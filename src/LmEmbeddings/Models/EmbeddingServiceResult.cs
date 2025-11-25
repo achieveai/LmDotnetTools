@@ -4,43 +4,43 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 
 /// <summary>
-/// Represents a structured result from embedding operations that includes performance metrics and error handling
+///     Represents a structured result from embedding operations that includes performance metrics and error handling
 /// </summary>
 /// <typeparam name="T">The type of the successful result data</typeparam>
 public record EmbeddingServiceResult<T>
 {
     /// <summary>
-    /// Whether the operation was successful
+    ///     Whether the operation was successful
     /// </summary>
     [JsonPropertyName("success")]
     public bool Success { get; init; }
 
     /// <summary>
-    /// The successful result data (if Success is true)
+    ///     The successful result data (if Success is true)
     /// </summary>
     [JsonPropertyName("data")]
     public T? Data { get; init; }
 
     /// <summary>
-    /// Error information (if Success is false)
+    ///     Error information (if Success is false)
     /// </summary>
     [JsonPropertyName("error")]
     public EmbeddingError? Error { get; init; }
 
     /// <summary>
-    /// Performance metrics for this operation
+    ///     Performance metrics for this operation
     /// </summary>
     [JsonPropertyName("metrics")]
     public RequestMetrics? Metrics { get; init; }
 
     /// <summary>
-    /// Additional metadata about the operation
+    ///     Additional metadata about the operation
     /// </summary>
     [JsonPropertyName("metadata")]
     public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     /// <summary>
-    /// Creates a successful result with performance metrics
+    ///     Creates a successful result with performance metrics
     /// </summary>
     /// <param name="data">The successful result data</param>
     /// <param name="metrics">Performance metrics for the operation</param>
@@ -62,7 +62,7 @@ public record EmbeddingServiceResult<T>
     }
 
     /// <summary>
-    /// Creates a failed result with structured error information
+    ///     Creates a failed result with structured error information
     /// </summary>
     /// <param name="error">The error that occurred</param>
     /// <param name="metrics">Performance metrics (if available)</param>
@@ -84,7 +84,7 @@ public record EmbeddingServiceResult<T>
     }
 
     /// <summary>
-    /// Creates a failed result from an exception
+    ///     Creates a failed result from an exception
     /// </summary>
     /// <param name="exception">The exception that occurred</param>
     /// <param name="requestId">The request ID for tracking</param>
@@ -141,12 +141,12 @@ public record EmbeddingServiceResult<T>
 }
 
 /// <summary>
-/// Helper class for creating common embedding service results
+///     Helper class for creating common embedding service results
 /// </summary>
 public static class EmbeddingResults
 {
     /// <summary>
-    /// Creates a validation error result
+    ///     Creates a validation error result
     /// </summary>
     public static EmbeddingServiceResult<T> ValidationError<T>(
         string field,
@@ -177,7 +177,7 @@ public static class EmbeddingResults
     }
 
     /// <summary>
-    /// Creates an API error result
+    ///     Creates an API error result
     /// </summary>
     public static EmbeddingServiceResult<T> ApiError<T>(
         string provider,
@@ -208,7 +208,7 @@ public static class EmbeddingResults
     }
 
     /// <summary>
-    /// Creates a rate limit error result
+    ///     Creates a rate limit error result
     /// </summary>
     public static EmbeddingServiceResult<T> RateLimitError<T>(RateLimitInfo rateLimitInfo, string? requestId = null)
     {

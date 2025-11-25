@@ -1,27 +1,28 @@
 using System.Collections.Concurrent;
+using System.Data;
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Test implementation of ISqliteSessionFactory that provides complete test isolation.
-/// Each session gets a unique database file that is automatically cleaned up.
+///     Test implementation of ISqliteSessionFactory that provides complete test isolation.
+///     Each session gets a unique database file that is automatically cleaned up.
 /// </summary>
 public class TestSqliteSessionFactory : ISqliteSessionFactory
 {
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly ILogger<TestSqliteSessionFactory> _logger;
-    private readonly string _testDirectory;
-    private readonly string _sharedDatabasePath;
-    private readonly string _sharedConnectionString;
     private readonly ConcurrentDictionary<string, DateTime> _activeSessions;
+    private readonly ILogger<TestSqliteSessionFactory> _logger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly Lock _metricsLock = new();
-
-    private int _totalSessionsCreated;
-    private int _failedSessionCreations;
     private readonly List<double> _sessionCreationTimes = [];
     private readonly List<double> _sessionLifetimes = [];
+    private readonly string _sharedConnectionString;
+    private readonly string _sharedDatabasePath;
+    private readonly string _testDirectory;
+    private int _failedSessionCreations;
+
+    private int _totalSessionsCreated;
 
     public TestSqliteSessionFactory(ILoggerFactory loggerFactory)
     {
@@ -232,8 +233,8 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     }
 
     /// <summary>
-    /// Cleans up all test database files and directories.
-    /// Should be called during test teardown.
+    ///     Cleans up all test database files and directories.
+    ///     Should be called during test teardown.
     /// </summary>
     public void Cleanup()
     {
@@ -241,7 +242,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         {
             if (Directory.Exists(_testDirectory))
             {
-                Directory.Delete(_testDirectory, recursive: true);
+                Directory.Delete(_testDirectory, true);
                 _logger.LogDebug("Cleaned up test directory: {TestDirectory}", _testDirectory);
             }
         }
@@ -263,12 +264,13 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 return trimmed["Data Source=".Length..];
             }
         }
+
         return string.Empty;
     }
 }
 
 /// <summary>
-/// Test implementation of ISqliteSession with automatic database file cleanup.
+///     Test implementation of ISqliteSession with automatic database file cleanup.
 /// </summary>
 public class TestSqliteSession : ISqliteSession
 {
@@ -277,12 +279,8 @@ public class TestSqliteSession : ISqliteSession
     private readonly ILogger<TestSqliteSession> _logger;
     private readonly Stopwatch _sessionStopwatch;
     private SqliteConnection? _connection;
-    private bool _disposed;
-    private int _operationCount;
     private DateTime _lastActivity;
-
-    public string SessionId { get; }
-    public bool IsDisposed => _disposed;
+    private int _operationCount;
 
     public TestSqliteSession(string connectionString, string databasePath, ILogger<TestSqliteSession> logger)
     {
@@ -301,17 +299,8 @@ public class TestSqliteSession : ISqliteSession
         );
     }
 
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
-    {
-        await EnsureConnectionAsync(cancellationToken);
-
-        await ExecuteAsync(
-            async connection => await ExecuteSchemaScriptsAsync(connection, cancellationToken),
-            cancellationToken
-        );
-
-        _logger.LogDebug("Test session {SessionId} database initialized", SessionId);
-    }
+    public string SessionId { get; }
+    public bool IsDisposed { get; private set; }
 
     public async Task<T> ExecuteAsync<T>(
         Func<SqliteConnection, Task<T>> operation,
@@ -435,18 +424,18 @@ public class TestSqliteSession : ISqliteSession
     {
         var health = new SessionHealthStatus
         {
-            IsHealthy = !_disposed && _connection?.State == System.Data.ConnectionState.Open,
+            IsHealthy = !IsDisposed && _connection?.State == ConnectionState.Open,
             ConnectionState = _connection?.State.ToString() ?? "NotCreated",
             CreatedAt = DateTime.UtcNow - _sessionStopwatch.Elapsed,
             LastActivity = _lastActivity,
             OperationCount = _operationCount,
         };
 
-        if (_disposed)
+        if (IsDisposed)
         {
             health.ErrorMessage = "Session is disposed";
         }
-        else if (_connection?.State != System.Data.ConnectionState.Open && _connection != null)
+        else if (_connection?.State != ConnectionState.Open && _connection != null)
         {
             health.ErrorMessage = $"Connection is in {_connection.State} state";
         }
@@ -456,7 +445,7 @@ public class TestSqliteSession : ISqliteSession
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             return;
         }
@@ -470,7 +459,7 @@ public class TestSqliteSession : ISqliteSession
 
         try
         {
-            if (_connection != null && _connection.State == System.Data.ConnectionState.Open)
+            if (_connection != null && _connection.State == ConnectionState.Open)
             {
                 // Force WAL checkpoint before closing
                 try
@@ -500,7 +489,7 @@ public class TestSqliteSession : ISqliteSession
         finally
         {
             _connection = null;
-            _disposed = true;
+            IsDisposed = true;
             _sessionStopwatch.Stop();
 
             // Clean up database files
@@ -514,9 +503,21 @@ public class TestSqliteSession : ISqliteSession
         }
     }
 
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureConnectionAsync(cancellationToken);
+
+        await ExecuteAsync(
+            async connection => await ExecuteSchemaScriptsAsync(connection, cancellationToken),
+            cancellationToken
+        );
+
+        _logger.LogDebug("Test session {SessionId} database initialized", SessionId);
+    }
+
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             throw new ObjectDisposedException(nameof(TestSqliteSession), $"Test session {SessionId} is disposed");
         }
@@ -533,7 +534,7 @@ public class TestSqliteSession : ISqliteSession
 
             _logger.LogDebug("Connection established for test session {SessionId}", SessionId);
         }
-        else if (_connection.State != System.Data.ConnectionState.Open)
+        else if (_connection.State != ConnectionState.Open)
         {
             _logger.LogWarning(
                 "Connection for test session {SessionId} is in {State} state, recreating",
@@ -767,12 +768,12 @@ public class TestSqliteSession : ISqliteSession
 }
 
 /// <summary>
-/// Wrapper for TestSqliteSession that tracks disposal for metrics.
+///     Wrapper for TestSqliteSession that tracks disposal for metrics.
 /// </summary>
 internal class TrackedTestSqliteSession : ISqliteSession
 {
-    private readonly ISqliteSession _innerSession;
     private readonly TestSqliteSessionFactory _factory;
+    private readonly ISqliteSession _innerSession;
     private bool _disposed;
 
     public TrackedTestSqliteSession(ISqliteSession innerSession, TestSqliteSessionFactory factory)

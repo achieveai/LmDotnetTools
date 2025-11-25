@@ -8,7 +8,7 @@ using ModelContextProtocol.Protocol;
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
 /// <summary>
-/// Tests for the MCP server functionality
+///     Tests for the MCP server functionality
 /// </summary>
 public class McpServerTests
 {
@@ -39,10 +39,10 @@ public class McpServerTests
 
             // Create a test agent and inject a tool call message to be returned
             var agent = new SimpleTestAgent();
-            var toolCall = new LmCore.Messages.ToolCall
+            var toolCall = new ToolCall
             {
                 FunctionName = "GreetingTool.SayHello",
-                FunctionArgs = JsonSerializer.Serialize(new { name = "User" })
+                FunctionArgs = JsonSerializer.Serialize(new { name = "User" }),
             };
             agent.InjectMessage(new ToolsCallMessage { ToolCalls = [toolCall] });
 

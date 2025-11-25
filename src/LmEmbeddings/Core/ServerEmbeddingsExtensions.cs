@@ -6,12 +6,12 @@ using LmEmbeddings.Models;
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
 /// <summary>
-/// Extension methods for ServerEmbeddings that provide structured results with performance metrics and error handling
+///     Extension methods for ServerEmbeddings that provide structured results with performance metrics and error handling
 /// </summary>
 public static class ServerEmbeddingsExtensions
 {
     /// <summary>
-    /// Generate embeddings with comprehensive metrics and structured error handling
+    ///     Generate embeddings with comprehensive metrics and structured error handling
     /// </summary>
     /// <param name="service">The embedding service</param>
     /// <param name="texts">Texts to embed</param>
@@ -69,9 +69,7 @@ public static class ServerEmbeddingsExtensions
             stopwatch.Stop();
 
             // Convert embeddings to the expected format
-            var embeddings =
-                response.Embeddings?.Select(e => e.Vector?.ToList() ?? []).ToList()
-                ?? [];
+            var embeddings = response.Embeddings?.Select(e => e.Vector?.ToList() ?? []).ToList() ?? [];
 
             // Create performance metrics
             var metrics = new RequestMetrics
@@ -118,7 +116,7 @@ public static class ServerEmbeddingsExtensions
     }
 
     /// <summary>
-    /// Get service health with structured configuration validation
+    ///     Get service health with structured configuration validation
     /// </summary>
     /// <param name="service">The embedding service</param>
     /// <returns>Health check result with configuration validation</returns>
@@ -184,7 +182,7 @@ public static class ServerEmbeddingsExtensions
     }
 
     /// <summary>
-    /// Analyze performance profile for the service
+    ///     Analyze performance profile for the service
     /// </summary>
     /// <param name="service">The embedding service</param>
     /// <param name="testCases">Test cases to run for profiling</param>

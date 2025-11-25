@@ -15,21 +15,21 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Middleware;
 
 /// <summary>
-/// Middleware for automatically tracking usage data from OpenRouter API calls.
-/// Injects usage tracking flags and enriches responses with usage information.
+///     Middleware for automatically tracking usage data from OpenRouter API calls.
+///     Injects usage tracking flags and enriches responses with usage information.
 /// </summary>
 public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 {
-    private readonly HttpClient _httpClient;
-    private readonly ILogger<OpenRouterUsageMiddleware> _logger;
-    private readonly UsageCache _usageCache;
     private const int MaxRetryCount = 6;
     private const int RetryDelayMs = 500;
     private const int StreamingTimeoutMs = 3000;
     private const int SyncTimeoutMs = 5000;
+    private readonly HttpClient _httpClient;
+    private readonly ILogger<OpenRouterUsageMiddleware> _logger;
+    private readonly UsageCache _usageCache;
 
     /// <summary>
-    /// Initializes a new instance of the OpenRouterUsageMiddleware.
+    ///     Initializes a new instance of the OpenRouterUsageMiddleware.
     /// </summary>
     /// <param name="openRouterApiKey">OpenRouter API key for usage lookup</param>
     /// <param name="logger">Logger for structured logging</param>
@@ -74,12 +74,21 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Disposes of the HttpClient and UsageCache.
+    /// </summary>
+    public void Dispose()
+    {
+        _httpClient?.Dispose();
+        _usageCache?.Dispose();
+    }
+
+    /// <summary>
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name => "OpenRouterUsageMiddleware";
 
     /// <summary>
-    /// Invokes the middleware for synchronous scenarios.
+    ///     Invokes the middleware for synchronous scenarios.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -100,11 +109,11 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             cancellationToken
         );
 
-        return await ProcessMessagesAsync(messages, isStreaming: false, cancellationToken);
+        return await ProcessMessagesAsync(messages, false, cancellationToken);
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios.
+    ///     Invokes the middleware for streaming scenarios.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
@@ -129,7 +138,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Injects usage tracking configuration into the request options.
+    ///     Injects usage tracking configuration into the request options.
     /// </summary>
     private static GenerateReplyOptions InjectUsageTracking(GenerateReplyOptions? options)
     {
@@ -148,7 +157,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Processes messages for synchronous scenarios, holding back UsageMessage objects and emitting a single enhanced UsageMessage at the end.
+    ///     Processes messages for synchronous scenarios, holding back UsageMessage objects and emitting a single enhanced
+    ///     UsageMessage at the end.
     /// </summary>
     private async Task<IEnumerable<IMessage>> ProcessMessagesAsync(
         IEnumerable<IMessage> messages,
@@ -209,7 +219,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Processes streaming messages, holding back UsageMessage objects and emitting a single enhanced UsageMessage at the end.
+    ///     Processes streaming messages, holding back UsageMessage objects and emitting a single enhanced UsageMessage at the
+    ///     end.
     /// </summary>
     private async IAsyncEnumerable<IMessage> ProcessStreamingMessagesAsync(
         IAsyncEnumerable<IMessage> messageStream,
@@ -246,20 +257,12 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         if (bufferedUsageMessage != null)
         {
             // We have a UsageMessage from the stream - enhance it
-            finalUsageMessage = await CreateUsageMessageAsync(
-                bufferedUsageMessage,
-                isStreaming: true,
-                cancellationToken
-            );
+            finalUsageMessage = await CreateUsageMessageAsync(bufferedUsageMessage, true, cancellationToken);
         }
         else if (lastNonUsageMessage != null)
         {
             // No UsageMessage in stream - try to create one from the last message
-            finalUsageMessage = await CreateUsageMessageAsync(
-                lastNonUsageMessage,
-                isStreaming: true,
-                cancellationToken
-            );
+            finalUsageMessage = await CreateUsageMessageAsync(lastNonUsageMessage, true, cancellationToken);
         }
 
         // Emit the final enhanced UsageMessage
@@ -270,7 +273,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Creates a UsageMessage with usage information if available.
+    ///     Creates a UsageMessage with usage information if available.
     /// </summary>
     private async Task<UsageMessage?> CreateUsageMessageAsync(
         IMessage message,
@@ -353,7 +356,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             // 1. No cost information is available (TotalCost is null or 0), OR
             // 2. This is a UsageMessage (indicating it came from upstream middleware) and we want to add OpenRouter-specific cost data
             var shouldEnhanceWithOpenRouter =
-                existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0 || (message is UsageMessage);
+                existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0 || message is UsageMessage;
 
             _logger.LogDebug(
                 "Enhancement evaluation: TotalCost={TotalCost}, IsUsageMessage={IsUsageMessage}, ShouldEnhance={ShouldEnhance}",
@@ -416,10 +419,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 
                     return enhancedResult;
                 }
-                else
-                {
-                    _logger.LogDebug("OpenRouter API returned no data, using existing usage");
-                }
+
+                _logger.LogDebug("OpenRouter API returned no data, using existing usage");
             }
             else
             {
@@ -479,7 +480,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Extracts completion ID from message metadata.
+    ///     Extracts completion ID from message metadata.
     /// </summary>
     private static string? GetCompletionId(IMessage message)
     {
@@ -489,8 +490,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Extracts inline usage information from a message response (Requirement 2.2).
-    /// This looks for usage data that came directly from the OpenRouter API response.
+    ///     Extracts inline usage information from a message response (Requirement 2.2).
+    ///     This looks for usage data that came directly from the OpenRouter API response.
     /// </summary>
     private static Usage? GetInlineUsageFromMessage(IMessage message)
     {
@@ -530,7 +531,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Extracts usage information from a message (for non-inline sources).
+    ///     Extracts usage information from a message (for non-inline sources).
     /// </summary>
     private static Usage? GetUsageFromMessage(IMessage message)
     {
@@ -552,7 +553,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Parses usage from a dictionary (typically from JSON deserialization).
+    ///     Parses usage from a dictionary (typically from JSON deserialization).
     /// </summary>
     private static Usage? ParseUsageFromDictionary(Dictionary<string, object?> usageDict)
     {
@@ -608,8 +609,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Gets cost stats from OpenRouter generation endpoint with retry logic (Requirement 3.1-3.4).
-    /// Checks cache first, then falls back to API calls with retry logic.
+    ///     Gets cost stats from OpenRouter generation endpoint with retry logic (Requirement 3.1-3.4).
+    ///     Checks cache first, then falls back to API calls with retry logic.
     /// </summary>
     private async Task<Usage?> GetCostStatsWithRetryAsync(
         string completionId,
@@ -748,7 +749,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Calls OpenRouter generation endpoint to get usage data.
+    ///     Calls OpenRouter generation endpoint to get usage data.
     /// </summary>
     private async Task<Usage?> GetUsageFromGenerationEndpointAsync(
         string completionId,
@@ -846,7 +847,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Maps OpenRouter stats data to Usage object.
+    ///     Maps OpenRouter stats data to Usage object.
     /// </summary>
     private static Usage MapStatsToUsage(OpenRouterStatsData stats)
     {
@@ -866,7 +867,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Maps OpenRouter stats data to OpenUsage object (Requirement 4.1-4.2).
+    ///     Maps OpenRouter stats data to OpenUsage object (Requirement 4.1-4.2).
     /// </summary>
     private static OpenUsage MapStatsToOpenUsage(OpenRouterStatsData stats)
     {
@@ -881,7 +882,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Creates a UsageMessage with usage information (Requirement 5.2).
+    ///     Creates a UsageMessage with usage information (Requirement 5.2).
     /// </summary>
     private static UsageMessage CreateUsageMessage(IMessage originalMessage, Usage usage, string completionId)
     {
@@ -896,8 +897,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Creates enriched messages with both Usage and OpenUsage information (Requirement 4.1-4.2, 5.2).
-    /// Returns a collection that includes the original enriched message plus a UsageMessage.
+    ///     Creates enriched messages with both Usage and OpenUsage information (Requirement 4.1-4.2, 5.2).
+    ///     Returns a collection that includes the original enriched message plus a UsageMessage.
     /// </summary>
     private static IEnumerable<IMessage> CreateEnrichedMessages(IMessage originalMessage, OpenRouterStatsData stats)
     {
@@ -922,8 +923,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Merges two Usage objects, prioritizing the 'new' usage for fields that are not zero or null.
-    /// Handles cases where OpenRouter provides revised token counts by logging warnings and using the updated values.
+    ///     Merges two Usage objects, prioritizing the 'new' usage for fields that are not zero or null.
+    ///     Handles cases where OpenRouter provides revised token counts by logging warnings and using the updated values.
     /// </summary>
     private Usage MergeUsageData(Usage existingUsage, Usage newUsage)
     {
@@ -1020,7 +1021,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Merges extra properties from two Usage objects, prioritizing new values.
+    ///     Merges extra properties from two Usage objects, prioritizing new values.
     /// </summary>
     private static ImmutableDictionary<string, object?> MergeExtraProperties(
         ImmutableDictionary<string, object?>? existing,
@@ -1046,14 +1047,5 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         }
 
         return result;
-    }
-
-    /// <summary>
-    /// Disposes of the HttpClient and UsageCache.
-    /// </summary>
-    public void Dispose()
-    {
-        _httpClient?.Dispose();
-        _usageCache?.Dispose();
     }
 }

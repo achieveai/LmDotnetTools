@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -13,22 +14,18 @@ public abstract class ParsedChunk { }
 
 public class TextChunk : ParsedChunk
 {
-    public string Text { get; set; } = string.Empty;
-
     public TextChunk() { }
 
     public TextChunk(string text)
     {
         Text = text;
     }
+
+    public string Text { get; set; } = string.Empty;
 }
 
 public class ToolCallChunk : ParsedChunk
 {
-    public string ToolName { get; set; } = string.Empty;
-    public string Content { get; set; } = string.Empty;
-    public string RawMatch { get; set; } = string.Empty;
-
     public ToolCallChunk() { }
 
     public ToolCallChunk(string toolName, string content, string rawMatch)
@@ -37,14 +34,14 @@ public class ToolCallChunk : ParsedChunk
         Content = content;
         RawMatch = rawMatch;
     }
+
+    public string ToolName { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public string RawMatch { get; set; } = string.Empty;
 }
 
 public class PartialToolCallMatch
 {
-    public int StartIndex { get; set; } = -1;
-    public string PartialPattern { get; set; } = string.Empty;
-    public bool IsMatch => StartIndex >= 0;
-
     public PartialToolCallMatch() { }
 
     public PartialToolCallMatch(int startIndex, string partialPattern)
@@ -53,14 +50,15 @@ public class PartialToolCallMatch
         PartialPattern = partialPattern;
     }
 
+    public int StartIndex { get; set; } = -1;
+    public string PartialPattern { get; set; } = string.Empty;
+    public bool IsMatch => StartIndex >= 0;
+
     public static PartialToolCallMatch NoMatch => new();
 }
 
 public class SafeTextResult
 {
-    public string SafeText { get; set; } = string.Empty;
-    public string RemainingBuffer { get; set; } = string.Empty;
-
     public SafeTextResult() { }
 
     public SafeTextResult(string safeText, string remainingBuffer)
@@ -68,6 +66,9 @@ public class SafeTextResult
         SafeText = safeText;
         RemainingBuffer = remainingBuffer;
     }
+
+    public string SafeText { get; set; } = string.Empty;
+    public string RemainingBuffer { get; set; } = string.Empty;
 }
 
 // Component 1: Text parser for complete tool calls
@@ -186,6 +187,7 @@ public partial class PartialToolCallDetector
                         correspondingOpen = openMatch;
                     }
                 }
+
                 if (correspondingOpen != null)
                 {
                     _ = matchedCloses.Add(correspondingOpen.Index);
@@ -289,24 +291,24 @@ public class SafeTextExtractor
 }
 
 /// <summary>
-/// Middleware for parsing natural tool use calls from LLM responses.
-/// Detects inline tool calls within fenced blocks and splits them into text and tool call messages.
+///     Middleware for parsing natural tool use calls from LLM responses.
+///     Detects inline tool calls within fenced blocks and splits them into text and tool call messages.
 /// </summary>
 public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 {
     // Shared regex patterns to eliminate duplication
     private static readonly Regex JsonCodeBlockPattern = MyRegex();
     private static readonly Regex ToolCallPattern = MyRegex1();
+    private readonly IAgent? _fallbackParser;
 
     private readonly IEnumerable<FunctionContract> _functions;
+    private readonly PartialToolCallDetector _partialDetector;
+    private readonly SafeTextExtractor _safeTextExtractor;
     private readonly IJsonSchemaValidator? _schemaValidator;
-    private readonly IAgent? _fallbackParser;
-    private bool _isFirstInvocation = true;
 
     // New parsing components
     private readonly ToolCallTextParser _textParser;
-    private readonly PartialToolCallDetector _partialDetector;
-    private readonly SafeTextExtractor _safeTextExtractor;
+    private bool _isFirstInvocation = true;
 
     public NaturalToolUseParserMiddleware(
         IEnumerable<FunctionContract> functions,
@@ -327,144 +329,6 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     }
 
     public string? Name { get; }
-
-    /// <summary>
-    /// Extracts JSON content from code blocks, handling both labeled and unlabeled blocks.
-    /// </summary>
-    private static string? TryExtractJsonFromContent(string content)
-    {
-        // First try fenced JSON blocks (existing behavior)
-        var match = JsonCodeBlockPattern.Match(content);
-        if (match.Success)
-        {
-            return match.Groups[1].Value.Trim();
-        }
-
-        // Then try unfenced JSON (new behavior)
-        return TryExtractUnfencedJson(content);
-    }
-
-    /// <summary>
-    /// Attempts to extract JSON content that is not wrapped in fenced code blocks.
-    /// Validates that the content is valid JSON before returning it.
-    /// </summary>
-    private static string? TryExtractUnfencedJson(string content)
-    {
-        var trimmed = content.Trim();
-        if (string.IsNullOrEmpty(trimmed))
-        {
-            return null;
-        }
-
-        // Check if content looks like JSON (starts with { or [)
-        if (trimmed.StartsWith("{") || trimmed.StartsWith("["))
-        {
-            try
-            {
-                // Validate it's parseable JSON
-                _ = JsonDocument.Parse(trimmed);
-                return trimmed;
-            }
-            catch (JsonException)
-            {
-                // Not valid JSON, return null
-                return null;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Unified method for processing tool calls with validation and fallback logic.
-    /// </summary>
-    private async Task<IEnumerable<IMessage>> ProcessToolCallAsync(
-        string toolName,
-        string content,
-        CancellationToken cancellationToken
-    )
-    {
-        try
-        {
-            var jsonText = TryExtractJsonFromContent(content);
-            if (jsonText != null)
-            {
-                var contract = _functions.FirstOrDefault(f =>
-                    f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase)
-                );
-                if (contract != null && contract.Parameters != null && _schemaValidator != null)
-                {
-                    var jsonSchema = contract.GetJsonSchema();
-                    var schemaString =
-                        jsonSchema != null
-                            ? JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions)
-                            : string.Empty;
-
-                    var isValid = _schemaValidator.Validate(jsonText, schemaString);
-                    if (isValid)
-                    {
-                        var toolCall = new ToolCall
-                        {
-                            FunctionName = toolName,
-                            FunctionArgs = jsonText,
-                            ToolCallId = Guid.NewGuid().ToString(),
-                        };
-                        return
-                        [
-                            new ToolsCallMessage
-                            {
-                                ToolCalls = [toolCall],
-                                Role = Role.Assistant,
-                            },
-                        ];
-                    }
-
-                    Console.WriteLine($"[DEBUG] Validation result: {isValid}");
-
-                    // Requirement 2.5 & 3.1: When no fallback agent is provided AND validation fails, throw exception immediately
-                    if (_fallbackParser == null)
-                    {
-                        throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
-                    }
-
-                    // Requirement 3.2: When fallback agent is provided, use structured output fallback for validation failures
-                    return await UseFallbackParserAsync(content, toolName, cancellationToken);
-                }
-                else
-                {
-                    // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
-                    return _fallbackParser == null
-                        ? throw new ToolUseParsingException(
-                            $"Tool {toolName} not found or no schema validator provided"
-                        )
-                        : await UseFallbackParserAsync(content, toolName, cancellationToken);
-                }
-            }
-            else
-            {
-                // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
-                return _fallbackParser == null
-                    ? throw new ToolUseParsingException($"No JSON content found for tool call {toolName}")
-                    : await UseFallbackParserAsync(content, toolName, cancellationToken);
-            }
-        }
-        catch (ToolUseParsingException)
-        {
-            // Re-throw ToolUseParsingException without modification to maintain existing patterns
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Requirement 3.1: When no fallback agent, throw ToolUseParsingException immediately
-            if (_fallbackParser == null)
-            {
-                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
-            }
-
-            // Requirement 3.2: When fallback agent is available, try fallback for any other exceptions
-            return await UseFallbackParserAsync(content, toolName, cancellationToken);
-        }
-    }
 
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -498,6 +362,131 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         );
 
         return ProcessStreamingRepliesAsync(streamingReplies, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Extracts JSON content from code blocks, handling both labeled and unlabeled blocks.
+    /// </summary>
+    private static string? TryExtractJsonFromContent(string content)
+    {
+        // First try fenced JSON blocks (existing behavior)
+        var match = JsonCodeBlockPattern.Match(content);
+        if (match.Success)
+        {
+            return match.Groups[1].Value.Trim();
+        }
+
+        // Then try unfenced JSON (new behavior)
+        return TryExtractUnfencedJson(content);
+    }
+
+    /// <summary>
+    ///     Attempts to extract JSON content that is not wrapped in fenced code blocks.
+    ///     Validates that the content is valid JSON before returning it.
+    /// </summary>
+    private static string? TryExtractUnfencedJson(string content)
+    {
+        var trimmed = content.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+
+        // Check if content looks like JSON (starts with { or [)
+        if (trimmed.StartsWith("{") || trimmed.StartsWith("["))
+        {
+            try
+            {
+                // Validate it's parseable JSON
+                _ = JsonDocument.Parse(trimmed);
+                return trimmed;
+            }
+            catch (JsonException)
+            {
+                // Not valid JSON, return null
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Unified method for processing tool calls with validation and fallback logic.
+    /// </summary>
+    private async Task<IEnumerable<IMessage>> ProcessToolCallAsync(
+        string toolName,
+        string content,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            var jsonText = TryExtractJsonFromContent(content);
+            if (jsonText != null)
+            {
+                var contract = _functions.FirstOrDefault(f =>
+                    f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase)
+                );
+                if (contract != null && contract.Parameters != null && _schemaValidator != null)
+                {
+                    var jsonSchema = contract.GetJsonSchema();
+                    var schemaString =
+                        jsonSchema != null
+                            ? JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions)
+                            : string.Empty;
+
+                    var isValid = _schemaValidator.Validate(jsonText, schemaString);
+                    if (isValid)
+                    {
+                        var toolCall = new ToolCall
+                        {
+                            FunctionName = toolName,
+                            FunctionArgs = jsonText,
+                            ToolCallId = Guid.NewGuid().ToString(),
+                        };
+                        return [new ToolsCallMessage { ToolCalls = [toolCall], Role = Role.Assistant }];
+                    }
+
+                    Console.WriteLine($"[DEBUG] Validation result: {isValid}");
+
+                    // Requirement 2.5 & 3.1: When no fallback agent is provided AND validation fails, throw exception immediately
+                    if (_fallbackParser == null)
+                    {
+                        throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
+                    }
+
+                    // Requirement 3.2: When fallback agent is provided, use structured output fallback for validation failures
+                    return await UseFallbackParserAsync(content, toolName, cancellationToken);
+                }
+
+                // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
+                return _fallbackParser == null
+                    ? throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided")
+                    : await UseFallbackParserAsync(content, toolName, cancellationToken);
+            }
+
+            // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
+            return _fallbackParser == null
+                ? throw new ToolUseParsingException($"No JSON content found for tool call {toolName}")
+                : await UseFallbackParserAsync(content, toolName, cancellationToken);
+        }
+        catch (ToolUseParsingException)
+        {
+            // Re-throw ToolUseParsingException without modification to maintain existing patterns
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Requirement 3.1: When no fallback agent, throw ToolUseParsingException immediately
+            if (_fallbackParser == null)
+            {
+                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
+            }
+
+            // Requirement 3.2: When fallback agent is available, try fallback for any other exceptions
+            return await UseFallbackParserAsync(content, toolName, cancellationToken);
+        }
     }
 
     private MiddlewareContext PrepareContext(MiddlewareContext context)
@@ -538,6 +527,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             _ = sb.AppendLine(func.ToMarkdown());
         }
+
         return sb.ToString();
     }
 
@@ -573,7 +563,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private async IAsyncEnumerable<IMessage> ProcessStreamingRepliesInternalAsync(
         IAsyncEnumerable<IMessage> streamingReplies,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+        [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
         // State for buffering TextUpdateMessages
@@ -686,7 +676,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         var messages = new List<IMessage>();
 
         // Check if there are tool calls in the format <tool_call name="...">...</tool_call>
-        var matches = ToolCallPattern.Matches(text).Cast<Match>().ToList();
+        var matches = ToolCallPattern.Matches(text).ToList();
 
         if (matches.Count == 0)
         {
@@ -904,25 +894,23 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             return isValid
                 ?
-
-                    [
-                        new ToolsCallMessage
-                        {
-                            GenerationId = Guid.NewGuid().ToString(),
-                            Role = Role.Tool,
-                            ToolCalls =
-                            [
-                                new ToolCall
-                                {
-                                    FunctionArgs = jsonText,
-                                    FunctionName = toolName,
-                                    Index = 0,
-                                    ToolCallId = Guid.NewGuid().ToString(),
-                                },
-                            ],
-                        },
-                    ]
-
+                [
+                    new ToolsCallMessage
+                    {
+                        GenerationId = Guid.NewGuid().ToString(),
+                        Role = Role.Tool,
+                        ToolCalls =
+                        [
+                            new ToolCall
+                            {
+                                FunctionArgs = jsonText,
+                                FunctionName = toolName,
+                                Index = 0,
+                                ToolCallId = Guid.NewGuid().ToString(),
+                            },
+                        ],
+                    },
+                ]
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 
@@ -959,11 +947,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private static ResponseFormat CreateResponseFormat(string toolName, JsonSchemaObject jsonSchema)
     {
-        return ResponseFormat.CreateWithSchema(
-            schemaName: $"{toolName}_parameters",
-            schemaObject: jsonSchema,
-            strictValidation: true
-        );
+        return ResponseFormat.CreateWithSchema($"{toolName}_parameters", jsonSchema);
     }
 
     private static TextMessage? ExtractTextMessageFromReplies(IEnumerable<IMessage> replies)
@@ -987,7 +971,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     private async IAsyncEnumerable<IMessage> ProcessParsedChunksAsync(
         List<ParsedChunk> parsedChunks,
         TextUpdateMessage template,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken
+        [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
         foreach (var chunk in parsedChunks)
@@ -1031,7 +1015,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 }
 
 /// <summary>
-/// Exception thrown when parsing of a natural tool use call fails.
+///     Exception thrown when parsing of a natural tool use call fails.
 /// </summary>
 public class ToolUseParsingException : Exception
 {
@@ -1043,7 +1027,7 @@ public class ToolUseParsingException : Exception
 }
 
 /// <summary>
-/// Wrapper class to convert a list to an async enumerable.
+///     Wrapper class to convert a list to an async enumerable.
 /// </summary>
 public class AsyncEnumerableWrapper<T> : IAsyncEnumerable<T>
 {
@@ -1061,7 +1045,7 @@ public class AsyncEnumerableWrapper<T> : IAsyncEnumerable<T>
 }
 
 /// <summary>
-/// Wrapper class to convert an enumerator to an async enumerator.
+///     Wrapper class to convert an enumerator to an async enumerator.
 /// </summary>
 public class AsyncEnumeratorWrapper<T> : IAsyncEnumerator<T>
 {

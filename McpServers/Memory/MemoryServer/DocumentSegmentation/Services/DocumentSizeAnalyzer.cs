@@ -5,17 +5,16 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service for analyzing document size and determining segmentation requirements.
+///     Service for analyzing document size and determining segmentation requirements.
 /// </summary>
 public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
 {
-    private readonly ILogger<DocumentSizeAnalyzer> _logger;
-    private readonly DocumentSegmentationOptions _options;
-
     // Regex patterns for text analysis
     private static readonly Regex WordPattern = MyRegex();
     private static readonly Regex SentencePattern = MyRegex1();
     private static readonly Regex ParagraphPattern = MyRegex2();
+    private readonly ILogger<DocumentSizeAnalyzer> _logger;
+    private readonly DocumentSegmentationOptions _options;
 
     public DocumentSizeAnalyzer(ILogger<DocumentSizeAnalyzer> logger, IOptions<DocumentSegmentationOptions> options)
     {
@@ -24,7 +23,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     }
 
     /// <summary>
-    /// Analyzes document content to determine size metrics.
+    ///     Analyzes document content to determine size metrics.
     /// </summary>
     public async Task<DocumentStatistics> AnalyzeDocumentAsync(
         string content,
@@ -68,7 +67,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
                 SentenceCount = CountSentences(content),
                 ParagraphCount = CountParagraphs(content),
                 // Estimate token count (rough approximation: 1 token ≈ 4 characters for English)
-                TokenCount = EstimateTokenCount(content)
+                TokenCount = EstimateTokenCount(content),
             };
 
             _logger.LogDebug(
@@ -89,7 +88,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     }
 
     /// <summary>
-    /// Determines if a document should be segmented based on configured thresholds.
+    ///     Determines if a document should be segmented based on configured thresholds.
     /// </summary>
     public bool ShouldSegmentDocument(DocumentStatistics statistics, DocumentType documentType = DocumentType.Generic)
     {
@@ -117,7 +116,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     }
 
     /// <summary>
-    /// Calculates optimal segment count for a document.
+    ///     Calculates optimal segment count for a document.
     /// </summary>
     public int CalculateOptimalSegmentCount(
         DocumentStatistics statistics,
@@ -150,7 +149,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     }
 
     /// <summary>
-    /// Estimates processing time for document segmentation.
+    ///     Estimates processing time for document segmentation.
     /// </summary>
     public long EstimateProcessingTime(DocumentStatistics statistics, SegmentationStrategy strategy)
     {

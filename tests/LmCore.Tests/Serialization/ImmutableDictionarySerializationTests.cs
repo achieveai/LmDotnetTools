@@ -6,7 +6,7 @@ using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;
 
 /// <summary>
-/// Tests for serialization and deserialization of ImmutableDictionary.
+///     Tests for serialization and deserialization of ImmutableDictionary.
 /// </summary>
 public class ImmutableDictionarySerializationTests
 {
@@ -15,85 +15,6 @@ public class ImmutableDictionarySerializationTests
     public ImmutableDictionarySerializationTests(ITestOutputHelper output)
     {
         _output = output;
-    }
-
-    private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
-    {
-        protected override TestClassWithExtensionData CreateInstance()
-        {
-            return new TestClassWithExtensionData();
-        }
-    }
-
-    // Test class with JsonExtensionData for testing inline extra properties
-    [JsonConverter(typeof(TestClassWithExtensionDataConverter))]
-    private record TestClassWithExtensionData
-    {
-        [JsonPropertyName("name")]
-        public string Name { get; init; } = string.Empty;
-
-        [JsonPropertyName("value")]
-        public int Value { get; init; }
-
-        [JsonExtensionData]
-        private Dictionary<string, object?> ExtraPropertiesInternal
-        {
-            get => ExtraProperties.ToDictionary();
-            init => ExtraProperties = value.ToImmutableDictionary();
-        }
-
-        [JsonIgnore]
-        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
-            ImmutableDictionary<string, object?>.Empty;
-
-        public TestClassWithExtensionData SetExtraProperty<T>(string key, T value)
-        {
-            return ExtraProperties == null
-                ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
-                : (this with
-                {
-                    ExtraProperties = ExtraProperties.Add(key, value),
-                });
-        }
-
-        public T? GetExtraProperty<T>(string key)
-        {
-            return ExtraProperties == null
-                ? default
-                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
-        }
-    }
-
-    // Test class with JsonPropertyName for testing nested extra properties
-    private record TestClassWithNestedProperties
-    {
-        [JsonPropertyName("name")]
-        public string Name { get; init; } = string.Empty;
-
-        [JsonPropertyName("value")]
-        public int Value { get; init; }
-
-        [JsonPropertyName("extra_properties")]
-        [JsonConverter(typeof(ExtraPropertiesConverter))]
-        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
-            ImmutableDictionary<string, object?>.Empty;
-
-        public TestClassWithNestedProperties SetExtraProperty<T>(string key, T value)
-        {
-            return ExtraProperties == null
-                ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
-                : (this with
-                {
-                    ExtraProperties = ExtraProperties.Add(key, value),
-                });
-        }
-
-        public T? GetExtraProperty<T>(string key)
-        {
-            return ExtraProperties == null
-                ? default
-                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
-        }
     }
 
     [Fact]
@@ -420,6 +341,7 @@ public class ImmutableDictionarySerializationTests
                     output.WriteLine($"{indentStr}  \"{property.Name}\": ");
                     PrintJsonElement(output, property.Value, indent + 1);
                 }
+
                 output.WriteLine($"{indentStr}}}");
                 break;
 
@@ -430,6 +352,7 @@ public class ImmutableDictionarySerializationTests
                     PrintJsonElement(output, item, indent + 1);
                     output.WriteLine("");
                 }
+
                 output.WriteLine($"{indentStr}]");
                 break;
 
@@ -449,10 +372,98 @@ public class ImmutableDictionarySerializationTests
             case JsonValueKind.Null:
                 output.WriteLine($"{indentStr}null");
                 break;
+
             case JsonValueKind.Undefined:
+                output.WriteLine($"{indentStr}undefined");
                 break;
+
             default:
-                break;
+                throw new NotSupportedException($"Unknown JsonValueKind: {element.ValueKind}");
+        }
+    }
+
+    private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
+    {
+        protected override TestClassWithExtensionData CreateInstance()
+        {
+            return new TestClassWithExtensionData();
+        }
+    }
+
+    // Test class with JsonExtensionData for testing inline extra properties
+    [JsonConverter(typeof(TestClassWithExtensionDataConverter))]
+    private record TestClassWithExtensionData
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; init; } = string.Empty;
+
+        [JsonPropertyName("value")]
+        public int Value { get; init; }
+
+        [JsonExtensionData]
+        private Dictionary<string, object?> ExtraPropertiesInternal
+        {
+            get => ExtraProperties.ToDictionary();
+            init => ExtraProperties = value.ToImmutableDictionary();
+        }
+
+        [JsonIgnore]
+        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+            ImmutableDictionary<string, object?>.Empty;
+
+        public TestClassWithExtensionData SetExtraProperty<T>(string key, T value)
+        {
+            return ExtraProperties == null
+                ? this with
+                {
+                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
+                }
+                : this with
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                };
+        }
+
+        public T? GetExtraProperty<T>(string key)
+        {
+            return ExtraProperties == null ? default
+                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue
+                : default;
+        }
+    }
+
+    // Test class with JsonPropertyName for testing nested extra properties
+    private record TestClassWithNestedProperties
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; init; } = string.Empty;
+
+        [JsonPropertyName("value")]
+        public int Value { get; init; }
+
+        [JsonPropertyName("extra_properties")]
+        [JsonConverter(typeof(ExtraPropertiesConverter))]
+        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+            ImmutableDictionary<string, object?>.Empty;
+
+        public TestClassWithNestedProperties SetExtraProperty<T>(string key, T value)
+        {
+            return ExtraProperties == null
+                ? this with
+                {
+                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
+                }
+                : this with
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                };
+        }
+
+        public T? GetExtraProperty<T>(string key)
+        {
+            return ExtraProperties == null ? default
+                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue
+                : default;
         }
     }
 }

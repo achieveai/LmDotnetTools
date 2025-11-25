@@ -4,95 +4,11 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Comprehensive tests for GraphDecisionInstruction model including validation, serialization, and operation logic.
-/// Uses data-driven testing approach for maximum coverage with minimal test methods.
+///     Comprehensive tests for GraphDecisionInstruction model including validation, serialization, and operation logic.
+///     Uses data-driven testing approach for maximum coverage with minimal test methods.
 /// </summary>
 public class GraphDecisionInstructionTests
 {
-    #region Instruction Creation and Validation Tests
-
-    [Theory]
-    [MemberData(nameof(ValidInstructionTestCases))]
-    public void CreateInstruction_WithValidData_ShouldSucceed(
-        string testName,
-        GraphDecisionOperation operation,
-        Entity? entityData,
-        Relationship? relationshipData,
-        float confidence,
-        string reasoning,
-        SessionContext sessionContext
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing instruction creation: {testName}");
-        Debug.WriteLine($"Operation: {operation}, Confidence: {confidence}");
-
-        // Act
-        var instruction = new GraphDecisionInstruction
-        {
-            Operation = operation,
-            EntityData = entityData,
-            RelationshipData = relationshipData,
-            Confidence = confidence,
-            Reasoning = reasoning,
-            SessionContext = sessionContext,
-            CreatedAt = DateTime.UtcNow,
-        };
-
-        // Assert
-        Assert.Equal(operation, instruction.Operation);
-        Assert.Equal(entityData, instruction.EntityData);
-        Assert.Equal(relationshipData, instruction.RelationshipData);
-        Assert.Equal(confidence, instruction.Confidence);
-        Assert.Equal(reasoning, instruction.Reasoning);
-        Assert.Equal(sessionContext, instruction.SessionContext);
-
-        Debug.WriteLine($"✅ Instruction created successfully");
-        Debug.WriteLine($"   Reasoning: {reasoning}");
-    }
-
-    [Theory]
-    [MemberData(nameof(InvalidInstructionTestCases))]
-    public void CreateInstruction_WithInvalidData_ShouldHandleGracefully(
-        string testName,
-        GraphDecisionOperation operation,
-        float confidence,
-        string reasoning,
-        string expectedIssue
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing invalid instruction creation: {testName}");
-        Debug.WriteLine($"Expected issue: {expectedIssue}");
-
-        // Act
-        var instruction = new GraphDecisionInstruction
-        {
-            Operation = operation,
-            Confidence = confidence,
-            Reasoning = reasoning,
-            SessionContext = new SessionContext { UserId = "user123" },
-            CreatedAt = DateTime.UtcNow,
-        };
-
-        // Assert - Instruction creation doesn't throw, but we can validate the data
-        if (confidence is < 0 or > 1)
-        {
-            Assert.True(
-                instruction.Confidence is < 0 or > 1,
-                "Confidence should be out of valid range"
-            );
-        }
-        if (string.IsNullOrWhiteSpace(reasoning))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(instruction.Reasoning), "Reasoning should be empty or whitespace");
-        }
-
-        Debug.WriteLine($"⚠️ Invalid instruction handled: {expectedIssue}");
-    }
-
-    #endregion
-
     #region Operation Logic Tests
 
     [Theory]
@@ -141,7 +57,9 @@ public class GraphDecisionInstructionTests
                     isValid = false;
                     actualIssue = "Must have either entity or relationship data";
                 }
+
                 break;
+
             case GraphDecisionOperation.NONE:
                 // Should not have any data
                 if (entityData != null || relationshipData != null)
@@ -149,9 +67,11 @@ public class GraphDecisionInstructionTests
                     isValid = false;
                     actualIssue = "NONE operation should not have data";
                 }
+
                 break;
+
             default:
-                break;
+                throw new NotSupportedException($"Unknown operation: {operation}");
         }
 
         Assert.Equal(expectedValid, isValid);
@@ -227,7 +147,89 @@ public class GraphDecisionInstructionTests
             Assert.Equal(originalInstruction.RelationshipData.Target, deserializedInstruction.RelationshipData.Target);
         }
 
-        Debug.WriteLine($"✅ Serialization successful - all fields preserved");
+        Debug.WriteLine("✅ Serialization successful - all fields preserved");
+    }
+
+    #endregion
+
+    #region Instruction Creation and Validation Tests
+
+    [Theory]
+    [MemberData(nameof(ValidInstructionTestCases))]
+    public void CreateInstruction_WithValidData_ShouldSucceed(
+        string testName,
+        GraphDecisionOperation operation,
+        Entity? entityData,
+        Relationship? relationshipData,
+        float confidence,
+        string reasoning,
+        SessionContext sessionContext
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing instruction creation: {testName}");
+        Debug.WriteLine($"Operation: {operation}, Confidence: {confidence}");
+
+        // Act
+        var instruction = new GraphDecisionInstruction
+        {
+            Operation = operation,
+            EntityData = entityData,
+            RelationshipData = relationshipData,
+            Confidence = confidence,
+            Reasoning = reasoning,
+            SessionContext = sessionContext,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        // Assert
+        Assert.Equal(operation, instruction.Operation);
+        Assert.Equal(entityData, instruction.EntityData);
+        Assert.Equal(relationshipData, instruction.RelationshipData);
+        Assert.Equal(confidence, instruction.Confidence);
+        Assert.Equal(reasoning, instruction.Reasoning);
+        Assert.Equal(sessionContext, instruction.SessionContext);
+
+        Debug.WriteLine("✅ Instruction created successfully");
+        Debug.WriteLine($"   Reasoning: {reasoning}");
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidInstructionTestCases))]
+    public void CreateInstruction_WithInvalidData_ShouldHandleGracefully(
+        string testName,
+        GraphDecisionOperation operation,
+        float confidence,
+        string reasoning,
+        string expectedIssue
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing invalid instruction creation: {testName}");
+        Debug.WriteLine($"Expected issue: {expectedIssue}");
+
+        // Act
+        var instruction = new GraphDecisionInstruction
+        {
+            Operation = operation,
+            Confidence = confidence,
+            Reasoning = reasoning,
+            SessionContext = new SessionContext { UserId = "user123" },
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        // Assert - Instruction creation doesn't throw, but we can validate the data
+        if (confidence is < 0 or > 1)
+        {
+            Assert.True(instruction.Confidence is < 0 or > 1, "Confidence should be out of valid range");
+        }
+
+        if (string.IsNullOrWhiteSpace(reasoning))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(instruction.Reasoning), "Reasoning should be empty or whitespace");
+        }
+
+        Debug.WriteLine($"⚠️ Invalid instruction handled: {expectedIssue}");
     }
 
     #endregion
@@ -294,20 +296,8 @@ public class GraphDecisionInstructionTests
     public static IEnumerable<object[]> InvalidInstructionTestCases =>
         [
             // Format: testName, operation, confidence, reasoning, expectedIssue
-            [
-                "Negative confidence",
-                GraphDecisionOperation.ADD,
-                -0.1f,
-                "Valid reasoning",
-                "Confidence below 0",
-            ],
-            [
-                "Confidence above 1",
-                GraphDecisionOperation.UPDATE,
-                1.1f,
-                "Valid reasoning",
-                "Confidence above 1",
-            ],
+            ["Negative confidence", GraphDecisionOperation.ADD, -0.1f, "Valid reasoning", "Confidence below 0"],
+            ["Confidence above 1", GraphDecisionOperation.UPDATE, 1.1f, "Valid reasoning", "Confidence above 1"],
             ["Empty reasoning", GraphDecisionOperation.DELETE, 0.8f, "", "Reasoning is empty"],
             ["Whitespace reasoning", GraphDecisionOperation.ADD, 0.8f, "   ", "Reasoning is whitespace"],
             [

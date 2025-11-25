@@ -12,13 +12,13 @@ using Moq;
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Tests for TopicBasedSegmentationService functionality.
+///     Tests for TopicBasedSegmentationService functionality.
 /// </summary>
 public class TopicBasedSegmentationServiceTests
 {
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly TopicBasedSegmentationService _service;
 
     public TopicBasedSegmentationServiceTests()
@@ -138,14 +138,12 @@ public class TopicBasedSegmentationServiceTests
         Debug.WriteLine($"Test content: {content}");
 
         // Act
-        var result = await _service.DetectTopicBoundariesAsync(content, DocumentType.Generic);
+        var result = await _service.DetectTopicBoundariesAsync(content);
         Debug.WriteLine($"Boundary detection result count: {result.Count}");
 
         foreach (var boundary in result)
         {
-            Debug.WriteLine(
-                $"Boundary at position {boundary.Position} with confidence {boundary.Confidence}"
-            );
+            Debug.WriteLine($"Boundary at position {boundary.Position} with confidence {boundary.Confidence}");
         }
 
         // Assert
@@ -178,7 +176,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         Debug.WriteLine($"Transition test content: {content}");
 
         // Act
-        var result = await _service.DetectTopicBoundariesAsync(content, DocumentType.Generic);
+        var result = await _service.DetectTopicBoundariesAsync(content);
 
         Debug.WriteLine($"Transition test result count: {result.Count}");
         foreach (var boundary in result)
@@ -266,7 +264,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
     {
         // Arrange
         var originalContent = CreateMultiTopicDocument();
-        var segments = await _service.SegmentByTopicsAsync(originalContent, DocumentType.Generic);
+        var segments = await _service.SegmentByTopicsAsync(originalContent);
 
         // Act
         var result = await _service.ValidateTopicSegmentsAsync(segments, originalContent);
@@ -297,13 +295,15 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var originalContent = "Test content";
         var poorSegments = new List<DocumentSegment>
         {
-            new() {
+            new()
+            {
                 Id = "1",
                 Content = "A", // Too short
                 SequenceNumber = 0,
                 Metadata = new Dictionary<string, object> { ["start_position"] = 0, ["end_position"] = 1 },
             },
-            new() {
+            new()
+            {
                 Id = "2",
                 Content = CreateIncoherentContent(), // Poor coherence
                 SequenceNumber = 1,
@@ -371,7 +371,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         ";
 
         // Act
-        var result = await _service.DetectTopicBoundariesAsync(singleTopicContent, DocumentType.Generic);
+        var result = await _service.DetectTopicBoundariesAsync(singleTopicContent);
 
         // Assert
         _ = result.Should().NotBeNull();
@@ -456,7 +456,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
 }
 
 /// <summary>
-/// Integration tests for TopicBasedSegmentationService with real dependencies.
+///     Integration tests for TopicBasedSegmentationService with real dependencies.
 /// </summary>
 public class TopicBasedSegmentationServiceIntegrationTests
 {
@@ -481,7 +481,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
         // Create HTTP handler with record/playback functionality
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(fullTestDataPath, allowAdditional: true)
+            .WithRecordPlayback(fullTestDataPath, true)
             .ForwardToApi(
                 EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", null, "https://openrouter.ai/api/v1"),
                 EnvironmentHelper.GetApiKeyFromEnv("OPENROUTER_API_KEY")

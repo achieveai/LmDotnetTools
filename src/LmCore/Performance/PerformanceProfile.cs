@@ -1,8 +1,8 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Aggregates performance data over time periods for profiling and analysis.
-/// Provides statistical insights into provider performance patterns.
+///     Aggregates performance data over time periods for profiling and analysis.
+///     Provides statistical insights into provider performance patterns.
 /// </summary>
 public record PerformanceProfile
 {

@@ -6,11 +6,12 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
 /// <summary>
-/// Basic calculator tool for mathematical operations
-/// Demonstrates validation and error handling
+///     Basic calculator tool for mathematical operations
+///     Demonstrates validation and error handling
 /// </summary>
 public class CalculatorTool : IFunctionProvider
 {
+    private static readonly string[] sourceArray = ["add", "subtract", "multiply", "divide"];
     private readonly ILogger<CalculatorTool> _logger;
 
     public CalculatorTool(ILogger<CalculatorTool> logger)
@@ -21,8 +22,6 @@ public class CalculatorTool : IFunctionProvider
 
     public string ProviderName => "CalculatorProvider";
     public int Priority => 100;
-
-    private static readonly string[] sourceArray = ["add", "subtract", "multiply", "divide"];
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
@@ -65,7 +64,7 @@ public class CalculatorTool : IFunctionProvider
     }
 
     /// <summary>
-    /// Executes the calculation
+    ///     Executes the calculation
     /// </summary>
     private async Task<string> ExecuteAsync(string arguments)
     {

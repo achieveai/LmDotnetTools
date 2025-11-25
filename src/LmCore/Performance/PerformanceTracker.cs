@@ -1,16 +1,13 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Default implementation of IPerformanceTracker that provides comprehensive performance tracking
-/// across all providers with thread-safe operations.
+///     Default implementation of IPerformanceTracker that provides comprehensive performance tracking
+///     across all providers with thread-safe operations.
 /// </summary>
 public class PerformanceTracker : IPerformanceTracker
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, ProviderStatistics> _providerStats = [];
-
-    /// <summary>Maximum number of recent metrics to keep per provider</summary>
-    public int MaxRecentMetricsPerProvider { get; init; } = 1000;
 
     /// <summary>Creates a new PerformanceTracker instance</summary>
     /// <param name="maxRecentMetricsPerProvider">Maximum recent metrics to retain per provider</param>
@@ -18,6 +15,9 @@ public class PerformanceTracker : IPerformanceTracker
     {
         MaxRecentMetricsPerProvider = maxRecentMetricsPerProvider;
     }
+
+    /// <summary>Maximum number of recent metrics to keep per provider</summary>
+    public int MaxRecentMetricsPerProvider { get; init; } = 1000;
 
     /// <summary>Records a request metric</summary>
     /// <param name="metric">The request metric to record</param>

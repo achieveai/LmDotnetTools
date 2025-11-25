@@ -4,8 +4,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class FunctionRegistryDebugTest
 {
-    private readonly ITestOutputHelper _output;
     private static readonly string[] functionNames = ["func1"];
+    private readonly ITestOutputHelper _output;
 
     public FunctionRegistryDebugTest(ITestOutputHelper output)
     {

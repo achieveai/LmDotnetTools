@@ -13,15 +13,15 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.WebSockets;
 
 /// <summary>
-/// Handles WebSocket connections for AG-UI protocol communication
+///     Handles WebSocket connections for AG-UI protocol communication
 /// </summary>
 public sealed class AgUiWebSocketHandler
 {
     private readonly IWebSocketConnectionManager _connectionManager;
     private readonly IEventPublisher _eventPublisher;
-    private readonly ICopilotKitSessionMapper? _sessionMapper;
     private readonly ILogger<AgUiWebSocketHandler> _logger;
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
+    private readonly ICopilotKitSessionMapper? _sessionMapper;
 
     public AgUiWebSocketHandler(
         IWebSocketConnectionManager connectionManager,
@@ -37,7 +37,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Handles a WebSocket connection lifecycle
+    ///     Handles a WebSocket connection lifecycle
     /// </summary>
     /// <param name="context">HTTP context containing the WebSocket request</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -131,7 +131,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Sends the session-started event to the client
+    ///     Sends the session-started event to the client
     /// </summary>
     private async Task SendSessionStartedEventAsync(
         WebSocket webSocket,
@@ -145,7 +145,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Streams AG-UI events to the WebSocket client
+    ///     Streams AG-UI events to the WebSocket client
     /// </summary>
     private async Task StreamEventsToClientAsync(
         WebSocket webSocket,
@@ -178,7 +178,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Receives messages from the WebSocket client
+    ///     Receives messages from the WebSocket client
     /// </summary>
     private async Task ReceiveMessagesFromClientAsync(
         WebSocket webSocket,
@@ -238,7 +238,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Processes a message received from the client
+    ///     Processes a message received from the client
     /// </summary>
     private async Task ProcessClientMessageAsync(
         WebSocket webSocket,
@@ -287,7 +287,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Enriches an event with threadId and runId if available from the session mapper
+    ///     Enriches an event with threadId and runId if available from the session mapper
     /// </summary>
     private AgUiEventBase EnrichEventWithThreadInfo(AgUiEventBase evt)
     {
@@ -313,7 +313,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Sends an AG-UI event to the WebSocket client
+    ///     Sends an AG-UI event to the WebSocket client
     /// </summary>
     private async Task SendEventAsync(WebSocket webSocket, AgUiEventBase evt, CancellationToken cancellationToken)
     {
@@ -335,7 +335,7 @@ public sealed class AgUiWebSocketHandler
             await webSocket.SendAsync(
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
-                endOfMessage: true,
+                true,
                 cancellationToken
             );
 
@@ -354,7 +354,7 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
-    /// Closes the WebSocket connection gracefully
+    ///     Closes the WebSocket connection gracefully
     /// </summary>
     private async Task CloseWebSocketAsync(
         WebSocket webSocket,

@@ -6,6 +6,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using LmCoreToolCall = AchieveAi.LmDotnetTools.LmCore.Messages.ToolCall;
+using ToolCall = AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs.ToolCall;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Tests.Converters;
 
@@ -17,6 +18,55 @@ public class LmCoreToAgUiConverterTests
     {
         _converter = new LmCoreToAgUiConverter(NullLogger<LmCoreToAgUiConverter>.Instance);
     }
+
+    #region ToolsCallAggregateMessage Tests
+
+    [Fact]
+    public void ConvertMessage_ToolsCallAggregateMessage_CreatesToolCallAndResults()
+    {
+        // Arrange - Note: The converter uses each message's individual GenerationId
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "get_time",
+            FunctionArgs = """{"timezone": "UTC"}""",
+            ToolCallId = "call-time",
+        };
+        var toolsCallMessage = new ToolsCallMessage
+        {
+            Role = Role.Assistant,
+            GenerationId = "call-gen-id",
+            ToolCalls = [toolCall],
+        };
+
+        var result = new ToolCallResult("call-time", "12:00 PM UTC");
+        var toolsCallResult = new ToolsCallResultMessage
+        {
+            Role = Role.Tool,
+            GenerationId = "result-gen-id",
+            ToolCallResults = [result],
+        };
+
+        var aggregateMessage = new ToolsCallAggregateMessage(toolsCallMessage, toolsCallResult);
+
+        // Act
+        var converted = _converter.ConvertMessage(aggregateMessage);
+
+        // Assert
+        _ = converted.Should().HaveCount(2);
+
+        // First message is the tool call - uses the ToolsCallMessage's GenerationId
+        _ = converted[0].Id.Should().Be("call-gen-id");
+        _ = converted[0].ToolCalls.Should().HaveCount(1);
+        _ = converted[0].ToolCalls![0].Id.Should().Be("call-time");
+
+        // Second message is the result - uses the ToolsCallResultMessage's GenerationId with index
+        _ = converted[1].Id.Should().Be("result-gen-id_result_0");
+        _ = converted[1].Role.Should().Be("tool");
+        _ = converted[1].Content.Should().Be("12:00 PM UTC");
+        _ = converted[1].ToolCallId.Should().Be("call-time");
+    }
+
+    #endregion
 
     #region TextMessage Tests
 
@@ -174,7 +224,7 @@ public class LmCoreToAgUiConverterTests
 
         var convertedToolCall = message.ToolCalls![0];
         _ = convertedToolCall.Id.Should().Be("call-123");
-        _ = DataObjects.DTOs.ToolCall.Type.Should().Be("function");
+        _ = ToolCall.Type.Should().Be("function");
         _ = convertedToolCall.Function.Name.Should().Be("get_weather");
     }
 
@@ -183,7 +233,12 @@ public class LmCoreToAgUiConverterTests
     {
         // Arrange
         var jsonArgs = """{"location": "Paris", "units": "celsius"}""";
-        var toolCall = new LmCoreToolCall { FunctionName = "get_weather", FunctionArgs = jsonArgs, ToolCallId = "call-456" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = jsonArgs,
+            ToolCallId = "call-456",
+        };
 
         var toolsCallMessage = new ToolsCallMessage
         {
@@ -209,9 +264,24 @@ public class LmCoreToAgUiConverterTests
     {
         // Arrange
         var toolCalls = ImmutableList.Create(
-            new LmCoreToolCall { FunctionName = "func1", FunctionArgs = """{"arg1": "value1"}""", ToolCallId = "call-1" },
-            new LmCoreToolCall { FunctionName = "func2", FunctionArgs = """{"arg2": "value2"}""", ToolCallId = "call-2" },
-            new LmCoreToolCall { FunctionName = "func3", FunctionArgs = """{"arg3": "value3"}""", ToolCallId = "call-3" }
+            new LmCoreToolCall
+            {
+                FunctionName = "func1",
+                FunctionArgs = """{"arg1": "value1"}""",
+                ToolCallId = "call-1",
+            },
+            new LmCoreToolCall
+            {
+                FunctionName = "func2",
+                FunctionArgs = """{"arg2": "value2"}""",
+                ToolCallId = "call-2",
+            },
+            new LmCoreToolCall
+            {
+                FunctionName = "func3",
+                FunctionArgs = """{"arg3": "value3"}""",
+                ToolCallId = "call-3",
+            }
         );
 
         var toolsCallMessage = new ToolsCallMessage
@@ -239,7 +309,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertMessage_ToolsCallResultMessage_SingleResult_CreatesSingleMessage()
     {
         // Arrange
-        var result = new ToolCallResult(ToolCallId: "call-123", Result: "Weather data: 72°F");
+        var result = new ToolCallResult("call-123", "Weather data: 72°F");
 
         var resultMessage = new ToolsCallResultMessage
         {
@@ -385,50 +455,6 @@ public class LmCoreToAgUiConverterTests
 
     #endregion
 
-    #region ToolsCallAggregateMessage Tests
-
-    [Fact]
-    public void ConvertMessage_ToolsCallAggregateMessage_CreatesToolCallAndResults()
-    {
-        // Arrange - Note: The converter uses each message's individual GenerationId
-        var toolCall = new LmCoreToolCall { FunctionName = "get_time", FunctionArgs = """{"timezone": "UTC"}""", ToolCallId = "call-time" };
-        var toolsCallMessage = new ToolsCallMessage
-        {
-            Role = Role.Assistant,
-            GenerationId = "call-gen-id",
-            ToolCalls = [toolCall],
-        };
-
-        var result = new ToolCallResult("call-time", "12:00 PM UTC");
-        var toolsCallResult = new ToolsCallResultMessage
-        {
-            Role = Role.Tool,
-            GenerationId = "result-gen-id",
-            ToolCallResults = [result],
-        };
-
-        var aggregateMessage = new ToolsCallAggregateMessage(toolsCallMessage, toolsCallResult);
-
-        // Act
-        var converted = _converter.ConvertMessage(aggregateMessage);
-
-        // Assert
-        _ = converted.Should().HaveCount(2);
-
-        // First message is the tool call - uses the ToolsCallMessage's GenerationId
-        _ = converted[0].Id.Should().Be("call-gen-id");
-        _ = converted[0].ToolCalls.Should().HaveCount(1);
-        _ = converted[0].ToolCalls![0].Id.Should().Be("call-time");
-
-        // Second message is the result - uses the ToolsCallResultMessage's GenerationId with index
-        _ = converted[1].Id.Should().Be("result-gen-id_result_0");
-        _ = converted[1].Role.Should().Be("tool");
-        _ = converted[1].Content.Should().Be("12:00 PM UTC");
-        _ = converted[1].ToolCallId.Should().Be("call-time");
-    }
-
-    #endregion
-
     #region ConvertMessageHistory Tests
 
     [Fact]
@@ -523,7 +549,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_ValidToolCall_CreatesCorrectStructure()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "calculate", FunctionArgs = """{"expression": "2 + 2"}""", ToolCallId = "call-calc" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "calculate",
+            FunctionArgs = """{"expression": "2 + 2"}""",
+            ToolCallId = "call-calc",
+        };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -531,7 +562,7 @@ public class LmCoreToAgUiConverterTests
         // Assert
         _ = result.Should().NotBeNull();
         _ = result.Id.Should().Be("call-calc");
-        _ = DataObjects.DTOs.ToolCall.Type.Should().Be("function");
+        _ = ToolCall.Type.Should().Be("function");
         _ = result.Function.Should().NotBeNull();
         _ = result.Function.Name.Should().Be("calculate");
         _ = result.Function.Arguments.GetProperty("expression").GetString().Should().Be("2 + 2");
@@ -541,7 +572,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithEmptyArgs_ParsesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "no_args_func", FunctionArgs = "{}", ToolCallId = "call-empty" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "no_args_func",
+            FunctionArgs = "{}",
+            ToolCallId = "call-empty",
+        };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -555,7 +591,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithNullArgs_ParsesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "null_args_func", FunctionArgs = null, ToolCallId = "call-null" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "null_args_func",
+            FunctionArgs = null,
+            ToolCallId = "call-null",
+        };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -569,7 +610,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithInvalidJson_ThrowsJsonException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "bad_json", FunctionArgs = "{not valid json}", ToolCallId = "call-bad" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "bad_json",
+            FunctionArgs = "{not valid json}",
+            ToolCallId = "call-bad",
+        };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);
@@ -580,7 +626,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithNullToolCallId_ThrowsArgumentException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "func", FunctionArgs = "{}", ToolCallId = null! };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "func",
+            FunctionArgs = "{}",
+            ToolCallId = null!,
+        };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);
@@ -591,7 +642,12 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithEmptyFunctionName_ThrowsArgumentException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "", FunctionArgs = "{}", ToolCallId = "call-1" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "",
+            FunctionArgs = "{}",
+            ToolCallId = "call-1",
+        };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);

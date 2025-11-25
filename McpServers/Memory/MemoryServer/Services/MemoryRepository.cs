@@ -7,14 +7,14 @@ using Microsoft.Data.Sqlite;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// SQLite-based repository for memory operations with session isolation and integer IDs.
-/// Uses Database Session Pattern for reliable connection management.
+///     SQLite-based repository for memory operations with session isolation and integer IDs.
+///     Uses Database Session Pattern for reliable connection management.
 /// </summary>
 public class MemoryRepository : IMemoryRepository
 {
-    private readonly ISqliteSessionFactory _sessionFactory;
     private readonly MemoryIdGenerator _idGenerator;
     private readonly ILogger<MemoryRepository> _logger;
+    private readonly ISqliteSessionFactory _sessionFactory;
 
     public MemoryRepository(
         ISqliteSessionFactory sessionFactory,
@@ -28,7 +28,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Adds a new memory to the repository.
+    ///     Adds a new memory to the repository.
     /// </summary>
     public async Task<Memory> AddAsync(
         string content,
@@ -99,7 +99,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets a memory by its integer ID within the session context.
+    ///     Gets a memory by its integer ID within the session context.
     /// </summary>
     public async Task<Memory?> GetByIdAsync(
         int id,
@@ -143,7 +143,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Updates an existing memory.
+    ///     Updates an existing memory.
     /// </summary>
     public async Task<Memory?> UpdateAsync(
         int id,
@@ -228,7 +228,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Deletes a memory by its integer ID within the session context.
+    ///     Deletes a memory by its integer ID within the session context.
     /// </summary>
     public async Task<bool> DeleteAsync(
         int id,
@@ -279,7 +279,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets all memories for a session context with pagination.
+    ///     Gets all memories for a session context with pagination.
     /// </summary>
     public async Task<List<Memory>> GetAllAsync(
         SessionContext sessionContext,
@@ -333,7 +333,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Searches memories using FTS5 or LIKE fallback.
+    ///     Searches memories using FTS5 or LIKE fallback.
     /// </summary>
     public async Task<List<Memory>> SearchAsync(
         string query,
@@ -369,113 +369,8 @@ public class MemoryRepository : IMemoryRepository
         );
     }
 
-    private async Task<List<Memory>> SearchWithFts5Async(
-        SqliteConnection connection,
-        string query,
-        SessionContext sessionContext,
-        int limit,
-        CancellationToken cancellationToken
-    )
-    {
-        using var command = connection.CreateCommand();
-
-        // Use FTS5 MATCH for full-text search
-        command.CommandText =
-            @"
-            SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, m.created_at, m.updated_at, m.version,
-                   fts.rank
-            FROM memory_fts fts
-            JOIN memories m ON m.id = fts.rowid
-            WHERE memory_fts MATCH @query 
-              AND m.user_id = @userId";
-
-        // Add session context filters
-        if (!string.IsNullOrEmpty(sessionContext.AgentId))
-        {
-            command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
-            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-        }
-
-        if (!string.IsNullOrEmpty(sessionContext.RunId))
-        {
-            command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
-            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-        }
-
-        command.CommandText += " ORDER BY fts.rank LIMIT @limit";
-
-        // Escape FTS5 special characters and prepare query
-        var escapedQuery = EscapeFts5Query(query);
-        _ = command.Parameters.AddWithValue("@query", escapedQuery);
-        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        _ = command.Parameters.AddWithValue("@limit", limit);
-
-        var memories = new List<Memory>();
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var memory = ReadMemoryFromReader(reader);
-            // Set score from FTS5 rank if available
-            var rankOrdinal = reader.GetOrdinal("rank");
-            if (!reader.IsDBNull(rankOrdinal))
-            {
-                memory.Score = reader.GetFloat(rankOrdinal);
-            }
-            memories.Add(memory);
-        }
-
-        return memories;
-    }
-
-    private async Task<List<Memory>> SearchWithLikeAsync(
-        SqliteConnection connection,
-        string query,
-        SessionContext sessionContext,
-        int limit,
-        CancellationToken cancellationToken
-    )
-    {
-        using var command = connection.CreateCommand();
-
-        command.CommandText =
-            @"
-            SELECT id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version
-            FROM memories 
-            WHERE (content LIKE @query OR metadata LIKE @query)
-              AND user_id = @userId";
-
-        // Add session context filters
-        if (!string.IsNullOrEmpty(sessionContext.AgentId))
-        {
-            command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-        }
-
-        if (!string.IsNullOrEmpty(sessionContext.RunId))
-        {
-            command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-        }
-
-        command.CommandText += " ORDER BY created_at DESC LIMIT @limit";
-
-        var likeQuery = $"%{query}%";
-        _ = command.Parameters.AddWithValue("@query", likeQuery);
-        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        _ = command.Parameters.AddWithValue("@limit", limit);
-
-        var memories = new List<Memory>();
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            memories.Add(ReadMemoryFromReader(reader));
-        }
-
-        return memories;
-    }
-
     /// <summary>
-    /// Gets memory statistics for a session context.
+    ///     Gets memory statistics for a session context.
     /// </summary>
     public async Task<MemoryStats> GetStatsAsync(
         SessionContext sessionContext,
@@ -548,7 +443,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Deletes all memories for a session context.
+    ///     Deletes all memories for a session context.
     /// </summary>
     public async Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
@@ -597,7 +492,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets memory history (placeholder for future versioning support).
+    ///     Gets memory history (placeholder for future versioning support).
     /// </summary>
     public async Task<List<MemoryHistoryEntry>> GetHistoryAsync(
         int id,
@@ -609,124 +504,23 @@ public class MemoryRepository : IMemoryRepository
         var memory = await GetByIdAsync(id, sessionContext, cancellationToken);
         return memory == null
             ? []
-            : [
-            new MemoryHistoryEntry
-            {
-                MemoryId = memory.Id,
-                Content = memory.Content,
-                Version = memory.Version,
-                CreatedAt = memory.UpdatedAt,
-                ChangeType = "current",
-            },
-        ];
-    }
-
-    private Memory ReadMemoryFromReader(SqliteDataReader reader)
-    {
-        var idOrdinal = reader.GetOrdinal("id");
-        var metadataOrdinal = reader.GetOrdinal("metadata");
-        var contentOrdinal = reader.GetOrdinal("content");
-        var userIdOrdinal = reader.GetOrdinal("user_id");
-        var agentIdOrdinal = reader.GetOrdinal("agent_id");
-        var runIdOrdinal = reader.GetOrdinal("run_id");
-        var createdAtOrdinal = reader.GetOrdinal("created_at");
-        var updatedAtOrdinal = reader.GetOrdinal("updated_at");
-        var versionOrdinal = reader.GetOrdinal("version");
-
-        var metadataJson = reader.IsDBNull(metadataOrdinal) ? null : reader.GetString(metadataOrdinal);
-        Dictionary<string, object>? metadata = null;
-
-        if (!string.IsNullOrEmpty(metadataJson))
-        {
-            try
-            {
-                metadata = JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson);
-            }
-            catch (JsonException ex)
-            {
-                _logger.LogWarning(ex, "Failed to deserialize metadata for memory {Id}", reader.GetInt32(idOrdinal));
-            }
-        }
-
-        return new Memory
-        {
-            Id = reader.GetInt32(idOrdinal),
-            Content = reader.IsDBNull(contentOrdinal) ? string.Empty : reader.GetString(contentOrdinal),
-            UserId = reader.IsDBNull(userIdOrdinal) ? string.Empty : reader.GetString(userIdOrdinal),
-            AgentId = reader.IsDBNull(agentIdOrdinal) ? null : reader.GetString(agentIdOrdinal),
-            RunId = reader.IsDBNull(runIdOrdinal) ? null : reader.GetString(runIdOrdinal),
-            Metadata = metadata,
-            CreatedAt = reader.GetDateTime(createdAtOrdinal),
-            UpdatedAt = reader.GetDateTime(updatedAtOrdinal),
-            Version = reader.GetInt32(versionOrdinal),
-        };
-    }
-
-    private static string EscapeFts5Query(string query)
-    {
-        // Escape FTS5 special characters
-        // FTS5 special characters: " ( ) * + - / : < = > ^ | ~ #
-        return query
-            .Replace("\"", "\"\"") // Escape double quotes
-            .Replace("/", " ") // Replace forward slash with space (common in search)
-            .Replace("(", " ") // Replace parentheses with spaces
-            .Replace(")", " ")
-            .Replace("*", " ") // Replace wildcard characters
-            .Replace("+", " ")
-            .Replace("-", " ")
-            .Replace(":", " ") // Replace colon (used for field searches)
-            .Replace("<", " ") // Replace comparison operators
-            .Replace("=", " ")
-            .Replace(">", " ")
-            .Replace("^", " ") // Replace boost operator
-            .Replace("|", " ") // Replace OR operator
-            .Replace("~", " ") // Replace NOT operator
-            .Replace("#", " "); // Replace hash symbol (used in work item IDs)
-    }
-
-    /// <summary>
-    /// Checks if the memory_embeddings table is using vec0 virtual table.
-    /// </summary>
-    private static async Task<bool> CheckForVec0TableAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            @"
-            SELECT sql FROM sqlite_master 
-            WHERE type='table' AND name='memory_embeddings' AND sql LIKE '%vec0%'";
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result != null;
-    }
-
-    /// <summary>
-    /// Checks if a specific table exists in the database.
-    /// </summary>
-    private static async Task<bool> CheckForTableAsync(
-        SqliteConnection connection,
-        string tableName,
-        CancellationToken cancellationToken
-    )
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            @"
-            SELECT COUNT(*) FROM sqlite_master 
-            WHERE type='table' AND name=@tableName";
-
-        _ = command.Parameters.AddWithValue("@tableName", tableName);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result != null && Convert.ToInt32(result) > 0;
+            :
+            [
+                new MemoryHistoryEntry
+                {
+                    MemoryId = memory.Id,
+                    Content = memory.Content,
+                    Version = memory.Version,
+                    CreatedAt = memory.UpdatedAt,
+                    ChangeType = "current",
+                },
+            ];
     }
 
     // Vector storage and search methods
 
     /// <summary>
-    /// Stores an embedding for a specific memory.
+    ///     Stores an embedding for a specific memory.
     /// </summary>
     public async Task StoreEmbeddingAsync(
         int memoryId,
@@ -813,7 +607,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets the embedding for a specific memory.
+    ///     Gets the embedding for a specific memory.
     /// </summary>
     public async Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
     {
@@ -852,7 +646,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Performs vector similarity search to find memories similar to the query embedding.
+    ///     Performs vector similarity search to find memories similar to the query embedding.
     /// </summary>
     public async Task<List<VectorSearchResult>> SearchVectorAsync(
         float[] queryEmbedding,
@@ -950,7 +744,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Performs hybrid search combining FTS5 and vector similarity search.
+    ///     Performs hybrid search combining FTS5 and vector similarity search.
     /// </summary>
     public async Task<List<Memory>> SearchHybridAsync(
         string query,
@@ -1033,7 +827,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets all agents for a specific user.
+    ///     Gets all agents for a specific user.
     /// </summary>
     public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
@@ -1082,7 +876,7 @@ public class MemoryRepository : IMemoryRepository
     }
 
     /// <summary>
-    /// Gets all run IDs for a specific user and agent.
+    ///     Gets all run IDs for a specific user and agent.
     /// </summary>
     public async Task<List<string>> GetRunsAsync(
         string userId,
@@ -1144,5 +938,213 @@ public class MemoryRepository : IMemoryRepository
             },
             cancellationToken
         );
+    }
+
+    private async Task<List<Memory>> SearchWithFts5Async(
+        SqliteConnection connection,
+        string query,
+        SessionContext sessionContext,
+        int limit,
+        CancellationToken cancellationToken
+    )
+    {
+        using var command = connection.CreateCommand();
+
+        // Use FTS5 MATCH for full-text search
+        command.CommandText =
+            @"
+            SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, m.created_at, m.updated_at, m.version,
+                   fts.rank
+            FROM memory_fts fts
+            JOIN memories m ON m.id = fts.rowid
+            WHERE memory_fts MATCH @query 
+              AND m.user_id = @userId";
+
+        // Add session context filters
+        if (!string.IsNullOrEmpty(sessionContext.AgentId))
+        {
+            command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
+            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+        }
+
+        if (!string.IsNullOrEmpty(sessionContext.RunId))
+        {
+            command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
+            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+        }
+
+        command.CommandText += " ORDER BY fts.rank LIMIT @limit";
+
+        // Escape FTS5 special characters and prepare query
+        var escapedQuery = EscapeFts5Query(query);
+        _ = command.Parameters.AddWithValue("@query", escapedQuery);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@limit", limit);
+
+        var memories = new List<Memory>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var memory = ReadMemoryFromReader(reader);
+            // Set score from FTS5 rank if available
+            var rankOrdinal = reader.GetOrdinal("rank");
+            if (!reader.IsDBNull(rankOrdinal))
+            {
+                memory.Score = reader.GetFloat(rankOrdinal);
+            }
+
+            memories.Add(memory);
+        }
+
+        return memories;
+    }
+
+    private async Task<List<Memory>> SearchWithLikeAsync(
+        SqliteConnection connection,
+        string query,
+        SessionContext sessionContext,
+        int limit,
+        CancellationToken cancellationToken
+    )
+    {
+        using var command = connection.CreateCommand();
+
+        command.CommandText =
+            @"
+            SELECT id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version
+            FROM memories 
+            WHERE (content LIKE @query OR metadata LIKE @query)
+              AND user_id = @userId";
+
+        // Add session context filters
+        if (!string.IsNullOrEmpty(sessionContext.AgentId))
+        {
+            command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
+            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+        }
+
+        if (!string.IsNullOrEmpty(sessionContext.RunId))
+        {
+            command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
+            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+        }
+
+        command.CommandText += " ORDER BY created_at DESC LIMIT @limit";
+
+        var likeQuery = $"%{query}%";
+        _ = command.Parameters.AddWithValue("@query", likeQuery);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@limit", limit);
+
+        var memories = new List<Memory>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            memories.Add(ReadMemoryFromReader(reader));
+        }
+
+        return memories;
+    }
+
+    private Memory ReadMemoryFromReader(SqliteDataReader reader)
+    {
+        var idOrdinal = reader.GetOrdinal("id");
+        var metadataOrdinal = reader.GetOrdinal("metadata");
+        var contentOrdinal = reader.GetOrdinal("content");
+        var userIdOrdinal = reader.GetOrdinal("user_id");
+        var agentIdOrdinal = reader.GetOrdinal("agent_id");
+        var runIdOrdinal = reader.GetOrdinal("run_id");
+        var createdAtOrdinal = reader.GetOrdinal("created_at");
+        var updatedAtOrdinal = reader.GetOrdinal("updated_at");
+        var versionOrdinal = reader.GetOrdinal("version");
+
+        var metadataJson = reader.IsDBNull(metadataOrdinal) ? null : reader.GetString(metadataOrdinal);
+        Dictionary<string, object>? metadata = null;
+
+        if (!string.IsNullOrEmpty(metadataJson))
+        {
+            try
+            {
+                metadata = JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Failed to deserialize metadata for memory {Id}", reader.GetInt32(idOrdinal));
+            }
+        }
+
+        return new Memory
+        {
+            Id = reader.GetInt32(idOrdinal),
+            Content = reader.IsDBNull(contentOrdinal) ? string.Empty : reader.GetString(contentOrdinal),
+            UserId = reader.IsDBNull(userIdOrdinal) ? string.Empty : reader.GetString(userIdOrdinal),
+            AgentId = reader.IsDBNull(agentIdOrdinal) ? null : reader.GetString(agentIdOrdinal),
+            RunId = reader.IsDBNull(runIdOrdinal) ? null : reader.GetString(runIdOrdinal),
+            Metadata = metadata,
+            CreatedAt = reader.GetDateTime(createdAtOrdinal),
+            UpdatedAt = reader.GetDateTime(updatedAtOrdinal),
+            Version = reader.GetInt32(versionOrdinal),
+        };
+    }
+
+    private static string EscapeFts5Query(string query)
+    {
+        // Escape FTS5 special characters
+        // FTS5 special characters: " ( ) * + - / : < = > ^ | ~ #
+        return query
+            .Replace("\"", "\"\"") // Escape double quotes
+            .Replace("/", " ") // Replace forward slash with space (common in search)
+            .Replace("(", " ") // Replace parentheses with spaces
+            .Replace(")", " ")
+            .Replace("*", " ") // Replace wildcard characters
+            .Replace("+", " ")
+            .Replace("-", " ")
+            .Replace(":", " ") // Replace colon (used for field searches)
+            .Replace("<", " ") // Replace comparison operators
+            .Replace("=", " ")
+            .Replace(">", " ")
+            .Replace("^", " ") // Replace boost operator
+            .Replace("|", " ") // Replace OR operator
+            .Replace("~", " ") // Replace NOT operator
+            .Replace("#", " "); // Replace hash symbol (used in work item IDs)
+    }
+
+    /// <summary>
+    ///     Checks if the memory_embeddings table is using vec0 virtual table.
+    /// </summary>
+    private static async Task<bool> CheckForVec0TableAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            @"
+            SELECT sql FROM sqlite_master 
+            WHERE type='table' AND name='memory_embeddings' AND sql LIKE '%vec0%'";
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result != null;
+    }
+
+    /// <summary>
+    ///     Checks if a specific table exists in the database.
+    /// </summary>
+    private static async Task<bool> CheckForTableAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            @"
+            SELECT COUNT(*) FROM sqlite_master 
+            WHERE type='table' AND name=@tableName";
+
+        _ = command.Parameters.AddWithValue("@tableName", tableName);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result != null && Convert.ToInt32(result) > 0;
     }
 }

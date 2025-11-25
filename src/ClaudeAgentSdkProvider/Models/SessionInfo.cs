@@ -1,7 +1,7 @@
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 
 /// <summary>
-/// Information about a claude-agent-sdk session
+///     Information about a claude-agent-sdk session
 /// </summary>
 public record SessionInfo
 {

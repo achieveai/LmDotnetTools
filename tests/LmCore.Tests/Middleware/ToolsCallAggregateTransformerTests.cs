@@ -8,14 +8,14 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_SingleToolCall_ProducesCorrectXmlFormat()
     {
         // Arrange
-        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}" };
+        var toolCall = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}",
+        };
         var toolResult = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = [toolCall],
-            GenerationId = "test-gen-123",
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "test-gen-123" };
 
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.WebSockets;
 
 /// <summary>
-/// Thread-safe implementation of WebSocket connection management
+///     Thread-safe implementation of WebSocket connection management
 /// </summary>
 public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
 {
@@ -17,7 +17,7 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
         _logger = logger;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public void AddConnection(string sessionId, WebSocket webSocket)
     {
         if (string.IsNullOrEmpty(sessionId))
@@ -45,7 +45,7 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public bool RemoveConnection(string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId))
@@ -84,18 +84,20 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
         return false;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public WebSocket? GetConnection(string sessionId)
     {
-        return string.IsNullOrEmpty(sessionId) ? null : _connections.TryGetValue(sessionId, out var webSocket) ? webSocket : null;
+        return string.IsNullOrEmpty(sessionId) ? null
+            : _connections.TryGetValue(sessionId, out var webSocket) ? webSocket
+            : null;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public IEnumerable<string> GetActiveSessions()
     {
         return [.. _connections.Keys];
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public int ConnectionCount => _connections.Count;
 }

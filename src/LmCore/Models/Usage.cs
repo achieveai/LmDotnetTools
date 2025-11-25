@@ -101,7 +101,7 @@ public record Usage
 }
 
 /// <summary>
-/// OpenAI-style input token details structure
+///     OpenAI-style input token details structure
 /// </summary>
 public record InputTokenDetails
 {
@@ -111,7 +111,7 @@ public record InputTokenDetails
 }
 
 /// <summary>
-/// OpenAI-style output token details structure
+///     OpenAI-style output token details structure
 /// </summary>
 public record OutputTokenDetails
 {

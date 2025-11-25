@@ -6,16 +6,16 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Basic implementation of document segmentation service with rule-based fallback.
+///     Basic implementation of document segmentation service with rule-based fallback.
 /// </summary>
 public class DocumentSegmentationService : IDocumentSegmentationService
 {
-    private readonly IDocumentSizeAnalyzer _sizeAnalyzer;
+    private readonly ILogger<DocumentSegmentationService> _logger;
+    private readonly DocumentSegmentationOptions _options;
     private readonly ISegmentationPromptManager _promptManager;
     private readonly IDocumentSegmentRepository _repository;
     private readonly ISqliteSessionFactory _sessionFactory;
-    private readonly ILogger<DocumentSegmentationService> _logger;
-    private readonly DocumentSegmentationOptions _options;
+    private readonly IDocumentSizeAnalyzer _sizeAnalyzer;
 
     public DocumentSegmentationService(
         IDocumentSizeAnalyzer sizeAnalyzer,
@@ -35,7 +35,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     }
 
     /// <summary>
-    /// Segments a document into logical chunks using the optimal strategy.
+    ///     Segments a document into logical chunks using the optimal strategy.
     /// </summary>
     public async Task<DocumentSegmentationResult> SegmentDocumentAsync(
         string content,
@@ -166,7 +166,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     }
 
     /// <summary>
-    /// Determines if a document should be segmented based on size and complexity.
+    ///     Determines if a document should be segmented based on size and complexity.
     /// </summary>
     public async Task<bool> ShouldSegmentAsync(
         string content,
@@ -184,7 +184,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     }
 
     /// <summary>
-    /// Determines the optimal segmentation strategy for a document.
+    ///     Determines the optimal segmentation strategy for a document.
     /// </summary>
     public async Task<SegmentationStrategy> DetermineOptimalStrategyAsync(
         string content,
@@ -207,7 +207,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     }
 
     /// <summary>
-    /// Validates the quality of segmentation results.
+    ///     Validates the quality of segmentation results.
     /// </summary>
     public async Task<SegmentationQualityAssessment> ValidateSegmentationQualityAsync(
         DocumentSegmentationResult result,
@@ -294,7 +294,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         for (var i = 0; i < segmentCount; i++)
         {
             var startIndex = i * wordsPerSegment;
-            var endIndex = (i == segmentCount - 1) ? words.Length : (i + 1) * wordsPerSegment;
+            var endIndex = i == segmentCount - 1 ? words.Length : (i + 1) * wordsPerSegment;
 
             var segmentWords = words[startIndex..endIndex];
             var segmentContent = string.Join(" ", segmentWords);
@@ -360,9 +360,9 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     {
         // Simple summary: first sentence or first 100 characters
         var sentences = content.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        return sentences.Length != 0 && sentences[0].Length <= 100
-            ? sentences[0].Trim() + "."
-            : content.Length <= 100 ? content : content[..97] + "...";
+        return sentences.Length != 0 && sentences[0].Length <= 100 ? sentences[0].Trim() + "."
+            : content.Length <= 100 ? content
+            : content[..97] + "...";
     }
 
     #endregion

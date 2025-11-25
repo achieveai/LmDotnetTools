@@ -3,13 +3,13 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Interface for receiving notifications when tool call results become available.
-/// This enables streaming of tool results as they complete, rather than waiting for all results.
+///     Interface for receiving notifications when tool call results become available.
+///     This enables streaming of tool results as they complete, rather than waiting for all results.
 /// </summary>
 public interface IToolResultCallback
 {
     /// <summary>
-    /// Called when a tool call result becomes available.
+    ///     Called when a tool call result becomes available.
     /// </summary>
     /// <param name="toolCallId">The unique identifier of the tool call</param>
     /// <param name="result">The result of the tool call execution</param>
@@ -22,7 +22,7 @@ public interface IToolResultCallback
     );
 
     /// <summary>
-    /// Called when a tool call starts execution.
+    ///     Called when a tool call starts execution.
     /// </summary>
     /// <param name="toolCallId">The unique identifier of the tool call</param>
     /// <param name="functionName">The name of the function being called</param>
@@ -37,7 +37,7 @@ public interface IToolResultCallback
     );
 
     /// <summary>
-    /// Called when a tool call encounters an error.
+    ///     Called when a tool call encounters an error.
     /// </summary>
     /// <param name="toolCallId">The unique identifier of the tool call</param>
     /// <param name="functionName">The name of the function that failed</param>

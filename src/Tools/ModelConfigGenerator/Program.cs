@@ -6,11 +6,12 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog;
 using NLog.Extensions.Logging;
+using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator;
 
 /// <summary>
-/// Console application for generating Models.config files from OpenRouter data.
+///     Console application for generating Models.config files from OpenRouter data.
 /// </summary>
 public class Program
 {
@@ -32,14 +33,13 @@ public class Program
                 {
                     Console.WriteLine($"  {family}");
                 }
+
                 return 0;
             }
 
             // Setup NLog and logging
             var logger = LogManager.GetCurrentClassLogger();
-            var logLevel = options.Verbose
-                ? Microsoft.Extensions.Logging.LogLevel.Debug
-                : Microsoft.Extensions.Logging.LogLevel.Information;
+            var logLevel = options.Verbose ? LogLevel.Debug : LogLevel.Information;
 
             try
             {
@@ -112,6 +112,7 @@ public class Program
             {
                 Console.Error.WriteLine(ex.StackTrace);
             }
+
             return 1;
         }
     }
@@ -136,6 +137,7 @@ public class Program
                         Console.Error.WriteLine("Error: --output requires a value");
                         return null;
                     }
+
                     options = options with { OutputPath = args[++i] };
                     break;
 
@@ -146,6 +148,7 @@ public class Program
                         Console.Error.WriteLine("Error: --families requires a value");
                         return null;
                     }
+
                     families.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries));
                     break;
 
@@ -161,6 +164,7 @@ public class Program
                         Console.Error.WriteLine("Error: --max-models requires a non-negative integer");
                         return null;
                     }
+
                     options = options with { MaxModels = maxModels };
                     i++;
                     break;
@@ -180,6 +184,7 @@ public class Program
                         Console.Error.WriteLine("Error: --min-context requires a non-negative integer");
                         return null;
                     }
+
                     options = options with { MinContextLength = minContext };
                     i++;
                     break;
@@ -190,6 +195,7 @@ public class Program
                         Console.Error.WriteLine("Error: --max-cost requires a non-negative decimal");
                         return null;
                     }
+
                     options = options with { MaxCostPerMillion = maxCost };
                     i++;
                     break;
@@ -200,11 +206,13 @@ public class Program
                         Console.Error.WriteLine("Error: --model-updated-since requires a value");
                         return null;
                     }
+
                     if (!DateTime.TryParse(args[i + 1], out var sinceDate))
                     {
                         Console.Error.WriteLine("Error: --model-updated-since requires a valid date (YYYY-MM-DD)");
                         return null;
                     }
+
                     options = options with { ModelUpdatedSince = sinceDate };
                     i++;
                     break;

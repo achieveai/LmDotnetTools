@@ -1,53 +1,13 @@
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Generates test data for provider testing
-/// Provides standardized test data patterns for all LmDotnetTools providers
+///     Generates test data for provider testing
+///     Provides standardized test data patterns for all LmDotnetTools providers
 /// </summary>
 public static class ProviderTestDataGenerator
 {
     /// <summary>
-    /// Common test API keys for different scenarios
-    /// </summary>
-    public static class ApiKeys
-    {
-        public const string Valid = "test-api-key-12345";
-        public const string ValidAlternate = "sk-test-abcdef123456";
-        public const string Empty = "";
-        public const string WhitespaceOnly = "   ";
-        public const string TooShort = "abc";
-        public static readonly string TooLong = new('x', 1000);
-    }
-
-    /// <summary>
-    /// Common test base URLs for different scenarios
-    /// </summary>
-    public static class BaseUrls
-    {
-        public const string ValidHttps = "https://api.test.com";
-        public const string ValidHttp = "http://api.test.com";
-        public const string ValidWithPath = "https://api.test.com/v1";
-        public const string ValidWithTrailingSlash = "https://api.test.com/";
-        public const string Invalid = "not-a-url";
-        public const string Empty = "";
-        public const string WhitespaceOnly = "   ";
-    }
-
-    /// <summary>
-    /// Common test model names for different scenarios
-    /// </summary>
-    public static class Models
-    {
-        public const string Valid = "test-model-v1";
-        public const string ValidAlternate = "gpt-4";
-        public const string ValidClaude = "claude-3-sonnet";
-        public const string Empty = "";
-        public const string WhitespaceOnly = "   ";
-        public const string WithSpecialChars = "model-with-special@chars!";
-    }
-
-    /// <summary>
-    /// Generates test data for API key validation scenarios
+    ///     Generates test data for API key validation scenarios
     /// </summary>
     /// <returns>Test data for API key validation</returns>
     public static IEnumerable<object[]> GetApiKeyValidationTestCases()
@@ -64,7 +24,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Generates test data for base URL validation scenarios
+    ///     Generates test data for base URL validation scenarios
     /// </summary>
     /// <returns>Test data for base URL validation</returns>
     public static IEnumerable<object[]> GetBaseUrlValidationTestCases()
@@ -83,7 +43,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Generates test data for model validation scenarios
+    ///     Generates test data for model validation scenarios
     /// </summary>
     /// <returns>Test data for model validation</returns>
     public static IEnumerable<object[]> GetModelValidationTestCases()
@@ -100,7 +60,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Generates common HTTP status code test scenarios
+    ///     Generates common HTTP status code test scenarios
     /// </summary>
     /// <returns>Test data for HTTP status code scenarios</returns>
     public static IEnumerable<object[]> GetHttpStatusCodeTestCases()
@@ -109,7 +69,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Generates test data for retry scenarios
+    ///     Generates test data for retry scenarios
     /// </summary>
     /// <returns>Test data for retry testing</returns>
     public static IEnumerable<object[]> GetRetryTestCases()
@@ -124,7 +84,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Generates test data for timeout scenarios
+    ///     Generates test data for timeout scenarios
     /// </summary>
     /// <returns>Test data for timeout testing</returns>
     public static IEnumerable<object[]> GetTimeoutTestCases()
@@ -139,7 +99,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Creates a simple test message for chat completion
+    ///     Creates a simple test message for chat completion
     /// </summary>
     /// <param name="role">Message role (user, assistant, system)</param>
     /// <param name="content">Message content</param>
@@ -150,7 +110,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Creates a list of test messages for chat completion
+    ///     Creates a list of test messages for chat completion
     /// </summary>
     /// <returns>List of test messages</returns>
     public static List<object> CreateTestMessages()
@@ -164,7 +124,7 @@ public static class ProviderTestDataGenerator
     }
 
     /// <summary>
-    /// Creates test usage data
+    ///     Creates test usage data
     /// </summary>
     /// <param name="promptTokens">Number of prompt tokens</param>
     /// <param name="completionTokens">Number of completion tokens</param>
@@ -177,5 +137,45 @@ public static class ProviderTestDataGenerator
             completion_tokens = completionTokens,
             total_tokens = promptTokens + completionTokens,
         };
+    }
+
+    /// <summary>
+    ///     Common test API keys for different scenarios
+    /// </summary>
+    public static class ApiKeys
+    {
+        public const string Valid = "test-api-key-12345";
+        public const string ValidAlternate = "sk-test-abcdef123456";
+        public const string Empty = "";
+        public const string WhitespaceOnly = "   ";
+        public const string TooShort = "abc";
+        public static readonly string TooLong = new('x', 1000);
+    }
+
+    /// <summary>
+    ///     Common test base URLs for different scenarios
+    /// </summary>
+    public static class BaseUrls
+    {
+        public const string ValidHttps = "https://api.test.com";
+        public const string ValidHttp = "http://api.test.com";
+        public const string ValidWithPath = "https://api.test.com/v1";
+        public const string ValidWithTrailingSlash = "https://api.test.com/";
+        public const string Invalid = "not-a-url";
+        public const string Empty = "";
+        public const string WhitespaceOnly = "   ";
+    }
+
+    /// <summary>
+    ///     Common test model names for different scenarios
+    /// </summary>
+    public static class Models
+    {
+        public const string Valid = "test-model-v1";
+        public const string ValidAlternate = "gpt-4";
+        public const string ValidClaude = "claude-3-sonnet";
+        public const string Empty = "";
+        public const string WhitespaceOnly = "   ";
+        public const string WithSpecialChars = "model-with-special@chars!";
     }
 }

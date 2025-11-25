@@ -14,7 +14,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "param1",
                     IsRequired = true,
@@ -58,7 +58,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "param1",
                     IsRequired = true,
@@ -79,7 +79,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "param1",
                     IsRequired = true,
@@ -100,19 +100,19 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "stringParam",
                     IsRequired = true,
                     ParameterType = new JsonSchemaObject { Type = "string" },
                 },
-                new()
+                new FunctionParameterContract
                 {
                     Name = "numberParam",
                     IsRequired = true,
                     ParameterType = new JsonSchemaObject { Type = "number" },
                 },
-                new()
+                new FunctionParameterContract
                 {
                     Name = "boolParam",
                     IsRequired = true,
@@ -136,15 +136,11 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "enumParam",
                     IsRequired = true,
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = ["value1", "value2"],
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = ["value1", "value2"] },
                 },
             ],
         };
@@ -161,15 +157,11 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "enumParam",
                     IsRequired = true,
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = ["value1", "value2"],
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = ["value1", "value2"] },
                 },
             ],
         };
@@ -186,7 +178,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "rangeParam",
                     IsRequired = true,
@@ -212,7 +204,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "rangeParam",
                     IsRequired = true,
@@ -238,7 +230,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -263,7 +255,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -289,7 +281,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -315,7 +307,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -341,7 +333,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -369,7 +361,7 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters =
             [
-                new()
+                new FunctionParameterContract
                 {
                     Name = "objectParam",
                     IsRequired = true,

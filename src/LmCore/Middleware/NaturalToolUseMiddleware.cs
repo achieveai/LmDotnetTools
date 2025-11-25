@@ -5,16 +5,16 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that combines NaturalToolUseParserMiddleware and FunctionCallMiddleware
-/// to enable natural language tool use within LLM responses.
+///     Middleware that combines NaturalToolUseParserMiddleware and FunctionCallMiddleware
+///     to enable natural language tool use within LLM responses.
 /// </summary>
 public class NaturalToolUseMiddleware : IStreamingMiddleware
 {
-    private readonly NaturalToolUseParserMiddleware _parserMiddleware;
     private readonly FunctionCallMiddleware _functionCallMiddleware;
+    private readonly NaturalToolUseParserMiddleware _parserMiddleware;
 
     /// <summary>
-    /// Creates a new instance of NaturalToolUseMiddleware.
+    ///     Creates a new instance of NaturalToolUseMiddleware.
     /// </summary>
     /// <param name="functions">The function contracts to be used for tool calls.</param>
     /// <param name="functionMap">A dictionary mapping function names to their implementations.</param>
@@ -48,12 +48,12 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name { get; }
 
     /// <summary>
-    /// Invokes the middleware to process a request and generate a response.
+    ///     Invokes the middleware to process a request and generate a response.
     /// </summary>
     /// <param name="context">The middleware context containing messages and options.</param>
     /// <param name="agent">The agent to use for generating responses.</param>
@@ -73,7 +73,7 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Invokes the middleware to process a request and generate a streaming response.
+    ///     Invokes the middleware to process a request and generate a streaming response.
     /// </summary>
     /// <param name="context">The middleware context containing messages and options.</param>
     /// <param name="agent">The streaming agent to use for generating responses.</param>

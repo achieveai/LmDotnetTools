@@ -9,15 +9,15 @@ using Moq.Protected;
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// LLM Failure Simulation Tests implementing AC-1.1 to AC-1.6 from ErrorHandling-TestAcceptanceCriteria.
-/// Tests various failure scenarios with mock HTTP handlers and validates proper error handling behavior.
+///     LLM Failure Simulation Tests implementing AC-1.1 to AC-1.6 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests various failure scenarios with mock HTTP handlers and validates proper error handling behavior.
 /// </summary>
 public class LlmFailureSimulationTests
 {
-    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
     private readonly CircuitBreakerConfiguration _circuitBreakerConfig;
-    private readonly RetryConfiguration _retryConfig;
     private readonly GracefulDegradationConfiguration _degradationConfig;
+    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
+    private readonly RetryConfiguration _retryConfig;
 
     public LlmFailureSimulationTests()
     {
@@ -48,9 +48,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.1: Network Timeout Handling (>30s)
-    /// Tests that service logs timeout, triggers retry with exponential backoff,
-    /// falls back after max retries, includes quality indicator, and completes within 60s.
+    ///     AC-1.1: Network Timeout Handling (>30s)
+    ///     Tests that service logs timeout, triggers retry with exponential backoff,
+    ///     falls back after max retries, includes quality indicator, and completes within 60s.
     /// </summary>
     [Fact]
     public async Task NetworkTimeout_ShouldHandleCorrectly()
@@ -91,9 +91,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.2: Rate Limiting (HTTP 429) Handling
-    /// Tests that service respects Retry-After header, doesn't trigger circuit breaker,
-    /// applies exponential backoff with jitter, max 5 retries, and logs rate limiting.
+    ///     AC-1.2: Rate Limiting (HTTP 429) Handling
+    ///     Tests that service respects Retry-After header, doesn't trigger circuit breaker,
+    ///     applies exponential backoff with jitter, max 5 retries, and logs rate limiting.
     /// </summary>
     [Fact]
     public async Task RateLimiting_ShouldHandleCorrectly()
@@ -118,6 +118,7 @@ public class LlmFailureSimulationTests
                     response.Headers.Add("Retry-After", "2"); // 2 seconds
                     return response;
                 }
+
                 // 4th call succeeds
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -149,9 +150,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.3: Authentication Errors (HTTP 401)
-    /// Tests that service logs error, NO retries attempted, immediate fallback,
-    /// circuit breaker opens after threshold, and clear error message.
+    ///     AC-1.3: Authentication Errors (HTTP 401)
+    ///     Tests that service logs error, NO retries attempted, immediate fallback,
+    ///     circuit breaker opens after threshold, and clear error message.
     /// </summary>
     [Fact]
     public async Task AuthenticationError_ShouldHandleCorrectly()
@@ -197,9 +198,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.4: Service Unavailable (HTTP 503)
-    /// Tests that service treats as temporary failure, retry mechanism activates,
-    /// circuit breaker increments, opens after threshold, graceful fallback.
+    ///     AC-1.4: Service Unavailable (HTTP 503)
+    ///     Tests that service treats as temporary failure, retry mechanism activates,
+    ///     circuit breaker increments, opens after threshold, graceful fallback.
     /// </summary>
     [Fact]
     public async Task ServiceUnavailable_ShouldHandleCorrectly()
@@ -246,9 +247,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.5: Malformed Response Handling
-    /// Tests that service logs parsing error, treats as failure, retry mechanism triggers,
-    /// falls back after max retries, no exceptions bubble up.
+    ///     AC-1.5: Malformed Response Handling
+    ///     Tests that service logs parsing error, treats as failure, retry mechanism triggers,
+    ///     falls back after max retries, no exceptions bubble up.
     /// </summary>
     [Fact]
     public async Task MalformedResponse_ShouldHandleCorrectly()
@@ -293,9 +294,9 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// AC-1.6: Connection Failure Handling
-    /// Tests that service logs connection failure, retry with exponential backoff,
-    /// circuit breaker increments, opens after threshold, immediate fallback.
+    ///     AC-1.6: Connection Failure Handling
+    ///     Tests that service logs connection failure, retry with exponential backoff,
+    ///     circuit breaker increments, opens after threshold, immediate fallback.
     /// </summary>
     [Fact]
     public async Task ConnectionFailure_ShouldHandleCorrectly()
@@ -331,8 +332,8 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// Integration test that validates circuit breaker behavior across multiple failure types.
-    /// Tests that circuit opens after threshold failures and blocks subsequent calls.
+    ///     Integration test that validates circuit breaker behavior across multiple failure types.
+    ///     Tests that circuit opens after threshold failures and blocks subsequent calls.
     /// </summary>
     [Fact]
     public async Task CircuitBreaker_WithMultipleFailures_ShouldOpenAndBlock()
@@ -408,8 +409,8 @@ public class LlmFailureSimulationTests
     }
 
     /// <summary>
-    /// Performance test to ensure all error handling scenarios complete within acceptable time limits.
-    /// Validates AC requirements for processing time limits.
+    ///     Performance test to ensure all error handling scenarios complete within acceptable time limits.
+    ///     Validates AC requirements for processing time limits.
     /// </summary>
     [Theory]
     [InlineData("timeout", 60000)] // AC-1.1: < 60 seconds including retries
@@ -442,108 +443,9 @@ public class LlmFailureSimulationTests
         );
     }
 
-    #region Helper Methods
-
-    private static Mock<HttpMessageHandler> CreateMockHttpHandler()
-    {
-        return new Mock<HttpMessageHandler>();
-    }
-
-    private ResilienceService CreateResilienceService(HttpMessageHandler handler)
-    {
-        var circuitBreaker = new CircuitBreakerService(
-            _circuitBreakerConfig,
-            Mock.Of<ILogger<CircuitBreakerService>>()
-        );
-        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
-
-        return new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
-    }
-
-    private static async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
-    {
-        using var client = new HttpClient(handler);
-        var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase}");
-        }
-
-        var content = await response.Content.ReadAsStringAsync();
-        return content;
-    }
-
-    private static async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
-    {
-        using var client = new HttpClient(handler);
-        var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase}");
-        }
-
-        var content = await response.Content.ReadAsStringAsync();
-
-        // Try to parse JSON - this will throw JsonException for malformed content
-        try
-        {
-            var doc = JsonDocument.Parse(content);
-            return doc.RootElement.GetProperty("result").GetString() ?? "parsed-result";
-        }
-        catch (JsonException ex)
-        {
-            throw new ArgumentException($"Malformed response: {ex.Message}", ex);
-        }
-    }
-
-    private static void ConfigureMockForErrorType(Mock<HttpMessageHandler> mockHandler, string errorType)
-    {
-        _ = mockHandler
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>()
-            )
-            .ReturnsAsync(() =>
-                errorType switch
-                {
-                    "timeout" => throw new TaskCanceledException("Network timeout"),
-                    "503" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
-                    "401" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
-                    "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("{ invalid json"),
-                    },
-                    _ => throw new HttpRequestException("Generic error"),
-                }
-            );
-    }
-
-    private void VerifyLogLevel(LogLevel expectedLevel)
-    {
-        // In a real implementation, we would verify specific log calls
-        // For now, we'll just verify that the logger was used
-        _mockLogger.Verify(
-            x =>
-                x.Log(
-                    It.Is<LogLevel>(l => l >= expectedLevel),
-                    It.IsAny<EventId>(),
-                    It.Is<It.IsAnyType>((v, t) => true),
-                    It.IsAny<Exception>(),
-                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
-                ),
-            Times.AtLeastOnce
-        );
-    }
-
-    #endregion
-
     /// <summary>
-    /// Comprehensive scenario test that validates end-to-end resilience behavior
-    /// across multiple error types in sequence, testing recovery patterns.
+    ///     Comprehensive scenario test that validates end-to-end resilience behavior
+    ///     across multiple error types in sequence, testing recovery patterns.
     /// </summary>
     [Fact]
     public async Task EndToEndResilience_WithMixedErrorScenarios_ShouldHandleGracefully()
@@ -650,15 +552,111 @@ public class LlmFailureSimulationTests
 
         // Health status should reflect mixed results
         var health = resilience.GetHealthStatus();
-        Assert.True(
-            health.FallbackUsageRate is > 0 and < 100,
-            "Fallback usage rate should be between 0 and 100%"
+        Assert.True(health.FallbackUsageRate is > 0 and < 100, "Fallback usage rate should be between 0 and 100%");
+    }
+
+    #region Helper Methods
+
+    private static Mock<HttpMessageHandler> CreateMockHttpHandler()
+    {
+        return new Mock<HttpMessageHandler>();
+    }
+
+    private ResilienceService CreateResilienceService(HttpMessageHandler handler)
+    {
+        var circuitBreaker = new CircuitBreakerService(
+            _circuitBreakerConfig,
+            Mock.Of<ILogger<CircuitBreakerService>>()
+        );
+        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
+
+        return new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
+    }
+
+    private static async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
+    {
+        using var client = new HttpClient(handler);
+        var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase}");
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+        return content;
+    }
+
+    private static async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
+    {
+        using var client = new HttpClient(handler);
+        var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase}");
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+
+        // Try to parse JSON - this will throw JsonException for malformed content
+        try
+        {
+            var doc = JsonDocument.Parse(content);
+            return doc.RootElement.GetProperty("result").GetString() ?? "parsed-result";
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"Malformed response: {ex.Message}", ex);
+        }
+    }
+
+    private static void ConfigureMockForErrorType(Mock<HttpMessageHandler> mockHandler, string errorType)
+    {
+        _ = mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+                errorType switch
+                {
+                    "timeout" => throw new TaskCanceledException("Network timeout"),
+                    "503" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                    "401" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                    "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{ invalid json"),
+                    },
+                    _ => throw new HttpRequestException("Generic error"),
+                }
+            );
+    }
+
+    private void VerifyLogLevel(LogLevel expectedLevel)
+    {
+        // In a real implementation, we would verify specific log calls
+        // For now, we'll just verify that the logger was used
+        _mockLogger.Verify(
+            x =>
+                x.Log(
+                    It.Is<LogLevel>(l => l >= expectedLevel),
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => true),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.AtLeastOnce
         );
     }
+
+    #endregion
 }
 
 /// <summary>
-/// Extension class for cleaner test scenarios.
+///     Extension class for cleaner test scenarios.
 /// </summary>
 public static class TestExtensions
 {

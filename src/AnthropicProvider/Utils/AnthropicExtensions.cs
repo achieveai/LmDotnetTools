@@ -4,12 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 
 /// <summary>
-/// Extension methods for the Anthropic API.
+///     Extension methods for the Anthropic API.
 /// </summary>
 public static class AnthropicExtensions
 {
     /// <summary>
-    /// Converts an Anthropic response to an LmCore message.
+    ///     Converts an Anthropic response to an LmCore message.
     /// </summary>
     /// <param name="response">The response to convert.</param>
     /// <param name="agentName">The name of the agent that generated the response.</param>
@@ -42,7 +42,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Converts an Anthropic response to a collection of LmCore messages.
+    ///     Converts an Anthropic response to a collection of LmCore messages.
     /// </summary>
     /// <param name="response">The response to convert.</param>
     /// <returns>A collection of messages.</returns>
@@ -51,7 +51,7 @@ public static class AnthropicExtensions
     {
         ArgumentNullException.ThrowIfNull(response);
         // First get messages using AnthropicStreamParser for consistent conversion
-        var parser = new Models.AnthropicStreamParser();
+        var parser = new AnthropicStreamParser();
         var messages = new List<IMessage>();
 
         // Process each content item
@@ -68,7 +68,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Converts an Anthropic content item to an appropriate message.
+    ///     Converts an Anthropic content item to an appropriate message.
     /// </summary>
     /// <param name="content">The content to convert.</param>
     /// <param name="responseId">The ID of the response.</param>
@@ -76,7 +76,7 @@ public static class AnthropicExtensions
     private static IMessage? ContentToMessage(AnthropicResponseContent content, string responseId)
     {
         // Handle text content
-        if (content is Models.AnthropicResponseTextContent textContent)
+        if (content is AnthropicResponseTextContent textContent)
         {
             return new TextMessage
             {
@@ -86,14 +86,23 @@ public static class AnthropicExtensions
             };
         }
         // Handle tool use content
-        else if (content is Models.AnthropicResponseToolUseContent toolUseContent)
+
+        if (content is AnthropicResponseToolUseContent toolUseContent)
         {
             var functionName = toolUseContent.Name;
             var arguments = toolUseContent.Input.ToString();
 
             return new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = arguments, ToolCallId = toolUseContent.Id }],
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = functionName,
+                        FunctionArgs = arguments,
+                        ToolCallId = toolUseContent.Id,
+                    },
+                ],
                 Role = Role.Assistant,
                 GenerationId = responseId,
             };
@@ -106,7 +115,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Checks if the response contains a tool call.
+    ///     Checks if the response contains a tool call.
     /// </summary>
     /// <param name="response">The response to check.</param>
     /// <returns>True if the response contains a tool call, otherwise false.</returns>
@@ -125,7 +134,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Creates a tool call message from an Anthropic response if present.
+    ///     Creates a tool call message from an Anthropic response if present.
     /// </summary>
     /// <param name="response">The response to create from.</param>
     /// <returns>A message for a tool call if present, otherwise null.</returns>

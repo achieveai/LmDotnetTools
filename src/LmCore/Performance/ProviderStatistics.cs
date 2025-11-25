@@ -1,14 +1,23 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Maintains running statistics for each provider, including model-specific metrics and operational insights.
-/// Provides real-time provider performance monitoring capabilities.
+///     Maintains running statistics for each provider, including model-specific metrics and operational insights.
+///     Provides real-time provider performance monitoring capabilities.
 /// </summary>
 public class ProviderStatistics
 {
     private readonly object _lock = new();
-    private readonly List<RequestMetrics> _recentMetrics = [];
     private readonly Dictionary<string, ModelStatistics> _modelStats = [];
+    private readonly List<RequestMetrics> _recentMetrics = [];
+
+    /// <summary>Creates a new ProviderStatistics instance</summary>
+    /// <param name="provider">Provider name</param>
+    /// <param name="maxRecentMetrics">Maximum number of recent metrics to retain</param>
+    public ProviderStatistics(string provider, int maxRecentMetrics = 1000)
+    {
+        Provider = provider;
+        MaxRecentMetrics = maxRecentMetrics;
+    }
 
     /// <summary>Maximum number of recent metrics to keep in memory</summary>
     public int MaxRecentMetrics { get; init; } = 1000;
@@ -69,15 +78,6 @@ public class ProviderStatistics
                 return [.. _recentMetrics];
             }
         }
-    }
-
-    /// <summary>Creates a new ProviderStatistics instance</summary>
-    /// <param name="provider">Provider name</param>
-    /// <param name="maxRecentMetrics">Maximum number of recent metrics to retain</param>
-    public ProviderStatistics(string provider, int maxRecentMetrics = 1000)
-    {
-        Provider = provider;
-        MaxRecentMetrics = maxRecentMetrics;
     }
 
     /// <summary>Records a request metric and updates statistics</summary>
@@ -197,10 +197,17 @@ public class ProviderStatistics
 }
 
 /// <summary>
-/// Statistics for a specific model within a provider.
+///     Statistics for a specific model within a provider.
 /// </summary>
 public class ModelStatistics
 {
+    /// <summary>Creates a new ModelStatistics instance</summary>
+    /// <param name="model">Model name</param>
+    public ModelStatistics(string model)
+    {
+        Model = model;
+    }
+
     /// <summary>Model name</summary>
     public string Model { get; }
 
@@ -231,13 +238,6 @@ public class ModelStatistics
 
     /// <summary>Average tokens per request for this model</summary>
     public double AverageTokensPerRequest => TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;
-
-    /// <summary>Creates a new ModelStatistics instance</summary>
-    /// <param name="model">Model name</param>
-    public ModelStatistics(string model)
-    {
-        Model = model;
-    }
 
     /// <summary>Records a metric for this model</summary>
     /// <param name="metric">Request metric to record</param>

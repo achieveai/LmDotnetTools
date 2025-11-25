@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text.Json;
 using MemoryServer.DocumentSegmentation.Models;
@@ -6,13 +7,13 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for retry policy functionality.
-/// Implements AC-3.1, AC-3.2, AC-3.3, and AC-3.4 from ErrorHandling-TestAcceptanceCriteria.
+///     Interface for retry policy functionality.
+///     Implements AC-3.1, AC-3.2, AC-3.3, and AC-3.4 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public interface IRetryPolicyService
 {
     /// <summary>
-    /// Executes an operation with retry policy.
+    ///     Executes an operation with retry policy.
     /// </summary>
     Task<T> ExecuteAsync<T>(
         Func<Task<T>> operation,
@@ -22,7 +23,7 @@ public interface IRetryPolicyService
         where T : class;
 
     /// <summary>
-    /// Executes an operation with retry policy, allowing null results.
+    ///     Executes an operation with retry policy, allowing null results.
     /// </summary>
     Task<T?> ExecuteWithNullAsync<T>(
         Func<Task<T?>> operation,
@@ -32,19 +33,19 @@ public interface IRetryPolicyService
         where T : class;
 
     /// <summary>
-    /// Determines if an error should be retried.
+    ///     Determines if an error should be retried.
     /// </summary>
     bool ShouldRetry(Exception exception, int attemptNumber);
 
     /// <summary>
-    /// Calculates the delay for the next retry attempt.
+    ///     Calculates the delay for the next retry attempt.
     /// </summary>
     TimeSpan CalculateDelay(int attemptNumber, Exception? lastException = null);
 }
 
 /// <summary>
-/// Implementation of retry policy service with exponential backoff and jitter.
-/// Provides centralized retry logic for all operations that may fail transiently.
+///     Implementation of retry policy service with exponential backoff and jitter.
+///     Provides centralized retry logic for all operations that may fail transiently.
 /// </summary>
 public class RetryPolicyService : IRetryPolicyService
 {
@@ -58,8 +59,8 @@ public class RetryPolicyService : IRetryPolicyService
     }
 
     /// <summary>
-    /// Executes an operation with retry policy.
-    /// Implements AC-3.1, AC-3.2, AC-3.3, and AC-3.4.
+    ///     Executes an operation with retry policy.
+    ///     Implements AC-3.1, AC-3.2, AC-3.3, and AC-3.4.
     /// </summary>
     public async Task<T> ExecuteAsync<T>(
         Func<Task<T>> operation,
@@ -79,7 +80,7 @@ public class RetryPolicyService : IRetryPolicyService
             TotalElapsed = TimeSpan.Zero,
         };
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         Exception? lastException = null;
 
         while (context.AttemptNumber <= context.MaxAttempts)
@@ -173,7 +174,7 @@ public class RetryPolicyService : IRetryPolicyService
     }
 
     /// <summary>
-    /// Executes an operation with retry policy, allowing null results.
+    ///     Executes an operation with retry policy, allowing null results.
     /// </summary>
     public async Task<T?> ExecuteWithNullAsync<T>(
         Func<Task<T?>> operation,
@@ -202,8 +203,8 @@ public class RetryPolicyService : IRetryPolicyService
     }
 
     /// <summary>
-    /// Determines if an error should be retried.
-    /// Implements AC-3.1 retry count and non-retryable error logic.
+    ///     Determines if an error should be retried.
+    ///     Implements AC-3.1 retry count and non-retryable error logic.
     /// </summary>
     public bool ShouldRetry(Exception exception, int attemptNumber)
     {
@@ -240,8 +241,8 @@ public class RetryPolicyService : IRetryPolicyService
     }
 
     /// <summary>
-    /// Calculates the delay for the next retry attempt.
-    /// Implements AC-3.2 exponential backoff and AC-3.3 jitter.
+    ///     Calculates the delay for the next retry attempt.
+    ///     Implements AC-3.2 exponential backoff and AC-3.3 jitter.
     /// </summary>
     public TimeSpan CalculateDelay(int attemptNumber, Exception? lastException = null)
     {
@@ -343,12 +344,12 @@ public class RetryPolicyService : IRetryPolicyService
 }
 
 /// <summary>
-/// Extension methods for easier retry policy usage.
+///     Extension methods for easier retry policy usage.
 /// </summary>
 public static class RetryPolicyExtensions
 {
     /// <summary>
-    /// Executes an operation with the default retry policy.
+    ///     Executes an operation with the default retry policy.
     /// </summary>
     public static async Task<T> WithRetryAsync<T>(
         this IRetryPolicyService retryService,
@@ -363,7 +364,7 @@ public static class RetryPolicyExtensions
     }
 
     /// <summary>
-    /// Executes an operation with retry policy, allowing null results.
+    ///     Executes an operation with retry policy, allowing null results.
     /// </summary>
     public static async Task<T?> WithRetryOrNullAsync<T>(
         this IRetryPolicyService retryService,

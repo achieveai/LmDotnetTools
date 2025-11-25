@@ -7,12 +7,12 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol;
 
 /// <summary>
-/// Extension methods for configuring AG-UI protocol services
+///     Extension methods for configuring AG-UI protocol services
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds AG-UI protocol services to the DI container
+    ///     Adds AG-UI protocol services to the DI container
     /// </summary>
     public static IServiceCollection AddAgUiProtocol(
         this IServiceCollection services,
@@ -20,7 +20,10 @@ public static class ServiceCollectionExtensions
     )
     {
         // Configure options
-        _ = configureOptions != null ? services.Configure(configureOptions) : services.Configure<AgUiMiddlewareOptions>(options => { });
+        _ =
+            configureOptions != null
+                ? services.Configure(configureOptions)
+                : services.Configure<AgUiMiddlewareOptions>(options => { });
 
         // Register core services
         _ = services.AddSingleton<IEventPublisher, ChannelEventPublisher>();

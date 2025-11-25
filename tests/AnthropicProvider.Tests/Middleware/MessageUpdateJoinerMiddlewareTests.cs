@@ -7,13 +7,15 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 public class MessageUpdateJoinerMiddlewareTests
 {
     /// <summary>
-    /// Gets the path to test files
+    ///     Gets the path to test files
     /// </summary>
     private static string GetTestFilesPath()
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation) ?? throw new InvalidOperationException("Could not determine current directory");
+        var currentDir =
+            Path.GetDirectoryName(assemblyLocation)
+            ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
         while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
@@ -56,7 +58,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var handler = MockHttpHandlerBuilder.Create().RespondWithStreamingFile(streamingResponsePath).Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
 
         // Create the Anthropic agent
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
@@ -126,7 +128,7 @@ public class MessageUpdateJoinerMiddlewareTests
     }
 
     /// <summary>
-    /// Parses messages from JSON without using a converter
+    ///     Parses messages from JSON without using a converter
     /// </summary>
     private static List<IMessage> ParseMessagesFromJson(string json)
     {
@@ -158,7 +160,7 @@ public class MessageUpdateJoinerMiddlewareTests
                 );
             }
             else if (
-                element.TryGetProperty("tool_calls", out var _)
+                element.TryGetProperty("tool_calls", out _)
                 || (element.TryGetProperty("source", out var sourceElement) && sourceElement.GetString() == "tool-call")
             )
             {
@@ -178,7 +180,14 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(new ToolCall { FunctionName = functionName, FunctionArgs = functionArgs, ToolCallId = toolCallId });
+                        toolCalls.Add(
+                            new ToolCall
+                            {
+                                FunctionName = functionName,
+                                FunctionArgs = functionArgs,
+                                ToolCallId = toolCallId,
+                            }
+                        );
                     }
                 }
 
@@ -218,7 +227,9 @@ public class MessageUpdateJoinerMiddlewareTests
     private static string? GetStringProperty(JsonElement element, string propertyName)
     {
         return element.TryGetProperty(propertyName, out var property)
-            ? property.ValueKind == JsonValueKind.String ? property.GetString() : null
+            ? property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null
             : null;
     }
 }

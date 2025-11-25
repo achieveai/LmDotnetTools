@@ -5,14 +5,11 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Implementation of document analysis service that uses heuristics and pattern recognition
-/// to determine document types and recommend segmentation strategies.
+///     Implementation of document analysis service that uses heuristics and pattern recognition
+///     to determine document types and recommend segmentation strategies.
 /// </summary>
 public partial class DocumentAnalysisService : IDocumentAnalysisService
 {
-    private readonly ILogger<DocumentAnalysisService> _logger;
-    private readonly DocumentSegmentationOptions _options;
-
     // Pattern regex for different document characteristics
     private static readonly Regex EmailHeaderPattern = MyRegex();
     private static readonly Regex ChatTimestampPattern = MyRegex1();
@@ -28,6 +25,8 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
     private static readonly string[] separatorArray = ["\n\n", "\r\n\r\n"];
     private static readonly char[] separatorArray0 = ['.', '!', '?'];
     private static readonly char[] separatorArray1 = [' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?'];
+    private readonly ILogger<DocumentAnalysisService> _logger;
+    private readonly DocumentSegmentationOptions _options;
 
     public DocumentAnalysisService(
         ILogger<DocumentAnalysisService> logger,
@@ -39,7 +38,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
     }
 
     /// <summary>
-    /// Analyzes document characteristics to determine document type.
+    ///     Analyzes document characteristics to determine document type.
     /// </summary>
     public async Task<DocumentTypeDetection> DetectDocumentTypeAsync(
         string content,
@@ -112,7 +111,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
     }
 
     /// <summary>
-    /// Analyzes document structure and content to recommend optimal segmentation strategy.
+    ///     Analyzes document structure and content to recommend optimal segmentation strategy.
     /// </summary>
     public async Task<StrategyRecommendation> AnalyzeOptimalStrategyAsync(
         string content,
@@ -173,7 +172,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
     }
 
     /// <summary>
-    /// Analyzes document complexity to help determine processing approach.
+    ///     Analyzes document complexity to help determine processing approach.
     /// </summary>
     public async Task<DocumentComplexityAnalysis> AnalyzeComplexityAsync(
         string content,
@@ -511,7 +510,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
             ListItemCount = ListPattern.Matches(content).Count,
             CodeBlockCount = CodeBlockPattern.Matches(content).Count,
             TableCount = TablePattern.Matches(content).Count,
-            LinkCount = LinkPattern.Matches(content).Count
+            LinkCount = LinkPattern.Matches(content).Count,
         };
 
         // Calculate heading depth
@@ -655,7 +654,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
         var reasons = new List<string>
         {
             // Document type reasoning
-            $"Document identified as {typeDetection.DocumentType} with {typeDetection.Confidence:P0} confidence"
+            $"Document identified as {typeDetection.DocumentType} with {typeDetection.Confidence:P0} confidence",
         };
 
         // Strategy-specific reasoning
@@ -697,9 +696,10 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
 
                 break;
             case SegmentationStrategy.Custom:
+                reasons.Add("Custom segmentation strategy configured for specific use case");
                 break;
             default:
-                break;
+                throw new NotSupportedException($"Unsupported segmentation strategy: {strategy}");
         }
 
         // Complexity reasoning

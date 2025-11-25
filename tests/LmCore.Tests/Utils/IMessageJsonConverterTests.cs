@@ -109,7 +109,12 @@ public class IMessageJsonConverterTests
     public void RoundTrip_ToolsCallAggregateMessage_PreservesAllData()
     {
         // Arrange
-        var toolCall = new ToolCall { FunctionName = "test_function", FunctionArgs = """{"arg1": "value1"}""", ToolCallId = "tool-1" };
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test_function",
+            FunctionArgs = """{"arg1": "value1"}""",
+            ToolCallId = "tool-1",
+        };
 
         var toolCallMessage = new ToolsCallMessage
         {
@@ -211,7 +216,15 @@ public class IMessageJsonConverterTests
             new ImageMessage { ImageData = BinaryData.FromString("fake-image-data"), Role = Role.Assistant },
             new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall { FunctionName = "test_function", FunctionArgs = "{}", ToolCallId = "id1" }],
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "test_function",
+                        FunctionArgs = "{}",
+                        ToolCallId = "id1",
+                    },
+                ],
                 Role = Role.Assistant,
             },
         };

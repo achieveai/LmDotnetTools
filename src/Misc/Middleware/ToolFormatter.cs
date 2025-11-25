@@ -4,7 +4,7 @@ using AchieveAi.LmDotnetTools.Misc.Utils;
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
 /// <summary>
-/// Delegate for formatting tool output into colored text segments using structured JSON fragment updates
+///     Delegate for formatting tool output into colored text segments using structured JSON fragment updates
 /// </summary>
 /// <param name="toolCallName">Name of the tool being called</param>
 /// <param name="fragmentUpdates">Structured JSON fragment updates from the tool</param>

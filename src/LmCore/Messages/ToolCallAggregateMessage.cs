@@ -5,70 +5,11 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 /// <summary>
-/// Combines a tool call message and its result into a single message
+///     Combines a tool call message and its result into a single message
 /// </summary>
 [JsonConverter(typeof(ToolsCallAggregateMessageJsonConverter))]
 public record ToolsCallAggregateMessage : IMessage
 {
-    /// <summary>
-    /// The original tool call message
-    /// </summary>
-    [JsonPropertyName("tool_call_message")]
-    public ToolsCallMessage ToolsCallMessage { get; init; }
-
-    /// <summary>
-    /// The result of the tool call
-    /// </summary>
-    [JsonPropertyName("tool_call_result")]
-    public ToolsCallResultMessage ToolsCallResult { get; init; }
-
-    /// <summary>
-    /// The agent that processed this aggregate message
-    /// </summary>
-    [JsonPropertyName("from_agent")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? FromAgent { get; init; }
-
-    /// <summary>
-    /// The role of this message (typically Assistant)
-    /// </summary>
-    [JsonPropertyName("role")]
-    public Role Role => Role.Assistant;
-
-    /// <summary>
-    /// Combined metadata from the tool call and its result
-    /// </summary>
-    [JsonIgnore]
-    public ImmutableDictionary<string, object>? Metadata { get; init; }
-
-    /// <summary>
-    /// Generation ID from the original tool call
-    /// </summary>
-    [JsonPropertyName("generation_id")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? GenerationId => ToolsCallMessage.GenerationId;
-
-    /// <summary>
-    /// Thread identifier from the original tool call
-    /// </summary>
-    [JsonPropertyName("threadId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ThreadId => ToolsCallMessage.ThreadId;
-
-    /// <summary>
-    /// Run identifier from the original tool call
-    /// </summary>
-    [JsonPropertyName("runId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? RunId => ToolsCallMessage.RunId;
-
-    /// <summary>
-    /// Message order index from the original tool call
-    /// </summary>
-    [JsonPropertyName("messageOrderIdx")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MessageOrderIdx => ToolsCallMessage.MessageOrderIdx;
-
     public ToolsCallAggregateMessage(
         ToolsCallMessage toolCallMessage,
         ToolsCallResultMessage toolCallResult,
@@ -108,6 +49,65 @@ public record ToolsCallAggregateMessage : IMessage
             }
         }
     }
+
+    /// <summary>
+    ///     The original tool call message
+    /// </summary>
+    [JsonPropertyName("tool_call_message")]
+    public ToolsCallMessage ToolsCallMessage { get; init; }
+
+    /// <summary>
+    ///     The result of the tool call
+    /// </summary>
+    [JsonPropertyName("tool_call_result")]
+    public ToolsCallResultMessage ToolsCallResult { get; init; }
+
+    /// <summary>
+    ///     The agent that processed this aggregate message
+    /// </summary>
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FromAgent { get; init; }
+
+    /// <summary>
+    ///     The role of this message (typically Assistant)
+    /// </summary>
+    [JsonPropertyName("role")]
+    public Role Role => Role.Assistant;
+
+    /// <summary>
+    ///     Combined metadata from the tool call and its result
+    /// </summary>
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
+
+    /// <summary>
+    ///     Generation ID from the original tool call
+    /// </summary>
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GenerationId => ToolsCallMessage.GenerationId;
+
+    /// <summary>
+    ///     Thread identifier from the original tool call
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId => ToolsCallMessage.ThreadId;
+
+    /// <summary>
+    ///     Run identifier from the original tool call
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId => ToolsCallMessage.RunId;
+
+    /// <summary>
+    ///     Message order index from the original tool call
+    /// </summary>
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx => ToolsCallMessage.MessageOrderIdx;
 
     // IMessage implementation
 

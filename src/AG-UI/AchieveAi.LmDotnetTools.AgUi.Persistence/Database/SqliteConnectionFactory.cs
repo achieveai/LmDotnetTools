@@ -5,21 +5,21 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
 
 /// <summary>
-/// Thread-safe factory for creating SQLite database connections with connection pooling.
+///     Thread-safe factory for creating SQLite database connections with connection pooling.
 /// </summary>
 /// <remarks>
-/// Uses SemaphoreSlim to limit concurrent connections and prevent database lock contention.
-/// Automatically enables WAL mode and foreign keys for better concurrency and data integrity.
+///     Uses SemaphoreSlim to limit concurrent connections and prevent database lock contention.
+///     Automatically enables WAL mode and foreign keys for better concurrency and data integrity.
 /// </remarks>
 public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
 {
     private readonly string _connectionString;
-    private readonly SemaphoreSlim _semaphore;
     private readonly ILogger<SqliteConnectionFactory> _logger;
+    private readonly SemaphoreSlim _semaphore;
     private bool _disposed;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="SqliteConnectionFactory"/> class.
+    ///     Initializes a new instance of the <see cref="SqliteConnectionFactory" /> class.
     /// </summary>
     /// <param name="connectionString">The SQLite connection string.</param>
     /// <param name="maxConcurrentConnections">Maximum number of concurrent connections (default: 10).</param>
@@ -46,13 +46,13 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
     }
 
     /// <summary>
-    /// Creates and opens a new database connection.
+    ///     Creates and opens a new database connection.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>An open SQLite connection with WAL mode and foreign keys enabled.</returns>
     /// <remarks>
-    /// The connection is wrapped to automatically release the semaphore on disposal.
-    /// Waits for an available connection slot if max connections are in use.
+    ///     The connection is wrapped to automatically release the semaphore on disposal.
+    ///     Waits for an available connection slot if max connections are in use.
     /// </remarks>
     public async Task<SqliteConnection> CreateConnectionAsync(CancellationToken ct = default)
     {
@@ -84,7 +84,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
     }
 
     /// <summary>
-    /// Disposes the connection factory and releases all resources.
+    ///     Disposes the connection factory and releases all resources.
     /// </summary>
     public void Dispose()
     {
@@ -98,16 +98,16 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
     }
 
     /// <summary>
-    /// Managed SQLite connection that automatically releases semaphore on disposal.
+    ///     Managed SQLite connection that automatically releases semaphore on disposal.
     /// </summary>
     /// <remarks>
-    /// Uses composition pattern to avoid base constructor initialization issues.
-    /// The connection is initialized via InitializeAsync after construction.
+    ///     Uses composition pattern to avoid base constructor initialization issues.
+    ///     The connection is initialized via InitializeAsync after construction.
     /// </remarks>
     private sealed class ManagedSqliteConnection : SqliteConnection
     {
-        private readonly SemaphoreSlim _semaphore;
         private readonly ILogger _logger;
+        private readonly SemaphoreSlim _semaphore;
         private bool _disposed;
 
         public ManagedSqliteConnection(string connectionString, SemaphoreSlim semaphore, ILogger logger)
@@ -118,11 +118,11 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
         }
 
         /// <summary>
-        /// Initializes the connection by opening it and configuring WAL mode and foreign keys.
+        ///     Initializes the connection by opening it and configuring WAL mode and foreign keys.
         /// </summary>
         /// <param name="ct">Cancellation token.</param>
         /// <remarks>
-        /// Must be called after construction before using the connection.
+        ///     Must be called after construction before using the connection.
         /// </remarks>
         public async Task InitializeAsync(CancellationToken ct)
         {
@@ -148,7 +148,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
 
             if (disposing)
             {
-                _ = (_semaphore?.Release());
+                _ = _semaphore?.Release();
                 _logger.LogTrace("Released SQLite connection and semaphore slot");
             }
 
@@ -163,7 +163,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
                 return;
             }
 
-            _ = (_semaphore?.Release());
+            _ = _semaphore?.Release();
             _logger.LogTrace("Released SQLite connection and semaphore slot (async)");
             _disposed = true;
 

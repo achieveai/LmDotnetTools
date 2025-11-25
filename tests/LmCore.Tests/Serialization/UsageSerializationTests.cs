@@ -6,8 +6,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;
 
 public class UsageSerializationTests
 {
-    private readonly ITestOutputHelper _output;
     private readonly JsonSerializerOptions _options;
+    private readonly ITestOutputHelper _output;
 
     public UsageSerializationTests(ITestOutputHelper output)
     {

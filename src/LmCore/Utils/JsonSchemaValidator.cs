@@ -1,12 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Json.Schema;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Validates JSON data against a schema.
+///     Validates JSON data against a schema.
 /// </summary>
 public class JsonSchemaValidator : IJsonSchemaValidator
 {
@@ -48,14 +49,14 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             return new SchemaValidationResult(false, ["Invalid JSON payload"]);
         }
 
-        Json.Schema.JsonSchema jsonSchema;
+        JsonSchema jsonSchema;
 
         try
         {
             jsonSchema = schema switch
             {
                 string schemaText => JsonSchema.FromText(schemaText),
-                Models.JsonSchemaObject schemaObj => JsonSchema.FromText(
+                JsonSchemaObject schemaObj => JsonSchema.FromText(
                     JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
                 ),
                 FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
@@ -87,7 +88,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
     }
 
-    private static Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
+    private static JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
     {
         var root = new JsonObject { ["type"] = "object" };
 
@@ -135,8 +136,8 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             {
                 if (detail.HasErrors)
                 {
-                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"]?.ToString())
-                        ? detail.Errors["error"].ToString()
+                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"])
+                        ? detail.Errors["error"]
                         : $"Validation failed at '{detail.InstanceLocation}'";
                     errors.Add(errorMessage);
                 }

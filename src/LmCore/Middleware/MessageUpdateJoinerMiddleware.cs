@@ -6,27 +6,26 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that joins update messages into larger messages for more efficient processing.
+///     Middleware that joins update messages into larger messages for more efficient processing.
 /// </summary>
 public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware"/> class.
+    ///     Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware" /> class.
     /// </summary>
     /// <param name="name">Optional name for the middleware.</param>
-    ///
     public MessageUpdateJoinerMiddleware(string? name = null)
     {
         Name = name ?? nameof(MessageUpdateJoinerMiddleware);
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name { get; }
 
     /// <summary>
-    /// Invokes the middleware for synchronous scenarios.
+    ///     Invokes the middleware for synchronous scenarios.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -40,7 +39,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios, joining update messages into larger messages.
+    ///     Invokes the middleware for streaming scenarios, joining update messages into larger messages.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
@@ -99,11 +98,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             lastMessageType = message.GetType();
 
             // Process the current message
-            var processedMessage = ProcessStreamingMessage(
-                message,
-                ref activeBuilder,
-                ref activeBuilderType
-            );
+            var processedMessage = ProcessStreamingMessage(message, ref activeBuilder, ref activeBuilderType);
 
             // Only emit the message if it's not being accumulated by a builder
             var isBeingAccumulated =
@@ -144,28 +139,19 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
-            return ProcessToolCallUpdate(
-                toolCallUpdate,
-                ref activeBuilder,
-                ref activeBuilderType
-            );
+            return ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
         }
         // For text update messages
-        else if (message is TextUpdateMessage textUpdate)
+
+        if (message is TextUpdateMessage textUpdate)
         {
             return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
         }
         // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
-        else if (message is ReasoningUpdateMessage reasoningUpdate)
-        {
-            return ProcessReasoningUpdate(
-                reasoningUpdate,
-                ref activeBuilder,
-                ref activeBuilderType
-            );
-        }
 
-        return message;
+        return message is ReasoningUpdateMessage reasoningUpdate
+            ? ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType)
+            : message;
     }
 
     private static IMessage ProcessToolCallUpdate(

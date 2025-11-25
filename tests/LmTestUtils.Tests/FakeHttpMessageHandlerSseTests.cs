@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 
@@ -39,7 +40,7 @@ public class FakeHttpMessageHandlerSseTests
         Assert.Contains("keep-alive", response.Headers.GetValues("Connection"));
 
         var content = await response.Content.ReadAsStringAsync();
-        System.Diagnostics.Debug.WriteLine($"SSE Content: {content}");
+        Debug.WriteLine($"SSE Content: {content}");
 
         // Verify SSE format
         Assert.Contains("id: 1", content);
@@ -66,7 +67,7 @@ public class FakeHttpMessageHandlerSseTests
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
 
         var content = await response.Content.ReadAsStringAsync();
-        System.Diagnostics.Debug.WriteLine($"Simple SSE Content: {content}");
+        Debug.WriteLine($"Simple SSE Content: {content}");
 
         // Verify content
         Assert.Contains("event: chat", content);
@@ -100,7 +101,7 @@ public class FakeHttpMessageHandlerSseTests
         Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
 
         var content = await response.Content.ReadAsStringAsync();
-        System.Diagnostics.Debug.WriteLine($"JSON SSE Content: {content}");
+        Debug.WriteLine($"JSON SSE Content: {content}");
 
         // Verify JSON content
         Assert.Contains("event: update", content);
@@ -134,7 +135,7 @@ public class FakeHttpMessageHandlerSseTests
 
         // Assert
         var content = await response.Content.ReadAsStringAsync();
-        System.Diagnostics.Debug.WriteLine($"Multiline SSE Content: {content}");
+        Debug.WriteLine($"Multiline SSE Content: {content}");
 
         // Verify multiline data is properly formatted
         Assert.Contains("data: Line 1", content);
@@ -155,7 +156,7 @@ public class FakeHttpMessageHandlerSseTests
 
         // Assert
         var content = await response.Content.ReadAsStringAsync();
-        System.Diagnostics.Debug.WriteLine($"No Event Type SSE Content: {content}");
+        Debug.WriteLine($"No Event Type SSE Content: {content}");
 
         // Verify no event field when not specified
         Assert.DoesNotContain("event:", content);

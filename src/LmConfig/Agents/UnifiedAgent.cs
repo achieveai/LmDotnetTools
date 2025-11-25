@@ -9,16 +9,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
 /// <summary>
-/// Unified agent that can work with any model/provider combination by using
-/// ModelResolver to pick the best provider and delegating to appropriate provider-specific agents.
+///     Unified agent that can work with any model/provider combination by using
+///     ModelResolver to pick the best provider and delegating to appropriate provider-specific agents.
 /// </summary>
 public class UnifiedAgent : IStreamingAgent, IDisposable
 {
-    private readonly IModelResolver _modelResolver;
+    private readonly Dictionary<string, IAgent> _agentCache = [];
     private readonly IProviderAgentFactory _agentFactory;
     private readonly ILogger<UnifiedAgent> _logger;
-    private readonly Dictionary<string, IAgent> _agentCache = [];
-    private bool _disposed = false;
+    private readonly IModelResolver _modelResolver;
+    private bool _disposed;
 
     public UnifiedAgent(
         IModelResolver modelResolver,
@@ -29,6 +29,12 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         _modelResolver = modelResolver ?? throw new ArgumentNullException(nameof(modelResolver));
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
         _logger = logger ?? NullLogger<UnifiedAgent>.Instance;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
@@ -157,7 +163,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Common preparation logic for both generation methods.
+    ///     Common preparation logic for both generation methods.
     /// </summary>
     private async Task<(
         List<IMessage> messageList,
@@ -181,7 +187,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Validates messages and returns them as a list.
+    ///     Validates messages and returns them as a list.
     /// </summary>
     private List<IMessage> ValidateMessages(IEnumerable<IMessage> messages)
     {
@@ -203,7 +209,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Resolves the best provider for the given options and returns a configured agent.
+    ///     Resolves the best provider for the given options and returns a configured agent.
     /// </summary>
     /// <param name="options">Generation options containing model ID and other preferences.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -218,7 +224,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Resolves the best provider for the given options and returns a configured streaming agent.
+    ///     Resolves the best provider for the given options and returns a configured streaming agent.
     /// </summary>
     /// <param name="options">Generation options containing model ID and other preferences.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -233,7 +239,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Generic agent resolution logic to eliminate duplication.
+    ///     Generic agent resolution logic to eliminate duplication.
     /// </summary>
     private async Task<IAgent> ResolveAgentInternalAsync<T>(
         GenerateReplyOptions? options,
@@ -243,9 +249,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         where T : IAgent
     {
         var resolution = await ResolveProviderAsync(options, cancellationToken);
-        var cacheKey = isStreaming
-            ? GetStreamingCacheKey(resolution)
-            : GetCacheKey(resolution);
+        var cacheKey = isStreaming ? GetStreamingCacheKey(resolution) : GetCacheKey(resolution);
 
         if (!_agentCache.TryGetValue(cacheKey, out var agent))
         {
@@ -303,7 +307,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Gets information about the resolved provider for the given options.
+    ///     Gets information about the resolved provider for the given options.
     /// </summary>
     /// <param name="options">Generation options containing model ID and other preferences.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -317,7 +321,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Gets all available providers for the given model ID.
+    ///     Gets all available providers for the given model ID.
     /// </summary>
     /// <param name="modelId">The model ID to get providers for.</param>
     /// <param name="criteria">Optional selection criteria.</param>
@@ -507,7 +511,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Creates updated GenerateReplyOptions with the correct ModelId for the resolved provider.
+    ///     Creates updated GenerateReplyOptions with the correct ModelId for the resolved provider.
     /// </summary>
     /// <param name="originalOptions">The original options from the user.</param>
     /// <param name="resolution">The provider resolution containing the effective model name.</param>
@@ -537,12 +541,6 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         {
             throw new ObjectDisposedException(nameof(UnifiedAgent));
         }
-    }
-
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
     }
 
     protected virtual void Dispose(bool disposing)

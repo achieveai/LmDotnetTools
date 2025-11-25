@@ -4,8 +4,8 @@ using MemoryServer.Tests.TestUtilities;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Unit tests for the SessionContext model.
-/// Tests session matching logic and factory methods.
+///     Unit tests for the SessionContext model.
+///     Tests session matching logic and factory methods.
 /// </summary>
 public class SessionContextTests
 {

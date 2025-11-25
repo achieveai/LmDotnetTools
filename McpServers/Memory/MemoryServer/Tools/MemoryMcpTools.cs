@@ -6,15 +6,11 @@ using ModelContextProtocol.Server;
 namespace MemoryServer.Tools;
 
 /// <summary>
-/// MCP tools for memory operations with session management and integer IDs.
+///     MCP tools for memory operations with session management and integer IDs.
 /// </summary>
 [McpServerToolType]
 public class MemoryMcpTools
 {
-    private readonly IMemoryService _memoryService;
-    private readonly ISessionContextResolver _sessionResolver;
-    private readonly ILogger<MemoryMcpTools> _logger;
-
     // Tool descriptions as const strings for better maintainability
     private const string AddMemoryDescription =
         @"Stores important information, facts, preferences, or context that should be remembered across conversations. Use this when you learn something significant about the user, their preferences, project details, or any information that would be valuable to recall later. Examples: user's coding style preferences, project requirements, personal details shared in conversation, or task-specific context that spans multiple interactions.";
@@ -46,6 +42,10 @@ public class MemoryMcpTools
     private const string GetRunsDescription =
         @"Retrieves all conversation sessions (runs) for tracking and organizing memories by interaction context. Use this to understand conversation history patterns, organize memories by specific projects or time periods, resume previous conversation contexts, analyze interaction frequency, or manage memory organization across different sessions. Helpful for users who have multiple ongoing projects or need to compartmentalize different types of interactions.";
 
+    private readonly ILogger<MemoryMcpTools> _logger;
+    private readonly IMemoryService _memoryService;
+    private readonly ISessionContextResolver _sessionResolver;
+
     public MemoryMcpTools(
         IMemoryService memoryService,
         ISessionContextResolver sessionResolver,
@@ -58,14 +58,15 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Adds new memories from conversation messages or direct content.
-    /// UserId and AgentId are automatically extracted from JWT token.
+    ///     Adds new memories from conversation messages or direct content.
+    ///     UserId and AgentId are automatically extracted from JWT token.
     /// </summary>
     /// <param name="content">The content to add as a memory</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
     /// <returns>Created memory with integer ID</returns>
-    [McpServerTool(Name = "memory_add"), Description(AddMemoryDescription)]
+    [McpServerTool(Name = "memory_add")]
+    [Description(AddMemoryDescription)]
     public async Task<object> AddMemoryAsync(
         [Description("The content to add as a memory")] string? content,
         [Description("Run identifier for session isolation")] string? runId = "",
@@ -84,9 +85,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId and agentId come from JWT token only
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Get from JWT token
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                null, // Get from JWT token
+                runIdParam
             );
 
             // Parse metadata if provided
@@ -134,16 +135,21 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Searches for relevant memories using semantic similarity and full-text search.
-    /// UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if "all", searches all agents.
+    ///     Searches for relevant memories using semantic similarity and full-text search.
+    ///     UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if
+    ///     "all", searches all agents.
     /// </summary>
     /// <param name="query">Search query text</param>
-    /// <param name="agentId">Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", searches all agents</param>
+    /// <param name="agentId">
+    ///     Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all",
+    ///     searches all agents
+    /// </param>
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <param name="limit">Maximum number of results (default: 10, max: 100)</param>
     /// <param name="scoreThreshold">Minimum similarity score threshold (default: 0.0)</param>
     /// <returns>Array of relevant memory objects with relevance scores</returns>
-    [McpServerTool(Name = "memory_search"), Description(SearchMemoriesDescription)]
+    [McpServerTool(Name = "memory_search")]
+    [Description(SearchMemoriesDescription)]
     public async Task<object> SearchMemoriesAsync(
         [Description("Search query text")] string? query,
         [Description(
@@ -188,9 +194,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId comes from JWT token, agentId logic as above
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: agentIdParam, // null = use JWT token agentId, or search all if "all" was specified
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                agentIdParam, // null = use JWT token agentId, or search all if "all" was specified
+                runIdParam
             );
 
             // Search memories
@@ -230,15 +236,20 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Retrieves all memories for a specific session.
-    /// UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if "all", gets all agents.
+    ///     Retrieves all memories for a specific session.
+    ///     UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if
+    ///     "all", gets all agents.
     /// </summary>
-    /// <param name="agentId">Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", gets all agents</param>
+    /// <param name="agentId">
+    ///     Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", gets
+    ///     all agents
+    /// </param>
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <param name="limit">Maximum number of results (default: 100, max: 1000)</param>
     /// <param name="offset">Offset for pagination (default: 0)</param>
     /// <returns>Array of memory objects</returns>
-    [McpServerTool(Name = "memory_get_all"), Description(GetAllMemoriesDescription)]
+    [McpServerTool(Name = "memory_get_all")]
+    [Description(GetAllMemoriesDescription)]
     public async Task<object> GetAllMemoriesAsync(
         [Description(
             "Agent identifier for session filtering - if not provided, uses JWT token agentId; if \"all\", gets all agents"
@@ -277,9 +288,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId comes from JWT token, agentId logic as above
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: agentIdParam, // null = use JWT token agentId, or get all if "all" was specified
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                agentIdParam, // null = use JWT token agentId, or get all if "all" was specified
+                runIdParam
             );
 
             // Get all memories
@@ -319,15 +330,16 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Updates an existing memory by ID.
-    /// UserId and AgentId are automatically extracted from JWT token for session validation.
+    ///     Updates an existing memory by ID.
+    ///     UserId and AgentId are automatically extracted from JWT token for session validation.
     /// </summary>
     /// <param name="id">Memory ID to update</param>
     /// <param name="content">New content for the memory</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
     /// <returns>Updated memory object</returns>
-    [McpServerTool(Name = "memory_update"), Description(UpdateMemoryDescription)]
+    [McpServerTool(Name = "memory_update")]
+    [Description(UpdateMemoryDescription)]
     public async Task<object> UpdateMemoryAsync(
         [Description("Memory ID to update")] int id,
         [Description("New content for the memory")] string? content,
@@ -352,9 +364,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId and agentId come from JWT token only
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Get from JWT token
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                null, // Get from JWT token
+                runIdParam
             );
 
             // Parse metadata if provided
@@ -407,13 +419,14 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Deletes a memory by ID.
-    /// UserId and AgentId are automatically extracted from JWT token for session validation.
+    ///     Deletes a memory by ID.
+    ///     UserId and AgentId are automatically extracted from JWT token for session validation.
     /// </summary>
     /// <param name="id">Memory ID to delete</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <returns>Deletion confirmation</returns>
-    [McpServerTool(Name = "memory_delete"), Description(DeleteMemoryDescription)]
+    [McpServerTool(Name = "memory_delete")]
+    [Description(DeleteMemoryDescription)]
     public async Task<object> DeleteMemoryAsync(
         [Description("Memory ID to delete")] int id,
         [Description("Run identifier for session isolation")] string? runId = ""
@@ -431,9 +444,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId and agentId come from JWT token only
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Get from JWT token
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                null, // Get from JWT token
+                runIdParam
             );
 
             // Delete memory
@@ -456,12 +469,13 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Deletes all memories for a session.
-    /// UserId and AgentId are automatically extracted from JWT token for session targeting.
+    ///     Deletes all memories for a session.
+    ///     UserId and AgentId are automatically extracted from JWT token for session targeting.
     /// </summary>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <returns>Deletion summary</returns>
-    [McpServerTool(Name = "memory_delete_all"), Description(DeleteAllMemoriesDescription)]
+    [McpServerTool(Name = "memory_delete_all")]
+    [Description(DeleteAllMemoriesDescription)]
     public async Task<object> DeleteAllMemoriesAsync(
         [Description("Run identifier for session isolation")] string? runId = ""
     )
@@ -473,9 +487,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId and agentId come from JWT token only
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Get from JWT token
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                null, // Get from JWT token
+                runIdParam
             );
 
             // Delete all memories
@@ -502,15 +516,20 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Gets memory history for a specific memory ID.
-    /// UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if "all", searches all agents.
+    ///     Gets memory history for a specific memory ID.
+    ///     UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if
+    ///     "all", searches all agents.
     /// </summary>
     /// <param name="id">Memory ID to get history for</param>
-    /// <param name="agentId">Agent identifier for session isolation - if not provided, uses JWT token agentId; if "all", searches all agents</param>
+    /// <param name="agentId">
+    ///     Agent identifier for session isolation - if not provided, uses JWT token agentId; if "all",
+    ///     searches all agents
+    /// </param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="limit">Maximum number of history entries (default: 50, max: 100)</param>
     /// <returns>Array of memory history entries</returns>
-    [McpServerTool(Name = "memory_get_history"), Description(GetMemoryHistoryDescription)]
+    [McpServerTool(Name = "memory_get_history")]
+    [Description(GetMemoryHistoryDescription)]
     public async Task<object> GetMemoryHistoryAsync(
         [Description("Memory ID to get history for")] int id,
         [Description(
@@ -548,9 +567,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId comes from JWT token, agentId logic as above
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: agentIdParam, // null = use JWT token agentId, or search all if "all" was specified
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                agentIdParam, // null = use JWT token agentId, or search all if "all" was specified
+                runIdParam
             );
 
             // Get memory history
@@ -590,13 +609,18 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Provides memory usage statistics and analytics.
-    /// UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if "all", gets stats for all agents.
+    ///     Provides memory usage statistics and analytics.
+    ///     UserId is automatically extracted from JWT token. AgentId behavior: if not provided, uses JWT token agentId; if
+    ///     "all", gets stats for all agents.
     /// </summary>
-    /// <param name="agentId">Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", gets stats for all agents</param>
+    /// <param name="agentId">
+    ///     Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", gets
+    ///     stats for all agents
+    /// </param>
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <returns>Memory usage statistics</returns>
-    [McpServerTool(Name = "memory_get_stats"), Description(GetMemoryStatsDescription)]
+    [McpServerTool(Name = "memory_get_stats")]
+    [Description(GetMemoryStatsDescription)]
     public async Task<object> GetMemoryStatsAsync(
         [Description(
             "Agent identifier for session filtering - if not provided, uses JWT token agentId; if \"all\", gets stats for all agents"
@@ -629,9 +653,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId comes from JWT token, agentId logic as above
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: agentIdParam, // null = use JWT token agentId, or get all if "all" was specified
-                explicitRunId: runIdParam
+                null, // Get from JWT token
+                agentIdParam, // null = use JWT token agentId, or get all if "all" was specified
+                runIdParam
             );
 
             // Get memory statistics
@@ -670,20 +694,21 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Gets all agents for the current user.
-    /// UserId is automatically extracted from JWT token.
+    ///     Gets all agents for the current user.
+    ///     UserId is automatically extracted from JWT token.
     /// </summary>
     /// <returns>Array of agent identifiers</returns>
-    [McpServerTool(Name = "memory_get_agents"), Description(GetAgentsDescription)]
+    [McpServerTool(Name = "memory_get_agents")]
+    [Description(GetAgentsDescription)]
     public async Task<object> GetAgentsAsync()
     {
         try
         {
             // Resolve session context - userId comes from JWT token
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Not needed for this query
-                explicitRunId: null
+                null, // Get from JWT token
+                null, // Not needed for this query
+                null
             ); // Not needed for this query
 
             // Get all agents for the user
@@ -707,12 +732,13 @@ public class MemoryMcpTools
     }
 
     /// <summary>
-    /// Gets all run IDs for a specific agent and user.
-    /// UserId is automatically extracted from JWT token.
+    ///     Gets all run IDs for a specific agent and user.
+    ///     UserId is automatically extracted from JWT token.
     /// </summary>
     /// <param name="agentId">Agent identifier to get runs for</param>
     /// <returns>Array of run identifiers</returns>
-    [McpServerTool(Name = "memory_get_runs"), Description(GetRunsDescription)]
+    [McpServerTool(Name = "memory_get_runs")]
+    [Description(GetRunsDescription)]
     public async Task<object> GetRunsAsync([Description("Agent identifier to get runs for")] string? agentId = "")
     {
         try
@@ -724,9 +750,9 @@ public class MemoryMcpTools
 
             // Resolve session context - userId comes from JWT token
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                explicitUserId: null, // Get from JWT token
-                explicitAgentId: null, // Not needed for this query
-                explicitRunId: null
+                null, // Get from JWT token
+                null, // Not needed for this query
+                null
             ); // Not needed for this query
 
             // Get all runs for the user and agent

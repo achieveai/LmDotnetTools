@@ -8,7 +8,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Tests.Interfaces;
 
 /// <summary>
-/// Comprehensive tests for IEmbeddingService interface
+///     Comprehensive tests for IEmbeddingService interface
 /// </summary>
 public class IEmbeddingServiceTests
 {
@@ -19,10 +19,61 @@ public class IEmbeddingServiceTests
         _mockLogger = new Mock<ILogger>();
     }
 
+    #region GenerateEmbeddingsAsync Tests
+
+    [Theory]
+    [MemberData(nameof(GenerateEmbeddingsTestCases))]
+    [Trait("Category", "Performance")]
+    public async Task GenerateEmbeddingsAsync_ValidInputs_ReturnsExpectedResponse(
+        string[] inputs,
+        string model,
+        string description
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing GenerateEmbeddingsAsync with: {description}");
+        Debug.WriteLine($"Inputs: [{string.Join(", ", inputs.Select(i => $"'{i}'"))}]");
+        Debug.WriteLine($"Model: {model}");
+        Debug.WriteLine($"Input count: {inputs.Length}");
+
+        var mockService = CreateMockEmbeddingService(1536);
+        var request = new EmbeddingRequest { Inputs = inputs, Model = model };
+
+        var expectedResponse = CreateTestEmbeddingResponse(inputs, model);
+        _ = mockService
+            .Setup(s => s.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expectedResponse);
+
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        var result = await mockService.Object.GenerateEmbeddingsAsync(request);
+        stopwatch.Stop();
+
+        // Assert
+        Debug.WriteLine($"Execution time: {stopwatch.ElapsedMilliseconds}ms");
+        Debug.WriteLine($"Response embedding count: {result.Embeddings.Count}");
+        Debug.WriteLine($"Response model: {result.Model}");
+
+        Assert.NotNull(result);
+        Assert.Equal(inputs.Length, result.Embeddings.Count);
+        Assert.Equal(model, result.Model);
+
+        for (var i = 0; i < inputs.Length; i++)
+        {
+            var embedding = result.Embeddings.ElementAt(i);
+            Debug.WriteLine($"Embedding {i}: Index={embedding.Index}, VectorLength={embedding.Vector.Length}");
+            Assert.Equal(i, embedding.Index);
+            Assert.Equal(1536, embedding.Vector.Length);
+            Assert.Equal(inputs[i], embedding.Text);
+        }
+    }
+
+    #endregion
+
     #region Test Data
 
     /// <summary>
-    /// Test data for GetEmbeddingAsync method
+    ///     Test data for GetEmbeddingAsync method
     /// </summary>
     public static IEnumerable<object[]> GetEmbeddingTestCases =>
         [
@@ -40,7 +91,7 @@ public class IEmbeddingServiceTests
         ];
 
     /// <summary>
-    /// Test data for invalid inputs
+    ///     Test data for invalid inputs
     /// </summary>
     public static IEnumerable<object[]> InvalidInputTestCases =>
         [
@@ -52,7 +103,7 @@ public class IEmbeddingServiceTests
         ];
 
     /// <summary>
-    /// Test data for GenerateEmbeddingsAsync method
+    ///     Test data for GenerateEmbeddingsAsync method
     /// </summary>
     public static IEnumerable<object[]> GenerateEmbeddingsTestCases =>
         [
@@ -108,7 +159,7 @@ public class IEmbeddingServiceTests
         Assert.Equal(expectedEmbeddingSize, result.Length);
         Assert.All(
             result,
-            value => Assert.True(value is >= (-1.0f) and <= 1.0f, "Embedding values should be normalized")
+            value => Assert.True(value is >= -1.0f and <= 1.0f, "Embedding values should be normalized")
         );
 
         mockService.Verify(s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()), Times.Once);
@@ -187,69 +238,20 @@ public class IEmbeddingServiceTests
         // Arrange
         var mockService = CreateMockEmbeddingService(1536);
 
-        _ = input == null
-            ? mockService
-                .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new ArgumentNullException("sentence"))
-            : mockService
-                .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new ArgumentException("Invalid input"));
+        _ =
+            input == null
+                ? mockService
+                    .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ArgumentNullException("sentence"))
+                : mockService
+                    .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ArgumentException("Invalid input"));
 
         // Act & Assert
-        _ = input == null
-            ? await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(input!))
-            : await Assert.ThrowsAsync<ArgumentException>(() => mockService.Object.GetEmbeddingAsync(input));
-    }
-
-    #endregion
-
-    #region GenerateEmbeddingsAsync Tests
-
-    [Theory]
-    [MemberData(nameof(GenerateEmbeddingsTestCases))]
-    [Trait("Category", "Performance")]
-    public async Task GenerateEmbeddingsAsync_ValidInputs_ReturnsExpectedResponse(
-        string[] inputs,
-        string model,
-        string description
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing GenerateEmbeddingsAsync with: {description}");
-        Debug.WriteLine($"Inputs: [{string.Join(", ", inputs.Select(i => $"'{i}'"))}]");
-        Debug.WriteLine($"Model: {model}");
-        Debug.WriteLine($"Input count: {inputs.Length}");
-
-        var mockService = CreateMockEmbeddingService(1536);
-        var request = new EmbeddingRequest { Inputs = inputs, Model = model };
-
-        var expectedResponse = CreateTestEmbeddingResponse(inputs, model);
-        _ = mockService
-            .Setup(s => s.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(expectedResponse);
-
-        // Act
-        var stopwatch = Stopwatch.StartNew();
-        var result = await mockService.Object.GenerateEmbeddingsAsync(request);
-        stopwatch.Stop();
-
-        // Assert
-        Debug.WriteLine($"Execution time: {stopwatch.ElapsedMilliseconds}ms");
-        Debug.WriteLine($"Response embedding count: {result.Embeddings.Count}");
-        Debug.WriteLine($"Response model: {result.Model}");
-
-        Assert.NotNull(result);
-        Assert.Equal(inputs.Length, result.Embeddings.Count);
-        Assert.Equal(model, result.Model);
-
-        for (var i = 0; i < inputs.Length; i++)
-        {
-            var embedding = result.Embeddings.ElementAt(i);
-            Debug.WriteLine($"Embedding {i}: Index={embedding.Index}, VectorLength={embedding.Vector.Length}");
-            Assert.Equal(i, embedding.Index);
-            Assert.Equal(1536, embedding.Vector.Length);
-            Assert.Equal(inputs[i], embedding.Text);
-        }
+        _ =
+            input == null
+                ? await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(input!))
+                : await Assert.ThrowsAsync<ArgumentException>(() => mockService.Object.GetEmbeddingAsync(input));
     }
 
     #endregion
@@ -359,7 +361,7 @@ public class IEmbeddingServiceTests
     #region Helper Methods
 
     /// <summary>
-    /// Creates a mock embedding service for testing
+    ///     Creates a mock embedding service for testing
     /// </summary>
     private static Mock<IEmbeddingService> CreateMockEmbeddingService(int embeddingSize)
     {
@@ -372,7 +374,7 @@ public class IEmbeddingServiceTests
     }
 
     /// <summary>
-    /// Generates a test embedding vector
+    ///     Generates a test embedding vector
     /// </summary>
     private static float[] GenerateTestEmbedding(int size)
     {
@@ -388,7 +390,7 @@ public class IEmbeddingServiceTests
     }
 
     /// <summary>
-    /// Creates a test embedding response
+    ///     Creates a test embedding response
     /// </summary>
     private static EmbeddingResponse CreateTestEmbeddingResponse(string[] inputs, string model)
     {

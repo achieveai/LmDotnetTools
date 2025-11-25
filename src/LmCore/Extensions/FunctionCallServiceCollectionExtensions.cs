@@ -4,12 +4,12 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AchieveAi.LmDotnetTools.LmCore.Extensions;
 
 /// <summary>
-/// Extension methods for registering function call services
+///     Extension methods for registering function call services
 /// </summary>
 public static class FunctionCallServiceCollectionExtensions
 {
     /// <summary>
-    /// Register core function handling services
+    ///     Register core function handling services
     /// </summary>
     public static IServiceCollection AddFunctionCallServices(this IServiceCollection services)
     {
@@ -19,7 +19,7 @@ public static class FunctionCallServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Register a function provider type
+    ///     Register a function provider type
     /// </summary>
     public static IServiceCollection AddFunctionProvider<TProvider>(this IServiceCollection services)
         where TProvider : class, IFunctionProvider
@@ -30,7 +30,7 @@ public static class FunctionCallServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Register function provider factory
+    ///     Register function provider factory
     /// </summary>
     public static IServiceCollection AddFunctionProvider(
         this IServiceCollection services,
@@ -42,7 +42,7 @@ public static class FunctionCallServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Configure function providers during startup
+    ///     Configure function providers during startup
     /// </summary>
     public static IServiceCollection ConfigureFunctionProviders(
         this IServiceCollection services,

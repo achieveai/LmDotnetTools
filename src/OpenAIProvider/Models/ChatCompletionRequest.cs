@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -11,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 public record ChatCompletionRequest
 {
     /// <summary>
-    /// Parameterless constructor for JSON deserialization
+    ///     Parameterless constructor for JSON deserialization
     /// </summary>
     public ChatCompletionRequest()
     {
@@ -51,7 +52,8 @@ public record ChatCompletionRequest
     [JsonPropertyName("max_tokens")]
     public int MaxTokens { get; init; }
 
-    [JsonPropertyName("stream"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    [JsonPropertyName("stream")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Stream { get; init; }
 
     [JsonPropertyName("n")]
@@ -94,7 +96,8 @@ public record ChatCompletionRequest
     [JsonExtensionData]
     private Dictionary<string, object> AdditionalParametersInternal
     {
-        get => AdditionalParameters.ToDictionary(); init => AdditionalParameters = value.ToImmutableDictionary();
+        get => AdditionalParameters.ToDictionary();
+        init => AdditionalParameters = value.ToImmutableDictionary();
     }
 
     [JsonIgnore]
@@ -111,23 +114,26 @@ public record ChatCompletionRequest
     )
     {
         // Translate with reasoning merge logic
-        messages = [.. messages
-            .Select(m =>
-                m switch
-                {
-                    CompositeMessage cm => cm.Messages.Any(mm => mm is UsageMessage)
-                        ? new CompositeMessage
-                        {
-                            Role = cm.Role,
-                            Messages = [.. cm.Messages.Where(mm => mm is not UsageMessage)],
-                        }
-                        : m,
-                    UsageMessage => null, // skip usage messages
-                    _ => m,
-                }
-            )
-            .Where(m => m is not null)
-            .Select(m => m!)];
+        messages =
+        [
+            .. messages
+                .Select(m =>
+                    m switch
+                    {
+                        CompositeMessage cm => cm.Messages.Any(mm => mm is UsageMessage)
+                            ? new CompositeMessage
+                            {
+                                Role = cm.Role,
+                                Messages = [.. cm.Messages.Where(mm => mm is not UsageMessage)],
+                            }
+                            : m,
+                        UsageMessage => null, // skip usage messages
+                        _ => m,
+                    }
+                )
+                .Where(m => m is not null)
+                .Select(m => m!),
+        ];
 
         var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
         return options != null
@@ -141,8 +147,7 @@ public record ChatCompletionRequest
             {
                 TopP = options.TopP,
                 Stream =
-                    options.ExtraProperties.TryGetValue("stream", out var stream) && stream is bool
-                        && (bool)stream,
+                    options.ExtraProperties.TryGetValue("stream", out var stream) && stream is bool && (bool)stream,
                 SafePrompt =
                     options.ExtraProperties.TryGetValue("safe_prompt", out var safePrompt) && safePrompt is bool
                         ? (bool)safePrompt
@@ -154,7 +159,7 @@ public record ChatCompletionRequest
                 Stop = options.StopSequence ?? [],
                 Tools = options.Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition())).ToList(),
             }
-            : new ChatCompletionRequest(model ?? "", chatMessages, temperature: 0.7f, maxTokens: 1024);
+            : new ChatCompletionRequest(model ?? "", chatMessages, 0.7f, 1024);
     }
 
     public static IEnumerable<ChatMessage> FromMessage(IMessage message)
@@ -170,15 +175,15 @@ public record ChatCompletionRequest
                 {
                     return compositeMsg.Messages.SelectMany(FromMessage);
                 }
-                else
-                {
-                    List<ChatMessage> chatMessages =
-                    [
-                        new ChatMessage
-                        {
-                            Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
-                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                                [.. compositeMsg
+
+                List<ChatMessage> chatMessages =
+                [
+                    new()
+                    {
+                        Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>(
+                            [
+                                .. compositeMsg
                                     .Messages.Where(m => m is not ReasoningMessage)
                                     .Select(m =>
                                         m switch
@@ -191,44 +196,44 @@ public record ChatCompletionRequest
                                             ),
                                             _ => throw new ArgumentException("Unsupported message type"),
                                         }
-                                    )]
-                            ),
-                        },
-                    ];
+                                    ),
+                            ]
+                        ),
+                    },
+                ];
 
-                    var hasEncryptedReasoning = compositeMsg
-                        .Messages.OfType<ReasoningMessage>()
-                        .Any(r => r.Visibility == ReasoningVisibility.Encrypted);
+                var hasEncryptedReasoning = compositeMsg
+                    .Messages.OfType<ReasoningMessage>()
+                    .Any(r => r.Visibility == ReasoningVisibility.Encrypted);
 
-                    var reasoningMessage = compositeMsg
-                        .Messages.OfType<ReasoningMessage>()
-                        .FirstOrDefault(r =>
-                            hasEncryptedReasoning
-                                ? r.Visibility == ReasoningVisibility.Encrypted
-                                : r.Visibility == ReasoningVisibility.Plain
-                        );
+                var reasoningMessage = compositeMsg
+                    .Messages.OfType<ReasoningMessage>()
+                    .FirstOrDefault(r =>
+                        hasEncryptedReasoning
+                            ? r.Visibility == ReasoningVisibility.Encrypted
+                            : r.Visibility == ReasoningVisibility.Plain
+                    );
 
-                    if (reasoningMessage != null)
+                if (reasoningMessage != null)
+                {
+                    if (hasEncryptedReasoning)
                     {
-                        if (hasEncryptedReasoning)
-                        {
-                            chatMessages[0].ReasoningDetails =
-                            [
-                                new ChatMessage.ReasoningDetail
-                                {
-                                    Type = "reasoning.encrypted",
-                                    Data = reasoningMessage.Reasoning,
-                                },
-                            ];
-                        }
-                        else
-                        {
-                            chatMessages[0].Reasoning = reasoningMessage.Reasoning;
-                        }
+                        chatMessages[0].ReasoningDetails =
+                        [
+                            new ChatMessage.ReasoningDetail
+                            {
+                                Type = "reasoning.encrypted",
+                                Data = reasoningMessage.Reasoning,
+                            },
+                        ];
                     }
-
-                    return chatMessages;
+                    else
+                    {
+                        chatMessages[0].Reasoning = reasoningMessage.Reasoning;
+                    }
                 }
+
+                return chatMessages;
             case ImageMessage imageMessage:
                 return
                 [
@@ -294,15 +299,18 @@ public record ChatCompletionRequest
                 var toolChat = new ChatMessage
                 {
                     Role = RoleEnum.Assistant,
-                    ToolCalls = [.. toolCallMessage
-                        .GetToolCalls()!
-                        .Select(tc => new FunctionContent(
-                            tc.ToolCallId ?? ("call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode()),
-                            new FunctionCall(tc.FunctionName!, tc.FunctionArgs!)
-                        )
-                        {
-                            Index = tc.Index,
-                        })],
+                    ToolCalls =
+                    [
+                        .. toolCallMessage
+                            .GetToolCalls()!
+                            .Select(tc => new FunctionContent(
+                                tc.ToolCallId ?? ("call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode()),
+                                new FunctionCall(tc.FunctionName!, tc.FunctionArgs!)
+                            )
+                            {
+                                Index = tc.Index,
+                            }),
+                    ],
                 };
 
                 if (
@@ -364,6 +372,7 @@ public record ChatCompletionRequest
                             MergeReasoning(reasoningBuffer, ch);
                             yield return ch;
                         }
+
                         break;
                     }
 
@@ -408,9 +417,11 @@ public record ChatCompletionRequest
             // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
             var selected = reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted)
                 ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted)]
-                : (List<ReasoningMessage>)(reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary)
-                    ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)]
-                    : [.. reasoningBuffer]);
+                : (List<ReasoningMessage>)(
+                    reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary)
+                        ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)]
+                        : [.. reasoningBuffer]
+                );
             if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
             {
                 // Single plain-text reasoning ⇒ emit "reasoning" field
@@ -419,16 +430,19 @@ public record ChatCompletionRequest
             else
             {
                 // Multiple or encrypted ⇒ use reasoning_details array
-                ch.ReasoningDetails = [.. selected
-                    .Select(p => new ChatMessage.ReasoningDetail
+                ch.ReasoningDetails =
+                [
+                    .. selected.Select(p => new ChatMessage.ReasoningDetail
                     {
                         Type =
                             p.Visibility == ReasoningVisibility.Encrypted ? "reasoning.encrypted"
                             : p.Visibility == ReasoningVisibility.Summary ? "reasoning.summary"
                             : "reasoning",
                         Data = p.Reasoning ?? string.Empty,
-                    })];
+                    }),
+                ];
             }
+
             reasoningBuffer.Clear();
         }
     }
@@ -473,7 +487,7 @@ public record ChatCompletionRequest
                 else
                 {
                     // Use JsonSerializer to convert arbitrary objects (including dictionaries/arrays) into JsonNode
-                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(kvp.Value);
+                    parameters[kvp.Key] = JsonSerializer.SerializeToNode(kvp.Value);
                 }
             }
         }

@@ -8,15 +8,15 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 /// <summary>
-/// HTTP-level unit tests for OpenClient using shared test infrastructure
-/// Tests retry logic, performance tracking, and validation
+///     HTTP-level unit tests for OpenClient using shared test infrastructure
+///     Tests retry logic, performance tracking, and validation
 /// </summary>
 public class OpenClientHttpTests
 {
-    private readonly ILogger<OpenClient> _logger;
-    private readonly IPerformanceTracker _performanceTracker;
     private static readonly string[] fallbackKeys = ["OPENAI_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["OPENAI_API_URL"];
+    private readonly ILogger<OpenClient> _logger;
+    private readonly IPerformanceTracker _performanceTracker;
 
     public OpenClientHttpTests()
     {
@@ -31,20 +31,17 @@ public class OpenClientHttpTests
         var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
 
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 2,
-            successResponse: successResponse,
-            failureStatus: HttpStatusCode.ServiceUnavailable
+            2,
+            successResponse,
+            HttpStatusCode.ServiceUnavailable
         );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "qwen/qwen3-235b-a22b",
-            messages:
-            [
-                new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            ]
+            "qwen/qwen3-235b-a22b",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }]
         );
 
         // Act
@@ -96,11 +93,8 @@ public class OpenClientHttpTests
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "qwen/qwen3-235b-a22b",
-            messages:
-            [
-                new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Test") },
-            ]
+            "qwen/qwen3-235b-a22b",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Test") }]
         );
 
         // Act & Assert
@@ -125,17 +119,14 @@ public class OpenClientHttpTests
     {
         // Arrange
         var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse, HttpStatusCode.OK);
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "qwen/qwen3-235b-a22b",
-            messages:
-            [
-                new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            ]
+            "qwen/qwen3-235b-a22b",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }]
         );
 
         // Act
@@ -157,20 +148,17 @@ public class OpenClientHttpTests
         // Arrange
         var streamingResponse = ChatCompletionTestData.CreateStreamingResponse();
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 1,
-            successResponse: streamingResponse,
-            failureStatus: HttpStatusCode.ServiceUnavailable
+            1,
+            streamingResponse,
+            HttpStatusCode.ServiceUnavailable
         );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "qwen/qwen3-235b-a22b",
-            messages:
-            [
-                new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            ]
+            "qwen/qwen3-235b-a22b",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }]
         );
 
         // Act
@@ -230,22 +218,18 @@ public class OpenClientHttpTests
     }
 
     /// <summary>
-    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", fallbackKeys);
     }
 
     /// <summary>
-    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "LLM_API_BASE_URL",
-            fallbackKeysArray,
-            "https://api.openai.com/v1"
-        );
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", fallbackKeysArray);
     }
 }

@@ -7,35 +7,17 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
 /// <summary>
-/// Manages test data for provider-specific tests, allowing for data-driven testing
-/// with standardized naming conventions and storage formats.
+///     Manages test data for provider-specific tests, allowing for data-driven testing
+///     with standardized naming conventions and storage formats.
 /// </summary>
 public class ProviderTestDataManager
 {
-    private readonly string _dataDirectory;
     private const string OpenAIDirectory = "OpenAI";
     private const string AnthropicDirectory = "Anthropic";
     private const string CommonDirectory = "Common";
 
     public static readonly JsonSerializerOptions JsonOptions = CreateTestingOptions();
-
-    /// <summary>
-    /// Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
-    /// Uses camelCase naming policy to match the existing test data files.
-    /// </summary>
-    private static JsonSerializerOptions CreateTestingOptions()
-    {
-        // Start with OpenAI factory but with camelCase naming to match test data
-        var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(
-            writeIndented: true,
-            namingPolicy: JsonNamingPolicy.CamelCase
-        );
-
-        // Add test-specific converters not included in the base factories
-        options.Converters.Add(new UnionJsonConverter<int, string>());
-
-        return options;
-    }
+    private readonly string _dataDirectory;
 
     public ProviderTestDataManager()
     {
@@ -44,7 +26,22 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Gets a path to test data files using a standardized naming convention.
+    ///     Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
+    ///     Uses camelCase naming policy to match the existing test data files.
+    /// </summary>
+    private static JsonSerializerOptions CreateTestingOptions()
+    {
+        // Start with OpenAI factory but with camelCase naming to match test data
+        var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(true, JsonNamingPolicy.CamelCase);
+
+        // Add test-specific converters not included in the base factories
+        options.Converters.Add(new UnionJsonConverter<int, string>());
+
+        return options;
+    }
+
+    /// <summary>
+    ///     Gets a path to test data files using a standardized naming convention.
     /// </summary>
     /// <param name="testName">The name of the test</param>
     /// <param name="providerType">Which provider this data is for</param>
@@ -71,7 +68,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Saves LmCore request data to a file.
+    ///     Saves LmCore request data to a file.
     /// </summary>
     public void SaveLmCoreRequest(
         string testName,
@@ -88,7 +85,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Loads LmCore request data from a file.
+    ///     Loads LmCore request data from a file.
     /// </summary>
     public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(
         string testName,
@@ -108,7 +105,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Saves a final response to a file.
+    ///     Saves a final response to a file.
     /// </summary>
     public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
     {
@@ -118,7 +115,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Loads a final response from a file.
+    ///     Loads a final response from a file.
     /// </summary>
     public List<IMessage>? LoadFinalResponse(string testName, ProviderType providerType)
     {
@@ -134,7 +131,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Ensures the directory exists for the given file path.
+    ///     Ensures the directory exists for the given file path.
     /// </summary>
     private static void EnsureDirectoryExists(string filePath)
     {
@@ -146,7 +143,7 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Gets all test cases from test data files in a provider's directory.
+    ///     Gets all test cases from test data files in a provider's directory.
     /// </summary>
     public IEnumerable<string> GetTestCaseNames(ProviderType providerType)
     {
@@ -162,52 +159,52 @@ public class ProviderTestDataManager
         return !Directory.Exists(directoryPath)
             ? []
             : Directory
-            .GetFiles(directoryPath, "*.LmCoreRequest.json")
-            .Select(path => Path.GetFileName(path)!)
-            .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
-            .Distinct();
+                .GetFiles(directoryPath, "*.LmCoreRequest.json")
+                .Select(path => Path.GetFileName(path)!)
+                .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
+                .Distinct();
     }
 }
 
 /// <summary>
-/// Types of data stored for tests.
+///     Types of data stored for tests.
 /// </summary>
 public enum DataType
 {
     /// <summary>
-    /// The original LmCore request with messages and options.
+    ///     The original LmCore request with messages and options.
     /// </summary>
     LmCoreRequest,
 
     /// <summary>
-    /// The final processed response.
+    ///     The final processed response.
     /// </summary>
     FinalResponse,
 }
 
 /// <summary>
-/// Providers supported for testing.
+///     Providers supported for testing.
 /// </summary>
 public enum ProviderType
 {
     /// <summary>
-    /// OpenAI provider.
+    ///     OpenAI provider.
     /// </summary>
     OpenAI,
 
     /// <summary>
-    /// Anthropic provider.
+    ///     Anthropic provider.
     /// </summary>
     Anthropic,
 
     /// <summary>
-    /// Common data shared between providers.
+    ///     Common data shared between providers.
     /// </summary>
     Common,
 }
 
 /// <summary>
-/// Data structure for LmCore requests.
+///     Data structure for LmCore requests.
 /// </summary>
 internal class LmCoreRequestData
 {

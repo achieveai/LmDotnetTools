@@ -51,12 +51,12 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
 
         var thinking = new AnthropicThinking(2048);
         Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
@@ -70,10 +70,7 @@ public class ThinkingModeTests
                 new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Hello" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
                 },
             ],
         };
@@ -81,7 +78,7 @@ public class ThinkingModeTests
 
         // Act - async call with proper await
         _ = await anthropicClient.CreateChatCompletionsAsync(request);
-        Console.WriteLine($"After API call - Captured thinking from request");
+        Console.WriteLine("After API call - Captured thinking from request");
 
         // Assert using the RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -104,12 +101,12 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -132,7 +129,8 @@ public class ThinkingModeTests
             Description = "Execute Python code in a Docker container",
             Parameters =
             [
-                new() {
+                new FunctionParameterContract
+                {
                     Name = "code",
                     Description = "Python code to execute",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

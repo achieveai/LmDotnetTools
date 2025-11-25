@@ -1,27 +1,30 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
 /// <summary>
-/// Concrete reranking service that integrates with Cohere's rerank API
+///     Concrete reranking service that integrates with Cohere's rerank API
 /// </summary>
 public class RerankingService : IRerankService, IDisposable
 {
-    private readonly string _endpoint;
-    private readonly string _model;
     private readonly string _apiKey;
+    private readonly bool _disposeHttpClient;
+    private readonly string _endpoint;
     private readonly HttpClient _httpClient;
     private readonly ILogger<RerankingService> _logger;
-    private readonly bool _disposeHttpClient;
 
     private readonly int _maxRetries = 2;
+    private readonly string _model;
 
     /// <summary>
-    /// Initializes a new instance of the RerankingService class
+    ///     Initializes a new instance of the RerankingService class
     /// </summary>
     /// <param name="endpoint">The reranking API endpoint URL</param>
     /// <param name="model">The reranking model to use (e.g., "rerank-v3.5")</param>
@@ -41,7 +44,7 @@ public class RerankingService : IRerankService, IDisposable
         _apiKey = !string.IsNullOrWhiteSpace(apiKey)
             ? apiKey
             : throw new ArgumentException("API key cannot be null or empty", nameof(apiKey));
-        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RerankingService>.Instance;
+        _logger = logger ?? NullLogger<RerankingService>.Instance;
 
         if (httpClient != null)
         {
@@ -56,14 +59,11 @@ public class RerankingService : IRerankService, IDisposable
 
         // Configure HttpClient
         _httpClient.BaseAddress = new Uri(_endpoint);
-        _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-            "Bearer",
-            _apiKey
-        );
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
     }
 
     /// <summary>
-    /// Initializes a new instance of the RerankingService class using RerankingOptions
+    ///     Initializes a new instance of the RerankingService class using RerankingOptions
     /// </summary>
     /// <param name="options">Reranking configuration options</param>
     /// <param name="logger">Logger instance</param>
@@ -74,13 +74,13 @@ public class RerankingService : IRerankService, IDisposable
         HttpClient? httpClient = null
     )
         : this(
-            endpoint: options?.BaseUrl ?? throw new ArgumentNullException(nameof(options)),
-            model: options.DefaultModel,
-            apiKey: string.IsNullOrWhiteSpace(options.ApiKey)
+            options?.BaseUrl ?? throw new ArgumentNullException(nameof(options)),
+            options.DefaultModel,
+            string.IsNullOrWhiteSpace(options.ApiKey)
                 ? throw new ArgumentException("API key cannot be null or empty", nameof(options.ApiKey))
                 : options.ApiKey,
-            logger: logger,
-            httpClient: httpClient
+            logger,
+            httpClient
         )
     {
         // Allow options to control retry count while keeping default behavior
@@ -88,7 +88,69 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     /// <summary>
-    /// Reranks documents based on their relevance to the provided query
+    ///     Disposes the RerankingService instance
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposeHttpClient)
+        {
+            _httpClient?.Dispose();
+        }
+    }
+
+    public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
+
+        return new RerankResponse
+        {
+            Results =
+            [
+                .. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score }),
+            ],
+        };
+    }
+
+    public async Task<RerankResponse> RerankAsync(
+        string query,
+        IReadOnlyList<string> documents,
+        string model,
+        int? topK = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var documentList = documents.ToList();
+        if (documentList.Count == 0)
+        {
+            return new RerankResponse { Results = [] };
+        }
+
+        var rankedDocuments = await RerankAsync(query, documentList, cancellationToken);
+
+        // Apply topK filtering if specified
+        if (topK.HasValue && topK.Value > 0)
+        {
+            rankedDocuments = [.. rankedDocuments.Take(topK.Value)];
+        }
+
+        return new RerankResponse
+        {
+            Results =
+            [
+                .. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score }),
+            ],
+        };
+    }
+
+    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<string>>([_model]);
+    }
+
+    /// <summary>
+    ///     Reranks documents based on their relevance to the provided query
     /// </summary>
     /// <param name="query">The query to rank documents against</param>
     /// <param name="documents">The documents to rerank</param>
@@ -111,40 +173,40 @@ public class RerankingService : IRerankService, IDisposable
         return docList.Count == 0
             ? throw new ArgumentException("Documents cannot be empty", nameof(documents))
             : await ExecuteWithLinearRetryAsync(
-            async (attemptNumber) =>
-            {
-                var requestPayload = new RerankRequest
+                async attemptNumber =>
                 {
-                    Model = _model,
-                    Query = query,
-                    Documents = [.. documents],
-                    TopN = null, // Return all documents ranked
-                };
+                    var requestPayload = new RerankRequest
+                    {
+                        Model = _model,
+                        Query = query,
+                        Documents = [.. documents],
+                        TopN = null, // Return all documents ranked
+                    };
 
-                var json = JsonSerializer.Serialize(requestPayload);
-                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                    var json = JsonSerializer.Serialize(requestPayload);
+                    var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
+                    var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
 
-                if (response.IsSuccessStatusCode)
-                {
-                    var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                    return ParseResponse(responseJson, docList);
-                }
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                        return ParseResponse(responseJson, docList);
+                    }
 
-                if (!IsRetryableStatusCode(response.StatusCode))
-                {
-                    _ = response.EnsureSuccessStatusCode(); // This will throw
-                }
+                    if (!IsRetryableStatusCode(response.StatusCode))
+                    {
+                        _ = response.EnsureSuccessStatusCode(); // This will throw
+                    }
 
-                throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
-            },
-            cancellationToken
-        );
+                    throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
+                },
+                cancellationToken
+            );
     }
 
     /// <summary>
-    /// Executes an operation with linear retry logic (500ms × retryCount)
+    ///     Executes an operation with linear retry logic (500ms × retryCount)
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="operation">The operation to execute</param>
@@ -202,7 +264,7 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     /// <summary>
-    /// Parses the Cohere API response into RankedDocument list
+    ///     Parses the Cohere API response into RankedDocument list
     /// </summary>
     /// <param name="responseJson">The JSON response from Cohere API</param>
     /// <param name="originalDocuments">The original documents for reference</param>
@@ -218,7 +280,7 @@ public class RerankingService : IRerankService, IDisposable
             if (response?.Results == null)
             {
                 _logger.LogError("Invalid response structure. Response: {Response}", responseJson);
-                throw new InvalidOperationException($"Invalid response from rerank API: missing results");
+                throw new InvalidOperationException("Invalid response from rerank API: missing results");
             }
 
             var rankedDocs = new List<RankedDocument>();
@@ -261,21 +323,22 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     /// <summary>
-    /// Determines if an HTTP status code is retryable
+    ///     Determines if an HTTP status code is retryable
     /// </summary>
     /// <param name="statusCode">The HTTP status code</param>
     /// <returns>True if the status code indicates a retryable error</returns>
     private static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
-        return statusCode is >= HttpStatusCode.InternalServerError
-            or // 5xx errors
-            HttpStatusCode.TooManyRequests
-            or // 429
-            HttpStatusCode.RequestTimeout; // 408
+        return statusCode
+            is >= HttpStatusCode.InternalServerError
+                or // 5xx errors
+                HttpStatusCode.TooManyRequests
+                or // 429
+                HttpStatusCode.RequestTimeout; // 408
     }
 
     /// <summary>
-    /// Determines if an HTTP error is retryable
+    ///     Determines if an HTTP error is retryable
     /// </summary>
     /// <param name="exception">The HTTP exception</param>
     /// <returns>True if the error is retryable</returns>
@@ -287,61 +350,5 @@ public class RerankingService : IRerankService, IDisposable
             || message.Contains('5')
             || // 5xx errors
             message.Contains("429"); // Rate limiting
-    }
-
-    /// <summary>
-    /// Disposes the RerankingService instance
-    /// </summary>
-    public void Dispose()
-    {
-        if (_disposeHttpClient)
-        {
-            _httpClient?.Dispose();
-        }
-    }
-
-    public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-
-        var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
-
-        return new RerankResponse
-        {
-            Results = [.. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })],
-        };
-    }
-
-    public async Task<RerankResponse> RerankAsync(
-        string query,
-        IReadOnlyList<string> documents,
-        string model,
-        int? topK = null,
-        CancellationToken cancellationToken = default
-    )
-    {
-        var documentList = documents.ToList();
-        if (documentList.Count == 0)
-        {
-            return new RerankResponse { Results = [] };
-        }
-
-        var rankedDocuments = await RerankAsync(query, documentList, cancellationToken);
-
-        // Apply topK filtering if specified
-        if (topK.HasValue && topK.Value > 0)
-        {
-            rankedDocuments = [.. rankedDocuments.Take(topK.Value)];
-        }
-
-        return new RerankResponse
-        {
-            Results = [.. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })],
-        };
-    }
-
-    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult<IReadOnlyList<string>>([_model]);
     }
 }

@@ -6,7 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
 /// <summary>
-/// Basic tests for McpFunctionCallExtensions that don't require external assemblies
+///     Basic tests for McpFunctionCallExtensions that don't require external assemblies
 /// </summary>
 public class McpFunctionCallExtensionsBasicTests
 {
@@ -16,12 +16,14 @@ public class McpFunctionCallExtensionsBasicTests
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
         {
-            new() {
+            new()
+            {
                 Name = "Echo",
                 Description = "Returns the input text",
                 Parameters =
                 [
-                    new() {
+                    new FunctionParameterContract
+                    {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -29,18 +31,21 @@ public class McpFunctionCallExtensionsBasicTests
                     },
                 ],
             },
-            new() {
+            new()
+            {
                 Name = "Add",
                 Description = "Adds two numbers",
                 Parameters =
                 [
-                    new() {
+                    new FunctionParameterContract
+                    {
                         Name = "a",
                         Description = "First number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
                         IsRequired = true,
                     },
-                    new() {
+                    new FunctionParameterContract
+                    {
                         Name = "b",
                         Description = "Second number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
@@ -52,14 +57,14 @@ public class McpFunctionCallExtensionsBasicTests
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["Echo"] = async (argsJson) =>
+            ["Echo"] = async argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var text = args!["text"].GetString() ?? string.Empty;
                 await Task.Yield(); // Make the task actually async
                 return text;
             },
-            ["Add"] = async (argsJson) =>
+            ["Add"] = async argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var a = args!["a"].GetDouble();
@@ -97,12 +102,14 @@ public class McpFunctionCallExtensionsBasicTests
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
         {
-            new() {
+            new()
+            {
                 Name = "Echo",
                 Description = "Returns the input text",
                 Parameters =
                 [
-                    new() {
+                    new FunctionParameterContract
+                    {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -114,7 +121,7 @@ public class McpFunctionCallExtensionsBasicTests
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["Echo"] = async (argsJson) =>
+            ["Echo"] = async argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var text = args!["text"].GetString() ?? string.Empty;

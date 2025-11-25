@@ -3,14 +3,14 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Interface for smart deduplication engine that intelligently removes overlapping results
-/// while preserving valuable context and complementary information.
+///     Interface for smart deduplication engine that intelligently removes overlapping results
+///     while preserving valuable context and complementary information.
 /// </summary>
 public interface IDeduplicationEngine
 {
     /// <summary>
-    /// Deduplicates unified search results using content similarity and source relationship analysis.
-    /// This method should be called AFTER reranking but BEFORE final result cutoffs.
+    ///     Deduplicates unified search results using content similarity and source relationship analysis.
+    ///     This method should be called AFTER reranking but BEFORE final result cutoffs.
     /// </summary>
     /// <param name="results">The unified search results to deduplicate.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -25,7 +25,7 @@ public interface IDeduplicationEngine
     );
 
     /// <summary>
-    /// Checks if the deduplication service is available and configured.
+    ///     Checks if the deduplication service is available and configured.
     /// </summary>
     /// <returns>True if deduplication service is available, false otherwise.</returns>
     bool IsDeduplicationAvailable();

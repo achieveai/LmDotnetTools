@@ -4,8 +4,9 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
+
 /// <summary>
-/// Tests for validating that extra properties are serialized inline in production models.
+///     Tests for validating that extra properties are serialized inline in production models.
 /// </summary>
 public class ExtraPropertiesSerializationTests
 {

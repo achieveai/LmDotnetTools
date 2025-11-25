@@ -13,18 +13,18 @@ using Moq;
 namespace MemoryServer.DocumentSegmentation.Tests.Integration;
 
 /// <summary>
-/// Integration tests for LLM provider connectivity and authentication.
-/// Tests the LlmProviderIntegrationService with real and mocked LLM providers.
+///     Integration tests for LLM provider connectivity and authentication.
+///     Tests the LlmProviderIntegrationService with real and mocked LLM providers.
 /// </summary>
 public class LlmProviderIntegrationTests : IDisposable
 {
-    private readonly ServiceProvider _serviceProvider;
+    private readonly ILogger<LlmProviderIntegrationService> _logger;
+    private readonly Mock<IAgent> _mockAgent;
     private readonly Mock<IProviderAgentFactory> _mockAgentFactory;
+    private readonly Mock<IDocumentAnalysisService> _mockAnalysisService;
     private readonly Mock<IModelResolver> _mockModelResolver;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly Mock<IDocumentAnalysisService> _mockAnalysisService;
-    private readonly Mock<IAgent> _mockAgent;
-    private readonly ILogger<LlmProviderIntegrationService> _logger;
+    private readonly ServiceProvider _serviceProvider;
 
     public LlmProviderIntegrationTests()
     {
@@ -51,6 +51,11 @@ public class LlmProviderIntegrationTests : IDisposable
 
         // Set up default mock behaviors
         SetupDefaultMockBehaviors();
+    }
+
+    public void Dispose()
+    {
+        _serviceProvider?.Dispose();
     }
 
     private void SetupDefaultMockBehaviors()
@@ -568,7 +573,7 @@ public class LlmProviderIntegrationTests : IDisposable
             x =>
                 x.ResolveProviderAsync(
                     It.IsAny<string>(),
-                    It.IsAny<AchieveAi.LmDotnetTools.LmConfig.Models.ProviderSelectionCriteria>(),
+                    It.IsAny<ProviderSelectionCriteria>(),
                     It.IsAny<CancellationToken>()
                 ),
             Times.Exactly(5)
@@ -654,10 +659,5 @@ public class LlmProviderIntegrationTests : IDisposable
         _ = act3.Should().Throw<ArgumentNullException>();
         _ = act4.Should().Throw<ArgumentNullException>();
         _ = act5.Should().Throw<ArgumentNullException>();
-    }
-
-    public void Dispose()
-    {
-        _serviceProvider?.Dispose();
     }
 }

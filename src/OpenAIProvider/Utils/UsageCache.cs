@@ -5,17 +5,17 @@ using Microsoft.Extensions.Caching.Memory;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 
 /// <summary>
-/// In-memory cache for OpenRouter usage data with TTL support.
-/// Thread-safe implementation using MemoryCache.
+///     In-memory cache for OpenRouter usage data with TTL support.
+///     Thread-safe implementation using MemoryCache.
 /// </summary>
 public class UsageCache : IDisposable
 {
     private readonly MemoryCache _cache;
     private readonly TimeSpan _defaultTtl;
-    private bool _disposed = false;
+    private bool _disposed;
 
     /// <summary>
-    /// Initializes a new instance of the UsageCache.
+    ///     Initializes a new instance of the UsageCache.
     /// </summary>
     /// <param name="ttlSeconds">Time-to-live in seconds for cached entries (default: 300)</param>
     public UsageCache(int ttlSeconds = 300)
@@ -30,8 +30,17 @@ public class UsageCache : IDisposable
         );
     }
 
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _cache?.Dispose();
+            _disposed = true;
+        }
+    }
+
     /// <summary>
-    /// Tries to get cached usage data for the specified completion ID.
+    ///     Tries to get cached usage data for the specified completion ID.
     /// </summary>
     /// <param name="completionId">The completion ID to look up</param>
     /// <returns>Cached usage data with IsCached=true, or null if not found</returns>
@@ -58,7 +67,7 @@ public class UsageCache : IDisposable
     }
 
     /// <summary>
-    /// Stores usage data in the cache for the specified completion ID.
+    ///     Stores usage data in the cache for the specified completion ID.
     /// </summary>
     /// <param name="completionId">The completion ID to cache</param>
     /// <param name="usage">The usage data to cache</param>
@@ -91,7 +100,7 @@ public class UsageCache : IDisposable
     }
 
     /// <summary>
-    /// Removes cached usage data for the specified completion ID.
+    ///     Removes cached usage data for the specified completion ID.
     /// </summary>
     /// <param name="completionId">The completion ID to remove from cache</param>
     public void RemoveUsage(string completionId)
@@ -105,14 +114,11 @@ public class UsageCache : IDisposable
     }
 
     /// <summary>
-    /// Clears all cached usage data.
+    ///     Clears all cached usage data.
     /// </summary>
     public void Clear()
     {
-        if (_disposed)
-        {
-            return;
-        }
+        if (_disposed) { }
 
         // MemoryCache doesn't have a direct Clear method, so we create a new one
         // This is a simple implementation - in production you might want to track keys
@@ -124,36 +130,27 @@ public class UsageCache : IDisposable
     }
 
     /// <summary>
-    /// Gets cache statistics for monitoring purposes.
+    ///     Gets cache statistics for monitoring purposes.
     /// </summary>
     /// <returns>Basic cache statistics</returns>
     public CacheStatistics GetStatistics()
     {
         return new CacheStatistics { TtlSeconds = (int)_defaultTtl.TotalSeconds, IsDisposed = _disposed };
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _cache?.Dispose();
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
-/// Cache statistics for monitoring and debugging.
+///     Cache statistics for monitoring and debugging.
 /// </summary>
 public class CacheStatistics
 {
     /// <summary>
-    /// Time-to-live in seconds for cached entries.
+    ///     Time-to-live in seconds for cached entries.
     /// </summary>
     public int TtlSeconds { get; init; }
 
     /// <summary>
-    /// Whether the cache has been disposed.
+    ///     Whether the cache has been disposed.
     /// </summary>
     public bool IsDisposed { get; init; }
 }

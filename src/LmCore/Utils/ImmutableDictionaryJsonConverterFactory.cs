@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// A factory for creating JsonConverters for ImmutableDictionary types.
+///     A factory for creating JsonConverters for ImmutableDictionary types.
 /// </summary>
 public class ImmutableDictionaryJsonConverterFactory : JsonConverterFactory
 {

@@ -4,14 +4,14 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that overrides options in the middleware context with values passed during construction.
+///     Middleware that overrides options in the middleware context with values passed during construction.
 /// </summary>
 public class OptionsOverridingMiddleware : IStreamingMiddleware
 {
     private readonly GenerateReplyOptions _options;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="OptionsOverridingMiddleware"/> class.
+    ///     Initializes a new instance of the <see cref="OptionsOverridingMiddleware" /> class.
     /// </summary>
     /// <param name="options">The options to override with.</param>
     /// <param name="name">Optional name for the middleware.</param>
@@ -22,12 +22,12 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name { get; }
 
     /// <summary>
-    /// Invokes the middleware, overriding options in the context and forwarding to the next agent.
+    ///     Invokes the middleware, overriding options in the context and forwarding to the next agent.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -45,7 +45,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios, overriding options in the context and forwarding to the next agent.
+    ///     Invokes the middleware for streaming scenarios, overriding options in the context and forwarding to the next agent.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,

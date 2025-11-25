@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -11,17 +13,17 @@ using ModelContextProtocol.Protocol;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// Middleware for handling function calls using MCP (Model Context Protocol) clients
+///     Middleware for handling function calls using MCP (Model Context Protocol) clients
 /// </summary>
 public partial class McpMiddleware : IStreamingMiddleware
 {
-    private readonly Dictionary<string, IMcpClient> _mcpClients;
-    private readonly IEnumerable<FunctionContract>? _functions;
     private readonly FunctionCallMiddleware _functionCallMiddleware;
+    private readonly IEnumerable<FunctionContract>? _functions;
     private readonly ILogger<McpMiddleware> _logger;
+    private readonly Dictionary<string, IMcpClient> _mcpClients;
 
     /// <summary>
-    /// Private constructor for the async factory pattern
+    ///     Private constructor for the async factory pattern
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="functions">Collection of function contracts</param>
@@ -44,16 +46,42 @@ public partial class McpMiddleware : IStreamingMiddleware
         _logger = logger;
 
         // Initialize the FunctionCallMiddleware with our function map and logger
-        _functionCallMiddleware = new FunctionCallMiddleware(
-            functions: functions,
-            functionMap: functionMap,
-            name: Name,
-            logger: functionCallLogger
-        );
+        _functionCallMiddleware = new FunctionCallMiddleware(functions, functionMap, Name, functionCallLogger);
     }
 
     /// <summary>
-    /// Creates a new instance of the McpMiddleware asynchronously
+    ///     Gets the name of the middleware
+    /// </summary>
+    public string? Name { get; }
+
+    /// <summary>
+    ///     Invokes the middleware
+    /// </summary>
+    public Task<IEnumerable<IMessage>> InvokeAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        // Delegate to the FunctionCallMiddleware
+        return _functionCallMiddleware.InvokeAsync(context, agent, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Invokes the middleware for streaming responses
+    /// </summary>
+    public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        // Delegate to the FunctionCallMiddleware
+        return _functionCallMiddleware.InvokeStreamingAsync(context, agent, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Creates a new instance of the McpMiddleware asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="functions">Optional collection of function contracts</param>
@@ -102,7 +130,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Creates function delegates for the MCP clients asynchronously
+    ///     Creates function delegates for the MCP clients asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="logger">Logger instance</param>
@@ -154,9 +182,9 @@ public partial class McpMiddleware : IStreamingMiddleware
                     );
 
                     // Create a delegate that calls the appropriate MCP client
-                    functionMap[functionName] = async (argsJson) =>
+                    functionMap[functionName] = async argsJson =>
                     {
-                        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                        var stopwatch = Stopwatch.StartNew();
                         try
                         {
                             logger.LogDebug(
@@ -206,7 +234,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                                 response.Content != null
                                     ? response
                                         .Content.Where(c => c?.Type == "text")
-                                        .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
+                                        .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
                                     : []
                             );
 
@@ -255,7 +283,6 @@ public partial class McpMiddleware : IStreamingMiddleware
             {
                 logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
                 // Continue with other clients even if one fails
-                continue;
             }
         }
 
@@ -263,7 +290,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Extracts function contracts from MCP client tools
+    ///     Extracts function contracts from MCP client tools
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="logger">Logger instance</param>
@@ -306,7 +333,6 @@ public partial class McpMiddleware : IStreamingMiddleware
                             tool.Name
                         );
                         // Continue with other tools even if one fails
-                        continue;
                     }
                 }
             }
@@ -314,7 +340,6 @@ public partial class McpMiddleware : IStreamingMiddleware
             {
                 logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
                 // Continue with other clients even if one fails
-                continue;
             }
         }
 
@@ -322,8 +347,8 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Sanitizes a tool name to comply with OpenAI's function name requirements
-    /// OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
+    ///     Sanitizes a tool name to comply with OpenAI's function name requirements
+    ///     OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
     /// </summary>
     private static string SanitizeToolName(string toolName)
     {
@@ -351,7 +376,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Converts an MCP client tool to a function contract
+    ///     Converts an MCP client tool to a function contract
     /// </summary>
     /// <param name="clientName">The client name</param>
     /// <param name="tool">The MCP client tool</param>
@@ -375,7 +400,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Extracts function parameters from a JSON schema
+    ///     Extracts function parameters from a JSON schema
     /// </summary>
     /// <param name="inputSchema">The input schema</param>
     /// <param name="logger">Logger instance</param>
@@ -492,7 +517,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Maps JSON Schema types to .NET types
+    ///     Maps JSON Schema types to .NET types
     /// </summary>
     /// <param name="jsonSchemaType">The JSON Schema type</param>
     /// <returns>The corresponding .NET type</returns>
@@ -510,37 +535,6 @@ public partial class McpMiddleware : IStreamingMiddleware
         };
     }
 
-    /// <summary>
-    /// Gets the name of the middleware
-    /// </summary>
-    public string? Name { get; }
-
-    /// <summary>
-    /// Invokes the middleware
-    /// </summary>
-    public Task<IEnumerable<IMessage>> InvokeAsync(
-        MiddlewareContext context,
-        IAgent agent,
-        CancellationToken cancellationToken = default
-    )
-    {
-        // Delegate to the FunctionCallMiddleware
-        return _functionCallMiddleware.InvokeAsync(context, agent, cancellationToken);
-    }
-
-    /// <summary>
-    /// Invokes the middleware for streaming responses
-    /// </summary>
-    public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-        MiddlewareContext context,
-        IStreamingAgent agent,
-        CancellationToken cancellationToken = default
-    )
-    {
-        // Delegate to the FunctionCallMiddleware
-        return _functionCallMiddleware.InvokeStreamingAsync(context, agent, cancellationToken);
-    }
-
-    [System.Text.RegularExpressions.GeneratedRegex(@"[^a-zA-Z0-9_-]")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
+    [GeneratedRegex(@"[^a-zA-Z0-9_-]")]
+    private static partial Regex MyRegex();
 }

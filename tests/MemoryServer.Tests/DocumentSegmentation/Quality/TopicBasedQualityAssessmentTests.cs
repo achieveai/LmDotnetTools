@@ -9,16 +9,16 @@ using Xunit.Abstractions;
 namespace MemoryServer.DocumentSegmentation.Tests.Quality;
 
 /// <summary>
-/// Advanced quality assessment tests for Topic-Based Segmentation.
-/// Tests sophisticated quality metrics and validation algorithms.
+///     Advanced quality assessment tests for Topic-Based Segmentation.
+///     Tests sophisticated quality metrics and validation algorithms.
 /// </summary>
 public class TopicBasedQualityAssessmentTests
 {
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
-    private readonly TopicBasedSegmentationService _service;
     private readonly ITestOutputHelper _output;
+    private readonly TopicBasedSegmentationService _service;
 
     public TopicBasedQualityAssessmentTests(ITestOutputHelper output)
     {
@@ -98,9 +98,7 @@ public class TopicBasedQualityAssessmentTests
         // Act
         var result = await _service.AnalyzeThematicCoherenceAsync(multiTopicContent);
 
-        Debug.WriteLine(
-            $"Coherence result: Score={result.CoherenceScore:F3}, PrimaryTopic={result.PrimaryTopic}"
-        );
+        Debug.WriteLine($"Coherence result: Score={result.CoherenceScore:F3}, PrimaryTopic={result.PrimaryTopic}");
 
         // Assert
         _ = result.Should().NotBeNull();
@@ -385,13 +383,15 @@ public class TopicBasedQualityAssessmentTests
             .OverallQuality.Should()
             .BeGreaterThan(0.7, "Well-structured content should achieve high overall quality");
 
-        _ = validation.AverageTopicCoherence.Should().BeGreaterThan(0.75, "Clear topics should have high coherence scores");
+        _ = validation
+            .AverageTopicCoherence.Should()
+            .BeGreaterThan(0.75, "Clear topics should have high coherence scores");
 
         _ = validation
             .TopicCoverage.Should()
             .BeGreaterThan(0.8, "Comprehensive segmentation should have high topic coverage");
 
-        Debug.WriteLine($"Excellent content results:");
+        Debug.WriteLine("Excellent content results:");
         Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
         Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
         Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
@@ -415,7 +415,7 @@ public class TopicBasedQualityAssessmentTests
         Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
 
         // Act
-        var segments = await _service.SegmentByTopicsAsync(poorContent, DocumentType.Generic);
+        var segments = await _service.SegmentByTopicsAsync(poorContent);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, poorContent);
 
         // Assert
@@ -428,7 +428,7 @@ public class TopicBasedQualityAssessmentTests
         var coherenceIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
         _ = coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
 
-        Debug.WriteLine($"Poor content results:");
+        Debug.WriteLine("Poor content results:");
         Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
         Debug.WriteLine($"  Issues found: {validation.Issues.Count}");
         Debug.WriteLine($"  Coherence issues: {coherenceIssues.Count}");

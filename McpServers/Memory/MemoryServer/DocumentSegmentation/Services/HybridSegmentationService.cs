@@ -4,17 +4,17 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Implementation of hybrid document segmentation that combines multiple strategies.
-/// Uses intelligent weighting, consensus analysis, and adaptive optimization for optimal results.
+///     Implementation of hybrid document segmentation that combines multiple strategies.
+///     Uses intelligent weighting, consensus analysis, and adaptive optimization for optimal results.
 /// </summary>
 public class HybridSegmentationService : IHybridSegmentationService
 {
-    private readonly IStructureBasedSegmentationService _structureService;
-    private readonly INarrativeBasedSegmentationService _narrativeService;
-    private readonly ITopicBasedSegmentationService _topicService;
     private readonly ILlmProviderIntegrationService _llmService;
-    private readonly ISegmentationPromptManager _promptManager;
     private readonly ILogger<HybridSegmentationService> _logger;
+    private readonly INarrativeBasedSegmentationService _narrativeService;
+    private readonly ISegmentationPromptManager _promptManager;
+    private readonly IStructureBasedSegmentationService _structureService;
+    private readonly ITopicBasedSegmentationService _topicService;
 
     public HybridSegmentationService(
         IStructureBasedSegmentationService structureService,
@@ -34,7 +34,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Segments document content using hybrid approach that combines multiple strategies.
+    ///     Segments document content using hybrid approach that combines multiple strategies.
     /// </summary>
     public async Task<List<DocumentSegment>> SegmentUsingHybridApproachAsync(
         string content,
@@ -87,10 +87,8 @@ public class HybridSegmentationService : IHybridSegmentationService
             var segmentationResults = await Task.WhenAll(segmentationTasks);
 
             // Step 3: Combine results using intelligent merging
-            var structureSegments =
-                segmentationResults.Length > 0 ? segmentationResults[0] : [];
-            var narrativeSegments =
-                segmentationResults.Length > 1 ? segmentationResults[1] : [];
+            var structureSegments = segmentationResults.Length > 0 ? segmentationResults[0] : [];
+            var narrativeSegments = segmentationResults.Length > 1 ? segmentationResults[1] : [];
             var topicSegments = segmentationResults.Length > 2 ? segmentationResults[2] : [];
 
             var combinedSegments = await CombineSegmentationResultsAsync(
@@ -146,7 +144,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Determines optimal strategy weights for a specific document.
+    ///     Determines optimal strategy weights for a specific document.
     /// </summary>
     public async Task<StrategyWeights> DetermineStrategyWeightsAsync(
         string content,
@@ -208,7 +206,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Combines segmentation results from multiple strategies using intelligent merging.
+    ///     Combines segmentation results from multiple strategies using intelligent merging.
     /// </summary>
     public async Task<List<DocumentSegment>> CombineSegmentationResultsAsync(
         List<DocumentSegment> structureSegments,
@@ -261,7 +259,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Validates hybrid segmentation quality and provides improvement suggestions.
+    ///     Validates hybrid segmentation quality and provides improvement suggestions.
     /// </summary>
     public async Task<HybridSegmentationValidation> ValidateHybridSegmentationAsync(
         List<DocumentSegment> segments,
@@ -321,7 +319,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Adapts segmentation strategy based on document characteristics and feedback.
+    ///     Adapts segmentation strategy based on document characteristics and feedback.
     /// </summary>
     public Task<AdaptiveStrategyConfig> AdaptSegmentationStrategyAsync(
         string content,
@@ -390,10 +388,29 @@ public class HybridSegmentationService : IHybridSegmentationService
         }
     }
 
+    /// <summary>
+    ///     Document characteristics used for weight determination.
+    /// </summary>
+    private class DocumentCharacteristics
+    {
+        public int LineCount { get; set; }
+        public int WordCount { get; set; }
+        public int CharacterCount { get; set; }
+        public bool HasHeadings { get; set; }
+        public bool HasLists { get; set; }
+        public bool HasCodeBlocks { get; set; }
+        public bool HasTables { get; set; }
+        public double NarrativeFlow { get; set; }
+        public int TemporalMarkers { get; set; }
+        public int CausationIndicators { get; set; }
+        public double TopicDiversity { get; set; }
+        public double KeywordDensity { get; set; }
+    }
+
     #region Private Helper Methods
 
     /// <summary>
-    /// Gets structure-based segments asynchronously.
+    ///     Gets structure-based segments asynchronously.
     /// </summary>
     private async Task<List<DocumentSegment>> GetStructureSegmentsAsync(
         string content,
@@ -413,7 +430,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Gets narrative-based segments asynchronously.
+    ///     Gets narrative-based segments asynchronously.
     /// </summary>
     private async Task<List<DocumentSegment>> GetNarrativeSegmentsAsync(
         string content,
@@ -433,7 +450,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Gets topic-based segments asynchronously.
+    ///     Gets topic-based segments asynchronously.
     /// </summary>
     private async Task<List<DocumentSegment>> GetTopicSegmentsAsync(
         string content,
@@ -453,7 +470,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Analyzes document characteristics for weight determination.
+    ///     Analyzes document characteristics for weight determination.
     /// </summary>
     private static DocumentCharacteristics AnalyzeDocumentCharacteristics(string content)
     {
@@ -488,7 +505,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Gets base weights based on document type.
+    ///     Gets base weights based on document type.
     /// </summary>
     private static StrategyWeights GetBaseWeightsByDocumentType(DocumentType documentType)
     {
@@ -540,7 +557,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Adjusts weights based on document characteristics.
+    ///     Adjusts weights based on document characteristics.
     /// </summary>
     private static StrategyWeights AdjustWeightsForCharacteristics(
         StrategyWeights baseWeights,
@@ -581,7 +598,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Gets LLM weight recommendations if available.
+    ///     Gets LLM weight recommendations if available.
     /// </summary>
     private async Task<StrategyWeights> GetLlmWeightRecommendationsAsync(
         string content,
@@ -609,7 +626,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Converts strategy recommendation to weights.
+    ///     Converts strategy recommendation to weights.
     /// </summary>
     private static StrategyWeights ConvertStrategyRecommendationToWeights(StrategyRecommendation recommendation)
     {
@@ -661,7 +678,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Combines two sets of weights using specified ratios.
+    ///     Combines two sets of weights using specified ratios.
     /// </summary>
     private static StrategyWeights CombineWeights(
         StrategyWeights weights1,
@@ -682,7 +699,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Executes fallback strategy when hybrid approach fails.
+    ///     Executes fallback strategy when hybrid approach fails.
     /// </summary>
     private async Task<List<DocumentSegment>> ExecuteFallbackStrategyAsync(
         string content,
@@ -724,7 +741,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     /// <summary>
-    /// Creates basic rule-based segments as ultimate fallback.
+    ///     Creates basic rule-based segments as ultimate fallback.
     /// </summary>
     private static List<DocumentSegment> CreateBasicRuleBasedSegments(string content)
     {
@@ -788,8 +805,9 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         // For now, return the strategy with highest weight
         return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
-            ? structureSegments
-            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
+                ? structureSegments
+            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments
+            : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> MergeOverlappingSegmentsAsync(
@@ -819,8 +837,9 @@ public class HybridSegmentationService : IHybridSegmentationService
     )
     {
         return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
-            ? structureSegments
-            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
+                ? structureSegments
+            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments
+            : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> OptimizeSegmentationAsync(
@@ -839,9 +858,12 @@ public class HybridSegmentationService : IHybridSegmentationService
         HybridSegmentationOptions options
     )
     {
-        return [.. segments
-            .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
-            .Take(options.MaxSegments)];
+        return
+        [
+            .. segments
+                .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
+                .Take(options.MaxSegments),
+        ];
     }
 
     // Quality calculation methods
@@ -946,8 +968,9 @@ public class HybridSegmentationService : IHybridSegmentationService
     private static SegmentationStrategy DeterminePrimaryStrategy(StrategyWeights weights)
     {
         return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
-            ? SegmentationStrategy.StructureBased
-            : weights.NarrativeWeight >= weights.TopicWeight ? SegmentationStrategy.NarrativeBased : SegmentationStrategy.TopicBased;
+                ? SegmentationStrategy.StructureBased
+            : weights.NarrativeWeight >= weights.TopicWeight ? SegmentationStrategy.NarrativeBased
+            : SegmentationStrategy.TopicBased;
     }
 
     private static SegmentationStrategy? DetermineSecondaryStrategy(
@@ -1058,6 +1081,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             count++;
             index += word.Length;
         }
+
         return count;
     }
 
@@ -1081,23 +1105,4 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     #endregion
-
-    /// <summary>
-    /// Document characteristics used for weight determination.
-    /// </summary>
-    private class DocumentCharacteristics
-    {
-        public int LineCount { get; set; }
-        public int WordCount { get; set; }
-        public int CharacterCount { get; set; }
-        public bool HasHeadings { get; set; }
-        public bool HasLists { get; set; }
-        public bool HasCodeBlocks { get; set; }
-        public bool HasTables { get; set; }
-        public double NarrativeFlow { get; set; }
-        public int TemporalMarkers { get; set; }
-        public int CausationIndicators { get; set; }
-        public double TopicDiversity { get; set; }
-        public double KeywordDensity { get; set; }
-    }
 }

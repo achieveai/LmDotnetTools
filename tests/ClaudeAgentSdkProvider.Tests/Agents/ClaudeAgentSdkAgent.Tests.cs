@@ -13,12 +13,12 @@ public class ClaudeAgentSdkAgentTests
         // Arrange
         var expectedMessages = new List<IMessage>
         {
-            new TextMessage { Text = "Hello from agent", Role = Role.Assistant }
+            new TextMessage { Text = "Hello from agent", Role = Role.Assistant },
         };
 
         var mockClient = new MockClaudeAgentSdkClient(
-            messagesToReplay: expectedMessages,
-            validateRequest: req =>
+            expectedMessages,
+            req =>
             {
                 Assert.Equal("claude-sonnet-4-5-20250929", req.ModelId);
                 Assert.Equal(40, req.MaxTurns);
@@ -29,7 +29,10 @@ public class ClaudeAgentSdkAgentTests
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
         // Act
-        var inputMessages = new[] { new TextMessage { Text = "Hi", Role = Role.User } };
+        var inputMessages = new[]
+        {
+            new TextMessage { Text = "Hi", Role = Role.User },
+        };
         var responses = await agent.GenerateReplyAsync(inputMessages);
 
         // Assert
@@ -46,15 +49,18 @@ public class ClaudeAgentSdkAgentTests
         var expectedMessages = new List<IMessage>
         {
             new ReasoningMessage { Reasoning = "Thinking...", Role = Role.Assistant },
-            new TextMessage { Text = "Result", Role = Role.Assistant }
+            new TextMessage { Text = "Result", Role = Role.Assistant },
         };
 
-        var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: expectedMessages);
+        var mockClient = new MockClaudeAgentSdkClient(expectedMessages);
         var options = new ClaudeAgentSdkOptions();
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
         // Act
-        var inputMessages = new[] { new TextMessage { Text = "Question", Role = Role.User } };
+        var inputMessages = new[]
+        {
+            new TextMessage { Text = "Question", Role = Role.User },
+        };
         var streamTask = await agent.GenerateReplyStreamingAsync(inputMessages);
 
         var streamedMessages = new List<IMessage>();
@@ -74,25 +80,26 @@ public class ClaudeAgentSdkAgentTests
     {
         // Arrange & Act & Assert
         _ = Assert.Throws<ArgumentNullException>(() =>
-            new ClaudeAgentSdkAgent("test", null!, new ClaudeAgentSdkOptions()));
+            new ClaudeAgentSdkAgent("test", null!, new ClaudeAgentSdkOptions())
+        );
     }
 
     [Fact]
     public void Agent_ThrowsOnNullOptions()
     {
         // Arrange & Act & Assert
-        var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: []);
-        _ = Assert.Throws<ArgumentNullException>(() =>
-            new ClaudeAgentSdkAgent("test", mockClient, null!));
+        var mockClient = new MockClaudeAgentSdkClient([]);
+        _ = Assert.Throws<ArgumentNullException>(() => new ClaudeAgentSdkAgent("test", mockClient, null!));
     }
 
     [Fact]
     public void Agent_ThrowsOnNullName()
     {
         // Arrange & Act & Assert
-        var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: []);
+        var mockClient = new MockClaudeAgentSdkClient([]);
         _ = Assert.Throws<ArgumentNullException>(() =>
-            new ClaudeAgentSdkAgent(null!, mockClient, new ClaudeAgentSdkOptions()));
+            new ClaudeAgentSdkAgent(null!, mockClient, new ClaudeAgentSdkOptions())
+        );
     }
 
     [Fact]
@@ -101,23 +108,20 @@ public class ClaudeAgentSdkAgentTests
         // Arrange
         string? capturedModelId = null;
         var mockClient = new MockClaudeAgentSdkClient(
-            messagesToReplay: [new TextMessage { Text = "Response", Role = Role.Assistant }],
-            validateRequest: req => { capturedModelId = req.ModelId; }
+            [new TextMessage { Text = "Response", Role = Role.Assistant }],
+            req =>
+            {
+                capturedModelId = req.ModelId;
+            }
         );
 
         var options = new ClaudeAgentSdkOptions();
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
-        var generateOptions = new GenerateReplyOptions
-        {
-            ModelId = "haiku"
-        };
+        var generateOptions = new GenerateReplyOptions { ModelId = "haiku" };
 
         // Act
-        _ = await agent.GenerateReplyAsync(
-            [new TextMessage { Text = "Input", Role = Role.User }],
-            generateOptions
-        );
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input", Role = Role.User }], generateOptions);
 
         // Assert
         Assert.Equal("haiku", capturedModelId);
@@ -129,8 +133,11 @@ public class ClaudeAgentSdkAgentTests
         // Arrange
         string? capturedModelId = null;
         var mockClient = new MockClaudeAgentSdkClient(
-            messagesToReplay: [new TextMessage { Text = "Response", Role = Role.Assistant }],
-            validateRequest: req => { capturedModelId = req.ModelId; }
+            [new TextMessage { Text = "Response", Role = Role.Assistant }],
+            req =>
+            {
+                capturedModelId = req.ModelId;
+            }
         );
 
         var options = new ClaudeAgentSdkOptions();
@@ -147,9 +154,7 @@ public class ClaudeAgentSdkAgentTests
     public async Task Agent_ProperlySetsSessionInfo()
     {
         // Arrange
-        var mockClient = new MockClaudeAgentSdkClient(
-            messagesToReplay: [new TextMessage { Text = "Response", Role = Role.Assistant }]
-        );
+        var mockClient = new MockClaudeAgentSdkClient([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         var options = new ClaudeAgentSdkOptions();
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
@@ -168,9 +173,9 @@ public class ClaudeAgentSdkAgentTests
     {
         // Arrange
         var mockClient = new MockClaudeAgentSdkClient(
-            messagesToReplay: [
+            [
                 new TextMessage { Text = "Response 1", Role = Role.Assistant },
-                new TextMessage { Text = "Response 2", Role = Role.Assistant }
+                new TextMessage { Text = "Response 2", Role = Role.Assistant },
             ]
         );
 
@@ -189,7 +194,7 @@ public class ClaudeAgentSdkAgentTests
     public void Agent_HasCorrectName()
     {
         // Arrange & Act
-        var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: []);
+        var mockClient = new MockClaudeAgentSdkClient([]);
         var agent = new ClaudeAgentSdkAgent("my-custom-agent", mockClient, new ClaudeAgentSdkOptions());
 
         // Assert

@@ -1,9 +1,14 @@
+using System.Diagnostics;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Utils;
 
 public class JsonFragmentAccumulatorTests
 {
+    private static readonly string[] item = ["{\"key\":", " \"value\"}"];
+    private static readonly string[] itemArray = ["[1,", " 2, 3]"];
+    private static readonly string[] itemArray0 = ["{\"outer\": {\"inner\":", " \"value\"}}"];
+    private static readonly string[] itemArray1 = ["\"simple", "_string\""];
     private readonly ITestOutputHelper output;
 
     public JsonFragmentAccumulatorTests(ITestOutputHelper output)
@@ -12,7 +17,22 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that basic JSON paths are correctly tracked
+    ///     Test data for JSON completion event testing
+    /// </summary>
+    public static IEnumerable<object[]> JsonCompletionTestCases =>
+        [
+            // Simple object completion
+            ["test_tool", item, "Simple object should emit JsonComplete event when closed"],
+            // Simple array completion
+            ["test_tool", itemArray, "Simple array should emit JsonComplete event when closed"],
+            // Nested object completion
+            ["test_tool", itemArray0, "Nested object should emit JsonComplete event when fully closed"],
+            // Single value completion
+            ["test_tool", itemArray1, "Simple string should emit JsonComplete event when closed"],
+        ];
+
+    /// <summary>
+    ///     Test that basic JSON paths are correctly tracked
     /// </summary>
     [Fact]
     public void Test_BasicPath()
@@ -40,7 +60,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that array paths and elements are correctly tracked
+    ///     Test that array paths and elements are correctly tracked
     /// </summary>
     [Fact]
     public void Test_ArrayPath()
@@ -69,7 +89,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that partial string values are emitted correctly
+    ///     Test that partial string values are emitted correctly
     /// </summary>
     [Fact]
     public void Test_PartialStringValues()
@@ -109,7 +129,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that keys are emitted correctly with their full values
+    ///     Test that keys are emitted correctly with their full values
     /// </summary>
     [Fact]
     public void Test_Keys()
@@ -142,7 +162,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that numbers, nulls and booleans are handled properly
+    ///     Test that numbers, nulls and booleans are handled properly
     /// </summary>
     [Fact]
     public void Test_ScalarValues()
@@ -168,7 +188,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that nested objects and arrays are handled correctly
+    ///     Test that nested objects and arrays are handled correctly
     /// </summary>
     [Fact]
     public void Test_NestedStructures()
@@ -295,7 +315,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that string updates are grouped by fragment but still incremental
+    ///     Test that string updates are grouped by fragment but still incremental
     /// </summary>
     [Fact]
     public void Test_StringUpdatesGroupedByFragment()
@@ -331,7 +351,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Test that escape sequences split between fragments are handled correctly
+    ///     Test that escape sequences split between fragments are handled correctly
     /// </summary>
     [Fact]
     public void Test_EscapeSequencesBetweenFragments()
@@ -363,31 +383,11 @@ public class JsonFragmentAccumulatorTests
         Assert.Equal("{\"escaped\":\"before\\\"after\"}", accumulator.CurrentJson);
     }
 
-    /// <summary>
-    /// Test data for JSON completion event testing
-    /// </summary>
-    public static IEnumerable<object[]> JsonCompletionTestCases =>
-        [
-            // Simple object completion
-            ["test_tool", item, "Simple object should emit JsonComplete event when closed"],
-            // Simple array completion
-            ["test_tool", itemArray, "Simple array should emit JsonComplete event when closed"],
-            // Nested object completion
-            ["test_tool", itemArray0, "Nested object should emit JsonComplete event when fully closed"],
-            // Single value completion
-            ["test_tool", itemArray1, "Simple string should emit JsonComplete event when closed"],
-        ];
-
-    private static readonly string[] item = ["{\"key\":", " \"value\"}"];
-    private static readonly string[] itemArray = ["[1,", " 2, 3]"];
-    private static readonly string[] itemArray0 = ["{\"outer\": {\"inner\":", " \"value\"}}"];
-    private static readonly string[] itemArray1 = ["\"simple", "_string\""];
-
     [Theory]
     [MemberData(nameof(JsonCompletionTestCases))]
     public void Test_JsonCompletionEvent(string toolName, string[] fragments, string description)
     {
-        System.Diagnostics.Debug.WriteLine($"Testing: {description}");
+        Debug.WriteLine($"Testing: {description}");
 
         var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
         var allUpdates = new List<JsonFragmentUpdate>();
@@ -398,10 +398,10 @@ public class JsonFragmentAccumulatorTests
             var updates = generator.AddFragment(fragment).ToList();
             allUpdates.AddRange(updates);
 
-            System.Diagnostics.Debug.WriteLine($"Fragment: '{fragment}' -> {updates.Count} updates");
+            Debug.WriteLine($"Fragment: '{fragment}' -> {updates.Count} updates");
             foreach (var update in updates)
             {
-                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: {update.Path} = {update.TextValue}");
+                Debug.WriteLine($"  {update.Kind}: {update.Path} = {update.TextValue}");
             }
         }
 
@@ -417,13 +417,13 @@ public class JsonFragmentAccumulatorTests
         Assert.NotNull(completionEvent.TextValue);
         Assert.True(completionEvent.TextValue!.Length > 0);
 
-        System.Diagnostics.Debug.WriteLine($"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}");
+        Debug.WriteLine($"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}");
     }
 
     #region Helper Methods
 
     /// <summary>
-    /// Asserts that exactly one string update of the specified kind exists with the expected value
+    ///     Asserts that exactly one string update of the specified kind exists with the expected value
     /// </summary>
     private static void AssertSingleStringUpdate(
         List<JsonFragmentUpdate> updates,
@@ -436,7 +436,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Asserts that an update with the specified kind, path and value exists
+    ///     Asserts that an update with the specified kind, path and value exists
     /// </summary>
     private void AssertHasUpdate(
         List<JsonFragmentUpdate> updates,
@@ -462,7 +462,7 @@ public class JsonFragmentAccumulatorTests
     }
 
     /// <summary>
-    /// Prints a list of updates with an optional header
+    ///     Prints a list of updates with an optional header
     /// </summary>
     private void PrintUpdates(List<JsonFragmentUpdate> updates, string? header = null)
     {

@@ -1,15 +1,16 @@
+using System.Diagnostics;
 using MemoryServer.DocumentSegmentation.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for resilience service that combines circuit breaker and retry policies.
-/// Implements comprehensive error handling and resilience patterns.
+///     Interface for resilience service that combines circuit breaker and retry policies.
+///     Implements comprehensive error handling and resilience patterns.
 /// </summary>
 public interface IResilienceService
 {
     /// <summary>
-    /// Executes an operation with full resilience protection (circuit breaker + retry + fallback).
+    ///     Executes an operation with full resilience protection (circuit breaker + retry + fallback).
     /// </summary>
     Task<ResilienceOperationResult<T>> ExecuteWithResilienceAsync<T>(
         Func<Task<T>> operation,
@@ -20,78 +21,80 @@ public interface IResilienceService
         where T : class;
 
     /// <summary>
-    /// Gets current error metrics for monitoring and alerting.
+    ///     Gets current error metrics for monitoring and alerting.
     /// </summary>
     ErrorMetrics GetErrorMetrics();
 
     /// <summary>
-    /// Resets error metrics (for testing or maintenance).
+    ///     Resets error metrics (for testing or maintenance).
     /// </summary>
     void ResetMetrics();
 
     /// <summary>
-    /// Gets health status of the resilience service.
+    ///     Gets health status of the resilience service.
     /// </summary>
     ResilienceHealthStatus GetHealthStatus();
 }
 
 /// <summary>
-/// Health status of the resilience service.
+///     Health status of the resilience service.
 /// </summary>
 public record ResilienceHealthStatus
 {
     /// <summary>
-    /// Overall health status.
+    ///     Overall health status.
     /// </summary>
     public bool IsHealthy { get; init; }
 
     /// <summary>
-    /// Number of operations currently in circuit open state.
+    ///     Number of operations currently in circuit open state.
     /// </summary>
     public int OpenCircuitCount { get; init; }
 
     /// <summary>
-    /// Current fallback usage rate (percentage).
+    ///     Current fallback usage rate (percentage).
     /// </summary>
     public double FallbackUsageRate { get; init; }
 
     /// <summary>
-    /// Average response time in milliseconds.
+    ///     Average response time in milliseconds.
     /// </summary>
     public double AverageResponseTimeMs { get; init; }
 
     /// <summary>
-    /// Overall error rate (percentage).
+    ///     Overall error rate (percentage).
     /// </summary>
     public double ErrorRate { get; init; }
 
     /// <summary>
-    /// Last health check timestamp.
+    ///     Last health check timestamp.
     /// </summary>
     public DateTime LastCheckAt { get; init; } = DateTime.UtcNow;
 }
 
 /// <summary>
-/// Implementation of resilience service that orchestrates circuit breaker, retry, and fallback mechanisms.
-/// Provides comprehensive error handling and metrics collection for Document Segmentation operations.
+///     Implementation of resilience service that orchestrates circuit breaker, retry, and fallback mechanisms.
+///     Provides comprehensive error handling and metrics collection for Document Segmentation operations.
 /// </summary>
 public class ResilienceService : IResilienceService
 {
+    private const int MaxRecentOperations = 1000;
     private readonly ICircuitBreakerService _circuitBreaker;
-    private readonly IRetryPolicyService _retryPolicy;
     private readonly GracefulDegradationConfiguration _degradationConfig;
     private readonly ILogger<ResilienceService> _logger;
 
     // Metrics tracking
     private readonly Lock _metricsLock = new();
-    private ErrorMetrics _currentMetrics = new();
+
     private readonly List<(
         DateTime Timestamp,
         double ResponseTimeMs,
         bool Success,
         bool UsedFallback
     )> _recentOperations = [];
-    private const int MaxRecentOperations = 1000;
+
+    private readonly IRetryPolicyService _retryPolicy;
+    private ErrorMetrics _currentMetrics = new();
 
     public ResilienceService(
         ICircuitBreakerService circuitBreaker,
@@ -107,8 +110,8 @@ public class ResilienceService : IResilienceService
     }
 
     /// <summary>
-    /// Executes an operation with full resilience protection.
-    /// Implements AC-4.1, AC-4.2, AC-4.3, and AC-4.4 from ErrorHandling-TestAcceptanceCriteria.
+    ///     Executes an operation with full resilience protection.
+    ///     Implements AC-4.1, AC-4.2, AC-4.3, and AC-4.4 from ErrorHandling-TestAcceptanceCriteria.
     /// </summary>
     public async Task<ResilienceOperationResult<T>> ExecuteWithResilienceAsync<T>(
         Func<Task<T>> operation,
@@ -119,7 +122,7 @@ public class ResilienceService : IResilienceService
         where T : class
     {
         var correlationId = Guid.NewGuid().ToString();
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         var degradationReason = string.Empty;
 
         _logger.LogDebug(
@@ -134,7 +137,7 @@ public class ResilienceService : IResilienceService
             var result = await ExecuteMainOperationAsync(operation, operationName, correlationId, cancellationToken);
 
             var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-            RecordOperationMetrics(responseTimeMs, success: true, usedFallback: false);
+            RecordOperationMetrics(responseTimeMs, true, false);
 
             _logger.LogInformation(
                 "Operation {OperationName} completed successfully in {ResponseTime}ms. CorrelationId: {CorrelationId}",
@@ -170,7 +173,7 @@ public class ResilienceService : IResilienceService
             if (fallbackOperation == null)
             {
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: false);
+                RecordOperationMetrics(responseTimeMs, false, false);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -198,7 +201,7 @@ public class ResilienceService : IResilienceService
                     $"Circuit breaker is open: {circuitEx.Message}. Using immediate fallback to rule-based segmentation.";
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: true, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, true, true);
 
                 _logger.LogInformation(
                     "Immediate fallback operation succeeded for {OperationName} in {ResponseTime}ms (circuit open). CorrelationId: {CorrelationId}",
@@ -230,7 +233,7 @@ public class ResilienceService : IResilienceService
                 );
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, false, true);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -242,7 +245,7 @@ public class ResilienceService : IResilienceService
                         $"Circuit breaker is open: {circuitEx.Message}. Immediate fallback operation timed out after {_degradationConfig.FallbackTimeoutMs}ms.",
                     ProcessingTimeMs = responseTimeMs,
                     Success = false,
-                    ErrorMessage = $"Circuit breaker is open: Fallback operation timeout",
+                    ErrorMessage = "Circuit breaker is open: Fallback operation timeout",
                     CorrelationId = correlationId,
                 };
             }
@@ -256,7 +259,7 @@ public class ResilienceService : IResilienceService
                 );
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, false, true);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -287,7 +290,7 @@ public class ResilienceService : IResilienceService
             if (fallbackOperation == null)
             {
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: false);
+                RecordOperationMetrics(responseTimeMs, false, false);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -315,7 +318,7 @@ public class ResilienceService : IResilienceService
                     $"Network timeout occurred: {ex.Message}. Fallback to rule-based segmentation.";
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: true, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, true, true);
 
                 _logger.LogInformation(
                     "Fallback operation succeeded for {OperationName} in {ResponseTime}ms. CorrelationId: {CorrelationId}",
@@ -347,7 +350,7 @@ public class ResilienceService : IResilienceService
                 );
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, false, true);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -359,7 +362,7 @@ public class ResilienceService : IResilienceService
                         $"Network timeout occurred: {ex.Message}. Fallback operation timed out after {_degradationConfig.FallbackTimeoutMs}ms.",
                     ProcessingTimeMs = responseTimeMs,
                     Success = false,
-                    ErrorMessage = $"Operation failed: Fallback operation timeout",
+                    ErrorMessage = "Operation failed: Fallback operation timeout",
                     CorrelationId = correlationId,
                 };
             }
@@ -373,7 +376,7 @@ public class ResilienceService : IResilienceService
                 );
 
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                RecordOperationMetrics(responseTimeMs, false, true);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -438,7 +441,7 @@ public class ResilienceService : IResilienceService
                     // Check performance degradation (AC-4.3: <20% degradation)
                     var performanceDegradation = CalculatePerformanceDegradation(responseTimeMs);
 
-                    RecordOperationMetrics(responseTimeMs, success: true, usedFallback: true);
+                    RecordOperationMetrics(responseTimeMs, true, true);
 
                     _logger.LogInformation(
                         "Fallback operation succeeded for {OperationName} in {ResponseTime}ms. CorrelationId: {CorrelationId}",
@@ -470,7 +473,7 @@ public class ResilienceService : IResilienceService
                     );
 
                     var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                    RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                    RecordOperationMetrics(responseTimeMs, false, true);
 
                     return new ResilienceOperationResult<T>
                     {
@@ -482,7 +485,7 @@ public class ResilienceService : IResilienceService
                             $"Main operation failed: {ex.Message}. Fallback operation timed out after {_degradationConfig.FallbackTimeoutMs}ms.",
                         ProcessingTimeMs = responseTimeMs,
                         Success = false,
-                        ErrorMessage = $"Operation failed: Fallback operation timeout",
+                        ErrorMessage = "Operation failed: Fallback operation timeout",
                         CorrelationId = correlationId,
                     };
                 }
@@ -501,7 +504,7 @@ public class ResilienceService : IResilienceService
                     );
 
                     var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                    RecordOperationMetrics(responseTimeMs, success: false, usedFallback: true);
+                    RecordOperationMetrics(responseTimeMs, false, true);
                     RecordErrorMetrics(fallbackEx);
 
                     return new ResilienceOperationResult<T>
@@ -519,11 +522,11 @@ public class ResilienceService : IResilienceService
                     };
                 }
             }
-            else
+
             {
                 // No fallback available
                 var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                RecordOperationMetrics(responseTimeMs, success: false, usedFallback: false);
+                RecordOperationMetrics(responseTimeMs, false, false);
 
                 return new ResilienceOperationResult<T>
                 {
@@ -541,8 +544,8 @@ public class ResilienceService : IResilienceService
     }
 
     /// <summary>
-    /// Gets current error metrics for monitoring and alerting.
-    /// Implements AC-5.3 from ErrorHandling-TestAcceptanceCriteria.
+    ///     Gets current error metrics for monitoring and alerting.
+    ///     Implements AC-5.3 from ErrorHandling-TestAcceptanceCriteria.
     /// </summary>
     public ErrorMetrics GetErrorMetrics()
     {
@@ -557,8 +560,8 @@ public class ResilienceService : IResilienceService
     }
 
     /// <summary>
-    /// Resets error metrics (for testing or maintenance).
-    /// Implements AC-5.2 state cleanup.
+    ///     Resets error metrics (for testing or maintenance).
+    ///     Implements AC-5.2 state cleanup.
     /// </summary>
     public void ResetMetrics()
     {
@@ -572,8 +575,8 @@ public class ResilienceService : IResilienceService
     }
 
     /// <summary>
-    /// Gets health status of the resilience service.
-    /// Implements AC-5.1 service recovery detection.
+    ///     Gets health status of the resilience service.
+    ///     Implements AC-5.1 service recovery detection.
     /// </summary>
     public ResilienceHealthStatus GetHealthStatus()
     {

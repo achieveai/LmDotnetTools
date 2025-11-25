@@ -9,20 +9,20 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
-/// Helper class for parsing Anthropic SSE stream events into IMessage objects
+///     Helper class for parsing Anthropic SSE stream events into IMessage objects
 /// </summary>
 public class AnthropicStreamParser
 {
-    private readonly List<IMessage> _messages = [];
     private readonly Dictionary<int, StreamingContentBlock> _contentBlocks = [];
+    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly List<IMessage> _messages = [];
     private string _messageId = string.Empty;
     private string _model = string.Empty;
     private string _role = "assistant";
     private AnthropicUsage? _usage;
-    private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
-    /// Creates a new instance of the AnthropicStreamParser
+    ///     Creates a new instance of the AnthropicStreamParser
     /// </summary>
     public AnthropicStreamParser()
     {
@@ -30,7 +30,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Processes a raw SSE event string and returns any resulting IMessage updates
+    ///     Processes a raw SSE event string and returns any resulting IMessage updates
     /// </summary>
     /// <param name="eventType">The SSE event type</param>
     /// <param name="data">The SSE event data (JSON string)</param>
@@ -86,7 +86,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Processes a strongly-typed AnthropicStreamEvent and returns any resulting IMessage updates
+    ///     Processes a strongly-typed AnthropicStreamEvent and returns any resulting IMessage updates
     /// </summary>
     /// <param name="streamEvent">The strongly-typed stream event</param>
     /// <returns>A list of message updates (empty if none produced by this event)</returns>
@@ -163,7 +163,9 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = [new ToolCallUpdate
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         ToolCallId = _contentBlocks[index].Id!,
                         Index = index,
@@ -173,7 +175,8 @@ public class AnthropicStreamParser
                             : null,
                         // Only include FunctionArgs if Input is available
                         FunctionArgs = input != null && input.Count > 0 ? input.ToJsonString() : null,
-                    }],
+                    },
+                ],
             };
 
             return [toolUpdate];
@@ -245,10 +248,9 @@ public class AnthropicStreamParser
                 }
 
             default:
-                break;
+                // Unknown delta type, ignore
+                return [];
         }
-
-        return [];
     }
 
     private List<IMessage> HandleContentBlockStop(JsonNode json)
@@ -357,7 +359,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Gets all messages accumulated so far
+    ///     Gets all messages accumulated so far
     /// </summary>
     public List<IMessage> GetAllMessages()
     {
@@ -379,7 +381,7 @@ public class AnthropicStreamParser
     // Shared helper methods
 
     /// <summary>
-    /// Creates usage metadata for consistent structure across message types
+    ///     Creates usage metadata for consistent structure across message types
     /// </summary>
     private ImmutableDictionary<string, object> CreateUsageMetadata()
     {
@@ -397,7 +399,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Creates a usage message from the current usage data
+    ///     Creates a usage message from the current usage data
     /// </summary>
     private UsageMessage CreateUsageMessage(string? generationId = null)
     {
@@ -418,7 +420,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Handles JSON delta updates, common code for both typed and untyped handlers
+    ///     Handles JSON delta updates, common code for both typed and untyped handlers
     /// </summary>
     private List<IMessage> HandleJsonDelta(StreamingContentBlock block, string partialJson)
     {
@@ -446,7 +448,9 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = [new ToolCallUpdate
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         ToolCallId = block.Id!,
                         Index = block.Index,
@@ -454,7 +458,8 @@ public class AnthropicStreamParser
                         FunctionName = !string.IsNullOrEmpty(block.Name) ? block.Name : null,
                         // Include the raw JSON as it's being built
                         FunctionArgs = partialJson,
-                    }],
+                    },
+                ],
             };
 
             return [toolUpdate];
@@ -464,7 +469,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Finalizes a tool use block, shared between typed and untyped handlers
+    ///     Finalizes a tool use block, shared between typed and untyped handlers
     /// </summary>
     private List<IMessage> FinalizeToolUseBlock(StreamingContentBlock block)
     {
@@ -487,7 +492,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    /// Creates a ToolsCallMessage from a streaming content block
+    ///     Creates a ToolsCallMessage from a streaming content block
     /// </summary>
     private ToolsCallMessage CreateToolsCallMessage(StreamingContentBlock block)
     {
@@ -515,7 +520,15 @@ public class AnthropicStreamParser
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = functionArgs, ToolCallId = block.Id ?? string.Empty }],
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = functionName,
+                    FunctionArgs = functionArgs,
+                    ToolCallId = block.Id ?? string.Empty,
+                },
+            ],
         };
 
         // Apply usage metadata if available
@@ -525,59 +538,6 @@ public class AnthropicStreamParser
         }
 
         return message;
-    }
-
-    /// <summary>
-    /// Helper class for accumulating partial JSON strings during streaming
-    /// </summary>
-    private class InputJsonAccumulator
-    {
-        private readonly StringBuilder _jsonBuffer = new();
-        private JsonNode? _parsedInput;
-
-        public void AddDelta(string partialJson)
-        {
-            _ = _jsonBuffer.Append(partialJson);
-
-            try
-            {
-                // Try to parse the accumulated JSON with each new delta
-                _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
-            }
-            catch
-            {
-                // Parsing will fail until we have complete, valid JSON
-                // That's expected and we continue accumulation
-            }
-        }
-
-        public bool IsComplete => _parsedInput != null;
-
-        public JsonNode? GetParsedInput()
-        {
-            return _parsedInput;
-        }
-
-        public string GetRawJson()
-        {
-            return _jsonBuffer.ToString();
-        }
-    }
-
-    /// <summary>
-    /// Helper class to track the state of a content block during streaming
-    /// </summary>
-    private class StreamingContentBlock
-    {
-        public int Index { get; set; }
-        public string Type { get; set; } = string.Empty;
-        public string Text { get; set; } = string.Empty;
-        public string? Id { get; set; }
-        public string? Name { get; set; }
-        public JsonNode? Input { get; set; }
-
-        // For accumulating partial JSON during streaming
-        public InputJsonAccumulator JsonAccumulator { get; } = new();
     }
 
     // Typed event handlers
@@ -644,7 +604,9 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = [new ToolCallUpdate
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         ToolCallId = toolUseTool.Id,
                         Index = index,
@@ -656,7 +618,8 @@ public class AnthropicStreamParser
                             && toolUseTool.Input.GetPropertyCount() > 0
                                 ? toolUseTool.Input.ToString()
                                 : "", // Use empty object for no args instead of empty string
-                    }],
+                    },
+                ],
             };
 
             return [toolUpdate];
@@ -755,7 +718,9 @@ public class AnthropicStreamParser
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            ToolCallUpdates = [new ToolCallUpdate
+            ToolCallUpdates =
+            [
+                new ToolCallUpdate
                 {
                     ToolCallId = toolCall.Id,
                     Index = toolCall.Index,
@@ -766,7 +731,8 @@ public class AnthropicStreamParser
                         toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0
                             ? toolCall.Input.ToString()
                             : "",
-                }],
+                },
+            ],
         };
 
         return [toolUpdate];
@@ -850,6 +816,60 @@ public class AnthropicStreamParser
         {
             Console.Error.WriteLine($"Anthropic API error: {errorEvent.Error.Type} - {errorEvent.Error.Message}");
         }
+
         return [];
+    }
+
+    /// <summary>
+    ///     Helper class for accumulating partial JSON strings during streaming
+    /// </summary>
+    private class InputJsonAccumulator
+    {
+        private readonly StringBuilder _jsonBuffer = new();
+        private JsonNode? _parsedInput;
+
+        public bool IsComplete => _parsedInput != null;
+
+        public void AddDelta(string partialJson)
+        {
+            _ = _jsonBuffer.Append(partialJson);
+
+            try
+            {
+                // Try to parse the accumulated JSON with each new delta
+                _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
+            }
+            catch
+            {
+                // Parsing will fail until we have complete, valid JSON
+                // That's expected and we continue accumulation
+            }
+        }
+
+        public JsonNode? GetParsedInput()
+        {
+            return _parsedInput;
+        }
+
+        public string GetRawJson()
+        {
+            return _jsonBuffer.ToString();
+        }
+    }
+
+    /// <summary>
+    ///     Helper class to track the state of a content block during streaming
+    /// </summary>
+    private class StreamingContentBlock
+    {
+        public int Index { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+        public string? Id { get; set; }
+        public string? Name { get; set; }
+        public JsonNode? Input { get; set; }
+
+        // For accumulating partial JSON during streaming
+        public InputJsonAccumulator JsonAccumulator { get; } = new();
     }
 }

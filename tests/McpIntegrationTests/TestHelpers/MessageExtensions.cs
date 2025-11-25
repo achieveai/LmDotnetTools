@@ -3,12 +3,12 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 
 /// <summary>
-/// Extension methods for working with messages in tests
+///     Extension methods for working with messages in tests
 /// </summary>
 public static class MessageExtensions
 {
     /// <summary>
-    /// Extracts text content from various message types
+    ///     Extracts text content from various message types
     /// </summary>
     /// <param name="message">The message to extract text from</param>
     /// <returns>The extracted text or null if the message is null</returns>

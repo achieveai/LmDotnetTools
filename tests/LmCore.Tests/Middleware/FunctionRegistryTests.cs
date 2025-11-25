@@ -85,8 +85,8 @@ public class FunctionRegistryTests
         // Arrange
         string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", stringArray, priority: 200);
-        var provider2 = CreateTestProvider("provider2", stringArray, priority: 100);
+        var provider1 = CreateTestProvider("provider1", stringArray, 200);
+        var provider2 = CreateTestProvider("provider2", stringArray, 100);
 
         // Act
         _ = registry.AddProvider(provider1);
@@ -247,7 +247,7 @@ public class FunctionRegistryTests
         // Arrange
         string[] stringArray = ["func1", "func2"];
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("TestProvider", stringArray, priority: 100);
+        var provider = CreateTestProvider("TestProvider", stringArray, 100);
 
         // Act
         _ = registry.AddProvider(provider);
@@ -421,6 +421,45 @@ public class FunctionRegistryTests
         return _ => Task.FromResult(result);
     }
 
+    private static FunctionContract CreateTestContractWithParameters(string name)
+    {
+        return new FunctionContract
+        {
+            Name = name,
+            Description = $"Test function {name}",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "stringParam",
+                    Description = "A string parameter",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "optionalParam",
+                    Description = "An optional parameter",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },
+                    IsRequired = false,
+                    DefaultValue = 42,
+                },
+            ],
+        };
+    }
+
+    private static FunctionContract CreateTestContractWithReturnType(string name)
+    {
+        return new FunctionContract
+        {
+            Name = name,
+            Description = $"Test function {name}",
+            ReturnType = typeof(string),
+            ReturnDescription = "Returns a string result",
+            Parameters = [],
+        };
+    }
+
     private class TestFunctionProvider : IFunctionProvider
     {
         private readonly string[] _functionNames;
@@ -522,42 +561,5 @@ public class FunctionRegistryTests
                 },
             ];
         }
-    }
-
-    private static FunctionContract CreateTestContractWithParameters(string name)
-    {
-        return new FunctionContract
-        {
-            Name = name,
-            Description = $"Test function {name}",
-            Parameters =
-            [
-                new() {
-                    Name = "stringParam",
-                    Description = "A string parameter",
-                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
-                    IsRequired = true,
-                },
-                new() {
-                    Name = "optionalParam",
-                    Description = "An optional parameter",
-                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },
-                    IsRequired = false,
-                    DefaultValue = 42,
-                },
-            ],
-        };
-    }
-
-    private static FunctionContract CreateTestContractWithReturnType(string name)
-    {
-        return new FunctionContract
-        {
-            Name = name,
-            Description = $"Test function {name}",
-            ReturnType = typeof(string),
-            ReturnDescription = "Returns a string result",
-            Parameters = [],
-        };
     }
 }

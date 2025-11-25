@@ -6,12 +6,12 @@ using ModelContextProtocol.Server;
 namespace AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 
 /// <summary>
-/// Extension methods for registering MCP function providers
+///     Extension methods for registering MCP function providers
 /// </summary>
 public static class McpServiceCollectionExtensions
 {
     /// <summary>
-    /// Register MCP function provider for specific assembly
+    ///     Register MCP function provider for specific assembly
     /// </summary>
     public static IServiceCollection AddMcpFunctions(
         this IServiceCollection services,
@@ -23,7 +23,7 @@ public static class McpServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Register MCP function provider with automatic discovery using assembly marker type
+    ///     Register MCP function provider with automatic discovery using assembly marker type
     /// </summary>
     public static IServiceCollection AddMcpFunctions<TAssemblyMarker>(
         this IServiceCollection services,
@@ -34,7 +34,7 @@ public static class McpServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Auto-discover and register all MCP assemblies from loaded assemblies
+    ///     Auto-discover and register all MCP assemblies from loaded assemblies
     /// </summary>
     public static IServiceCollection AddMcpFunctionsFromLoadedAssemblies(this IServiceCollection services)
     {
@@ -49,7 +49,7 @@ public static class McpServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Check if assembly contains MCP tools
+    ///     Check if assembly contains MCP tools
     /// </summary>
     private static bool HasMcpTools(Assembly assembly)
     {

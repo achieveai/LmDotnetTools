@@ -3,32 +3,32 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Represents a complete function definition with its contract and handler
+///     Represents a complete function definition with its contract and handler
 /// </summary>
 public record FunctionDescriptor
 {
     /// <summary>
-    /// The function contract containing metadata and parameter definitions
+    ///     The function contract containing metadata and parameter definitions
     /// </summary>
     public required FunctionContract Contract { get; init; }
 
     /// <summary>
-    /// The function handler that executes the actual function logic
+    ///     The function handler that executes the actual function logic
     /// </summary>
     public required Func<string, Task<string>> Handler { get; init; }
 
     /// <summary>
-    /// Unique key for this function (handles class name prefixing for MCP functions)
+    ///     Unique key for this function (handles class name prefixing for MCP functions)
     /// </summary>
     public string Key => Contract.ClassName != null ? $"{Contract.ClassName}-{Contract.Name}" : Contract.Name;
 
     /// <summary>
-    /// Display name for error messages and logging
+    ///     Display name for error messages and logging
     /// </summary>
     public string DisplayName => Contract.ClassName != null ? $"{Contract.ClassName}.{Contract.Name}" : Contract.Name;
 
     /// <summary>
-    /// Provider name for debugging and conflict resolution
+    ///     Provider name for debugging and conflict resolution
     /// </summary>
     public string ProviderName { get; init; } = "Unknown";
 }

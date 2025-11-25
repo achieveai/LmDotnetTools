@@ -31,15 +31,8 @@ public class JsonlStreamParserTests
                 Model = "claude-sonnet-4-5",
                 Id = "msg-id",
                 Role = "assistant",
-                Content =
-                [
-                    new ContentBlock
-                    {
-                        Type = "text",
-                        Text = "Hello, world!"
-                    }
-                ]
-            }
+                Content = [new ContentBlock { Type = "text", Text = "Hello, world!" }],
+            },
         };
 
         // Act
@@ -69,15 +62,8 @@ public class JsonlStreamParserTests
                 Model = "claude-sonnet-4-5",
                 Id = "msg-id",
                 Role = "assistant",
-                Content =
-                [
-                    new ContentBlock
-                    {
-                        Type = "thinking",
-                        Thinking = "Let me think about this..."
-                    }
-                ]
-            }
+                Content = [new ContentBlock { Type = "thinking", Thinking = "Let me think about this..." }],
+            },
         };
 
         // Act
@@ -106,19 +92,15 @@ public class JsonlStreamParserTests
                 Id = "msg-id",
                 Role = "assistant",
                 Content = [new ContentBlock { Type = "text", Text = "Hello" }],
-                Usage = new UsageInfo
-                {
-                    InputTokens = 100,
-                    OutputTokens = 50
-                }
-            }
+                Usage = new UsageInfo { InputTokens = 100, OutputTokens = 50 },
+            },
         };
 
         // Act
         var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
-        Assert.Equal(2, messages.Count);  // TextMessage + UsageMessage
+        Assert.Equal(2, messages.Count); // TextMessage + UsageMessage
         var usageMessage = Assert.IsType<UsageMessage>(messages[1]);
         Assert.Equal(100, usageMessage.Usage.PromptTokens);
         Assert.Equal(50, usageMessage.Usage.CompletionTokens);
@@ -147,8 +129,8 @@ public class JsonlStreamParserTests
             Message = new UserMessage
             {
                 Role = "user",
-                Content = JsonDocument.Parse(toolResultContentJson).RootElement
-            }
+                Content = JsonDocument.Parse(toolResultContentJson).RootElement,
+            },
         };
 
         // Act
@@ -179,8 +161,8 @@ public class JsonlStreamParserTests
             Message = new UserMessage
             {
                 Role = "user",
-                Content = JsonDocument.Parse("\"Hello, assistant!\"").RootElement
-            }
+                Content = JsonDocument.Parse("\"Hello, assistant!\"").RootElement,
+            },
         };
 
         // Act
@@ -221,8 +203,8 @@ public class JsonlStreamParserTests
             Message = new UserMessage
             {
                 Role = "user",
-                Content = JsonDocument.Parse(multipleToolResultsJson).RootElement
-            }
+                Content = JsonDocument.Parse(multipleToolResultsJson).RootElement,
+            },
         };
 
         // Act

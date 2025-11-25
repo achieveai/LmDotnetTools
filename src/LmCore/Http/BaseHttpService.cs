@@ -3,27 +3,27 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
 /// <summary>
-/// Base class for HTTP-based services providing common infrastructure
+///     Base class for HTTP-based services providing common infrastructure
 /// </summary>
 public abstract class BaseHttpService : IDisposable
 {
     /// <summary>
-    /// Logger instance for the service
-    /// </summary>
-    protected readonly ILogger Logger;
-
-    /// <summary>
-    /// HTTP client for making API requests
+    ///     HTTP client for making API requests
     /// </summary>
     protected readonly HttpClient HttpClient;
 
     /// <summary>
-    /// Tracks whether the service has been disposed
+    ///     Logger instance for the service
     /// </summary>
-    private bool _disposed = false;
+    protected readonly ILogger Logger;
 
     /// <summary>
-    /// Initializes a new instance of the BaseHttpService class
+    ///     Tracks whether the service has been disposed
+    /// </summary>
+    private bool _disposed;
+
+    /// <summary>
+    ///     Initializes a new instance of the BaseHttpService class
     /// </summary>
     /// <param name="logger">Logger instance for the service</param>
     /// <param name="httpClient">HTTP client for making API requests</param>
@@ -35,7 +35,16 @@ public abstract class BaseHttpService : IDisposable
     }
 
     /// <summary>
-    /// Executes an operation with retry logic and exponential backoff
+    ///     Releases all resources used by the service
+    /// </summary>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    ///     Executes an operation with retry logic and exponential backoff
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="operation">The operation to execute</param>
@@ -55,7 +64,7 @@ public abstract class BaseHttpService : IDisposable
     }
 
     /// <summary>
-    /// Executes an HTTP operation with retry logic for HTTP-specific scenarios
+    ///     Executes an HTTP operation with retry logic for HTTP-specific scenarios
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="httpOperation">The HTTP operation that returns an HttpResponseMessage</param>
@@ -83,7 +92,7 @@ public abstract class BaseHttpService : IDisposable
     }
 
     /// <summary>
-    /// Checks if the service has been disposed and throws an exception if it has
+    ///     Checks if the service has been disposed and throws an exception if it has
     /// </summary>
     /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
     protected void ThrowIfDisposed()
@@ -92,7 +101,7 @@ public abstract class BaseHttpService : IDisposable
     }
 
     /// <summary>
-    /// Releases the unmanaged resources used by the service and optionally releases the managed resources
+    ///     Releases the unmanaged resources used by the service and optionally releases the managed resources
     /// </summary>
     /// <param name="disposing">true to release both managed and unmanaged resources; false to release only unmanaged resources</param>
     protected virtual void Dispose(bool disposing)
@@ -108,14 +117,5 @@ public abstract class BaseHttpService : IDisposable
 
             _disposed = true;
         }
-    }
-
-    /// <summary>
-    /// Releases all resources used by the service
-    /// </summary>
-    public void Dispose()
-    {
-        Dispose(disposing: true);
-        GC.SuppressFinalize(this);
     }
 }

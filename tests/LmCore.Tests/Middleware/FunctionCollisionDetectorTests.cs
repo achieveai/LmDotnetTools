@@ -4,19 +4,89 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 /// <summary>
-/// Comprehensive test suite for FunctionCollisionDetector class
+///     Comprehensive test suite for FunctionCollisionDetector class
 /// </summary>
 public class FunctionCollisionDetectorTests
 {
-    private readonly Mock<ILogger> _mockLogger;
     private static readonly string[] expected = ["func1", "func2", "func3"];
     private static readonly string[] expectedArray = ["Provider1", "Provider2"];
     private static readonly string[] expectedArray0 = ["Provider2", "Provider3"];
+    private readonly Mock<ILogger> _mockLogger;
 
     public FunctionCollisionDetectorTests()
     {
         _mockLogger = new Mock<ILogger>();
     }
+
+    #region Integration Scenarios
+
+    [Fact]
+    public void DetectAndResolveCollisions_WithRealWorldScenario_HandlesComplexCase()
+    {
+        // Arrange - Simulate a real scenario with multiple MCP servers
+        var detector = new FunctionCollisionDetector(_mockLogger.Object);
+        var functions = new List<FunctionDescriptor>
+        {
+            // GitHub MCP Server
+            CreateTestDescriptor("search_repositories", "github"),
+            CreateTestDescriptor("get_file_contents", "github"),
+            CreateTestDescriptor("create_issue", "github"),
+            // Filesystem MCP Server
+            CreateTestDescriptor("read_file", "filesystem"),
+            CreateTestDescriptor("write_file", "filesystem"),
+            CreateTestDescriptor("list_directory", "filesystem"),
+            // Database MCP Server
+            CreateTestDescriptor("execute_query", "database"),
+            CreateTestDescriptor("list_tables", "database"),
+            // Collision: Both GitHub and Filesystem have a search function
+            CreateTestDescriptor("search", "github"),
+            CreateTestDescriptor("search", "filesystem"),
+            // Collision: Multiple providers have a list function
+            CreateTestDescriptor("list", "github"),
+            CreateTestDescriptor("list", "filesystem"),
+            CreateTestDescriptor("list", "database"),
+        };
+
+        // Act
+        var namingMap = detector.DetectAndResolveCollisions(functions);
+
+        // Assert
+        Assert.Equal(13, namingMap.Count);
+
+        // Non-colliding functions should not have prefixes
+        Assert.Equal(
+            "search_repositories",
+            namingMap[functions.First(f => f.Contract.Name == "search_repositories").Key]
+        );
+        Assert.Equal("read_file", namingMap[functions.First(f => f.Contract.Name == "read_file").Key]);
+        Assert.Equal("execute_query", namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]);
+
+        // Colliding functions should have prefixes
+        Assert.Equal(
+            "github-search",
+            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key]
+        );
+        Assert.Equal(
+            "filesystem-search",
+            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem").Key]
+        );
+
+        // All "list" functions should have prefixes
+        Assert.Equal(
+            "github-list",
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key]
+        );
+        Assert.Equal(
+            "filesystem-list",
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem").Key]
+        );
+        Assert.Equal(
+            "database-list",
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key]
+        );
+    }
+
+    #endregion
 
     #region Helper Methods
 
@@ -130,7 +200,7 @@ public class FunctionCollisionDetectorTests
         {
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["LongProviderName"] = new ProviderFilterConfig { CustomPrefix = "LP" },
+                ["LongProviderName"] = new() { CustomPrefix = "LP" },
             },
         };
 
@@ -323,7 +393,8 @@ public class FunctionCollisionDetectorTests
         var detector = new FunctionCollisionDetector(_mockLogger.Object);
         var functions = new List<FunctionDescriptor>
         {
-            new() {
+            new()
+            {
                 Contract = new FunctionContract { Name = "func1" },
                 Handler = _ => Task.FromResult("result"),
                 ProviderName = string.Empty,
@@ -417,8 +488,8 @@ public class FunctionCollisionDetectorTests
             UsePrefixOnlyForCollisions = false, // Prefix all
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["VeryLongProviderName"] = new ProviderFilterConfig { CustomPrefix = "VLPN" },
-                ["AnotherLongProvider"] = new ProviderFilterConfig { CustomPrefix = "ALP" },
+                ["VeryLongProviderName"] = new() { CustomPrefix = "VLPN" },
+                ["AnotherLongProvider"] = new() { CustomPrefix = "ALP" },
             },
         };
 
@@ -445,76 +516,6 @@ public class FunctionCollisionDetectorTests
         // Provider without custom prefix uses provider name
         var shortNameFunc = functions.First(f => f.ProviderName == "ShortName");
         Assert.Equal("ShortName-anotherUnique", namingMap[shortNameFunc.Key]);
-    }
-
-    #endregion
-
-    #region Integration Scenarios
-
-    [Fact]
-    public void DetectAndResolveCollisions_WithRealWorldScenario_HandlesComplexCase()
-    {
-        // Arrange - Simulate a real scenario with multiple MCP servers
-        var detector = new FunctionCollisionDetector(_mockLogger.Object);
-        var functions = new List<FunctionDescriptor>
-        {
-            // GitHub MCP Server
-            CreateTestDescriptor("search_repositories", "github"),
-            CreateTestDescriptor("get_file_contents", "github"),
-            CreateTestDescriptor("create_issue", "github"),
-            // Filesystem MCP Server
-            CreateTestDescriptor("read_file", "filesystem"),
-            CreateTestDescriptor("write_file", "filesystem"),
-            CreateTestDescriptor("list_directory", "filesystem"),
-            // Database MCP Server
-            CreateTestDescriptor("execute_query", "database"),
-            CreateTestDescriptor("list_tables", "database"),
-            // Collision: Both GitHub and Filesystem have a search function
-            CreateTestDescriptor("search", "github"),
-            CreateTestDescriptor("search", "filesystem"),
-            // Collision: Multiple providers have a list function
-            CreateTestDescriptor("list", "github"),
-            CreateTestDescriptor("list", "filesystem"),
-            CreateTestDescriptor("list", "database"),
-        };
-
-        // Act
-        var namingMap = detector.DetectAndResolveCollisions(functions);
-
-        // Assert
-        Assert.Equal(13, namingMap.Count);
-
-        // Non-colliding functions should not have prefixes
-        Assert.Equal(
-            "search_repositories",
-            namingMap[functions.First(f => f.Contract.Name == "search_repositories").Key]
-        );
-        Assert.Equal("read_file", namingMap[functions.First(f => f.Contract.Name == "read_file").Key]);
-        Assert.Equal("execute_query", namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]);
-
-        // Colliding functions should have prefixes
-        Assert.Equal(
-            "github-search",
-            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key]
-        );
-        Assert.Equal(
-            "filesystem-search",
-            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem").Key]
-        );
-
-        // All "list" functions should have prefixes
-        Assert.Equal(
-            "github-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key]
-        );
-        Assert.Equal(
-            "filesystem-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem").Key]
-        );
-        Assert.Equal(
-            "database-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key]
-        );
     }
 
     #endregion

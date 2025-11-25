@@ -4,21 +4,20 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of graph memory service that orchestrates graph processing and integrates with the memory system.
-/// Implements the Facade pattern to provide a unified interface for graph operations.
+///     Implementation of graph memory service that orchestrates graph processing and integrates with the memory system.
+///     Implements the Facade pattern to provide a unified interface for graph operations.
 /// </summary>
 public class GraphMemoryService : IGraphMemoryService
 {
-    private readonly IGraphExtractionService _extractionService;
-    private readonly IGraphDecisionEngine _decisionEngine;
-    private readonly IGraphRepository _graphRepository;
-    private readonly IMemoryRepository _memoryRepository;
-    private readonly ILogger<GraphMemoryService> _logger;
-
     // Configuration constants
     private const float TraditionalSearchWeight = 0.6f;
     private const float GraphSearchWeight = 0.4f;
     private const int DefaultGraphSearchLimit = 50;
+    private readonly IGraphDecisionEngine _decisionEngine;
+    private readonly IGraphExtractionService _extractionService;
+    private readonly IGraphRepository _graphRepository;
+    private readonly ILogger<GraphMemoryService> _logger;
+    private readonly IMemoryRepository _memoryRepository;
 
     public GraphMemoryService(
         IGraphExtractionService extractionService,
@@ -253,10 +252,10 @@ public class GraphMemoryService : IGraphMemoryService
 
             result.TraversalResults = [.. traversalResults];
             result.AllEntities = [.. traversalResults.Select(t => t.Entity).Distinct()];
-            result.AllRelationships = [.. traversalResults
-                .Where(t => t.Relationship != null)
-                .Select(t => t.Relationship!)
-                .Distinct()];
+            result.AllRelationships =
+            [
+                .. traversalResults.Where(t => t.Relationship != null).Select(t => t.Relationship!).Distinct(),
+            ];
             result.MaxDepthReached = traversalResults.Any() ? traversalResults.Max(t => t.Depth) : 0;
 
             stopwatch.Stop();
@@ -321,7 +320,7 @@ public class GraphMemoryService : IGraphMemoryService
             // Get all memories for the session
             var memories = await _memoryRepository.GetAllAsync(
                 sessionContext,
-                limit: int.MaxValue,
+                int.MaxValue,
                 cancellationToken: cancellationToken
             );
             summary.MemoriesProcessed = memories.Count;
@@ -390,12 +389,12 @@ public class GraphMemoryService : IGraphMemoryService
             // Get all entities and relationships
             var entities = await _graphRepository.GetEntitiesAsync(
                 sessionContext,
-                limit: int.MaxValue,
+                int.MaxValue,
                 cancellationToken: cancellationToken
             );
             var relationships = await _graphRepository.GetRelationshipsAsync(
                 sessionContext,
-                limit: int.MaxValue,
+                int.MaxValue,
                 cancellationToken: cancellationToken
             );
 
@@ -573,6 +572,7 @@ public class GraphMemoryService : IGraphMemoryService
                         summary.RelationshipsAdded++;
                         _logger.LogDebug("EXECUTION SUCCESS: Relationship {RelationshipInfo} added", relationshipInfo);
                     }
+
                     break;
 
                 case GraphDecisionOperation.UPDATE:
@@ -594,6 +594,7 @@ public class GraphMemoryService : IGraphMemoryService
                         );
                         summary.RelationshipsUpdated++;
                     }
+
                     break;
 
                 case GraphDecisionOperation.DELETE:
@@ -613,11 +614,12 @@ public class GraphMemoryService : IGraphMemoryService
                             cancellationToken
                         );
                     }
+
                     break;
                 case GraphDecisionOperation.NONE:
                     break;
                 default:
-                    break;
+                    throw new NotSupportedException($"Unsupported operation: {instruction.Operation}");
             }
         }
         catch (Exception ex)
@@ -680,7 +682,7 @@ public class GraphMemoryService : IGraphMemoryService
             var queryEntities = await _extractionService.ExtractEntitiesAsync(
                 query,
                 sessionContext,
-                memoryId: 0,
+                0,
                 cancellationToken: cancellationToken
             );
 
@@ -812,7 +814,7 @@ public class GraphMemoryService : IGraphMemoryService
             var queryEntities = await _extractionService.ExtractEntitiesAsync(
                 query,
                 sessionContext,
-                memoryId: 0,
+                0,
                 cancellationToken: cancellationToken
             );
             results.RelevantEntities.AddRange(queryEntities);
@@ -821,7 +823,7 @@ public class GraphMemoryService : IGraphMemoryService
             var memoryIds = results.CombinedResults.Select(r => r.Memory.Id).ToList();
             var entities = await _graphRepository.GetEntitiesAsync(
                 sessionContext,
-                limit: 1000,
+                1000,
                 cancellationToken: cancellationToken
             );
             var relevantEntities = entities.Where(e => e.SourceMemoryIds?.Any(id => memoryIds.Contains(id)) == true);
@@ -838,10 +840,13 @@ public class GraphMemoryService : IGraphMemoryService
             var entityNames = results.RelevantEntities.Select(e => e.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var relationships = await _graphRepository.GetRelationshipsAsync(
                 sessionContext,
-                limit: 1000,
+                1000,
                 cancellationToken: cancellationToken
             );
-            results.RelevantRelationships = [.. relationships.Where(r => entityNames.Contains(r.Source) || entityNames.Contains(r.Target))];
+            results.RelevantRelationships =
+            [
+                .. relationships.Where(r => entityNames.Contains(r.Source) || entityNames.Contains(r.Target)),
+            ];
         }
         catch (Exception ex)
         {
@@ -858,12 +863,12 @@ public class GraphMemoryService : IGraphMemoryService
             // Get all entities and relationships for the session
             var entities = await _graphRepository.GetEntitiesAsync(
                 sessionContext,
-                limit: int.MaxValue,
+                int.MaxValue,
                 cancellationToken: cancellationToken
             );
             var relationships = await _graphRepository.GetRelationshipsAsync(
                 sessionContext,
-                limit: int.MaxValue,
+                int.MaxValue,
                 cancellationToken: cancellationToken
             );
 

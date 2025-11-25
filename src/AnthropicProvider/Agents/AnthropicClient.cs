@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -14,7 +15,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
 /// <summary>
-/// Client for interacting with the Anthropic API.
+///     Client for interacting with the Anthropic API.
 /// </summary>
 public class AnthropicClient : BaseHttpService, IAnthropicClient
 {
@@ -24,7 +25,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     private readonly IPerformanceTracker _performanceTracker;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="AnthropicClient"/> class.
+    ///     Initializes a new instance of the <see cref="AnthropicClient" /> class.
     /// </summary>
     /// <param name="apiKey">The API key to use for authentication.</param>
     /// <param name="httpClient">Optional custom HTTP client to use.</param>
@@ -45,7 +46,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="AnthropicClient"/> class with a pre-configured HTTP client.
+    ///     Initializes a new instance of the <see cref="AnthropicClient" /> class with a pre-configured HTTP client.
     /// </summary>
     /// <param name="httpClient">Pre-configured HTTP client with authentication headers.</param>
     /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
@@ -61,13 +62,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
     }
 
-    private static HttpClient CreateHttpClient(string apiKey)
-    {
-        var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
-        return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
-    }
-
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<AnthropicResponse> CreateChatCompletionsAsync(
         AnthropicRequest request,
         CancellationToken cancellationToken = default
@@ -94,7 +89,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     Logger.LogDebug("Sending Anthropic chat completion request for model {Model}", request.Model);
                     return await HttpClient.SendAsync(requestMessage, cancellationToken);
                 },
-                async (httpResponse) =>
+                async httpResponse =>
                 {
                     _ = httpResponse.EnsureSuccessStatusCode();
                     var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
@@ -114,9 +109,9 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
             // Track successful request metrics
             var completedMetrics = metrics.Complete(
-                statusCode: 200,
-                usage: response.Usage != null
-                    ? new AchieveAi.LmDotnetTools.LmCore.Core.Usage
+                200,
+                response.Usage != null
+                    ? new Usage
                     {
                         PromptTokens = response.Usage.InputTokens,
                         CompletionTokens = response.Usage.OutputTokens,
@@ -134,18 +129,14 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             Logger.LogError(ex, "Error in Anthropic chat completion request for model {Model}", request.Model);
 
             // Track failed request metrics
-            var completedMetrics = metrics.Complete(
-                statusCode: 0,
-                errorMessage: ex.Message,
-                exceptionType: ex.GetType().Name
-            );
+            var completedMetrics = metrics.Complete(0, errorMessage: ex.Message, exceptionType: ex.GetType().Name);
 
             _performanceTracker.TrackRequest(completedMetrics);
             throw;
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
         AnthropicRequest request,
         CancellationToken cancellationToken = default
@@ -185,12 +176,12 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         cancellationToken
                     );
                 },
-                (httpResponse) => Task.FromResult(httpResponse.Content),
+                httpResponse => Task.FromResult(httpResponse.Content),
                 cancellationToken: cancellationToken
             );
 
             // Track successful setup
-            var successMetrics = metrics.Complete(statusCode: 200);
+            var successMetrics = metrics.Complete(200);
             _performanceTracker.TrackRequest(successMetrics);
 
             Logger.LogDebug("Successfully established streaming connection for model {Model}", request.Model);
@@ -206,11 +197,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             );
 
             // Track failed streaming request metrics
-            var completedMetrics = metrics.Complete(
-                statusCode: 0,
-                errorMessage: ex.Message,
-                exceptionType: ex.GetType().Name
-            );
+            var completedMetrics = metrics.Complete(0, errorMessage: ex.Message, exceptionType: ex.GetType().Name);
 
             _performanceTracker.TrackRequest(completedMetrics);
 
@@ -225,6 +212,12 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
             throw;
         }
+    }
+
+    private static HttpClient CreateHttpClient(string apiKey)
+    {
+        var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
+        return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
     }
 
     private async IAsyncEnumerable<AnthropicStreamEvent> StreamData(

@@ -9,11 +9,7 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = [toolCall],
-            Role = Role.Assistant,
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall], Role = Role.Assistant };
 
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 

@@ -7,11 +7,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 
 /// <summary>
-/// SQLite implementation of <see cref="ISessionRepository"/>.
+///     SQLite implementation of <see cref="ISessionRepository" />.
 /// </summary>
 /// <remarks>
-/// Thread-safe implementation using parameterized queries.
-/// All database operations are async and support cancellation.
+///     Thread-safe implementation using parameterized queries.
+///     All database operations are async and support cancellation.
 /// </remarks>
 public sealed class SessionRepository : ISessionRepository
 {
@@ -19,7 +19,7 @@ public sealed class SessionRepository : ISessionRepository
     private readonly ILogger<SessionRepository> _logger;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="SessionRepository"/> class.
+    ///     Initializes a new instance of the <see cref="SessionRepository" /> class.
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
@@ -29,7 +29,7 @@ public sealed class SessionRepository : ISessionRepository
         _logger = logger ?? NullLogger<SessionRepository>.Instance;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<SessionEntity?> GetByIdAsync(string id, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -48,7 +48,7 @@ public sealed class SessionRepository : ISessionRepository
         return await reader.ReadAsync(ct) ? MapSessionEntity(reader) : null;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<SessionEntity>> GetByConversationIdAsync(
         string conversationId,
         CancellationToken ct = default
@@ -77,7 +77,7 @@ public sealed class SessionRepository : ISessionRepository
         return sessions;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task CreateAsync(SessionEntity session, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -102,7 +102,7 @@ public sealed class SessionRepository : ISessionRepository
         _logger.LogDebug("Created session {SessionId} with status {Status}", session.Id, session.Status);
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task UpdateAsync(SessionEntity session, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -132,7 +132,7 @@ public sealed class SessionRepository : ISessionRepository
         _logger.LogDebug("Updated session {SessionId} to status {Status}", session.Id, session.Status);
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<SessionEntity>> GetIncompleteSessionsAsync(CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -157,7 +157,7 @@ public sealed class SessionRepository : ISessionRepository
         return sessions;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task MarkSessionAsFailedAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -179,7 +179,7 @@ public sealed class SessionRepository : ISessionRepository
     }
 
     /// <summary>
-    /// Maps a data reader row to a SessionEntity.
+    ///     Maps a data reader row to a SessionEntity.
     /// </summary>
     private static SessionEntity MapSessionEntity(SqliteDataReader reader)
     {

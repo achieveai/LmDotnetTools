@@ -49,11 +49,7 @@ public class OptionsOverridingMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, options, token) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -83,7 +79,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with null options
-        var context = new MiddlewareContext([message], null);
+        var context = new MiddlewareContext([message]);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -100,11 +96,7 @@ public class OptionsOverridingMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, options, token) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -160,11 +152,7 @@ public class OptionsOverridingMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, options, token) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -287,11 +275,7 @@ public class OptionsOverridingMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, options, token) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -368,11 +352,7 @@ public class OptionsOverridingMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 (msgs, options, token) => capturedOptions = options
             )
-            .ReturnsAsync(
-                [
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                ]
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);

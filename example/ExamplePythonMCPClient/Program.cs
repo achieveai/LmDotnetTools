@@ -14,13 +14,14 @@ using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using DotNetEnv;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
 /// <summary>
-/// Custom function provider for the AskUser function
+///     Custom function provider for the AskUser function
 /// </summary>
 public class CustomFunctionProvider : IFunctionProvider
 {
@@ -50,8 +51,8 @@ public class CustomFunctionProvider : IFunctionProvider
                 {
                     Name = "options",
                     ParameterType = JsonSchemaObject.StringArray(
-                        description: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
-                        itemDescription: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
+                        "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
+                        "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
                     ),
                     Description =
                         "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
@@ -161,7 +162,7 @@ public static class Program
 
             // Register Todo TaskManager instance functions (stateful)
             var taskManager = new TaskManager();
-            _ = functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
+            _ = functionRegistry.AddFunctionsFromObject(taskManager, "TodoManager", 50);
 
             // Print comprehensive function documentation
             Console.WriteLine("=== Available Functions ===");
@@ -185,7 +186,7 @@ public static class Program
             var serviceProvider = services.BuildServiceProvider();
 
             // Create a caching HttpClient for OpenAI
-            var httpClient = services.CreateCachingOpenAIClient(apiKey: API_KEY, baseUrl: API_URL);
+            var httpClient = services.CreateCachingOpenAIClient(API_KEY, API_URL);
 
             // Create an OpenAI client with caching
             var openClient = new OpenClient(httpClient, API_URL);
@@ -212,10 +213,10 @@ public static class Program
                 // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
-                ExtraProperties = new Dictionary<string, object?>()
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["parallel_tool_call"] = true,
-                    ["reasoning"] = new Dictionary<string, object?>() { ["effort"] = "low", ["max_tokens"] = 768 },
+                    ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "low", ["max_tokens"] = 768 },
                 }.ToImmutableDictionary(),
             };
 
@@ -227,7 +228,7 @@ public static class Program
 
             var promptReader = new PromptReader(PROMPTS_PATH);
 
-            var dict = new Dictionary<string, object>() { ["task"] = task! };
+            var dict = new Dictionary<string, object> { ["task"] = task! };
 
             if (previousPlan != null)
             {
@@ -470,10 +471,6 @@ public static class Program
             Console.WriteLine($"\nError: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
         }
-        finally
-        {
-            // await Task.WhenAll(pythonMcpClients.Select(client => client.DisposeAsync().AsTask()));
-        }
 
         Console.WriteLine("\nPress any key to exit...");
         _ = Console.ReadLine();
@@ -494,13 +491,13 @@ public static class Program
     }
 
     /// <summary>
-    /// Loads environment variables from .env file in the project root
+    ///     Loads environment variables from .env file in the project root
     /// </summary>
     /// <remarks>
-    /// Tries multiple locations to find the .env file:
-    /// 1. Current directory
-    /// 2. Project directory
-    /// 3. Solution root directory
+    ///     Tries multiple locations to find the .env file:
+    ///     1. Current directory
+    ///     2. Project directory
+    ///     3. Solution root directory
     /// </remarks>
     private static void LoadEnvironmentVariables()
     {
@@ -512,7 +509,7 @@ public static class Program
 
         _ =
             curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
-                ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
+                ? Env.Load(Path.Combine(curPath, ".env"))
                 : throw new FileNotFoundException(
                     ".env file not found in the current directory or any parent directories."
                 );
@@ -547,22 +544,20 @@ public static class Program
                 toolsCallAggregateMessage
                     .ToolsCallMessage.ToolCalls.Zip(toolsCallAggregateMessage.ToolsCallResult.ToolCallResults)
                     .ToImmutableList()
-                    .ForEach(
-                        (tup) =>
-                        {
-                            var (toolCall, toolCallResult) = tup;
-                            WriteToConsoleInColor(
-                                $"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}",
-                                ConsoleColor.DarkCyan,
-                                null
-                            );
-                            WriteToConsoleInColor(
-                                $"Tool call result: {toolCallResult.Result}",
-                                ConsoleColor.DarkMagenta,
-                                null
-                            );
-                        }
-                    );
+                    .ForEach(tup =>
+                    {
+                        var (toolCall, toolCallResult) = tup;
+                        WriteToConsoleInColor(
+                            $"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}",
+                            ConsoleColor.DarkCyan,
+                            null
+                        );
+                        WriteToConsoleInColor(
+                            $"Tool call result: {toolCallResult.Result}",
+                            ConsoleColor.DarkMagenta,
+                            null
+                        );
+                    });
                 break;
             default:
                 Console.WriteLine(message?.ToString() ?? string.Empty);

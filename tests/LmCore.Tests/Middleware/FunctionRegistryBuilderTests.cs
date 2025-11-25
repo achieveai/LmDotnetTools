@@ -1,3 +1,4 @@
+using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,9 +13,9 @@ public class FunctionRegistryBuilderTests
         var registry = new FunctionRegistry();
 
         // Act & Assert
-        _ = Assert.IsType<IFunctionRegistryBuilder>(registry, exactMatch: false);
-        _ = Assert.IsType<IFunctionRegistryWithProviders>(registry, exactMatch: false);
-        _ = Assert.IsType<IConfiguredFunctionRegistry>(registry, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(registry, false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(registry, false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(registry, false);
     }
 
     [Fact]
@@ -28,7 +29,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddProvider(provider);
 
         // Assert
-        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, false);
     }
 
     [Fact]
@@ -43,7 +44,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddFunction(contract, handler);
 
         // Assert
-        _ = Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(result, false);
     }
 
     [Fact]
@@ -57,7 +58,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithLogger(logger);
 
         // Assert
-        _ = Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(result, false);
     }
 
     [Fact]
@@ -70,7 +71,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithConflictResolution(ConflictResolution.TakeFirst);
 
         // Assert
-        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, false);
     }
 
     [Fact]
@@ -83,7 +84,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithConflictHandler((key, candidates) => candidates.First());
 
         // Assert
-        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, false);
     }
 
     [Fact]
@@ -97,7 +98,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithFilterConfig(config);
 
         // Assert
-        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, false);
     }
 
     [Fact]
@@ -110,7 +111,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.Configure();
 
         // Assert
-        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, false);
     }
 
     [Fact]
@@ -139,7 +140,7 @@ public class FunctionRegistryBuilderTests
             );
 
         // Assert
-        _ = Assert.IsType<IConfiguredFunctionRegistry>(configured, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(configured, false);
 
         // Verify we can build
         var (contracts, handlers) = configured.Build();
@@ -160,7 +161,7 @@ public class FunctionRegistryBuilderTests
                         EnableFiltering = true,
                         ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
                         {
-                            ["valid_provider"] = new ProviderFilterConfig { CustomPrefix = "valid_prefix" },
+                            ["valid_provider"] = new() { CustomPrefix = "valid_prefix" },
                         },
                     }
                 ) as IConfiguredFunctionRegistry;
@@ -179,17 +180,13 @@ public class FunctionRegistryBuilderTests
         var registry = new FunctionRegistry();
 
         // Force set an invalid configuration (simulating deserialization)
-        var filterConfig = new FunctionFilterConfig
-        {
-            EnableFiltering = true,
-            ProviderConfigs = [],
-        };
+        var filterConfig = new FunctionFilterConfig { EnableFiltering = true, ProviderConfigs = [] };
 
         var providerConfig = new ProviderFilterConfig();
         // Use reflection to bypass validation
         var field = typeof(ProviderFilterConfig).GetField(
             "_customPrefix",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            BindingFlags.NonPublic | BindingFlags.Instance
         );
         field?.SetValue(providerConfig, "invalid prefix"); // Invalid due to space
 
@@ -236,8 +233,7 @@ public class FunctionRegistryBuilderTests
         var provider1 = CreateTestProvider("Provider1");
         var provider2 = CreateTestProvider("Provider2");
 
-        var registry =
-            new FunctionRegistry().AddProvider(provider1).AddProvider(provider2).Configure();
+        var registry = new FunctionRegistry().AddProvider(provider1).AddProvider(provider2).Configure();
 
         // Act
         var providers = registry.GetProviders();
@@ -253,8 +249,7 @@ public class FunctionRegistryBuilderTests
     {
         // Arrange
         string[] stringArray = ["func1"];
-        var registry =
-            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
+        var registry = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
 
         // Act
         var markdown = registry.GetMarkdownDocumentation();
@@ -271,8 +266,7 @@ public class FunctionRegistryBuilderTests
     {
         // Arrange
         string[] stringArray = ["func1"];
-        var registry =
-            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
+        var registry = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
 
         // Act
         var middleware = registry.BuildMiddleware("TestMiddleware");
@@ -308,7 +302,7 @@ public class FunctionRegistryBuilderTests
                         GlobalAllowedFunctions = ["search", "getCurrentWeather"],
                         ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
                         {
-                            ["Weather"] = new ProviderFilterConfig { CustomPrefix = "weather" },
+                            ["Weather"] = new() { CustomPrefix = "weather" },
                         },
                     }
                 ) as IConfiguredFunctionRegistry;

@@ -1,4 +1,3 @@
-
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -9,27 +8,20 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 {
+    private static ILogger<MiddlewareWrappingStreamingAgent> _logger =
+        NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
+
     private readonly IStreamingAgent _agent;
+    private readonly string _creationStackTrace;
     private readonly Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>>? _middleware;
+    private readonly string _middlewareName;
+
     private readonly Func<
         MiddlewareContext,
         IStreamingAgent,
         CancellationToken,
         Task<IAsyncEnumerable<IMessage>>
     > _streamingMiddleware;
-    private readonly string _middlewareName;
-    private readonly string _creationStackTrace;
-    private static ILogger<MiddlewareWrappingStreamingAgent> _logger =
-        NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
-
-    /// <summary>
-    /// Sets the logger to use for all MiddlewareWrappingStreamingAgent instances.
-    /// This should be called once at application startup if logging is desired.
-    /// </summary>
-    public static void SetLogger(ILogger<MiddlewareWrappingStreamingAgent> logger)
-    {
-        _logger = logger ?? NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
-    }
 
     public MiddlewareWrappingStreamingAgent(IStreamingAgent agent, IStreamingMiddleware middleware)
     {
@@ -100,6 +92,15 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         );
 
         return MonitoredStreamWrapper(messageStream, correlationId, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Sets the logger to use for all MiddlewareWrappingStreamingAgent instances.
+    ///     This should be called once at application startup if logging is desired.
+    /// </summary>
+    public static void SetLogger(ILogger<MiddlewareWrappingStreamingAgent> logger)
+    {
+        _logger = logger ?? NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
     }
 
     private async IAsyncEnumerable<IMessage> MonitoredStreamWrapper(

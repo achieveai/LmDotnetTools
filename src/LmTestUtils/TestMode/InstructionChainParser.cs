@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 
 /// <summary>
-/// Default implementation of instruction chain parser for test mode.
+///     Default implementation of instruction chain parser for test mode.
 /// </summary>
 public sealed class InstructionChainParser(ILogger<InstructionChainParser> logger) : IInstructionChainParser
 {
@@ -200,7 +200,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
 
             var name =
                 call.TryGetProperty("name", out var nEl) && nEl.ValueKind == JsonValueKind.String
-                    ? (nEl.GetString() ?? string.Empty)
+                    ? nEl.GetString() ?? string.Empty
                     : string.Empty;
 
             var argsObj = call.TryGetProperty("args", out var aEl) ? aEl : default;

@@ -6,13 +6,13 @@ using Moq;
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// Tests for CircuitBreakerService implementation.
-/// Validates AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests for CircuitBreakerService implementation.
+///     Validates AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public class CircuitBreakerServiceTests
 {
-    private readonly Mock<ILogger<CircuitBreakerService>> _mockLogger;
     private readonly CircuitBreakerConfiguration _configuration;
+    private readonly Mock<ILogger<CircuitBreakerService>> _mockLogger;
     private readonly CircuitBreakerService _service;
 
     public CircuitBreakerServiceTests()
@@ -27,6 +27,22 @@ public class CircuitBreakerServiceTests
         };
         _service = new CircuitBreakerService(_configuration, _mockLogger.Object);
     }
+
+    /// <summary>
+    ///     Test data for different error types and their thresholds.
+    ///     Validates AC-2.2 error type threshold configuration.
+    /// </summary>
+    public static IEnumerable<object[]> ErrorTypeTestCases =>
+        [
+            [new HttpRequestException("401 Unauthorized"), "401", "Authentication error should use specific threshold"],
+            [
+                new HttpRequestException("503 Service Unavailable"),
+                "503",
+                "Service unavailable should use specific threshold",
+            ],
+            [new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold"],
+            [new InvalidOperationException("Generic error"), "generic", "Generic error should use default threshold"],
+        ];
 
     [Fact]
     public async Task ExecuteAsync_WithSuccessfulOperation_ShouldReturnResult()
@@ -177,30 +193,6 @@ public class CircuitBreakerServiceTests
         Assert.Null(state.NextRetryAt);
         Assert.Null(state.LastError);
     }
-
-    /// <summary>
-    /// Test data for different error types and their thresholds.
-    /// Validates AC-2.2 error type threshold configuration.
-    /// </summary>
-    public static IEnumerable<object[]> ErrorTypeTestCases =>
-        [
-            [
-                new HttpRequestException("401 Unauthorized"),
-                "401",
-                "Authentication error should use specific threshold",
-            ],
-            [
-                new HttpRequestException("503 Service Unavailable"),
-                "503",
-                "Service unavailable should use specific threshold",
-            ],
-            [new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold"],
-            [
-                new InvalidOperationException("Generic error"),
-                "generic",
-                "Generic error should use default threshold",
-            ],
-        ];
 
     [Theory]
     [MemberData(nameof(ErrorTypeTestCases))]

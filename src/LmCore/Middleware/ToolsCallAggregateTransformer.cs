@@ -6,15 +6,15 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Static utility class for transforming ToolsCallAggregateMessage back to natural language format
-/// with XML-style tool calls and responses.
+///     Static utility class for transforming ToolsCallAggregateMessage back to natural language format
+///     with XML-style tool calls and responses.
 /// </summary>
 public static class ToolsCallAggregateTransformer
 {
     private static readonly JsonSerializerOptions PrettyJsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
+    ///     Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
     /// </summary>
     /// <param name="aggregateMessage">The aggregate message containing tool calls and results</param>
     /// <returns>A TextMessage with embedded XML tool calls and responses</returns>
@@ -79,8 +79,8 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Combines a sequence of messages that may include TextMessages and ToolsCallAggregateMessages
-    /// into a single TextMessage with natural tool use format.
+    ///     Combines a sequence of messages that may include TextMessages and ToolsCallAggregateMessages
+    ///     into a single TextMessage with natural tool use format.
     /// </summary>
     /// <param name="messageSequence">The sequence of messages to combine</param>
     /// <returns>A single TextMessage containing all content</returns>
@@ -116,6 +116,7 @@ public static class ToolsCallAggregateTransformer
             {
                 _ = contentBuilder.AppendLine(); // Add spacing between messages
             }
+
             _ = contentBuilder.Append(messageText);
 
             // Merge metadata from this message
@@ -141,7 +142,7 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Formats a single tool call and its result as XML.
+    ///     Formats a single tool call and its result as XML.
     /// </summary>
     /// <param name="toolCall">The tool call to format</param>
     /// <param name="toolResult">The corresponding tool result</param>
@@ -170,7 +171,7 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Formats tool arguments, pretty-printing JSON if applicable.
+    ///     Formats tool arguments, pretty-printing JSON if applicable.
     /// </summary>
     /// <param name="functionArgs">The function arguments string</param>
     /// <returns>Formatted arguments string</returns>
@@ -180,7 +181,7 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Formats tool response, pretty-printing JSON if detected.
+    ///     Formats tool response, pretty-printing JSON if detected.
     /// </summary>
     /// <param name="result">The tool result string</param>
     /// <returns>Formatted response string</returns>
@@ -196,7 +197,7 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Attempts to parse and pretty-print a string as JSON.
+    ///     Attempts to parse and pretty-print a string as JSON.
     /// </summary>
     /// <param name="text">The text to try formatting as JSON</param>
     /// <returns>Pretty-printed JSON if successful, null otherwise</returns>
@@ -229,7 +230,7 @@ public static class ToolsCallAggregateTransformer
     }
 
     /// <summary>
-    /// Merges two metadata dictionaries, with the second taking precedence for conflicting keys.
+    ///     Merges two metadata dictionaries, with the second taking precedence for conflicting keys.
     /// </summary>
     /// <param name="first">The first metadata dictionary</param>
     /// <param name="second">The second metadata dictionary (takes precedence)</param>

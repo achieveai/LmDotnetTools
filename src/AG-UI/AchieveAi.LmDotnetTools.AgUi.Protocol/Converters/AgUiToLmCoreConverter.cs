@@ -1,14 +1,16 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using ToolCall = AchieveAi.LmDotnetTools.LmCore.Messages.ToolCall;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 
 /// <summary>
-/// Converts AG-UI protocol messages to LmCore format (inbound conversion)
+///     Converts AG-UI protocol messages to LmCore format (inbound conversion)
 /// </summary>
 public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
 {
@@ -19,19 +21,19 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         _logger = logger ?? NullLogger<AgUiToLmCoreConverter>.Instance;
     }
 
-    /// <inheritdoc/>
-    public IMessage ConvertMessage(DataObjects.DTOs.Message message)
+    /// <inheritdoc />
+    public IMessage ConvertMessage(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
 
         // Determine message type based on AG-UI message properties
-        return message.Role == "tool"
-            ? ConvertToolResultMessage(message)
-            : message.ToolCalls?.Count > 0 ? ConvertToolsCallMessage(message) : ConvertTextMessage(message);
+        return message.Role == "tool" ? ConvertToolResultMessage(message)
+            : message.ToolCalls?.Count > 0 ? ConvertToolsCallMessage(message)
+            : ConvertTextMessage(message);
     }
 
-    /// <inheritdoc/>
-    public ImmutableList<IMessage> ConvertMessageHistory(ImmutableList<DataObjects.DTOs.Message> messages)
+    /// <inheritdoc />
+    public ImmutableList<IMessage> ConvertMessageHistory(ImmutableList<Message> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -52,7 +54,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         return result.ToImmutable();
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public ToolCall ConvertToolCall(DataObjects.DTOs.ToolCall toolCall)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
@@ -68,9 +70,9 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         };
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public (IEnumerable<IMessage> messages, GenerateReplyOptions options) ConvertRunAgentInput(
-        DataObjects.DTOs.RunAgentInput input,
+        RunAgentInput input,
         IEnumerable<FunctionContract>? availableFunctions = null
     )
     {
@@ -95,7 +97,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         return (messages, options);
     }
 
-    private static TextMessage ConvertTextMessage(DataObjects.DTOs.Message message)
+    private static TextMessage ConvertTextMessage(Message message)
     {
         return new TextMessage
         {
@@ -106,7 +108,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         };
     }
 
-    private ToolsCallMessage ConvertToolsCallMessage(DataObjects.DTOs.Message message)
+    private ToolsCallMessage ConvertToolsCallMessage(Message message)
     {
         var toolCalls = message.ToolCalls!.Select(ConvertToolCall).ToImmutableList();
 
@@ -119,9 +121,9 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         };
     }
 
-    private static ToolsCallResultMessage ConvertToolResultMessage(DataObjects.DTOs.Message message)
+    private static ToolsCallResultMessage ConvertToolResultMessage(Message message)
     {
-        var result = new ToolCallResult(ToolCallId: message.ToolCallId, Result: message.Content ?? string.Empty);
+        var result = new ToolCallResult(message.ToolCallId, message.Content ?? string.Empty);
 
         return new ToolsCallResultMessage
         {
@@ -133,7 +135,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
     }
 
     private static GenerateReplyOptions ConvertConfiguration(
-        DataObjects.DTOs.RunConfiguration? config,
+        RunConfiguration? config,
         IEnumerable<FunctionContract>? availableFunctions
     )
     {

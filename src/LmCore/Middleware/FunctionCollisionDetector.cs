@@ -6,16 +6,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Handles collision detection and name resolution for functions across all providers
+///     Handles collision detection and name resolution for functions across all providers
 /// </summary>
 public partial class FunctionCollisionDetector
 {
-    private readonly ILogger _logger;
     private static readonly Regex InvalidCharPattern = MyRegex();
     private static readonly Regex MultipleUnderscorePattern = MyRegex1();
+    private readonly ILogger _logger;
 
     /// <summary>
-    /// Initializes a new instance of the FunctionCollisionDetector class
+    ///     Initializes a new instance of the FunctionCollisionDetector class
     /// </summary>
     /// <param name="logger">Optional logger for debugging</param>
     public FunctionCollisionDetector(ILogger? logger = null)
@@ -24,7 +24,7 @@ public partial class FunctionCollisionDetector
     }
 
     /// <summary>
-    /// Detects name collisions among functions from different providers and resolves them
+    ///     Detects name collisions among functions from different providers and resolves them
     /// </summary>
     /// <param name="functions">Collection of function descriptors from all providers</param>
     /// <param name="config">Configuration for collision handling</param>
@@ -112,7 +112,7 @@ public partial class FunctionCollisionDetector
     }
 
     /// <summary>
-    /// Determines the registered name for a function based on collision and configuration
+    ///     Determines the registered name for a function based on collision and configuration
     /// </summary>
     private static string DetermineRegisteredName(
         FunctionDescriptor descriptor,
@@ -143,16 +143,14 @@ public partial class FunctionCollisionDetector
 
             return $"{sanitizedPrefix}-{sanitizedFunctionName}";
         }
-        else
-        {
-            // No prefix needed, just sanitize the name
-            return SanitizeName(functionName);
-        }
+
+        // No prefix needed, just sanitize the name
+        return SanitizeName(functionName);
     }
 
     /// <summary>
-    /// Sanitizes a name to comply with OpenAI's function name requirements
-    /// OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
+    ///     Sanitizes a name to comply with OpenAI's function name requirements
+    ///     OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
     /// </summary>
     /// <param name="name">The name to sanitize</param>
     /// <returns>Sanitized name that complies with OpenAI requirements</returns>
@@ -185,7 +183,7 @@ public partial class FunctionCollisionDetector
     }
 
     /// <summary>
-    /// Analyzes function collections for potential collisions without resolving them
+    ///     Analyzes function collections for potential collisions without resolving them
     /// </summary>
     /// <param name="functions">Collection of function descriptors</param>
     /// <returns>Analysis report of collisions</returns>
@@ -238,7 +236,7 @@ public partial class FunctionCollisionDetector
 }
 
 /// <summary>
-/// Report containing collision analysis information
+///     Report containing collision analysis information
 /// </summary>
 public class CollisionAnalysisReport
 {
@@ -249,7 +247,7 @@ public class CollisionAnalysisReport
 }
 
 /// <summary>
-/// Information about a specific function name collision
+///     Information about a specific function name collision
 /// </summary>
 public class CollisionInfo
 {

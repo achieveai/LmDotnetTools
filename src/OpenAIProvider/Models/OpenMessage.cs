@@ -155,7 +155,7 @@ public record OpenUsage
 
     public double? TotalCost { get; init; }
 
-    public bool IsCached { get; init; } = false;
+    public bool IsCached { get; init; }
 
     public static OpenUsage operator +(OpenUsage a, OpenUsage b)
     {

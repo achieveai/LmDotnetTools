@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;
 
 /// <summary>
-/// Builds HttpClient instances using the handler pipeline abstraction.
+///     Builds HttpClient instances using the handler pipeline abstraction.
 /// </summary>
 public static class HttpClientFactory
 {

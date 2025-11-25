@@ -100,7 +100,7 @@ public class ModelFallbackMiddlewareTests
         // Create model agent map with the failing agent first
         var modelAgentMap = new Dictionary<string, IAgent[]>
         {
-            { "model1", new IAgent[] { failingAgent.Object, successAgent } },
+            { "model1", new[] { failingAgent.Object, successAgent } },
         };
 
         // Create middleware
@@ -162,11 +162,11 @@ public class ModelFallbackMiddlewareTests
         // Create model agent map with two failing agents
         var modelAgentMap = new Dictionary<string, IAgent[]>
         {
-            { "model1", new IAgent[] { failingAgent1.Object, failingAgent2.Object } },
+            { "model1", new[] { failingAgent1.Object, failingAgent2.Object } },
         };
 
         // Create middleware with tryDefaultLast = true
-        var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent, tryDefaultLast: true);
+        var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent);
 
         // Create context with model1 specified
         var options = new GenerateReplyOptions { ModelId = modelId };
@@ -228,11 +228,11 @@ public class ModelFallbackMiddlewareTests
         // Create model agent map with two failing agents
         var modelAgentMap = new Dictionary<string, IAgent[]>
         {
-            { "model1", new IAgent[] { failingAgent1.Object, failingAgent2.Object } },
+            { "model1", new[] { failingAgent1.Object, failingAgent2.Object } },
         };
 
         // Create middleware with tryDefaultLast = true
-        var middleware = new ModelFallbackMiddleware(modelAgentMap, failingDefaultAgent.Object, tryDefaultLast: true);
+        var middleware = new ModelFallbackMiddleware(modelAgentMap, failingDefaultAgent.Object);
 
         // Create context with model1 specified
         var options = new GenerateReplyOptions { ModelId = modelId };
@@ -286,11 +286,7 @@ public class ModelFallbackMiddlewareTests
         // Act - we pass a placeholder agent here, the middleware should use model1Agent instead
         var result = await middleware.InvokeStreamingAsync(
             context,
-            new MockStreamingAgent(
-                [
-                    new TextMessage { Text = "Placeholder", Role = Role.Assistant },
-                ]
-            ),
+            new MockStreamingAgent([new TextMessage { Text = "Placeholder", Role = Role.Assistant }]),
             CancellationToken.None
         );
 

@@ -15,16 +15,16 @@ using RerankingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOp
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of LmConfig integration service for centralized model management.
+///     Implementation of LmConfig integration service for centralized model management.
 /// </summary>
 public class LmConfigService : ILmConfigService
 {
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly AppConfig _appConfig;
-    private readonly MemoryServerOptions _memoryOptions;
-    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<LmConfigService> _logger;
+    private readonly MemoryServerOptions _memoryOptions;
     private readonly IModelResolver _modelResolver;
+    private readonly IServiceProvider _serviceProvider;
     private readonly UnifiedAgent _unifiedAgent;
 
     public LmConfigService(
@@ -49,7 +49,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets the optimal model configuration for a specific capability.
+    ///     Gets the optimal model configuration for a specific capability.
     /// </summary>
     public Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default)
     {
@@ -72,7 +72,12 @@ public class LmConfigService : ILmConfigService
         if (_memoryOptions.LmConfig?.CostOptimization?.Enabled == true)
         {
             var maxCost = _memoryOptions.LmConfig.CostOptimization.MaxCostPerRequest;
-            modelsWithCapability = [.. modelsWithCapability.Where(m => (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000)];
+            modelsWithCapability =
+            [
+                .. modelsWithCapability.Where(m =>
+                    (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000
+                ),
+            ];
         }
 
         // Select based on fallback strategy
@@ -103,7 +108,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates an agent for a specific capability using the optimal model.
+    ///     Creates an agent for a specific capability using the optimal model.
     /// </summary>
     public async Task<IAgent> CreateAgentAsync(string capability, CancellationToken cancellationToken = default)
     {
@@ -135,7 +140,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
+    ///     Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
     /// </summary>
     public Task<IAgent> CreateAgentWithModelAsync(
         string modelId,
@@ -191,7 +196,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates an embedding service using environment variables.
+    ///     Creates an embedding service using environment variables.
     /// </summary>
     public Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default)
     {
@@ -235,7 +240,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates a reranking service using environment variables.
+    ///     Creates a reranking service using environment variables.
     /// </summary>
     public Task<IRerankService> CreateRerankServiceAsync(CancellationToken cancellationToken = default)
     {
@@ -266,7 +271,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets the complete application configuration.
+    ///     Gets the complete application configuration.
     /// </summary>
     public AppConfig GetConfiguration()
     {
@@ -274,7 +279,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets all models that support a specific capability.
+    ///     Gets all models that support a specific capability.
     /// </summary>
     public IReadOnlyList<ModelConfig> GetModelsWithCapability(string capability)
     {
@@ -282,7 +287,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Validates that required models are configured for memory operations.
+    ///     Validates that required models are configured for memory operations.
     /// </summary>
     public bool ValidateRequiredModels()
     {
@@ -322,7 +327,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets the effective model name that should be used for API calls for a specific capability.
+    ///     Gets the effective model name that should be used for API calls for a specific capability.
     /// </summary>
     public async Task<string?> GetEffectiveModelNameAsync(
         string capability,
@@ -454,5 +459,6 @@ public class LmConfigService : ILmConfigService
             )
             : config;
     }
+
     #endregion
 }

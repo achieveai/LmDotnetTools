@@ -3,14 +3,14 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Interface for result enrichment engine that provides minimal enrichment to enhance
-/// user understanding without overwhelming the results (max 2 items per result).
+///     Interface for result enrichment engine that provides minimal enrichment to enhance
+///     user understanding without overwhelming the results (max 2 items per result).
 /// </summary>
 public interface IResultEnricher
 {
     /// <summary>
-    /// Enriches unified search results with minimal additional context and related items.
-    /// This method should be called as the final step in the search pipeline.
+    ///     Enriches unified search results with minimal additional context and related items.
+    ///     This method should be called as the final step in the search pipeline.
     /// </summary>
     /// <param name="results">The unified search results to enrich.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -25,7 +25,7 @@ public interface IResultEnricher
     );
 
     /// <summary>
-    /// Checks if the enrichment service is available and configured.
+    ///     Checks if the enrichment service is available and configured.
     /// </summary>
     /// <returns>True if enrichment service is available, false otherwise.</returns>
     bool IsEnrichmentAvailable();

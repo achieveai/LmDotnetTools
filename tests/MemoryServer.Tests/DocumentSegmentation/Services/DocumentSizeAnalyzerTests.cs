@@ -7,13 +7,13 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Unit tests for DocumentSizeAnalyzer service.
+///     Unit tests for DocumentSizeAnalyzer service.
 /// </summary>
 public class DocumentSizeAnalyzerTests
 {
+    private readonly DocumentSizeAnalyzer _analyzer;
     private readonly ILogger<DocumentSizeAnalyzer> _logger;
     private readonly DocumentSegmentationOptions _options;
-    private readonly DocumentSizeAnalyzer _analyzer;
 
     public DocumentSizeAnalyzerTests()
     {

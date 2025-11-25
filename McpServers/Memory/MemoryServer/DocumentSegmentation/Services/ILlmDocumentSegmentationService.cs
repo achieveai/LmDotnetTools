@@ -3,13 +3,13 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for LLM-powered document segmentation services.
-/// Extends the base document segmentation service with LLM-specific capabilities.
+///     Interface for LLM-powered document segmentation services.
+///     Extends the base document segmentation service with LLM-specific capabilities.
 /// </summary>
 public interface ILlmDocumentSegmentationService
 {
     /// <summary>
-    /// Analyzes document content to determine the optimal segmentation strategy using LLM analysis.
+    ///     Analyzes document content to determine the optimal segmentation strategy using LLM analysis.
     /// </summary>
     /// <param name="content">The document content to analyze</param>
     /// <param name="documentType">Type of document for context</param>
@@ -22,7 +22,7 @@ public interface ILlmDocumentSegmentationService
     );
 
     /// <summary>
-    /// Performs LLM-powered document segmentation using the specified strategy.
+    ///     Performs LLM-powered document segmentation using the specified strategy.
     /// </summary>
     /// <param name="content">The document content to segment</param>
     /// <param name="strategy">Segmentation strategy to apply</param>
@@ -37,7 +37,7 @@ public interface ILlmDocumentSegmentationService
     );
 
     /// <summary>
-    /// Validates and enhances segment quality using LLM analysis.
+    ///     Validates and enhances segment quality using LLM analysis.
     /// </summary>
     /// <param name="segments">Segments to validate and enhance</param>
     /// <param name="originalContent">Original document content for context</param>
@@ -50,7 +50,7 @@ public interface ILlmDocumentSegmentationService
     );
 
     /// <summary>
-    /// Checks if LLM services are available and healthy.
+    ///     Checks if LLM services are available and healthy.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if LLM services are available</returns>
@@ -58,32 +58,32 @@ public interface ILlmDocumentSegmentationService
 }
 
 /// <summary>
-/// Strategy recommendation with confidence and reasoning.
+///     Strategy recommendation with confidence and reasoning.
 /// </summary>
 public class StrategyRecommendation
 {
     /// <summary>
-    /// Recommended segmentation strategy
+    ///     Recommended segmentation strategy
     /// </summary>
     public SegmentationStrategy Strategy { get; set; }
 
     /// <summary>
-    /// Confidence score (0.0 to 1.0)
+    ///     Confidence score (0.0 to 1.0)
     /// </summary>
     public double Confidence { get; set; }
 
     /// <summary>
-    /// LLM reasoning for the recommendation
+    ///     LLM reasoning for the recommendation
     /// </summary>
     public string Reasoning { get; set; } = string.Empty;
 
     /// <summary>
-    /// Alternative strategies considered
+    ///     Alternative strategies considered
     /// </summary>
     public List<SegmentationStrategy> Alternatives { get; set; } = [];
 
     /// <summary>
-    /// Additional metadata from LLM analysis
+    ///     Additional metadata from LLM analysis
     /// </summary>
     public Dictionary<string, object> Metadata { get; set; } = [];
 }

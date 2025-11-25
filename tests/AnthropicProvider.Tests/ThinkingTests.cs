@@ -1,4 +1,3 @@
-
 using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests;

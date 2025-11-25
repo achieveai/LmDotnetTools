@@ -12,13 +12,13 @@ namespace MemoryServer.Tests.Tools;
 
 public class MemoryMcpToolsTests
 {
-    private readonly MockMemoryRepository _mockRepository;
-    private readonly Mock<ISessionContextResolver> _mockSessionResolver;
-    private readonly Mock<ILogger<MemoryMcpTools>> _mockLogger;
-    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private static readonly float[] value = [0.1f, 0.2f, 0.3f];
     private readonly MemoryMcpTools _mcpTools;
     private readonly MemoryService _memoryService;
-    private static readonly float[] value = [0.1f, 0.2f, 0.3f];
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private readonly Mock<ILogger<MemoryMcpTools>> _mockLogger;
+    private readonly MockMemoryRepository _mockRepository;
+    private readonly Mock<ISessionContextResolver> _mockSessionResolver;
 
     public MemoryMcpToolsTests()
     {
@@ -94,7 +94,7 @@ public class MemoryMcpToolsTests
         _mockRepository.Reset();
 
         // Act
-        var result = await _mcpTools.AddMemoryAsync(content: "Test memory content for MCP", runId: "test_run");
+        var result = await _mcpTools.AddMemoryAsync("Test memory content for MCP", "test_run");
 
         Debug.WriteLine($"Result: {JsonSerializer.Serialize(result)}");
 
@@ -143,10 +143,10 @@ public class MemoryMcpToolsTests
 
         // Act
         var result = await _mcpTools.SearchMemoriesAsync(
-            query: "searchable test",
-            agentId: "search_agent", // Optional - can be provided to filter by agent
-            runId: "search_run",
-            limit: 10
+            "searchable test",
+            "search_agent", // Optional - can be provided to filter by agent
+            "search_run",
+            10
         );
 
         Debug.WriteLine($"Search result: {JsonSerializer.Serialize(result)}");
@@ -195,9 +195,9 @@ public class MemoryMcpToolsTests
 
         // Act
         var result = await _mcpTools.GetAllMemoriesAsync(
-            agentId: "getall_agent", // Optional - can be provided to filter by agent
-            runId: "getall_run",
-            limit: 100
+            "getall_agent", // Optional - can be provided to filter by agent
+            "getall_run",
+            100
         );
 
         Debug.WriteLine($"Get all result: {JsonSerializer.Serialize(result)}");
@@ -235,11 +235,7 @@ public class MemoryMcpToolsTests
         _mockRepository.AddTestMemory(originalMemory);
 
         // Act
-        var result = await _mcpTools.UpdateMemoryAsync(
-            id: 1,
-            content: "Updated content for update test",
-            runId: "update_run"
-        ); // userId and agentId come from JWT
+        var result = await _mcpTools.UpdateMemoryAsync(1, "Updated content for update test", "update_run"); // userId and agentId come from JWT
 
         Debug.WriteLine($"Update result: {JsonSerializer.Serialize(result)}");
 
@@ -277,7 +273,7 @@ public class MemoryMcpToolsTests
         _mockRepository.AddTestMemory(testMemory);
 
         // Act
-        var result = await _mcpTools.DeleteMemoryAsync(id: 1, runId: "delete_run"); // userId and agentId come from JWT
+        var result = await _mcpTools.DeleteMemoryAsync(1, "delete_run"); // userId and agentId come from JWT
 
         Debug.WriteLine($"Delete result: {JsonSerializer.Serialize(result)}");
 
@@ -320,8 +316,8 @@ public class MemoryMcpToolsTests
 
         // Act
         var result = await _mcpTools.GetMemoryStatsAsync(
-            agentId: "stats_agent", // Optional - can be provided to filter by agent
-            runId: "stats_run"
+            "stats_agent", // Optional - can be provided to filter by agent
+            "stats_run"
         );
 
         Debug.WriteLine($"Stats result: {JsonSerializer.Serialize(result)}");
@@ -346,7 +342,7 @@ public class MemoryMcpToolsTests
         _mockRepository.Reset();
 
         // Act
-        var result = await _mcpTools.AddMemoryAsync(content: "Test memory without connection ID"); // No userId, agentId - they come from JWT
+        var result = await _mcpTools.AddMemoryAsync("Test memory without connection ID"); // No userId, agentId - they come from JWT
 
         Debug.WriteLine($"Result: {JsonSerializer.Serialize(result)}");
 

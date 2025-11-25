@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace MemoryServer.DocumentSegmentation.Tests.Infrastructure;
 
 /// <summary>
-/// Integration tests to validate database schema creation and document segmentation table setup.
+///     Integration tests to validate database schema creation and document segmentation table setup.
 /// </summary>
 public class DatabaseSchemaTests : IAsyncDisposable
 {
@@ -14,6 +14,18 @@ public class DatabaseSchemaTests : IAsyncDisposable
     public DatabaseSchemaTests()
     {
         _sessionFactory = new TestSqliteSessionFactory(new LoggerFactory());
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sessionFactory is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (_sessionFactory is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     [Fact]
@@ -65,6 +77,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             {
                 columnList.Add(reader.GetString(reader.GetOrdinal("name")));
             }
+
             return columnList;
         });
 
@@ -91,7 +104,9 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         foreach (var expectedColumn in expectedColumns)
         {
-            _ = columns.Should().Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
+            _ = columns
+                .Should()
+                .Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
         }
     }
 
@@ -113,6 +128,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             {
                 columnList.Add(reader.GetString(reader.GetOrdinal("name")));
             }
+
             return columnList;
         });
 
@@ -162,6 +178,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
                     indexList.Add(indexName);
                 }
             }
+
             return indexList;
         });
 
@@ -258,17 +275,5 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         _ = user1Count.Should().Be(1, "User1 should see only their segments");
         _ = user2Count.Should().Be(1, "User2 should see only their segments");
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_sessionFactory is IAsyncDisposable asyncDisposable)
-        {
-            await asyncDisposable.DisposeAsync();
-        }
-        else if (_sessionFactory is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
     }
 }

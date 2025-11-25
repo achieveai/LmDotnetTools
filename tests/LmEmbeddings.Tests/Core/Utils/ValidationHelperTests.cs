@@ -9,7 +9,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core.Utils;
 
 /// <summary>
-/// Tests for ValidationHelper utility class ensuring consistent error handling patterns
+///     Tests for ValidationHelper utility class ensuring consistent error handling patterns
 /// </summary>
 public class ValidationHelperTests
 {
@@ -368,11 +368,7 @@ public class ValidationHelperTests
         [
             [item, 1, "Single item collection"],
             [itemArray, 3, "Multiple item collection"],
-            [
-                new List<string> { "test" },
-                1,
-                "List with one item",
-            ],
+            [new List<string> { "test" }, 1, "List with one item"],
         ];
 
     public static IEnumerable<object[]> InvalidCollectionTestCases =>
@@ -453,10 +449,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> ValidEmbeddingRequestTestCases =>
         [
-            [
-                new EmbeddingRequest { Inputs = itemArray9, Model = "test-model" },
-                "Basic valid request",
-            ],
+            [new EmbeddingRequest { Inputs = itemArray9, Model = "test-model" }, "Basic valid request"],
             [
                 new EmbeddingRequest
                 {
@@ -471,16 +464,8 @@ public class ValidationHelperTests
     public static IEnumerable<object[]> InvalidEmbeddingRequestTestCases =>
         [
             [null!, typeof(ArgumentNullException), "Null request"],
-            [
-                new EmbeddingRequest { Inputs = itemArray11, Model = "" },
-                typeof(ArgumentException),
-                "Empty model",
-            ],
-            [
-                new EmbeddingRequest { Inputs = [], Model = "test-model" },
-                typeof(ArgumentException),
-                "Empty inputs",
-            ],
+            [new EmbeddingRequest { Inputs = itemArray11, Model = "" }, typeof(ArgumentException), "Empty model"],
+            [new EmbeddingRequest { Inputs = [], Model = "test-model" }, typeof(ArgumentException), "Empty inputs"],
         ];
 
     private static readonly string[] item = ["item1"];

@@ -4,18 +4,21 @@ using AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
 using AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Tracking;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.Extensions;
 
 /// <summary>
-/// Extension methods for registering AG-UI services in the dependency injection container
+///     Extension methods for registering AG-UI services in the dependency injection container
 /// </summary>
 public static class AgUiServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds AG-UI services to the service collection
+    ///     Adds AG-UI services to the service collection
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="configureOptions">Optional configuration delegate</param>
@@ -60,29 +63,28 @@ public static class AgUiServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers core AG-UI Protocol layer services
+    ///     Registers core AG-UI Protocol layer services
     /// </summary>
     private static void RegisterProtocolServices(IServiceCollection services)
     {
         // Event publisher (singleton for all sessions)
         services.TryAddSingleton<IEventPublisher>(provider =>
         {
-            var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgUiOptions>>().Value;
-            var logger = provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ChannelEventPublisher>>();
+            var options = provider.GetRequiredService<IOptions<AgUiOptions>>().Value;
+            var logger = provider.GetRequiredService<ILogger<ChannelEventPublisher>>();
             return new ChannelEventPublisher(logger, options.EventBufferSize);
         });
 
         // Message converter
         services.TryAddSingleton<IMessageConverter>(provider =>
         {
-            var toolCallTracker = provider.GetRequiredService<Protocol.Tracking.IToolCallTracker>();
-            var logger =
-                provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Protocol.Converters.MessageToAgUiConverter>>();
-            return new Protocol.Converters.MessageToAgUiConverter(toolCallTracker, logger);
+            var toolCallTracker = provider.GetRequiredService<IToolCallTracker>();
+            var logger = provider.GetRequiredService<ILogger<MessageToAgUiConverter>>();
+            return new MessageToAgUiConverter(toolCallTracker, logger);
         });
 
         // Tool call tracker
-        services.TryAddSingleton<Protocol.Tracking.IToolCallTracker, Protocol.Tracking.ToolCallTracker>();
+        services.TryAddSingleton<IToolCallTracker, ToolCallTracker>();
 
         // LmCore to AG-UI converter
         services.TryAddSingleton<ILmCoreToAgUiConverter, LmCoreToAgUiConverter>();
@@ -92,15 +94,14 @@ public static class AgUiServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers ASP.NET Core specific services
+    ///     Registers ASP.NET Core specific services
     /// </summary>
     private static void RegisterAspNetCoreServices(IServiceCollection services)
     {
         // WebSocket connection manager (singleton)
         services.TryAddSingleton<IWebSocketConnectionManager>(provider =>
         {
-            var logger =
-                provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebSocketConnectionManager>>();
+            var logger = provider.GetRequiredService<ILogger<WebSocketConnectionManager>>();
             return new WebSocketConnectionManager(logger);
         });
 
@@ -109,7 +110,7 @@ public static class AgUiServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Conditionally registers persistence services if enabled in options
+    ///     Conditionally registers persistence services if enabled in options
     /// </summary>
     private static void RegisterPersistenceServices(IServiceCollection services)
     {
@@ -118,14 +119,14 @@ public static class AgUiServiceCollectionExtensions
         // Register persistence services only if enabled
         services.TryAddSingleton(provider =>
         {
-            var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgUiOptions>>().Value;
+            var options = provider.GetRequiredService<IOptions<AgUiOptions>>().Value;
             if (!options.EnablePersistence)
             {
                 return null as IDbConnectionFactory;
             }
 
             var connectionString = $"Data Source={options.DatabasePath}";
-            var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<SqliteConnectionFactory>>();
+            var logger = provider.GetService<ILogger<SqliteConnectionFactory>>();
             return new SqliteConnectionFactory(connectionString, options.MaxDatabaseConnections, logger);
         });
 
@@ -137,7 +138,7 @@ public static class AgUiServiceCollectionExtensions
                 return null as ISessionRepository;
             }
 
-            var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<SessionRepository>>();
+            var logger = provider.GetService<ILogger<SessionRepository>>();
             return new SessionRepository(factory, logger);
         });
 
@@ -149,7 +150,7 @@ public static class AgUiServiceCollectionExtensions
                 return null as IMessageRepository;
             }
 
-            var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<MessageRepository>>();
+            var logger = provider.GetService<ILogger<MessageRepository>>();
             return new MessageRepository(factory, logger);
         });
 
@@ -161,7 +162,7 @@ public static class AgUiServiceCollectionExtensions
                 return null as IEventRepository;
             }
 
-            var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<EventRepository>>();
+            var logger = provider.GetService<ILogger<EventRepository>>();
             return new EventRepository(factory, logger);
         });
 
@@ -173,7 +174,7 @@ public static class AgUiServiceCollectionExtensions
                 return null;
             }
 
-            var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<DatabaseInitializer>>();
+            var logger = provider.GetService<ILogger<DatabaseInitializer>>();
             return new DatabaseInitializer(factory, logger);
         });
 #pragma warning restore CS8634

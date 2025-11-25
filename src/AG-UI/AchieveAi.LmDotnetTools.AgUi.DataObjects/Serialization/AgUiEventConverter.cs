@@ -5,12 +5,12 @@ using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Serialization;
 
 /// <summary>
-/// Custom JSON converter for polymorphic AG-UI event serialization/deserialization
+///     Custom JSON converter for polymorphic AG-UI event serialization/deserialization
 /// </summary>
 public class AgUiEventConverter : JsonConverter<AgUiEventBase>
 {
     /// <summary>
-    /// Reads and converts the JSON to an AG-UI event
+    ///     Reads and converts the JSON to an AG-UI event
     /// </summary>
     public override AgUiEventBase? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -63,7 +63,7 @@ public class AgUiEventConverter : JsonConverter<AgUiEventBase>
     }
 
     /// <summary>
-    /// Writes the AG-UI event to JSON
+    ///     Writes the AG-UI event to JSON
     /// </summary>
     public override void Write(Utf8JsonWriter writer, AgUiEventBase value, JsonSerializerOptions options)
     {

@@ -4,106 +4,11 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Comprehensive tests for Entity model including validation, serialization, and session context.
-/// Uses data-driven testing approach for maximum coverage with minimal test methods.
+///     Comprehensive tests for Entity model including validation, serialization, and session context.
+///     Uses data-driven testing approach for maximum coverage with minimal test methods.
 /// </summary>
 public class EntityTests
 {
-    #region Entity Creation and Validation Tests
-
-    [Theory]
-    [MemberData(nameof(ValidEntityTestCases))]
-    public void CreateEntity_WithValidData_ShouldSucceed(
-        string testName,
-        string name,
-        string? type,
-        List<string>? aliases,
-        string userId,
-        string? agentId,
-        string? runId,
-        float confidence,
-        List<int>? sourceMemoryIds,
-        Dictionary<string, object>? metadata
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing entity creation: {testName}");
-        Debug.WriteLine($"Input - Name: {name}, Type: {type}, UserId: {userId}");
-
-        // Act
-        var entity = new Entity
-        {
-            Name = name,
-            Type = type,
-            Aliases = aliases,
-            UserId = userId,
-            AgentId = agentId,
-            RunId = runId,
-            Confidence = confidence,
-            SourceMemoryIds = sourceMemoryIds,
-            Metadata = metadata,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert
-        Assert.Equal(name, entity.Name);
-        Assert.Equal(type, entity.Type);
-        Assert.Equal(aliases, entity.Aliases);
-        Assert.Equal(userId, entity.UserId);
-        Assert.Equal(agentId, entity.AgentId);
-        Assert.Equal(runId, entity.RunId);
-        Assert.Equal(confidence, entity.Confidence);
-        Assert.Equal(sourceMemoryIds, entity.SourceMemoryIds);
-        Assert.Equal(metadata, entity.Metadata);
-
-        Debug.WriteLine($"✅ Entity created successfully with ID: {entity.Id}");
-        Debug.WriteLine($"   Confidence: {entity.Confidence}, Aliases: {aliases?.Count ?? 0}");
-    }
-
-    [Theory]
-    [MemberData(nameof(InvalidEntityTestCases))]
-    public void CreateEntity_WithInvalidData_ShouldHandleGracefully(
-        string testName,
-        string name,
-        string userId,
-        float confidence,
-        string expectedIssue
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing invalid entity creation: {testName}");
-        Debug.WriteLine($"Expected issue: {expectedIssue}");
-
-        // Act
-        var entity = new Entity
-        {
-            Name = name,
-            UserId = userId,
-            Confidence = confidence,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert - Entity creation doesn't throw, but we can validate the data
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(entity.Name), "Name should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
-        }
-        if (confidence is < 0 or > 1)
-        {
-            Assert.True(entity.Confidence is < 0 or > 1, "Confidence should be out of valid range");
-        }
-
-        Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");
-    }
-
-    #endregion
-
     #region Session Context Tests
 
     [Theory]
@@ -195,7 +100,104 @@ public class EntityTests
             Assert.True(originalEntity.SourceMemoryIds.SequenceEqual(deserializedEntity.SourceMemoryIds));
         }
 
-        Debug.WriteLine($"✅ Serialization successful - all fields preserved");
+        Debug.WriteLine("✅ Serialization successful - all fields preserved");
+    }
+
+    #endregion
+
+    #region Entity Creation and Validation Tests
+
+    [Theory]
+    [MemberData(nameof(ValidEntityTestCases))]
+    public void CreateEntity_WithValidData_ShouldSucceed(
+        string testName,
+        string name,
+        string? type,
+        List<string>? aliases,
+        string userId,
+        string? agentId,
+        string? runId,
+        float confidence,
+        List<int>? sourceMemoryIds,
+        Dictionary<string, object>? metadata
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing entity creation: {testName}");
+        Debug.WriteLine($"Input - Name: {name}, Type: {type}, UserId: {userId}");
+
+        // Act
+        var entity = new Entity
+        {
+            Name = name,
+            Type = type,
+            Aliases = aliases,
+            UserId = userId,
+            AgentId = agentId,
+            RunId = runId,
+            Confidence = confidence,
+            SourceMemoryIds = sourceMemoryIds,
+            Metadata = metadata,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert
+        Assert.Equal(name, entity.Name);
+        Assert.Equal(type, entity.Type);
+        Assert.Equal(aliases, entity.Aliases);
+        Assert.Equal(userId, entity.UserId);
+        Assert.Equal(agentId, entity.AgentId);
+        Assert.Equal(runId, entity.RunId);
+        Assert.Equal(confidence, entity.Confidence);
+        Assert.Equal(sourceMemoryIds, entity.SourceMemoryIds);
+        Assert.Equal(metadata, entity.Metadata);
+
+        Debug.WriteLine($"✅ Entity created successfully with ID: {entity.Id}");
+        Debug.WriteLine($"   Confidence: {entity.Confidence}, Aliases: {aliases?.Count ?? 0}");
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidEntityTestCases))]
+    public void CreateEntity_WithInvalidData_ShouldHandleGracefully(
+        string testName,
+        string name,
+        string userId,
+        float confidence,
+        string expectedIssue
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing invalid entity creation: {testName}");
+        Debug.WriteLine($"Expected issue: {expectedIssue}");
+
+        // Act
+        var entity = new Entity
+        {
+            Name = name,
+            UserId = userId,
+            Confidence = confidence,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert - Entity creation doesn't throw, but we can validate the data
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(entity.Name), "Name should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
+        }
+
+        if (confidence is < 0 or > 1)
+        {
+            Assert.True(entity.Confidence is < 0 or > 1, "Confidence should be out of valid range");
+        }
+
+        Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");
     }
 
     #endregion
@@ -205,18 +207,7 @@ public class EntityTests
     public static IEnumerable<object?[]> ValidEntityTestCases =>
         [
             // Format: testName, name, type, aliases, userId, agentId, runId, confidence, sourceMemoryIds, metadata
-            [
-                "Basic entity with minimal data",
-                "John Doe",
-                "person",
-                null,
-                "user123",
-                null,
-                null,
-                0.8f,
-                null,
-                null,
-            ],
+            ["Basic entity with minimal data", "John Doe", "person", null, "user123", null, null, 0.8f, null, null],
             [
                 "Entity with aliases",
                 "New York City",
@@ -280,20 +271,8 @@ public class EntityTests
             ["Empty userId", "Valid Name", "", 0.8f, "UserId is empty"],
             ["Negative confidence", "Valid Name", "user123", -0.1f, "Confidence below 0"],
             ["Confidence above 1", "Valid Name", "user123", 1.1f, "Confidence above 1"],
-            [
-                "Extreme negative confidence",
-                "Valid Name",
-                "user123",
-                -999.0f,
-                "Extreme negative confidence",
-            ],
-            [
-                "Extreme positive confidence",
-                "Valid Name",
-                "user123",
-                999.0f,
-                "Extreme positive confidence",
-            ],
+            ["Extreme negative confidence", "Valid Name", "user123", -999.0f, "Extreme negative confidence"],
+            ["Extreme positive confidence", "Valid Name", "user123", 999.0f, "Extreme positive confidence"],
         ];
 
     public static IEnumerable<object?[]> SessionContextTestCases =>

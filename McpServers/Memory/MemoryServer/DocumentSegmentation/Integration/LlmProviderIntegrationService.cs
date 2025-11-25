@@ -9,17 +9,17 @@ using MemoryServer.DocumentSegmentation.Services;
 namespace MemoryServer.DocumentSegmentation.Integration;
 
 /// <summary>
-/// Service that integrates with LmConfig to provide LLM-powered document segmentation.
-/// Supports multiple providers (OpenAI, Anthropic) with automatic failover.
+///     Service that integrates with LmConfig to provide LLM-powered document segmentation.
+///     Supports multiple providers (OpenAI, Anthropic) with automatic failover.
 /// </summary>
 public class LlmProviderIntegrationService : ILlmProviderIntegrationService
 {
     private readonly IProviderAgentFactory _agentFactory;
-    private readonly IModelResolver _modelResolver;
-    private readonly ISegmentationPromptManager _promptManager;
+    private readonly LlmProviderConfiguration _configuration;
     private readonly IDocumentAnalysisService _documentAnalysisService;
     private readonly ILogger<LlmProviderIntegrationService> _logger;
-    private readonly LlmProviderConfiguration _configuration;
+    private readonly IModelResolver _modelResolver;
+    private readonly ISegmentationPromptManager _promptManager;
 
     public LlmProviderIntegrationService(
         IProviderAgentFactory agentFactory,
@@ -40,7 +40,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
     }
 
     /// <summary>
-    /// Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
+    ///     Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
     /// </summary>
     public async Task<StrategyRecommendation> AnalyzeOptimalStrategyAsync(
         string content,
@@ -99,7 +99,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
     }
 
     /// <summary>
-    /// Tests connectivity to LLM providers.
+    ///     Tests connectivity to LLM providers.
     /// </summary>
     public async Task<bool> TestConnectivityAsync(CancellationToken cancellationToken = default)
     {

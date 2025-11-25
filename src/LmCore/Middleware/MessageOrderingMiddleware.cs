@@ -6,23 +6,20 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that assigns messageOrderIdx to messages within the same generation.
-/// This middleware should be positioned immediately after the provider agent and before MessageAggregationMiddleware.
-/// It assigns sequential indices (0, 1, 2...) to messages with the same GenerationId.
+///     Middleware that assigns messageOrderIdx to messages within the same generation.
+///     This middleware should be positioned immediately after the provider agent and before MessageAggregationMiddleware.
+///     It assigns sequential indices (0, 1, 2...) to messages with the same GenerationId.
 /// </summary>
 public class MessageOrderingMiddleware : IStreamingMiddleware
 {
     private readonly ILogger<MessageOrderingMiddleware> _logger;
 
     /// <summary>
-    /// Creates a new instance of MessageOrderingMiddleware
+    ///     Creates a new instance of MessageOrderingMiddleware
     /// </summary>
     /// <param name="name">Optional name for this middleware instance</param>
     /// <param name="logger">Optional logger</param>
-    public MessageOrderingMiddleware(
-        string? name = null,
-        ILogger<MessageOrderingMiddleware>? logger = null
-    )
+    public MessageOrderingMiddleware(string? name = null, ILogger<MessageOrderingMiddleware>? logger = null)
     {
         _logger = logger ?? NullLogger<MessageOrderingMiddleware>.Instance;
         Name = name ?? nameof(MessageOrderingMiddleware);
@@ -41,14 +38,11 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
         var replies = await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
 
         // Assign message ordering
-        var orderedMessages = MessageOrderingMiddleware.AssignMessageOrdering(replies);
+        var orderedMessages = AssignMessageOrdering(replies);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug(
-                "Assigned messageOrderIdx to {MessageCount} messages",
-                orderedMessages.Count()
-            );
+            _logger.LogDebug("Assigned messageOrderIdx to {MessageCount} messages", orderedMessages.Count());
         }
 
         return orderedMessages;
@@ -69,11 +63,11 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
         );
 
         // Wrap the async enumerable to assign ordering on the fly
-        return MessageOrderingMiddleware.AssignMessageOrderingStreaming(streamingResponse);
+        return AssignMessageOrderingStreaming(streamingResponse);
     }
 
     /// <summary>
-    /// Assigns messageOrderIdx to messages with the same GenerationId
+    ///     Assigns messageOrderIdx to messages with the same GenerationId
     /// </summary>
     private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
     {
@@ -133,7 +127,10 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
                     MessageOrderIdx = orderIdx,
                 },
                 ToolsCallAggregateMessage m => new ToolsCallAggregateMessage(
-                    m.ToolsCallMessage with { MessageOrderIdx = orderIdx },
+                    m.ToolsCallMessage with
+                    {
+                        MessageOrderIdx = orderIdx,
+                    },
                     m.ToolsCallResult,
                     m.FromAgent
                 ),
@@ -143,11 +140,9 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Assigns messageOrderIdx to streaming messages on the fly
+    ///     Assigns messageOrderIdx to streaming messages on the fly
     /// </summary>
-    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
-        IAsyncEnumerable<IMessage> messages
-    )
+    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(IAsyncEnumerable<IMessage> messages)
     {
         var orderIndexByGeneration = new Dictionary<string, int>();
 
@@ -204,7 +199,10 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
                     MessageOrderIdx = orderIdx,
                 },
                 ToolsCallAggregateMessage m => new ToolsCallAggregateMessage(
-                    m.ToolsCallMessage with { MessageOrderIdx = orderIdx },
+                    m.ToolsCallMessage with
+                    {
+                        MessageOrderIdx = orderIdx,
+                    },
                     m.ToolsCallResult,
                     m.FromAgent
                 ),

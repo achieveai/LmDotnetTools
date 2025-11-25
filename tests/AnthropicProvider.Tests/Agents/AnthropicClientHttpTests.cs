@@ -6,8 +6,8 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 /// <summary>
-/// HTTP-level unit tests for AnthropicClient using shared test infrastructure
-/// Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
+///     HTTP-level unit tests for AnthropicClient using shared test infrastructure
+///     Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
 /// </summary>
 public class AnthropicClientHttpTests
 {
@@ -24,11 +24,11 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Test response from Claude", "claude-3-sonnet-20240229");
+        var successResponse = CreateAnthropicSuccessResponse("Test response from Claude");
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 2,
-            successResponse: successResponse,
-            failureStatus: HttpStatusCode.ServiceUnavailable
+            2,
+            successResponse,
+            HttpStatusCode.ServiceUnavailable
         );
 
         var httpClient = new HttpClient(fakeHandler);
@@ -40,13 +40,10 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages =
             [
-                new()
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Hello Claude" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello Claude" }],
                 },
             ],
         };
@@ -105,7 +102,7 @@ public class AnthropicClientHttpTests
     )
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Success", "claude-3-sonnet-20240229");
+        var successResponse = CreateAnthropicSuccessResponse("Success");
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
@@ -117,13 +114,10 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages =
             [
-                new()
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Test" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Test" }],
                 },
             ],
         };
@@ -149,8 +143,8 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_AnthropicUsageMapping_ShouldMapTokensCorrectly()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 50, outputTokens: 25);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse, HttpStatusCode.OK);
+        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(50, 25);
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -161,13 +155,10 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages =
             [
-                new()
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Hello" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
                 },
             ],
         };
@@ -194,9 +185,9 @@ public class AnthropicClientHttpTests
         // Arrange
         var streamingEvents = CreateAnthropicStreamingResponse();
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 1,
-            successResponse: string.Join("", streamingEvents),
-            failureStatus: HttpStatusCode.ServiceUnavailable
+            1,
+            string.Join("", streamingEvents),
+            HttpStatusCode.ServiceUnavailable
         );
 
         var httpClient = new HttpClient(fakeHandler);
@@ -209,13 +200,10 @@ public class AnthropicClientHttpTests
             Stream = true,
             Messages =
             [
-                new()
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Hello" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
                 },
             ],
         };
@@ -243,8 +231,8 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 100, outputTokens: 50);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse, HttpStatusCode.OK);
+        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(100, 50);
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -255,13 +243,10 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages =
             [
-                new()
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Complex reasoning task" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Complex reasoning task" }],
                 },
             ],
         };
@@ -293,10 +278,7 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content =
-            [
-                new AnthropicResponseTextContent { Type = "text", Text = "Test response from Claude" },
-            ],
+            Content = [new AnthropicResponseTextContent { Type = "text", Text = "Test response from Claude" }],
             Usage = new AnthropicUsage { InputTokens = 10, OutputTokens = 5 },
         };
     }
@@ -309,10 +291,7 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content =
-            [
-                new AnthropicResponseTextContent { Type = "text", Text = "Test response with specific usage" },
-            ],
+            Content = [new AnthropicResponseTextContent { Type = "text", Text = "Test response with specific usage" }],
             Usage = new AnthropicUsage { InputTokens = inputTokens, OutputTokens = outputTokens },
         };
     }
@@ -366,7 +345,7 @@ public class AnthropicClientHttpTests
     }
 
     /// <summary>
-    /// Creates an Anthropic-specific successful response JSON
+    ///     Creates an Anthropic-specific successful response JSON
     /// </summary>
     private static string CreateAnthropicSuccessResponse(
         string content = "Hello! How can I help you today?",
@@ -396,7 +375,7 @@ public class AnthropicClientHttpTests
     }
 
     /// <summary>
-    /// Creates an Anthropic-specific successful response JSON with specific usage
+    ///     Creates an Anthropic-specific successful response JSON with specific usage
     /// </summary>
     private static string CreateAnthropicSuccessResponseWithSpecificUsage(int inputTokens, int outputTokens)
     {

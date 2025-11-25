@@ -6,14 +6,15 @@ using Moq;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Comprehensive tests for GraphDecisionEngine including conflict resolution, decision logic, and confidence calculations.
-/// Uses data-driven testing approach with mocked dependencies for isolated testing.
+///     Comprehensive tests for GraphDecisionEngine including conflict resolution, decision logic, and confidence
+///     calculations.
+///     Uses data-driven testing approach with mocked dependencies for isolated testing.
 /// </summary>
 public class GraphDecisionEngineTests
 {
-    private readonly Mock<IGraphRepository> _mockRepository;
-    private readonly Mock<ILogger<GraphDecisionEngine>> _mockLogger;
     private readonly GraphDecisionEngine _decisionEngine;
+    private readonly Mock<ILogger<GraphDecisionEngine>> _mockLogger;
+    private readonly Mock<IGraphRepository> _mockRepository;
 
     public GraphDecisionEngineTests()
     {
@@ -225,13 +226,15 @@ public class GraphDecisionEngineTests
                 "New entities and relationships",
                 new List<Entity>
                 {
-                    new() {
+                    new()
+                    {
                         Name = "John",
                         Type = "person",
                         UserId = "user123",
                         Confidence = 0.8f,
                     },
-                    new() {
+                    new()
+                    {
                         Name = "Pizza",
                         Type = "food",
                         UserId = "user123",
@@ -240,7 +243,8 @@ public class GraphDecisionEngineTests
                 },
                 new List<Relationship>
                 {
-                    new() {
+                    new()
+                    {
                         Source = "John",
                         RelationshipType = "likes",
                         Target = "Pizza",
@@ -263,13 +267,15 @@ public class GraphDecisionEngineTests
                 "Mixed new and existing entities",
                 new List<Entity>
                 {
-                    new() {
+                    new()
+                    {
                         Name = "John",
                         Type = "person",
                         UserId = "user123",
                         Confidence = 0.9f,
                     }, // Higher confidence
-                    new() {
+                    new()
+                    {
                         Name = "Alice",
                         Type = "person",
                         UserId = "user123",
@@ -279,7 +285,8 @@ public class GraphDecisionEngineTests
                 new List<Relationship>(),
                 new List<Entity>
                 {
-                    new() {
+                    new()
+                    {
                         Id = 1,
                         Name = "John",
                         Type = "person",

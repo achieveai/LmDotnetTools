@@ -5,8 +5,8 @@ using Microsoft.Extensions.Options;
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
 /// <summary>
-/// Implementation of IModelResolver that handles complex provider resolution logic
-/// based on configuration, availability, and selection criteria.
+///     Implementation of IModelResolver that handles complex provider resolution logic
+///     based on configuration, availability, and selection criteria.
 /// </summary>
 public class ModelResolver : IModelResolver
 {
@@ -286,7 +286,7 @@ public class ModelResolver : IModelResolver
             {
                 if (string.IsNullOrWhiteSpace(provider.Name))
                 {
-                    providerErrors.Add($"Provider with empty name");
+                    providerErrors.Add("Provider with empty name");
                     continue;
                 }
 
@@ -360,11 +360,14 @@ public class ModelResolver : IModelResolver
         }
 
         // Check cost limits
-        return
-            (criteria.MaxPromptCostPerMillion.HasValue
-            && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value)
-            || (criteria.MaxCompletionCostPerMillion.HasValue
-                && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value);
+        return (
+                criteria.MaxPromptCostPerMillion.HasValue
+                && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
+            )
+            || (
+                criteria.MaxCompletionCostPerMillion.HasValue
+                && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value
+            );
     }
 
     private static bool ShouldExcludeSubProvider(SubProviderConfig subProvider, ProviderSelectionCriteria criteria)
@@ -382,11 +385,14 @@ public class ModelResolver : IModelResolver
         }
 
         // Check cost limits
-        return
-            (criteria.MaxPromptCostPerMillion.HasValue
-            && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value)
-            || (criteria.MaxCompletionCostPerMillion.HasValue
-                && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value);
+        return (
+                criteria.MaxPromptCostPerMillion.HasValue
+                && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
+            )
+            || (
+                criteria.MaxCompletionCostPerMillion.HasValue
+                && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value
+            );
     }
 
     private static IReadOnlyList<ProviderResolution> SortProvidersByPreference(

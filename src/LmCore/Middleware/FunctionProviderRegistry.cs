@@ -3,14 +3,14 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Default implementation of IFunctionProviderRegistry
+///     Default implementation of IFunctionProviderRegistry
 /// </summary>
 public class FunctionProviderRegistry : IFunctionProviderRegistry
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly List<IFunctionProvider> _providers = [];
     private readonly List<Func<IServiceProvider, IFunctionProvider>> _factories = [];
     private readonly List<Type> _providerTypes = [];
+    private readonly List<IFunctionProvider> _providers = [];
+    private readonly IServiceProvider _serviceProvider;
 
     public FunctionProviderRegistry(IServiceProvider serviceProvider)
     {

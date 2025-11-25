@@ -1,8 +1,9 @@
 using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
+
 /// <summary>
-/// Helper for test debugging and diagnostics
+///     Helper for test debugging and diagnostics
 /// </summary>
 public static class TestLogger
 {

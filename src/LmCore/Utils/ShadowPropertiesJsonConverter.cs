@@ -6,20 +6,24 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// A base JsonConverter for types that use shadow properties pattern, where extra properties
-/// are stored in an ExtraProperties dictionary but serialized inline with the main properties.
+///     A base JsonConverter for types that use shadow properties pattern, where extra properties
+///     are stored in an ExtraProperties dictionary but serialized inline with the main properties.
 /// </summary>
 public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     where T : class
 {
-    private readonly PropertyInfo[]? _jsonProperties;
     private readonly PropertyInfo? _extraPropertiesProperty;
+    private readonly PropertyInfo[]? _jsonProperties;
 
     protected ShadowPropertiesJsonConverter()
     {
         var type = typeof(T);
         // Get all properties with JsonPropertyName attribute
-        _jsonProperties = [.. type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)];
+        _jsonProperties =
+        [
+            .. type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null),
+        ];
 
         // Find ImmutableDictionary property marked as extra properties storage
         _extraPropertiesProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -135,13 +139,13 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     }
 
     /// <summary>
-    /// Creates a new instance of the type being deserialized.
+    ///     Creates a new instance of the type being deserialized.
     /// </summary>
     protected abstract T CreateInstance();
 
     /// <summary>
-    /// Gets the extra properties dictionary from the instance.
-    /// Can be overridden if the property can't be found via reflection.
+    ///     Gets the extra properties dictionary from the instance.
+    ///     Can be overridden if the property can't be found via reflection.
     /// </summary>
     protected virtual ImmutableDictionary<string, object?> GetExtraProperties(T value)
     {
@@ -152,8 +156,8 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     }
 
     /// <summary>
-    /// Sets the extra properties dictionary on the instance.
-    /// Can be overridden if the property can't be found via reflection.
+    ///     Sets the extra properties dictionary on the instance.
+    ///     Can be overridden if the property can't be found via reflection.
     /// </summary>
     protected virtual T SetExtraProperties(T instance, ImmutableDictionary<string, object?> extraProperties)
     {
@@ -162,11 +166,15 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     }
 
     /// <summary>
-    /// Reads a known property from the JSON reader. Override this to handle properties that can't be handled via reflection.
+    ///     Reads a known property from the JSON reader. Override this to handle properties that can't be handled via
+    ///     reflection.
     /// </summary>
-    /// <returns>A tuple containing:
-    /// - bool: True if the property was handled, false if it should be handled by reflection or treated as an extra property
-    /// - T: The potentially updated instance (for record types)</returns>
+    /// <returns>
+    ///     A tuple containing:
+    ///     - bool: True if the property was handled, false if it should be handled by reflection or treated as an extra
+    ///     property
+    ///     - T: The potentially updated instance (for record types)
+    /// </returns>
     protected virtual (bool handled, T instance) ReadProperty(
         ref Utf8JsonReader reader,
         T instance,
@@ -178,7 +186,8 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     }
 
     /// <summary>
-    /// Writes the known properties to the JSON writer. Override this to handle properties that can't be handled via reflection.
+    ///     Writes the known properties to the JSON writer. Override this to handle properties that can't be handled via
+    ///     reflection.
     /// </summary>
     protected virtual void WriteProperties(Utf8JsonWriter writer, T value, JsonSerializerOptions options) { }
 
@@ -199,14 +208,17 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
                 {
                     return intValue;
                 }
+
                 if (reader.TryGetInt64(out var longValue))
                 {
                     return longValue;
                 }
+
                 if (reader.TryGetDouble(out var doubleValue))
                 {
                     return doubleValue;
                 }
+
                 return reader.GetDecimal();
             case JsonTokenType.StartObject:
                 using (var document = JsonDocument.ParseValue(ref reader))

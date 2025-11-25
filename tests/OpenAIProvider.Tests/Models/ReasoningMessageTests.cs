@@ -17,7 +17,7 @@ public class ReasoningMessageTests
         };
 
         // Act
-        var coreMessages = chatMessage.ToMessages(name: "TestAgent").ToArray();
+        var coreMessages = chatMessage.ToMessages("TestAgent").ToArray();
 
         // Assert ordering and types
         Assert.Equal(2, coreMessages.Length);
@@ -41,13 +41,13 @@ public class ReasoningMessageTests
             Role = RoleEnum.Assistant,
             ReasoningDetails =
             [
-                new() { Type = "reasoning.encrypted", Data = "ciphertext123" },
+                new ChatMessage.ReasoningDetail { Type = "reasoning.encrypted", Data = "ciphertext123" },
             ],
             Content = ChatMessage.CreateContent("Answer without chain-of-thought"),
         };
 
         // Act
-        var coreMessages = chatMessage.ToMessages(name: "TestAgent").ToArray();
+        var coreMessages = chatMessage.ToMessages("TestAgent").ToArray();
 
         // Assert
         Assert.Equal(2, coreMessages.Length);

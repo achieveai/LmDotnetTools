@@ -3,13 +3,13 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Interface for the graph memory service that orchestrates graph processing and integrates with the memory system.
-/// Implements the Facade pattern to provide a unified interface for graph operations.
+///     Interface for the graph memory service that orchestrates graph processing and integrates with the memory system.
+///     Implements the Facade pattern to provide a unified interface for graph operations.
 /// </summary>
 public interface IGraphMemoryService
 {
     /// <summary>
-    /// Processes a memory and updates the knowledge graph with extracted entities and relationships.
+    ///     Processes a memory and updates the knowledge graph with extracted entities and relationships.
     /// </summary>
     /// <param name="memory">The memory to process.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -22,7 +22,7 @@ public interface IGraphMemoryService
     );
 
     /// <summary>
-    /// Searches for memories using both traditional search and graph traversal.
+    ///     Searches for memories using both traditional search and graph traversal.
     /// </summary>
     /// <param name="query">Search query.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -39,7 +39,7 @@ public interface IGraphMemoryService
     );
 
     /// <summary>
-    /// Gets entities related to a specific entity through graph traversal.
+    ///     Gets entities related to a specific entity through graph traversal.
     /// </summary>
     /// <param name="entityName">Name of the entity to start traversal from.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -56,7 +56,7 @@ public interface IGraphMemoryService
     );
 
     /// <summary>
-    /// Gets comprehensive statistics about the knowledge graph.
+    ///     Gets comprehensive statistics about the knowledge graph.
     /// </summary>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -67,7 +67,7 @@ public interface IGraphMemoryService
     );
 
     /// <summary>
-    /// Rebuilds the knowledge graph from existing memories.
+    ///     Rebuilds the knowledge graph from existing memories.
     /// </summary>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -78,7 +78,7 @@ public interface IGraphMemoryService
     );
 
     /// <summary>
-    /// Validates the integrity of the knowledge graph.
+    ///     Validates the integrity of the knowledge graph.
     /// </summary>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

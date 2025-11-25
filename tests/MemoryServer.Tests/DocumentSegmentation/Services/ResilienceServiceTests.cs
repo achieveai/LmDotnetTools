@@ -6,16 +6,16 @@ using Moq;
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// Tests for ResilienceService implementation.
-/// Validates comprehensive error handling, circuit breaker integration, and graceful degradation.
-/// Covers AC-4.1, AC-4.2, AC-4.3, AC-4.4, and AC-5.1 to AC-5.4 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests for ResilienceService implementation.
+///     Validates comprehensive error handling, circuit breaker integration, and graceful degradation.
+///     Covers AC-4.1, AC-4.2, AC-4.3, AC-4.4, and AC-5.1 to AC-5.4 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public class ResilienceServiceTests
 {
-    private readonly Mock<ICircuitBreakerService> _mockCircuitBreaker;
-    private readonly Mock<IRetryPolicyService> _mockRetryPolicy;
-    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
     private readonly GracefulDegradationConfiguration _degradationConfig;
+    private readonly Mock<ICircuitBreakerService> _mockCircuitBreaker;
+    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
+    private readonly Mock<IRetryPolicyService> _mockRetryPolicy;
     private readonly ResilienceService _service;
 
     public ResilienceServiceTests()
@@ -39,6 +39,19 @@ public class ResilienceServiceTests
             _mockLogger.Object
         );
     }
+
+    /// <summary>
+    ///     Test data for various error scenarios to validate resilience behavior.
+    ///     Tests different combinations of errors and recovery patterns.
+    /// </summary>
+    public static IEnumerable<object[]> ErrorScenarioTestCases =>
+        [
+            [new HttpRequestException("timeout"), true, "Network timeouts should use fallback"],
+            [new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should use fallback"],
+            [new HttpRequestException("401 Unauthorized"), true, "Auth errors should use fallback"],
+            [new ArgumentException("Invalid response"), true, "Malformed responses should use fallback"],
+            [new InvalidOperationException("Generic error"), true, "Generic errors should use fallback"],
+        ];
 
     [Fact]
     public async Task ExecuteWithResilienceAsync_WithSuccessfulOperation_ShouldReturnSuccessResult()
@@ -266,23 +279,6 @@ public class ResilienceServiceTests
         Assert.Equal(0, health.ErrorRate);
         Assert.True(health.LastCheckAt <= DateTime.UtcNow);
     }
-
-    /// <summary>
-    /// Test data for various error scenarios to validate resilience behavior.
-    /// Tests different combinations of errors and recovery patterns.
-    /// </summary>
-    public static IEnumerable<object[]> ErrorScenarioTestCases =>
-        [
-            [new HttpRequestException("timeout"), true, "Network timeouts should use fallback"],
-            [
-                new HttpRequestException("429 Too Many Requests"),
-                true,
-                "Rate limiting should use fallback",
-            ],
-            [new HttpRequestException("401 Unauthorized"), true, "Auth errors should use fallback"],
-            [new ArgumentException("Invalid response"), true, "Malformed responses should use fallback"],
-            [new InvalidOperationException("Generic error"), true, "Generic errors should use fallback"],
-        ];
 
     [Theory]
     [MemberData(nameof(ErrorScenarioTestCases))]

@@ -4,14 +4,14 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Factory for creating test logger instances
-/// Provides consistent ILogger&lt;T&gt; implementations for testing
-/// Shared utility for all LmDotnetTools provider testing
+///     Factory for creating test logger instances
+///     Provides consistent ILogger&lt;T&gt; implementations for testing
+///     Shared utility for all LmDotnetTools provider testing
 /// </summary>
 public static class TestLoggerFactory
 {
     /// <summary>
-    /// Creates a test logger instance that outputs to Debug
+    ///     Creates a test logger instance that outputs to Debug
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
     /// <returns>An ILogger&lt;T&gt; instance for testing</returns>
@@ -21,7 +21,7 @@ public static class TestLoggerFactory
     }
 
     /// <summary>
-    /// Creates a test logger instance with custom output action
+    ///     Creates a test logger instance with custom output action
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
     /// <param name="outputAction">Custom action for log output</param>
@@ -32,8 +32,8 @@ public static class TestLoggerFactory
     }
 
     /// <summary>
-    /// Creates a silent test logger that doesn't output anything
-    /// Useful for performance-sensitive tests
+    ///     Creates a silent test logger that doesn't output anything
+    ///     Useful for performance-sensitive tests
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
     /// <returns>A silent ILogger{T} instance</returns>
@@ -77,6 +77,7 @@ public static class TestLoggerFactory
             {
                 message += $" Exception: {exception}";
             }
+
             _outputAction(message);
         }
     }

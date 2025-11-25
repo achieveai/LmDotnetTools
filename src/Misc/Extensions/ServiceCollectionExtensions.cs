@@ -11,12 +11,12 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.Misc.Extensions;
 
 /// <summary>
-/// Extension methods for registering LLM caching services with dependency injection.
+///     Extension methods for registering LLM caching services with dependency injection.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers LLM file caching services with the specified options.
+    ///     Registers LLM file caching services with the specified options.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="options">Cache configuration options</param>
@@ -77,8 +77,8 @@ public static class ServiceCollectionExtensions
             _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var innerBuilder =
-                    (builderDescriptor.ImplementationInstance as HandlerBuilder)
-                    ?? (builderDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
+                    builderDescriptor.ImplementationInstance as HandlerBuilder
+                    ?? builderDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder
                     ?? new HandlerBuilder();
 
                 var store = sp.GetRequiredService<IKvStore>();
@@ -94,7 +94,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers LLM file caching services with configuration from IConfiguration.
+    ///     Registers LLM file caching services with configuration from IConfiguration.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="configuration">Configuration instance</param>
@@ -112,7 +112,7 @@ public static class ServiceCollectionExtensions
         var options = new LlmCacheOptions
         {
             CacheDirectory = section.GetValue<string>("CacheDirectory") ?? LlmCacheOptions.GetDefaultCacheDirectory(),
-            EnableCaching = section.GetValue<bool>("EnableCaching", true),
+            EnableCaching = section.GetValue("EnableCaching", true),
             CacheExpiration =
                 section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0
                     ? TimeSpan.FromHours(hours)
@@ -120,14 +120,14 @@ public static class ServiceCollectionExtensions
             MaxCacheItems = section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
             MaxCacheSizeBytes =
                 section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0 ? bytes : 1_073_741_824,
-            CleanupOnStartup = section.GetValue<bool>("CleanupOnStartup", false),
+            CleanupOnStartup = section.GetValue("CleanupOnStartup", false),
         };
 
         return services.AddLlmFileCache(options);
     }
 
     /// <summary>
-    /// Registers LLM file caching services with configuration from environment variables.
+    ///     Registers LLM file caching services with configuration from environment variables.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
@@ -138,7 +138,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Creates a caching HttpClient for OpenAI-compatible APIs.
+    ///     Creates a caching HttpClient for OpenAI-compatible APIs.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="apiKey">The API key for authentication</param>
@@ -158,21 +158,11 @@ public static class ServiceCollectionExtensions
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        return HttpClientFactory.Create(
-            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
-                apiKey,
-                baseUrl,
-                ProviderType.OpenAI
-            ),
-            handlerBuilder,
-            timeout,
-            headers,
-            logger
-        );
+        return HttpClientFactory.Create(new ProviderConfig(apiKey, baseUrl), handlerBuilder, timeout, headers, logger);
     }
 
     /// <summary>
-    /// Creates a caching HttpClient for Anthropic APIs.
+    ///     Creates a caching HttpClient for Anthropic APIs.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="apiKey">The API key for authentication</param>
@@ -193,11 +183,7 @@ public static class ServiceCollectionExtensions
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
         return HttpClientFactory.Create(
-            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
-                apiKey,
-                baseUrl,
-                ProviderType.Anthropic
-            ),
+            new ProviderConfig(apiKey, baseUrl, ProviderType.Anthropic),
             handlerBuilder,
             timeout,
             headers,
@@ -206,7 +192,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Wraps an existing HttpClient with caching capabilities.
+    ///     Wraps an existing HttpClient with caching capabilities.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="existingClient">The existing HttpClient to wrap</param>
@@ -219,13 +205,7 @@ public static class ServiceCollectionExtensions
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        var newClient = HttpClientFactory.Create(
-            provider: null,
-            pipeline: handlerBuilder,
-            timeout: existingClient.Timeout,
-            headers: null,
-            logger: logger
-        );
+        var newClient = HttpClientFactory.Create(null, handlerBuilder, existingClient.Timeout, null, logger);
 
         newClient.BaseAddress = existingClient.BaseAddress;
         foreach (var h in existingClient.DefaultRequestHeaders)
@@ -237,7 +217,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Gets cache statistics for monitoring and diagnostics.
+    ///     Gets cache statistics for monitoring and diagnostics.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>Cache statistics</returns>
@@ -289,7 +269,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Clears all cached items.
+    ///     Clears all cached items.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>Task representing the clear operation</returns>
@@ -312,47 +292,47 @@ public static class ServiceCollectionExtensions
 
 // NOTE: Legacy ICachingHttpClientFactory interface and its implementation have been removed in favour of the IHttpHandlerBuilder-driven pipeline approach.
 /// <summary>
-/// Statistics about the cache for monitoring and diagnostics.
+///     Statistics about the cache for monitoring and diagnostics.
 /// </summary>
 public class CacheStatistics
 {
     /// <summary>
-    /// Number of items currently in the cache.
+    ///     Number of items currently in the cache.
     /// </summary>
     public int ItemCount { get; set; }
 
     /// <summary>
-    /// Total size of cached items in bytes.
+    ///     Total size of cached items in bytes.
     /// </summary>
     public long TotalSizeBytes { get; set; }
 
     /// <summary>
-    /// Cache directory path.
+    ///     Cache directory path.
     /// </summary>
     public string CacheDirectory { get; set; } = string.Empty;
 
     /// <summary>
-    /// Whether caching is enabled.
+    ///     Whether caching is enabled.
     /// </summary>
     public bool IsEnabled { get; set; }
 
     /// <summary>
-    /// Maximum number of items allowed in cache.
+    ///     Maximum number of items allowed in cache.
     /// </summary>
     public int MaxItems { get; set; }
 
     /// <summary>
-    /// Maximum cache size in bytes.
+    ///     Maximum cache size in bytes.
     /// </summary>
     public long MaxSizeBytes { get; set; }
 
     /// <summary>
-    /// Cache utilization as a percentage (0-100).
+    ///     Cache utilization as a percentage (0-100).
     /// </summary>
     public double ItemUtilizationPercent => MaxItems > 0 ? (double)ItemCount / MaxItems * 100 : 0;
 
     /// <summary>
-    /// Size utilization as a percentage (0-100).
+    ///     Size utilization as a percentage (0-100).
     /// </summary>
     public double SizeUtilizationPercent => MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
 }

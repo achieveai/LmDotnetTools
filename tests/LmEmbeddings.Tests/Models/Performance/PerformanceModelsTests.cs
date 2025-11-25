@@ -9,7 +9,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.Models.Performance;
 
 /// <summary>
-/// Tests for Performance models including serialization, validation, and data integrity
+///     Tests for Performance models including serialization, validation, and data integrity
 /// </summary>
 public class PerformanceModelsTests
 {
@@ -19,6 +19,104 @@ public class PerformanceModelsTests
     {
         _logger = TestLoggerFactory.CreateLogger<PerformanceModelsTests>();
     }
+
+    #region Statistics Models Tests
+
+    [Theory]
+    [MemberData(nameof(ResponseTimeStatsTestCases))]
+    public void ResponseTimeStats_StatisticalValues_ValidatesCorrectly(
+        ResponseTimeStats stats,
+        bool isStatisticallyValid,
+        string description
+    )
+    {
+        Debug.WriteLine($"Testing ResponseTimeStats: {description}");
+        Debug.WriteLine($"Average: {stats.AverageMs}ms, P95: {stats.P95Ms}ms, P99: {stats.P99Ms}ms");
+
+        // Act
+        var json = JsonSerializer.Serialize(stats);
+        var deserializedStats = JsonSerializer.Deserialize<ResponseTimeStats>(json);
+
+        // Assert
+        Assert.NotNull(deserializedStats);
+        Assert.Equal(stats.AverageMs, deserializedStats.AverageMs);
+        Assert.Equal(stats.P95Ms, deserializedStats.P95Ms);
+        Assert.Equal(stats.P99Ms, deserializedStats.P99Ms);
+
+        if (isStatisticallyValid)
+        {
+            Assert.True(stats.MinMs <= stats.AverageMs);
+            Assert.True(stats.AverageMs <= stats.P95Ms);
+            Assert.True(stats.P95Ms <= stats.P99Ms);
+            Assert.True(stats.P99Ms <= stats.MaxMs);
+            Debug.WriteLine("✓ Statistical relationships validated");
+        }
+
+        Debug.WriteLine("✓ ResponseTimeStats validation completed");
+    }
+
+    #endregion
+
+    #region Usage Models Tests
+
+    [Theory]
+    [MemberData(nameof(UsageStatisticsTestCases))]
+    public void UsageStatistics_CompleteUsage_SerializesCorrectly(
+        UsageStatistics usage,
+        int expectedModelCount,
+        string description
+    )
+    {
+        Debug.WriteLine($"Testing UsageStatistics: {description}");
+        Debug.WriteLine(
+            $"Entity: {usage.Entity}, EntityType: {usage.EntityType}, Models: {usage.ModelUsage?.Count ?? 0}"
+        );
+
+        // Act
+        var json = JsonSerializer.Serialize(usage);
+        var deserializedUsage = JsonSerializer.Deserialize<UsageStatistics>(json);
+
+        // Assert
+        Assert.NotNull(deserializedUsage);
+        Assert.Equal(usage.Entity, deserializedUsage.Entity);
+        Assert.Equal(usage.EntityType, deserializedUsage.EntityType);
+        Assert.Equal(expectedModelCount, deserializedUsage.ModelUsage?.Count ?? 0);
+
+        Debug.WriteLine($"✓ UsageStatistics serialization successful: {json.Length} characters");
+    }
+
+    #endregion
+
+    #region Quality Models Tests
+
+    [Theory]
+    [MemberData(nameof(QualityMetricsTestCases))]
+    public void QualityMetrics_QualityScores_ValidatesRanges(
+        QualityMetrics quality,
+        bool scoresInValidRange,
+        string description
+    )
+    {
+        Debug.WriteLine($"Testing QualityMetrics: {description}");
+        Debug.WriteLine($"AvgQualityScore: {quality.AvgQualityScore}, UserSatisfaction: {quality.UserSatisfaction}");
+
+        // Act
+        var json = JsonSerializer.Serialize(quality);
+        var deserializedQuality = JsonSerializer.Deserialize<QualityMetrics>(json);
+
+        // Assert
+        Assert.NotNull(deserializedQuality);
+
+        if (scoresInValidRange && quality.AvgQualityScore.HasValue)
+        {
+            Assert.True(quality.AvgQualityScore is >= 0.0 and <= 1.0);
+            Debug.WriteLine("✓ Quality scores within valid range [0,1]");
+        }
+
+        Debug.WriteLine("✓ QualityMetrics validation completed");
+    }
+
+    #endregion
 
     #region RequestMetrics Tests
 
@@ -136,104 +234,6 @@ public class PerformanceModelsTests
 
     #endregion
 
-    #region Statistics Models Tests
-
-    [Theory]
-    [MemberData(nameof(ResponseTimeStatsTestCases))]
-    public void ResponseTimeStats_StatisticalValues_ValidatesCorrectly(
-        ResponseTimeStats stats,
-        bool isStatisticallyValid,
-        string description
-    )
-    {
-        Debug.WriteLine($"Testing ResponseTimeStats: {description}");
-        Debug.WriteLine($"Average: {stats.AverageMs}ms, P95: {stats.P95Ms}ms, P99: {stats.P99Ms}ms");
-
-        // Act
-        var json = JsonSerializer.Serialize(stats);
-        var deserializedStats = JsonSerializer.Deserialize<ResponseTimeStats>(json);
-
-        // Assert
-        Assert.NotNull(deserializedStats);
-        Assert.Equal(stats.AverageMs, deserializedStats.AverageMs);
-        Assert.Equal(stats.P95Ms, deserializedStats.P95Ms);
-        Assert.Equal(stats.P99Ms, deserializedStats.P99Ms);
-
-        if (isStatisticallyValid)
-        {
-            Assert.True(stats.MinMs <= stats.AverageMs);
-            Assert.True(stats.AverageMs <= stats.P95Ms);
-            Assert.True(stats.P95Ms <= stats.P99Ms);
-            Assert.True(stats.P99Ms <= stats.MaxMs);
-            Debug.WriteLine("✓ Statistical relationships validated");
-        }
-
-        Debug.WriteLine($"✓ ResponseTimeStats validation completed");
-    }
-
-    #endregion
-
-    #region Usage Models Tests
-
-    [Theory]
-    [MemberData(nameof(UsageStatisticsTestCases))]
-    public void UsageStatistics_CompleteUsage_SerializesCorrectly(
-        UsageStatistics usage,
-        int expectedModelCount,
-        string description
-    )
-    {
-        Debug.WriteLine($"Testing UsageStatistics: {description}");
-        Debug.WriteLine(
-            $"Entity: {usage.Entity}, EntityType: {usage.EntityType}, Models: {usage.ModelUsage?.Count ?? 0}"
-        );
-
-        // Act
-        var json = JsonSerializer.Serialize(usage);
-        var deserializedUsage = JsonSerializer.Deserialize<UsageStatistics>(json);
-
-        // Assert
-        Assert.NotNull(deserializedUsage);
-        Assert.Equal(usage.Entity, deserializedUsage.Entity);
-        Assert.Equal(usage.EntityType, deserializedUsage.EntityType);
-        Assert.Equal(expectedModelCount, deserializedUsage.ModelUsage?.Count ?? 0);
-
-        Debug.WriteLine($"✓ UsageStatistics serialization successful: {json.Length} characters");
-    }
-
-    #endregion
-
-    #region Quality Models Tests
-
-    [Theory]
-    [MemberData(nameof(QualityMetricsTestCases))]
-    public void QualityMetrics_QualityScores_ValidatesRanges(
-        QualityMetrics quality,
-        bool scoresInValidRange,
-        string description
-    )
-    {
-        Debug.WriteLine($"Testing QualityMetrics: {description}");
-        Debug.WriteLine($"AvgQualityScore: {quality.AvgQualityScore}, UserSatisfaction: {quality.UserSatisfaction}");
-
-        // Act
-        var json = JsonSerializer.Serialize(quality);
-        var deserializedQuality = JsonSerializer.Deserialize<QualityMetrics>(json);
-
-        // Assert
-        Assert.NotNull(deserializedQuality);
-
-        if (scoresInValidRange && quality.AvgQualityScore.HasValue)
-        {
-            Assert.True(quality.AvgQualityScore is >= 0.0 and <= 1.0);
-            Debug.WriteLine("✓ Quality scores within valid range [0,1]");
-        }
-
-        Debug.WriteLine($"✓ QualityMetrics validation completed");
-    }
-
-    #endregion
-
     #region Common Types Tests
 
     [Theory]
@@ -334,11 +334,7 @@ public class PerformanceModelsTests
                 true,
                 "Valid timing breakdown",
             ],
-            [
-                new TimingBreakdown { ValidationMs = null, ServerProcessingMs = 150 },
-                true,
-                "Partial timing breakdown",
-            ],
+            [new TimingBreakdown { ValidationMs = null, ServerProcessingMs = 150 }, true, "Partial timing breakdown"],
         ];
 
     public static IEnumerable<object[]> PerformanceProfileTestCases =>
@@ -372,13 +368,16 @@ public class PerformanceModelsTests
                         AverageRetries = 1.2,
                         SuccessRateAfterRetriesPercent = 98.5,
                     },
-                    Trends = [new PerformanceTrend
+                    Trends =
+                    [
+                        new PerformanceTrend
                         {
                             Timestamp = DateTime.UtcNow,
                             Metric = "response_time",
                             Value = 250,
                             Trend = TrendDirection.Improving,
-                        }],
+                        },
+                    ],
                 },
                 1,
                 "Complete service performance profile",

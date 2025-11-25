@@ -8,33 +8,29 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 namespace AchieveAi.LmDotnetTools.Misc.Utils;
 
 /// <summary>
-/// Adaptive task management system designed for learning-based problem solving.
-///
-/// Core Philosophy:
-/// ================
-/// Tasks are not a rigid plan but a living hypothesis that evolves with understanding.
-/// The ability to modify, add, and remove tasks based on learnings is a feature, not a bug.
-///
-/// Key Principles:
-/// 1. **Cognitive Load Management**: Keep 4-7 tasks at any level to maintain focus
-/// 2. **Learning Capture**: Notes preserve insights for future tasks
-/// 3. **Adaptive Planning**: 30-50% plan modification is normal and healthy
-/// 4. **Hierarchical Breakdown**: Deep nesting for complex problems
-/// 5. **Continuous Evolution**: Tasks change as understanding deepens
-///
-/// Workflow:
-/// 1. Start with bulk-initialize for known structure
-/// 2. Add tasks as complexity is discovered
-/// 3. Capture learnings in notes immediately
-/// 4. Delete obsolete tasks without hesitation
-/// 5. Use list-tasks to maintain awareness
-///
-/// Success Metrics:
-/// - Regular task additions (shows learning)
-/// - Frequent note updates (knowledge capture)
-/// - Steady completion rate (momentum)
-/// - Task deletions (adaptation)
-/// - Balanced tree (4-7 siblings per level)
+///     Adaptive task management system designed for learning-based problem solving.
+///     Core Philosophy:
+///     ================
+///     Tasks are not a rigid plan but a living hypothesis that evolves with understanding.
+///     The ability to modify, add, and remove tasks based on learnings is a feature, not a bug.
+///     Key Principles:
+///     1. **Cognitive Load Management**: Keep 4-7 tasks at any level to maintain focus
+///     2. **Learning Capture**: Notes preserve insights for future tasks
+///     3. **Adaptive Planning**: 30-50% plan modification is normal and healthy
+///     4. **Hierarchical Breakdown**: Deep nesting for complex problems
+///     5. **Continuous Evolution**: Tasks change as understanding deepens
+///     Workflow:
+///     1. Start with bulk-initialize for known structure
+///     2. Add tasks as complexity is discovered
+///     3. Capture learnings in notes immediately
+///     4. Delete obsolete tasks without hesitation
+///     5. Use list-tasks to maintain awareness
+///     Success Metrics:
+///     - Regular task additions (shows learning)
+///     - Frequent note updates (knowledge capture)
+///     - Steady completion rate (momentum)
+///     - Task deletions (adaptation)
+///     - Balanced tree (4-7 siblings per level)
 /// </summary>
 public class TaskManager
 {
@@ -45,79 +41,6 @@ public class TaskManager
         InProgress,
         Completed,
         Removed,
-    }
-
-    public class BulkTaskItem
-    {
-        public string Task { get; set; } = string.Empty;
-        public List<string> SubTasks { get; set; } = [];
-        public List<string> Notes { get; set; } = [];
-    }
-
-    public record TaskItem
-    {
-        [JsonPropertyName("id")]
-        public required string Id { get; init; } // Changed to string for hierarchical IDs like "1", "1.1", "1.2.1"
-
-        [JsonPropertyName("status")]
-        public required TaskStatus Status { get; init; } = TaskStatus.NotStarted;
-
-        [JsonPropertyName("subTasks")]
-        public required IList<TaskItem> SubTasks { get; init; } = ImmutableList<TaskItem>.Empty;
-
-        [JsonPropertyName("title")]
-        public required string Title { get; init; }
-
-        [JsonPropertyName("notes")]
-        public required IList<string> Notes { get; init; } = ImmutableList<string>.Empty;
-    }
-
-    private sealed record PrivateTaskItem
-    {
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
-
-        [JsonPropertyName("displayId")]
-        public string DisplayId { get; set; } = string.Empty;
-
-        [JsonPropertyName("title")]
-        public string Title { get; set; } = string.Empty;
-
-        [JsonPropertyName("status")]
-        public TaskStatus Status { get; set; } = TaskStatus.NotStarted;
-
-        [JsonPropertyName("notes")]
-        public List<string> Notes { get; } = [];
-
-        [JsonPropertyName("parentId")]
-        public int? ParentId { get; set; }
-
-        [JsonPropertyName("subTasks")]
-        public List<PrivateTaskItem> SubTasks { get; init; } = [];
-
-        [JsonPropertyName("nextSubTaskId")]
-        public int NextSubTaskId { get; set; } = 1;
-
-        public TaskItem ToPublic()
-        {
-            return new TaskItem
-            {
-                Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId, // Use DisplayId for hierarchical IDs
-                Title = Title,
-                Status = Status,
-                Notes = [.. Notes],
-                SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
-            };
-        }
-    }
-
-    private sealed record ManagerState
-    {
-        [JsonPropertyName("rootTasks")]
-        public List<PrivateTaskItem> RootTasks { get; set; } = [];
-
-        [JsonPropertyName("nextId")]
-        public int NextId { get; set; } = 1;
     }
 
     private readonly ManagerState _state;
@@ -446,18 +369,16 @@ Examples:
 
             return $"Deleted subtask {subtaskId.Value} from task {taskId}: {subtask.Title}";
         }
-        else
-        {
-            // Delete main task and all subtasks
-            if (task == null)
-            {
-                return $"Error: Task {taskId} not found.";
-            }
 
-            _ = _state.RootTasks.Remove(task);
-            RemoveTaskAndSubtasks(task);
-            return $"Deleted task {taskId} and all subtasks: {task.Title}";
+        // Delete main task and all subtasks
+        if (task == null)
+        {
+            return $"Error: Task {taskId} not found.";
         }
+
+        _ = _state.RootTasks.Remove(task);
+        RemoveTaskAndSubtasks(task);
+        return $"Deleted task {taskId} and all subtasks: {task.Title}";
     }
 
     [Function(
@@ -521,6 +442,7 @@ Examples:
         {
             targetTask.Notes.Add(noteText.Trim());
         }
+
         return $"Added note to {taskRef}.";
     }
 
@@ -560,6 +482,7 @@ Examples:
 
             targetTask.Notes[noteIndex - 1] = noteText.Trim();
         }
+
         return $"Updated note #{noteIndex} on {taskRef}.";
     }
 
@@ -634,6 +557,7 @@ Examples:
         {
             _ = sb.AppendLine($"{i + 1}. {notesCopy[i]}");
         }
+
         return sb.ToString().TrimEnd();
     }
 
@@ -708,11 +632,12 @@ Examples:
             );
             _ = sb.AppendLine($"**Total**: {totalActive} active tasks");
         }
+
         _ = sb.AppendLine();
 
         foreach (var task in rootTasksCopy)
         {
-            AppendTaskMarkdown(sb, task, level: 0, filterStatus, mainOnly);
+            AppendTaskMarkdown(sb, task, 0, filterStatus, mainOnly);
         }
 
         var result = sb.ToString().TrimEnd();
@@ -770,6 +695,7 @@ Examples:
             var statusSymbol = GetStatusSymbol(task.Status);
             _ = sb.AppendLine($"- {statusSymbol} {path}: {task.Title}");
         }
+
         return sb.ToString().TrimEnd();
     }
 
@@ -781,8 +707,8 @@ Examples:
     // Helper methods
 
     /// <summary>
-    /// Finds a task by ID and optional subtask ID, returning the task, a reference string, and any error.
-    /// This consolidates the repeated task lookup pattern.
+    ///     Finds a task by ID and optional subtask ID, returning the task, a reference string, and any error.
+    ///     This consolidates the repeated task lookup pattern.
     /// </summary>
     private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(int taskId, int? subtaskId)
     {
@@ -997,11 +923,7 @@ Examples:
     {
         return JsonSerializer.Serialize(
             _state,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                WriteIndented = false,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            }
+            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
         );
     }
 
@@ -1009,17 +931,13 @@ Examples:
     {
         return JsonSerializer.SerializeToElement(
             _state,
-            new JsonSerializerOptions
-            {
-                WriteIndented = false,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            }
+            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
         );
     }
 
     public static TaskManager DeserializeTasks(JsonElement json)
     {
-        var state = JsonSerializer.Deserialize<ManagerState>(json);
+        var state = json.Deserialize<ManagerState>();
         return state == null ? new TaskManager() : new TaskManager(state);
     }
 
@@ -1105,5 +1023,78 @@ Examples:
             TaskStatus.Removed => "removed",
             _ => "not started",
         };
+    }
+
+    public class BulkTaskItem
+    {
+        public string Task { get; set; } = string.Empty;
+        public List<string> SubTasks { get; set; } = [];
+        public List<string> Notes { get; set; } = [];
+    }
+
+    public record TaskItem
+    {
+        [JsonPropertyName("id")]
+        public required string Id { get; init; } // Changed to string for hierarchical IDs like "1", "1.1", "1.2.1"
+
+        [JsonPropertyName("status")]
+        public required TaskStatus Status { get; init; } = TaskStatus.NotStarted;
+
+        [JsonPropertyName("subTasks")]
+        public required IList<TaskItem> SubTasks { get; init; } = ImmutableList<TaskItem>.Empty;
+
+        [JsonPropertyName("title")]
+        public required string Title { get; init; }
+
+        [JsonPropertyName("notes")]
+        public required IList<string> Notes { get; init; } = ImmutableList<string>.Empty;
+    }
+
+    private sealed record PrivateTaskItem
+    {
+        [JsonPropertyName("id")]
+        public int Id { get; set; }
+
+        [JsonPropertyName("displayId")]
+        public string DisplayId { get; set; } = string.Empty;
+
+        [JsonPropertyName("title")]
+        public string Title { get; set; } = string.Empty;
+
+        [JsonPropertyName("status")]
+        public TaskStatus Status { get; set; } = TaskStatus.NotStarted;
+
+        [JsonPropertyName("notes")]
+        public List<string> Notes { get; } = [];
+
+        [JsonPropertyName("parentId")]
+        public int? ParentId { get; set; }
+
+        [JsonPropertyName("subTasks")]
+        public List<PrivateTaskItem> SubTasks { get; } = [];
+
+        [JsonPropertyName("nextSubTaskId")]
+        public int NextSubTaskId { get; set; } = 1;
+
+        public TaskItem ToPublic()
+        {
+            return new TaskItem
+            {
+                Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId, // Use DisplayId for hierarchical IDs
+                Title = Title,
+                Status = Status,
+                Notes = [.. Notes],
+                SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
+            };
+        }
+    }
+
+    private sealed record ManagerState
+    {
+        [JsonPropertyName("rootTasks")]
+        public List<PrivateTaskItem> RootTasks { get; set; } = [];
+
+        [JsonPropertyName("nextId")]
+        public int NextId { get; set; } = 1;
     }
 }

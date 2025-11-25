@@ -23,29 +23,29 @@ public interface IMessage
     ImmutableDictionary<string, object>? Metadata { get; }
 
     /// <summary>
-    /// Run identifier for this specific execution (used with AG-UI protocol)
-    /// Tracks individual runs within a conversation thread
+    ///     Run identifier for this specific execution (used with AG-UI protocol)
+    ///     Tracks individual runs within a conversation thread
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? RunId => null;
 
     /// <summary>
-    /// Parent Run identifier for branching/time travel (creates git-like lineage)
+    ///     Parent Run identifier for branching/time travel (creates git-like lineage)
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ParentRunId => null;
 
     /// <summary>
-    /// Thread identifier for conversation continuity (used with AG-UI protocol)
-    /// Maps to a persistent conversation thread across multiple runs
+    ///     Thread identifier for conversation continuity (used with AG-UI protocol)
+    ///     Maps to a persistent conversation thread across multiple runs
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? ThreadId => null;
 
     /// <summary>
-    /// Order index of this message within its generation (same GenerationId)
-    /// Enables deterministic reconstruction of message order for KV cache optimization
-    /// Restarts at 0 for each new generation. Null for messages without ordering (e.g., user messages)
+    ///     Order index of this message within its generation (same GenerationId)
+    ///     Enables deterministic reconstruction of message order for KV cache optimization
+    ///     Restarts at 0 for each new generation. Null for messages without ordering (e.g., user messages)
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     int? MessageOrderIdx => null;

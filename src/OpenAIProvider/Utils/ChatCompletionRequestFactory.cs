@@ -7,14 +7,14 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 
 /// <summary>
-/// Factory for creating ChatCompletionRequest objects from IMessage collections and GenerateReplyOptions
-/// with support for different LLM providers.
+///     Factory for creating ChatCompletionRequest objects from IMessage collections and GenerateReplyOptions
+///     with support for different LLM providers.
 /// </summary>
 public static class ChatCompletionRequestFactory
 {
     /// <summary>
-    /// Creates a ChatCompletionRequest from a collection of messages and options
-    /// with automatic provider detection based on model ID prefix or options.Providers.
+    ///     Creates a ChatCompletionRequest from a collection of messages and options
+    ///     with automatic provider detection based on model ID prefix or options.Providers.
     /// </summary>
     /// <param name="messages">The messages to include in the request</param>
     /// <param name="options">The generation options</param>
@@ -34,7 +34,7 @@ public static class ChatCompletionRequestFactory
     }
 
     /// <summary>
-    /// Creates a standard OpenAI-compatible ChatCompletionRequest
+    ///     Creates a standard OpenAI-compatible ChatCompletionRequest
     /// </summary>
     public static ChatCompletionRequest CreateStandardRequest(
         IEnumerable<IMessage> messages,
@@ -59,7 +59,7 @@ public static class ChatCompletionRequestFactory
     }
 
     /// <summary>
-    /// Creates an OpenRouter-specific ChatCompletionRequest
+    ///     Creates an OpenRouter-specific ChatCompletionRequest
     /// </summary>
     public static ChatCompletionRequest CreateOpenRouterRequest(
         IEnumerable<IMessage> messages,
@@ -132,8 +132,9 @@ public static class ChatCompletionRequestFactory
 
     private static List<ChatMessage> ConvertMessagesToChat(IEnumerable<IMessage> messages)
     {
-        return [.. messages
-            .Select(message =>
+        return
+        [
+            .. messages.Select(message =>
             {
                 // Map role
                 var role =
@@ -175,7 +176,8 @@ public static class ChatCompletionRequestFactory
                 }
 
                 return chatMessage;
-            })];
+            }),
+        ];
     }
 
     private static ChatCompletionRequest ApplyStandardOptions(
@@ -309,10 +311,13 @@ public static class ChatCompletionRequestFactory
                         {
                             headersObj[header.Key] = header.Value;
                         }
+
                         jsonObject["http_headers"] = headersObj;
                     }
+
                     break;
                 default:
+                    // Ignore unknown properties
                     break;
             }
         }

@@ -5,7 +5,7 @@ namespace AchieveAi.LmDotnetTools.TestUtils;
 public static class TestUtils
 {
     /// <summary>
-    /// Finds the workspace root directory by looking for the .git directory, .env.test file, or solution file.
+    ///     Finds the workspace root directory by looking for the .git directory, .env.test file, or solution file.
     /// </summary>
     /// <param name="startingPath">The directory to start searching from.</param>
     /// <returns>The path to the workspace root directory.</returns>
@@ -41,7 +41,7 @@ public static class TestUtils
     }
 
     /// <summary>
-    /// Extracts text content from various message types
+    ///     Extracts text content from various message types
     /// </summary>
     /// <param name="message">The message to extract text from</param>
     /// <returns>The extracted text or null if the message is null</returns>

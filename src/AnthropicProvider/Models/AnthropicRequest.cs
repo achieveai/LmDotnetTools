@@ -6,73 +6,74 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+
 /// <summary>
-/// Represents a request to the Anthropic API for message completion.
+///     Represents a request to the Anthropic API for message completion.
 /// </summary>
 public record AnthropicRequest
 {
     /// <summary>
-    /// The model to use for the completion.
+    ///     The model to use for the completion.
     /// </summary>
     [JsonPropertyName("model")]
     public string Model { get; init; } = AnthropicModelNames.Claude3Sonnet;
 
     /// <summary>
-    /// The messages to include in the request.
+    ///     The messages to include in the request.
     /// </summary>
     [JsonPropertyName("messages")]
     public List<AnthropicMessage> Messages { get; init; } = [];
 
     /// <summary>
-    /// The system prompt to use for the completion.
+    ///     The system prompt to use for the completion.
     /// </summary>
     [JsonPropertyName("system")]
     public string? System { get; init; }
 
     /// <summary>
-    /// The maximum number of tokens to generate.
+    ///     The maximum number of tokens to generate.
     /// </summary>
     [JsonPropertyName("max_tokens")]
     public int MaxTokens { get; init; } = 4096;
 
     /// <summary>
-    /// Controls the randomness of the output.
+    ///     Controls the randomness of the output.
     /// </summary>
     [JsonPropertyName("temperature")]
     public float Temperature { get; init; } = 1.0f; // For Thinking mode, temperature must be 1.0
 
     /// <summary>
-    /// Whether to stream the response.
+    ///     Whether to stream the response.
     /// </summary>
     [JsonPropertyName("stream")]
-    public bool Stream { get; init; } = false;
+    public bool Stream { get; init; }
 
     /// <summary>
-    /// Top-p parameter for nucleus sampling.
+    ///     Top-p parameter for nucleus sampling.
     /// </summary>
     [JsonPropertyName("top_p")]
     public float? TopP { get; init; }
 
     /// <summary>
-    /// Tool definitions for the request.
+    ///     Tool definitions for the request.
     /// </summary>
     [JsonPropertyName("tools")]
     public List<AnthropicTool>? Tools { get; init; }
 
     /// <summary>
-    /// Controls how the model uses tools.
+    ///     Controls how the model uses tools.
     /// </summary>
     [JsonPropertyName("tool_choice")]
     public string? ToolChoice { get; init; }
 
     /// <summary>
-    /// Configuration for extended thinking mode for compatible models.
+    ///     Configuration for extended thinking mode for compatible models.
     /// </summary>
     [JsonPropertyName("thinking")]
     public AnthropicThinking? Thinking { get; init; }
 
     /// <summary>
-    /// Creates an AnthropicRequest from a list of LmCore messages and options.
+    ///     Creates an AnthropicRequest from a list of LmCore messages and options.
     /// </summary>
     /// <param name="messages">The messages to include in the request.</param>
     /// <param name="options">The options for the request.</param>
@@ -111,6 +112,7 @@ public record AnthropicRequest
                     {
                         anthropicMessages.Add(secondaryMessage);
                     }
+
                     break;
                 case ToolsCallAggregateMessage aggregateMsg:
                     var assistantContents = new List<AnthropicContent>();
@@ -149,6 +151,7 @@ public record AnthropicRequest
                     {
                         anthropicMessages.Add(anthropicMessage);
                     }
+
                     break;
             }
         }

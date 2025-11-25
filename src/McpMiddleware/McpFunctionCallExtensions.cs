@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -8,13 +9,13 @@ using ModelContextProtocol.Server;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// Extensions for creating FunctionCallMiddleware components from MCP tool registrations
+///     Extensions for creating FunctionCallMiddleware components from MCP tool registrations
 /// </summary>
 public static class McpFunctionCallExtensions
 {
     /// <summary>
-    /// Creates a tuple containing function contracts and function map for use with FunctionCallMiddleware
-    /// from an assembly containing MCP tool registrations
+    ///     Creates a tuple containing function contracts and function map for use with FunctionCallMiddleware
+    ///     from an assembly containing MCP tool registrations
     /// </summary>
     /// <param name="toolAssembly">The assembly containing MCP tool types, or null to use calling assembly</param>
     /// <returns>A tuple containing function contracts and function map for FunctionCallMiddleware</returns>
@@ -36,8 +37,8 @@ public static class McpFunctionCallExtensions
     }
 
     /// <summary>
-    /// Creates a tuple containing function contracts and function map for use with FunctionCallMiddleware
-    /// from a collection of types with MCP tool methods
+    ///     Creates a tuple containing function contracts and function map for use with FunctionCallMiddleware
+    ///     from a collection of types with MCP tool methods
     /// </summary>
     /// <param name="toolTypes">Types that contain MCP tool methods</param>
     /// <returns>A tuple containing function contracts and function map for FunctionCallMiddleware</returns>
@@ -73,7 +74,7 @@ public static class McpFunctionCallExtensions
                 functionContracts.Add(contract);
 
                 // Create the function callback handler
-                functionMap[$"{contract.ClassName}-{contract.Name}"] = async (argsJson) =>
+                functionMap[$"{contract.ClassName}-{contract.Name}"] = async argsJson =>
                 {
                     try
                     {
@@ -137,14 +138,12 @@ public static class McpFunctionCallExtensions
                             // Return empty object for Task with no result
                             return "{}";
                         }
-                        else
-                        {
-                            // Handle synchronous methods
-                            result = toolMethod.Invoke(instance, paramValues);
-                            return result != null && toolMethod.ReturnType != typeof(void)
-                                ? JsonSerializer.Serialize(result)
-                                : "{}";
-                        }
+
+                        // Handle synchronous methods
+                        result = toolMethod.Invoke(instance, paramValues);
+                        return result != null && toolMethod.ReturnType != typeof(void)
+                            ? JsonSerializer.Serialize(result)
+                            : "{}";
                     }
                     catch (Exception ex)
                     {
@@ -159,7 +158,7 @@ public static class McpFunctionCallExtensions
     }
 
     /// <summary>
-    /// Creates a FunctionContract from an MCP tool method
+    ///     Creates a FunctionContract from an MCP tool method
     /// </summary>
     /// <param name="toolMethod">The method to create a function contract for</param>
     /// <param name="toolAttr">The MCP tool attribute on the method</param>
@@ -187,7 +186,7 @@ public static class McpFunctionCallExtensions
         }
 
         // Get description from System.ComponentModel.Description attribute or use default
-        var descriptionAttr = toolMethod.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>();
+        var descriptionAttr = toolMethod.GetCustomAttribute<DescriptionAttribute>();
         var description = descriptionAttr?.Description ?? $"Tool method {toolMethod.Name} from {toolType.Name}";
 
         // Get parameters
@@ -196,9 +195,7 @@ public static class McpFunctionCallExtensions
             .Select(p => new FunctionParameterContract
             {
                 Name = p.Name!,
-                Description =
-                    p.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()?.Description
-                    ?? $"Parameter {p.Name}",
+                Description = p.GetCustomAttribute<DescriptionAttribute>()?.Description ?? $"Parameter {p.Name}",
                 ParameterType = SchemaHelper.CreateJsonSchemaFromType(p.ParameterType),
                 IsRequired = !p.HasDefaultValue && !p.IsOptional,
             })
@@ -215,7 +212,7 @@ public static class McpFunctionCallExtensions
     }
 
     /// <summary>
-    /// Creates a FunctionCallMiddleware using tool registrations from the specified assembly
+    ///     Creates a FunctionCallMiddleware using tool registrations from the specified assembly
     /// </summary>
     /// <param name="toolAssembly">The assembly containing MCP tool types, or null to use calling assembly</param>
     /// <param name="name">Optional name for the middleware</param>

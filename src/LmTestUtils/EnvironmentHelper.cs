@@ -3,15 +3,15 @@ using dotenv.net;
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Shared utility for loading environment variables in test scenarios
+///     Shared utility for loading environment variables in test scenarios
 /// </summary>
 public static class EnvironmentHelper
 {
-    private static bool _envLoaded = false;
+    private static bool _envLoaded;
     private static readonly object _lockObject = new();
 
     /// <summary>
-    /// Loads environment variables from .env file if not already loaded.
+    ///     Loads environment variables from .env file if not already loaded.
     /// </summary>
     /// <param name="envFilePath">Optional path to .env file.</param>
     public static void LoadEnvIfNeeded(string? envFilePath = null)
@@ -29,9 +29,7 @@ public static class EnvironmentHelper
                 if (File.Exists(envFilePath))
                 {
                     Console.WriteLine($"File exists at {envFilePath}");
-                    DotEnv.Load(
-                        options: new DotEnvOptions(envFilePaths: new[] { envFilePath }, ignoreExceptions: false)
-                    );
+                    DotEnv.Load(new DotEnvOptions(envFilePaths: [envFilePath], ignoreExceptions: false));
                 }
                 else
                 {
@@ -48,9 +46,7 @@ public static class EnvironmentHelper
                 if (File.Exists(workspaceEnvPath))
                 {
                     Console.WriteLine($"File exists at {workspaceEnvPath}");
-                    DotEnv.Load(
-                        options: new DotEnvOptions(envFilePaths: new[] { workspaceEnvPath }, ignoreExceptions: false)
-                    );
+                    DotEnv.Load(new DotEnvOptions(envFilePaths: [workspaceEnvPath], ignoreExceptions: false));
                 }
                 else
                 {
@@ -63,7 +59,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Gets API key from environment variables with fallback options
+    ///     Gets API key from environment variables with fallback options
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -99,7 +95,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Gets API base URL from environment variables with fallback options
+    ///     Gets API base URL from environment variables with fallback options
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -135,7 +131,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Resets the environment loading state (useful for testing)
+    ///     Resets the environment loading state (useful for testing)
     /// </summary>
     public static void ResetEnvironmentState()
     {
@@ -146,7 +142,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Finds the workspace root directory by looking for solution files
+    ///     Finds the workspace root directory by looking for solution files
     /// </summary>
     /// <param name="startPath">Starting directory path</param>
     /// <returns>Workspace root directory path</returns>

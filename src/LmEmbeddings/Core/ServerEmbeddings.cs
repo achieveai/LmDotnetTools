@@ -1,36 +1,49 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
 /// <summary>
-/// Generic server-based embedding service that supports batch processing and multiple API types.
-/// This implementation provides efficient batch processing, automatic text chunking, and support
-/// for both OpenAI and Jina AI API formats.
+///     Generic server-based embedding service that supports batch processing and multiple API types.
+///     This implementation provides efficient batch processing, automatic text chunking, and support
+///     for both OpenAI and Jina AI API formats.
 /// </summary>
 /// <remarks>
-/// <para>
-/// This service is designed for high-throughput embedding generation with the following features:
-/// </para>
-/// <list type="bullet">
-/// <item><description>Automatic batch processing with configurable batch sizes</description></item>
-/// <item><description>Text chunking for inputs exceeding maximum length limits</description></item>
-/// <item><description>Support for multiple API formats (OpenAI, Jina AI)</description></item>
-/// <item><description>Configurable timeout and retry mechanisms</description></item>
-/// <item><description>Efficient queue-based processing for individual requests</description></item>
-/// </list>
-/// <para>
-/// The service automatically batches individual embedding requests for improved efficiency
-/// and provides both individual and batch API methods for different use cases.
-/// </para>
+///     <para>
+///         This service is designed for high-throughput embedding generation with the following features:
+///     </para>
+///     <list type="bullet">
+///         <item>
+///             <description>Automatic batch processing with configurable batch sizes</description>
+///         </item>
+///         <item>
+///             <description>Text chunking for inputs exceeding maximum length limits</description>
+///         </item>
+///         <item>
+///             <description>Support for multiple API formats (OpenAI, Jina AI)</description>
+///         </item>
+///         <item>
+///             <description>Configurable timeout and retry mechanisms</description>
+///         </item>
+///         <item>
+///             <description>Efficient queue-based processing for individual requests</description>
+///         </item>
+///     </list>
+///     <para>
+///         The service automatically batches individual embedding requests for improved efficiency
+///         and provides both individual and batch API methods for different use cases.
+///     </para>
 /// </remarks>
 /// <example>
-/// <code>
+///     <code>
 /// // Basic configuration for OpenAI
 /// var service = new ServerEmbeddings(
 ///     endpoint: "https://api.openai.com",
@@ -52,20 +65,20 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 /// </example>
 public class ServerEmbeddings : BaseEmbeddingService
 {
-    private readonly string _endpoint;
-    private readonly string _model;
-    private readonly int _embeddingSize;
-    private readonly string _apiKey;
-    private readonly int _maxBatchSize;
-    private readonly EmbeddingApiType _apiType;
-    private readonly ConcurrentQueue<BatchRequest> _batchQueue;
-    private readonly Timer _batchTimer;
-    private readonly object _batchLock = new();
     private const int BatchTimeoutMs = 100; // 100ms batch timeout
     private const int MaxTextLength = 8192; // Maximum text length before chunking
+    private readonly string _apiKey;
+    private readonly EmbeddingApiType _apiType;
+    private readonly object _batchLock = new();
+    private readonly ConcurrentQueue<BatchRequest> _batchQueue;
+    private readonly Timer _batchTimer;
+    private readonly int _embeddingSize;
+    private readonly string _endpoint;
+    private readonly int _maxBatchSize;
+    private readonly string _model;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ServerEmbeddings"/> class with comprehensive configuration options.
+    ///     Initializes a new instance of the <see cref="ServerEmbeddings" /> class with comprehensive configuration options.
     /// </summary>
     /// <param name="endpoint">The API endpoint URL for the embedding service</param>
     /// <param name="model">The embedding model identifier to use for all requests</param>
@@ -75,25 +88,39 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// <param name="apiType">The API format type to use (OpenAI or Jina AI, default: OpenAI)</param>
     /// <param name="logger">Logger instance for diagnostic and error logging (optional)</param>
     /// <param name="httpClient">HTTP client instance for making API requests (optional, will create new if not provided)</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="endpoint"/>, <paramref name="model"/>, or <paramref name="apiKey"/> is null</exception>
-    /// <exception cref="ArgumentException">Thrown when <paramref name="embeddingSize"/>, <paramref name="maxBatchSize"/> is not positive, or <paramref name="apiKey"/> is empty</exception>
+    /// <exception cref="ArgumentNullException">
+    ///     Thrown when <paramref name="endpoint" />, <paramref name="model" />, or
+    ///     <paramref name="apiKey" /> is null
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    ///     Thrown when <paramref name="embeddingSize" />, <paramref name="maxBatchSize" /> is
+    ///     not positive, or <paramref name="apiKey" /> is empty
+    /// </exception>
     /// <remarks>
-    /// <para>
-    /// This constructor sets up the service with the following default behaviors:
-    /// </para>
-    /// <list type="bullet">
-    /// <item><description>Batch timeout of 100ms for efficient request aggregation</description></item>
-    /// <item><description>Maximum text length of 8192 characters before chunking</description></item>
-    /// <item><description>Automatic HTTP client configuration with Bearer token authentication</description></item>
-    /// <item><description>Background timer for processing batched requests</description></item>
-    /// </list>
-    /// <para>
-    /// The service will automatically configure the HTTP client with the provided endpoint
-    /// and API key. If no HTTP client is provided, a new one will be created.
-    /// </para>
+    ///     <para>
+    ///         This constructor sets up the service with the following default behaviors:
+    ///     </para>
+    ///     <list type="bullet">
+    ///         <item>
+    ///             <description>Batch timeout of 100ms for efficient request aggregation</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Maximum text length of 8192 characters before chunking</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Automatic HTTP client configuration with Bearer token authentication</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Background timer for processing batched requests</description>
+    ///         </item>
+    ///     </list>
+    ///     <para>
+    ///         The service will automatically configure the HTTP client with the provided endpoint
+    ///         and API key. If no HTTP client is provided, a new one will be created.
+    ///     </para>
     /// </remarks>
     /// <example>
-    /// <code>
+    ///     <code>
     /// // Basic configuration for OpenAI
     /// var service = new ServerEmbeddings(
     ///     endpoint: "https://api.openai.com",
@@ -123,10 +150,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         ILogger<ServerEmbeddings>? logger = null,
         HttpClient? httpClient = null
     )
-        : base(
-            logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerEmbeddings>.Instance,
-            httpClient ?? new HttpClient()
-        )
+        : base(logger ?? NullLogger<ServerEmbeddings>.Instance, httpClient ?? new HttpClient())
     {
         ValidationHelper.ValidateNotNull(endpoint);
         ValidationHelper.ValidateNotNull(model);
@@ -147,37 +171,40 @@ public class ServerEmbeddings : BaseEmbeddingService
 
         // Configure HttpClient
         HttpClient.BaseAddress = new Uri(_endpoint);
-        HttpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-            "Bearer",
-            _apiKey
-        );
+        HttpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// This property returns the embedding size specified during service initialization.
-    /// The value represents the dimensionality of all embedding vectors produced by this service instance.
+    ///     This property returns the embedding size specified during service initialization.
+    ///     The value represents the dimensionality of all embedding vectors produced by this service instance.
     /// </remarks>
     public override int EmbeddingSize => _embeddingSize;
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// This implementation uses an efficient batch processing system for individual embedding requests.
-    /// The method enqueues the request and processes it as part of a batch for improved performance.
-    /// </para>
-    /// <para>
-    /// The batch processing behavior:
-    /// </para>
-    /// <list type="bullet">
-    /// <item><description>Requests are automatically batched with a 100ms timeout</description></item>
-    /// <item><description>Batches are immediately processed when reaching the maximum batch size</description></item>
-    /// <item><description>Individual requests receive their specific embedding result</description></item>
-    /// </list>
-    /// <para>
-    /// For processing multiple texts simultaneously, consider using
-    /// <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)"/> directly for better performance.
-    /// </para>
+    ///     <para>
+    ///         This implementation uses an efficient batch processing system for individual embedding requests.
+    ///         The method enqueues the request and processes it as part of a batch for improved performance.
+    ///     </para>
+    ///     <para>
+    ///         The batch processing behavior:
+    ///     </para>
+    ///     <list type="bullet">
+    ///         <item>
+    ///             <description>Requests are automatically batched with a 100ms timeout</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Batches are immediately processed when reaching the maximum batch size</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Individual requests receive their specific embedding result</description>
+    ///         </item>
+    ///     </list>
+    ///     <para>
+    ///         For processing multiple texts simultaneously, consider using
+    ///         <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)" /> directly for better performance.
+    ///     </para>
     /// </remarks>
     public override async Task<float[]> GetEmbeddingAsync(
         string sentence,
@@ -208,20 +235,30 @@ public class ServerEmbeddings : BaseEmbeddingService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// This implementation provides comprehensive request processing with the following features:
-    /// </para>
-    /// <list type="bullet">
-    /// <item><description>Automatic text chunking for inputs exceeding maximum length</description></item>
-    /// <item><description>Request validation using the base class validation methods</description></item>
-    /// <item><description>API-specific payload formatting based on the request's API type</description></item>
-    /// <item><description>HTTP retry logic with exponential backoff</description></item>
-    /// <item><description>Standardized response parsing and error handling</description></item>
-    /// </list>
-    /// <para>
-    /// The method automatically applies text chunking if any input exceeds the maximum text length
-    /// and formats the request payload according to the specified API type (OpenAI or Jina).
-    /// </para>
+    ///     <para>
+    ///         This implementation provides comprehensive request processing with the following features:
+    ///     </para>
+    ///     <list type="bullet">
+    ///         <item>
+    ///             <description>Automatic text chunking for inputs exceeding maximum length</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Request validation using the base class validation methods</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>API-specific payload formatting based on the request's API type</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>HTTP retry logic with exponential backoff</description>
+    ///         </item>
+    ///         <item>
+    ///             <description>Standardized response parsing and error handling</description>
+    ///         </item>
+    ///     </list>
+    ///     <para>
+    ///         The method automatically applies text chunking if any input exceeds the maximum text length
+    ///         and formats the request payload according to the specified API type (OpenAI or Jina).
+    ///     </para>
     /// </remarks>
     public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
         EmbeddingRequest request,
@@ -251,16 +288,18 @@ public class ServerEmbeddings : BaseEmbeddingService
             {
                 var requestPayload = FormatRequestPayload(chunkedRequest);
                 var json = JsonSerializer.Serialize(requestPayload);
-                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
 
                 return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
             },
-            async (response) =>
+            async response =>
             {
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                 var embeddingResponse = JsonSerializer.Deserialize<EmbeddingResponse>(responseJson);
 
-                return embeddingResponse?.Embeddings == null ? throw new InvalidOperationException("Invalid response from API") : embeddingResponse;
+                return embeddingResponse?.Embeddings == null
+                    ? throw new InvalidOperationException("Invalid response from API")
+                    : embeddingResponse;
             },
             cancellationToken: cancellationToken
         );
@@ -268,17 +307,17 @@ public class ServerEmbeddings : BaseEmbeddingService
 
     /// <inheritdoc />
     /// <remarks>
-    /// For ServerEmbeddings, this method returns the single model configured during initialization.
-    /// The service is designed to work with a specific model, so only that model is reported as available.
+    ///     For ServerEmbeddings, this method returns the single model configured during initialization.
+    ///     The service is designed to work with a specific model, so only that model is reported as available.
     /// </remarks>
     public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
         // For ServerEmbeddings, we return the configured model
-        return Task.FromResult<IReadOnlyList<string>>(new[] { _model });
+        return Task.FromResult<IReadOnlyList<string>>([_model]);
     }
 
     /// <summary>
-    /// Executes HTTP operation with linear backoff retry logic (1s × retryCount)
+    ///     Executes HTTP operation with linear backoff retry logic (1s × retryCount)
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="httpOperation">The HTTP operation to execute</param>
@@ -347,7 +386,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     }
 
     /// <summary>
-    /// Applies text chunking to inputs that exceed the maximum length
+    ///     Applies text chunking to inputs that exceed the maximum length
     /// </summary>
     /// <param name="inputs">The input texts</param>
     /// <returns>Chunked inputs</returns>
@@ -373,7 +412,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     }
 
     /// <summary>
-    /// Chunks text into smaller pieces
+    ///     Chunks text into smaller pieces
     /// </summary>
     /// <param name="text">The text to chunk</param>
     /// <param name="maxLength">Maximum length per chunk</param>
@@ -406,7 +445,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     }
 
     /// <summary>
-    /// Processes the batch queue
+    ///     Processes the batch queue
     /// </summary>
     /// <param name="state">Timer state (unused)</param>
     private void ProcessBatch(object? state)
@@ -465,17 +504,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     }
 
     /// <summary>
-    /// Represents a batch request for embedding generation
-    /// </summary>
-    private class BatchRequest
-    {
-        public required string Text { get; set; }
-        public required TaskCompletionSource<float[]> TaskCompletionSource { get; set; }
-        public CancellationToken CancellationToken { get; set; }
-    }
-
-    /// <summary>
-    /// Disposes the ServerEmbeddings instance
+    ///     Disposes the ServerEmbeddings instance
     /// </summary>
     /// <param name="disposing">Whether to dispose managed resources</param>
     protected override void Dispose(bool disposing)
@@ -484,6 +513,17 @@ public class ServerEmbeddings : BaseEmbeddingService
         {
             _batchTimer?.Dispose();
         }
+
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    ///     Represents a batch request for embedding generation
+    /// </summary>
+    private class BatchRequest
+    {
+        public required string Text { get; set; }
+        public required TaskCompletionSource<float[]> TaskCompletionSource { get; set; }
+        public CancellationToken CancellationToken { get; set; }
     }
 }

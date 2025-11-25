@@ -4,12 +4,12 @@ using System.Text.RegularExpressions;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Utility methods for handling JSON strings, especially partial or streaming JSON data
+///     Utility methods for handling JSON strings, especially partial or streaming JSON data
 /// </summary>
 public static class JsonStringUtils
 {
     /// <summary>
-    /// Unescapes a JSON string, converting escape sequences like \n to their actual characters
+    ///     Unescapes a JSON string, converting escape sequences like \n to their actual characters
     /// </summary>
     /// <param name="jsonString">The JSON string to unescape</param>
     /// <returns>The unescaped string</returns>
@@ -21,8 +21,8 @@ public static class JsonStringUtils
     }
 
     /// <summary>
-    /// Attempts to extract a property from potentially incomplete JSON
-    /// Uses JsonDocument.Parse first, falls back to regex for incomplete JSON
+    ///     Attempts to extract a property from potentially incomplete JSON
+    ///     Uses JsonDocument.Parse first, falls back to regex for incomplete JSON
     /// </summary>
     /// <typeparam name="T">The expected type of the property value</typeparam>
     /// <param name="partialJson">The potentially incomplete JSON string</param>
@@ -75,7 +75,7 @@ public static class JsonStringUtils
     }
 
     /// <summary>
-    /// Attempts to determine if a JSON fragment is likely complete
+    ///     Attempts to determine if a JSON fragment is likely complete
     /// </summary>
     /// <param name="jsonFragment">The JSON fragment to check</param>
     /// <returns>True if the JSON appears to be complete, false otherwise</returns>

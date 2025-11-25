@@ -1,7 +1,7 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Extensions for working with asynchronous enumerables.
+///     Extensions for working with asynchronous enumerables.
 /// </summary>
 public static class AsyncEnumerableExtensions
 {

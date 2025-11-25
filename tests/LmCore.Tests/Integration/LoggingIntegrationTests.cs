@@ -8,16 +8,16 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
 /// <summary>
-/// Integration tests for the comprehensive logging system across all agents and middleware.
-/// Tests complete request flows with logging enabled at various levels.
+///     Integration tests for the comprehensive logging system across all agents and middleware.
+///     Tests complete request flows with logging enabled at various levels.
 /// </summary>
 public class LoggingIntegrationTests : IDisposable
 {
-    private readonly TestLogger<UnifiedAgent> _unifiedAgentLogger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly TestLogger<FunctionCallMiddleware> _middlewareLogger;
     private readonly TestLogger<OpenClient> _openClientLogger;
-    private readonly ILoggerFactory _loggerFactory;
     private readonly ServiceProvider _serviceProvider;
+    private readonly TestLogger<UnifiedAgent> _unifiedAgentLogger;
 
     public LoggingIntegrationTests()
     {
@@ -42,6 +42,12 @@ public class LoggingIntegrationTests : IDisposable
         _loggerFactory = loggerFactory;
 
         _serviceProvider = services.BuildServiceProvider();
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 
     /* [Fact] // Disabled: Test relies on mocking non-virtual properties which is not supported
@@ -131,19 +137,14 @@ public class LoggingIntegrationTests : IDisposable
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["TestFunction"] = async (args) =>
+            ["TestFunction"] = async args =>
             {
                 await Task.Delay(10); // Simulate some work
                 return "Test result";
             },
         };
 
-        var middleware = new FunctionCallMiddleware(
-            [testFunction],
-            functionMap,
-            "TestMiddleware",
-            _middlewareLogger
-        );
+        var middleware = new FunctionCallMiddleware([testFunction], functionMap, "TestMiddleware", _middlewareLogger);
 
         var mockAgent = new Mock<IAgent>();
         var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"input\":\"test\"}" };
@@ -165,9 +166,7 @@ public class LoggingIntegrationTests : IDisposable
             .ReturnsAsync([toolCallMessage]);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Text = "Call test function", Role = Role.User },
-            ],
+            [new TextMessage { Text = "Call test function", Role = Role.User }],
             new GenerateReplyOptions()
         );
 
@@ -488,25 +487,14 @@ public class LoggingIntegrationTests : IDisposable
             _serviceProvider?.Dispose();
         }
     }
-
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
 }
 
 /// <summary>
-/// Helper classes for testing logging functionality
+///     Helper classes for testing logging functionality
 /// </summary>
 public class TestLoggerFactory : ILoggerFactory
 {
     private readonly Dictionary<string, ILogger> _loggers = [];
-
-    public void AddLogger<T>(TestLogger<T> logger)
-    {
-        _loggers[typeof(T).FullName!] = logger;
-    }
 
     public ILogger CreateLogger(string categoryName)
     {
@@ -516,6 +504,11 @@ public class TestLoggerFactory : ILoggerFactory
     public void AddProvider(ILoggerProvider provider) { }
 
     public void Dispose() { }
+
+    public void AddLogger<T>(TestLogger<T> logger)
+    {
+        _loggers[typeof(T).FullName!] = logger;
+    }
 }
 
 public class TestLoggerProvider : ILoggerProvider

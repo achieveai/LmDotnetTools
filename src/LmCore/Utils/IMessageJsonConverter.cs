@@ -6,8 +6,8 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// A JSON converter for IMessage that uses JsonDerivedType attributes for type discrimination
-/// and respects existing type-specific converters.
+///     A JSON converter for IMessage that uses JsonDerivedType attributes for type discrimination
+///     and respects existing type-specific converters.
 /// </summary>
 public class IMessageJsonConverter : JsonConverter<IMessage>
 {
@@ -16,10 +16,10 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
     // Cache for derived types and their discriminators from JsonDerivedType attributes
     private readonly Dictionary<string, Type> _discriminatorToType;
-    private readonly Dictionary<Type, string> _typeToDiscriminator;
 
     // Cache for type-specific converters
     private readonly Dictionary<Type, JsonConverter> _typeConverters = [];
+    private readonly Dictionary<Type, string> _typeToDiscriminator;
 
     public IMessageJsonConverter()
     {
@@ -253,7 +253,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         {
             return typeof(UsageMessage);
         }
-        else if (element.TryGetProperty("text", out _))
+
+        if (element.TryGetProperty("text", out _))
         {
             // Check if this is a TextUpdateMessage or a regular TextMessage
             return
@@ -261,25 +262,28 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
                 ? typeof(TextUpdateMessage)
                 : typeof(TextMessage);
         }
-        else if (element.TryGetProperty("image_data", out _))
+
+        if (element.TryGetProperty("image_data", out _))
         {
             return typeof(ImageMessage);
         }
-        else if (element.TryGetProperty("tool_calls", out _))
+
+        if (element.TryGetProperty("tool_calls", out _))
         {
             return typeof(ToolsCallMessage);
         }
-        else if (element.TryGetProperty("tool_call_updates", out _))
+
+        if (element.TryGetProperty("tool_call_updates", out _))
         {
             return typeof(ToolsCallUpdateMessage);
         }
-        else if (element.TryGetProperty("tool_call_results", out _))
+
+        if (element.TryGetProperty("tool_call_results", out _))
         {
             return typeof(ToolsCallResultMessage);
         }
-        else if (
-            element.TryGetProperty("tool_call_message", out _) && element.TryGetProperty("tool_call_result", out _)
-        )
+
+        if (element.TryGetProperty("tool_call_message", out _) && element.TryGetProperty("tool_call_result", out _))
         {
             return typeof(ToolsCallAggregateMessage);
         }
@@ -289,7 +293,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
     }
 
     /// <summary>
-    /// Resolves a Type from a type discriminator string.
+    ///     Resolves a Type from a type discriminator string.
     /// </summary>
     /// <param name="typeDiscriminator">The type discriminator string, with or without "_message" suffix.</param>
     /// <returns>The resolved Type, or null if not found.</returns>

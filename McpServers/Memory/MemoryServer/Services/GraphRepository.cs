@@ -8,13 +8,13 @@ using Microsoft.Data.Sqlite;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of graph database operations using SQLite with Database Session Pattern.
-/// Provides CRUD operations for entities and relationships with session isolation.
+///     Implementation of graph database operations using SQLite with Database Session Pattern.
+///     Provides CRUD operations for entities and relationships with session isolation.
 /// </summary>
 public class GraphRepository : IGraphRepository
 {
-    private readonly ISqliteSessionFactory _sessionFactory;
     private readonly ILogger<GraphRepository> _logger;
+    private readonly ISqliteSessionFactory _sessionFactory;
 
     public GraphRepository(ISqliteSessionFactory sessionFactory, ILogger<GraphRepository> logger)
     {
@@ -60,10 +60,7 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@id", entity.Id);
                 _ = command.Parameters.AddWithValue("@name", entity.Name);
                 _ = command.Parameters.AddWithValue("@type", entity.Type ?? (object)DBNull.Value);
-                _ = command.Parameters.AddWithValue(
-                    "@aliases",
-                    JsonSerializer.Serialize(entity.Aliases ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@aliases", JsonSerializer.Serialize(entity.Aliases ?? []));
                 _ = command.Parameters.AddWithValue("@userId", entity.UserId);
                 _ = command.Parameters.AddWithValue("@agentId", entity.AgentId ?? (object)DBNull.Value);
                 _ = command.Parameters.AddWithValue("@runId", entity.RunId ?? (object)DBNull.Value);
@@ -74,10 +71,7 @@ public class GraphRepository : IGraphRepository
                     "@sourceMemoryIds",
                     JsonSerializer.Serialize(entity.SourceMemoryIds ?? [])
                 );
-                _ = command.Parameters.AddWithValue(
-                    "@metadata",
-                    JsonSerializer.Serialize(entity.Metadata ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(entity.Metadata ?? []));
                 _ = command.Parameters.AddWithValue("@version", entity.Version);
 
                 _ = await command.ExecuteNonQueryAsync(cancellationToken);
@@ -219,12 +213,11 @@ public class GraphRepository : IGraphRepository
             async (connection, transaction) =>
             {
                 // Verify entity exists and belongs to session
-                var existing = await GetEntityByIdInternalAsync(
-                    connection,
-                    entity.Id,
-                    sessionContext,
-                    cancellationToken
-                ) ?? throw new InvalidOperationException($"Entity {entity.Id} not found or does not belong to session");
+                var existing =
+                    await GetEntityByIdInternalAsync(connection, entity.Id, sessionContext, cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        $"Entity {entity.Id} not found or does not belong to session"
+                    );
                 entity.UpdatedAt = DateTime.UtcNow;
                 entity.Version = existing.Version + 1;
 
@@ -244,20 +237,14 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@id", entity.Id);
                 _ = command.Parameters.AddWithValue("@name", entity.Name);
                 _ = command.Parameters.AddWithValue("@type", entity.Type ?? (object)DBNull.Value);
-                _ = command.Parameters.AddWithValue(
-                    "@aliases",
-                    JsonSerializer.Serialize(entity.Aliases ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@aliases", JsonSerializer.Serialize(entity.Aliases ?? []));
                 _ = command.Parameters.AddWithValue("@updatedAt", entity.UpdatedAt);
                 _ = command.Parameters.AddWithValue("@confidence", entity.Confidence);
                 _ = command.Parameters.AddWithValue(
                     "@sourceMemoryIds",
                     JsonSerializer.Serialize(entity.SourceMemoryIds ?? [])
                 );
-                _ = command.Parameters.AddWithValue(
-                    "@metadata",
-                    JsonSerializer.Serialize(entity.Metadata ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(entity.Metadata ?? []));
                 _ = command.Parameters.AddWithValue("@version", entity.Version);
                 _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
                 _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
@@ -331,7 +318,10 @@ public class GraphRepository : IGraphRepository
 
                 _ = deleteEntityCommand.Parameters.AddWithValue("@entityId", entityId);
                 _ = deleteEntityCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                _ = deleteEntityCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                _ = deleteEntityCommand.Parameters.AddWithValue(
+                    "@agentId",
+                    sessionContext.AgentId ?? (object)DBNull.Value
+                );
                 _ = deleteEntityCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 var rowsAffected = await deleteEntityCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -399,15 +389,15 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@createdAt", relationship.CreatedAt);
                 _ = command.Parameters.AddWithValue("@updatedAt", relationship.UpdatedAt);
                 _ = command.Parameters.AddWithValue("@confidence", relationship.Confidence);
-                _ = command.Parameters.AddWithValue("@sourceMemoryId", relationship.SourceMemoryId ?? (object)DBNull.Value);
+                _ = command.Parameters.AddWithValue(
+                    "@sourceMemoryId",
+                    relationship.SourceMemoryId ?? (object)DBNull.Value
+                );
                 _ = command.Parameters.AddWithValue(
                     "@temporalContext",
                     relationship.TemporalContext ?? (object)DBNull.Value
                 );
-                _ = command.Parameters.AddWithValue(
-                    "@metadata",
-                    JsonSerializer.Serialize(relationship.Metadata ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(relationship.Metadata ?? []));
                 _ = command.Parameters.AddWithValue("@version", relationship.Version);
 
                 _ = await command.ExecuteNonQueryAsync(cancellationToken);
@@ -563,7 +553,9 @@ public class GraphRepository : IGraphRepository
             async (connection, transaction) =>
             {
                 // Verify relationship exists and belongs to session
-                var existing = await GetRelationshipByIdAsync(relationship.Id, sessionContext, cancellationToken) ?? throw new InvalidOperationException(
+                var existing =
+                    await GetRelationshipByIdAsync(relationship.Id, sessionContext, cancellationToken)
+                    ?? throw new InvalidOperationException(
                         $"Relationship {relationship.Id} not found or does not belong to session"
                     );
                 relationship.UpdatedAt = DateTime.UtcNow;
@@ -587,15 +579,15 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType);
                 _ = command.Parameters.AddWithValue("@target", relationship.Target);
                 _ = command.Parameters.AddWithValue("@confidence", relationship.Confidence);
-                _ = command.Parameters.AddWithValue("@sourceMemoryId", relationship.SourceMemoryId ?? (object)DBNull.Value);
+                _ = command.Parameters.AddWithValue(
+                    "@sourceMemoryId",
+                    relationship.SourceMemoryId ?? (object)DBNull.Value
+                );
                 _ = command.Parameters.AddWithValue(
                     "@temporalContext",
                     relationship.TemporalContext ?? (object)DBNull.Value
                 );
-                _ = command.Parameters.AddWithValue(
-                    "@metadata",
-                    JsonSerializer.Serialize(relationship.Metadata ?? [])
-                );
+                _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(relationship.Metadata ?? []));
                 _ = command.Parameters.AddWithValue("@updatedAt", relationship.UpdatedAt);
                 _ = command.Parameters.AddWithValue("@version", relationship.Version);
                 _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
@@ -1265,7 +1257,10 @@ public class GraphRepository : IGraphRepository
                   AND (@runId IS NULL OR run_id = @runId)";
 
                 _ = entityCountCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                _ = entityCountCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                _ = entityCountCommand.Parameters.AddWithValue(
+                    "@agentId",
+                    sessionContext.AgentId ?? (object)DBNull.Value
+                );
                 _ = entityCountCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 stats.EntityCount = Convert.ToInt32(await entityCountCommand.ExecuteScalarAsync(cancellationToken));
@@ -1313,7 +1308,10 @@ public class GraphRepository : IGraphRepository
                 LIMIT 10";
 
                 _ = topRelTypesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                _ = topRelTypesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                _ = topRelTypesCommand.Parameters.AddWithValue(
+                    "@agentId",
+                    sessionContext.AgentId ?? (object)DBNull.Value
+                );
                 _ = topRelTypesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 using var topRelTypesReader = await topRelTypesCommand.ExecuteReaderAsync(cancellationToken);
@@ -1345,7 +1343,10 @@ public class GraphRepository : IGraphRepository
                 LIMIT 10";
 
                 _ = topEntitiesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                _ = topEntitiesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                _ = topEntitiesCommand.Parameters.AddWithValue(
+                    "@agentId",
+                    sessionContext.AgentId ?? (object)DBNull.Value
+                );
                 _ = topEntitiesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 using var topEntitiesReader = await topEntitiesCommand.ExecuteReaderAsync(cancellationToken);

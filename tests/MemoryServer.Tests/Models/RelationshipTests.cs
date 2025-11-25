@@ -4,127 +4,11 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Comprehensive tests for Relationship model including validation, serialization, and session context.
-/// Uses data-driven testing approach for maximum coverage with minimal test methods.
+///     Comprehensive tests for Relationship model including validation, serialization, and session context.
+///     Uses data-driven testing approach for maximum coverage with minimal test methods.
 /// </summary>
 public class RelationshipTests
 {
-    #region Relationship Creation and Validation Tests
-
-    [Theory]
-    [MemberData(nameof(ValidRelationshipTestCases))]
-    public void CreateRelationship_WithValidData_ShouldSucceed(
-        string testName,
-        string source,
-        string relationshipType,
-        string target,
-        string userId,
-        string? agentId,
-        string? runId,
-        float confidence,
-        int? sourceMemoryId,
-        string? temporalContext,
-        Dictionary<string, object>? metadata
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing relationship creation: {testName}");
-        Debug.WriteLine($"Input - {source} --[{relationshipType}]--> {target}");
-
-        // Act
-        var relationship = new Relationship
-        {
-            Source = source,
-            RelationshipType = relationshipType,
-            Target = target,
-            UserId = userId,
-            AgentId = agentId,
-            RunId = runId,
-            Confidence = confidence,
-            SourceMemoryId = sourceMemoryId,
-            TemporalContext = temporalContext,
-            Metadata = metadata,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert
-        Assert.Equal(source, relationship.Source);
-        Assert.Equal(relationshipType, relationship.RelationshipType);
-        Assert.Equal(target, relationship.Target);
-        Assert.Equal(userId, relationship.UserId);
-        Assert.Equal(agentId, relationship.AgentId);
-        Assert.Equal(runId, relationship.RunId);
-        Assert.Equal(confidence, relationship.Confidence);
-        Assert.Equal(sourceMemoryId, relationship.SourceMemoryId);
-        Assert.Equal(temporalContext, relationship.TemporalContext);
-        Assert.Equal(metadata, relationship.Metadata);
-
-        Debug.WriteLine($"✅ Relationship created successfully with ID: {relationship.Id}");
-        Debug.WriteLine($"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}");
-    }
-
-    [Theory]
-    [MemberData(nameof(InvalidRelationshipTestCases))]
-    public void CreateRelationship_WithInvalidData_ShouldHandleGracefully(
-        string testName,
-        string source,
-        string relationshipType,
-        string target,
-        string userId,
-        float confidence,
-        string expectedIssue
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing invalid relationship creation: {testName}");
-        Debug.WriteLine($"Expected issue: {expectedIssue}");
-
-        // Act
-        var relationship = new Relationship
-        {
-            Source = source,
-            RelationshipType = relationshipType,
-            Target = target,
-            UserId = userId,
-            Confidence = confidence,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert - Relationship creation doesn't throw, but we can validate the data
-        if (string.IsNullOrWhiteSpace(source))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.Source), "Source should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(relationshipType))
-        {
-            Assert.True(
-                string.IsNullOrWhiteSpace(relationship.RelationshipType),
-                "RelationshipType should be empty or whitespace"
-            );
-        }
-        if (string.IsNullOrWhiteSpace(target))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.Target), "Target should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
-        }
-        if (confidence is < 0 or > 1)
-        {
-            Assert.True(
-                relationship.Confidence is < 0 or > 1,
-                "Confidence should be out of valid range"
-            );
-        }
-
-        Debug.WriteLine($"⚠️ Invalid relationship handled: {expectedIssue}");
-    }
-
-    #endregion
-
     #region Session Context Tests
 
     [Theory]
@@ -216,7 +100,7 @@ public class RelationshipTests
             }
         }
 
-        Debug.WriteLine($"✅ Serialization successful - all fields preserved");
+        Debug.WriteLine("✅ Serialization successful - all fields preserved");
     }
 
     #endregion
@@ -251,6 +135,123 @@ public class RelationshipTests
         Assert.Equal(expectedResult, isSelfReferential);
 
         Debug.WriteLine($"✅ Self-referential check: {isSelfReferential}");
+    }
+
+    #endregion
+
+    #region Relationship Creation and Validation Tests
+
+    [Theory]
+    [MemberData(nameof(ValidRelationshipTestCases))]
+    public void CreateRelationship_WithValidData_ShouldSucceed(
+        string testName,
+        string source,
+        string relationshipType,
+        string target,
+        string userId,
+        string? agentId,
+        string? runId,
+        float confidence,
+        int? sourceMemoryId,
+        string? temporalContext,
+        Dictionary<string, object>? metadata
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing relationship creation: {testName}");
+        Debug.WriteLine($"Input - {source} --[{relationshipType}]--> {target}");
+
+        // Act
+        var relationship = new Relationship
+        {
+            Source = source,
+            RelationshipType = relationshipType,
+            Target = target,
+            UserId = userId,
+            AgentId = agentId,
+            RunId = runId,
+            Confidence = confidence,
+            SourceMemoryId = sourceMemoryId,
+            TemporalContext = temporalContext,
+            Metadata = metadata,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert
+        Assert.Equal(source, relationship.Source);
+        Assert.Equal(relationshipType, relationship.RelationshipType);
+        Assert.Equal(target, relationship.Target);
+        Assert.Equal(userId, relationship.UserId);
+        Assert.Equal(agentId, relationship.AgentId);
+        Assert.Equal(runId, relationship.RunId);
+        Assert.Equal(confidence, relationship.Confidence);
+        Assert.Equal(sourceMemoryId, relationship.SourceMemoryId);
+        Assert.Equal(temporalContext, relationship.TemporalContext);
+        Assert.Equal(metadata, relationship.Metadata);
+
+        Debug.WriteLine($"✅ Relationship created successfully with ID: {relationship.Id}");
+        Debug.WriteLine($"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}");
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidRelationshipTestCases))]
+    public void CreateRelationship_WithInvalidData_ShouldHandleGracefully(
+        string testName,
+        string source,
+        string relationshipType,
+        string target,
+        string userId,
+        float confidence,
+        string expectedIssue
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing invalid relationship creation: {testName}");
+        Debug.WriteLine($"Expected issue: {expectedIssue}");
+
+        // Act
+        var relationship = new Relationship
+        {
+            Source = source,
+            RelationshipType = relationshipType,
+            Target = target,
+            UserId = userId,
+            Confidence = confidence,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert - Relationship creation doesn't throw, but we can validate the data
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Source), "Source should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(relationshipType))
+        {
+            Assert.True(
+                string.IsNullOrWhiteSpace(relationship.RelationshipType),
+                "RelationshipType should be empty or whitespace"
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Target), "Target should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
+        }
+
+        if (confidence is < 0 or > 1)
+        {
+            Assert.True(relationship.Confidence is < 0 or > 1, "Confidence should be out of valid range");
+        }
+
+        Debug.WriteLine($"⚠️ Invalid relationship handled: {expectedIssue}");
     }
 
     #endregion
@@ -338,24 +339,8 @@ public class RelationshipTests
             // Format: testName, source, relationshipType, target, userId, confidence, expectedIssue
             ["Empty source", "", "likes", "Pizza", "user123", 0.8f, "Source is empty"],
             ["Whitespace source", "   ", "likes", "Pizza", "user123", 0.8f, "Source is whitespace"],
-            [
-                "Empty relationship type",
-                "John",
-                "",
-                "Pizza",
-                "user123",
-                0.8f,
-                "RelationshipType is empty",
-            ],
-            [
-                "Whitespace relationship type",
-                "John",
-                "   ",
-                "Pizza",
-                "user123",
-                0.8f,
-                "RelationshipType is whitespace",
-            ],
+            ["Empty relationship type", "John", "", "Pizza", "user123", 0.8f, "RelationshipType is empty"],
+            ["Whitespace relationship type", "John", "   ", "Pizza", "user123", 0.8f, "RelationshipType is whitespace"],
             ["Empty target", "John", "likes", "", "user123", 0.8f, "Target is empty"],
             ["Whitespace target", "John", "likes", "   ", "user123", 0.8f, "Target is whitespace"],
             ["Empty userId", "John", "likes", "Pizza", "", 0.8f, "UserId is empty"],

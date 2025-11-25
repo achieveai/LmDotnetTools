@@ -4,12 +4,12 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Serialization;
 
 /// <summary>
-/// JSON serialization options configured for AG-UI protocol compliance
+///     JSON serialization options configured for AG-UI protocol compliance
 /// </summary>
 public static class AgUiJsonOptions
 {
     /// <summary>
-    /// Default JSON serializer options for AG-UI events and DTOs
+    ///     Default JSON serializer options for AG-UI events and DTOs
     /// </summary>
     public static JsonSerializerOptions Default { get; } =
         new()
@@ -37,7 +37,7 @@ public static class AgUiJsonOptions
         };
 
     /// <summary>
-    /// JSON options with indentation for human-readable output
+    ///     JSON options with indentation for human-readable output
     /// </summary>
     public static JsonSerializerOptions Pretty { get; } = new(Default) { WriteIndented = true };
 }

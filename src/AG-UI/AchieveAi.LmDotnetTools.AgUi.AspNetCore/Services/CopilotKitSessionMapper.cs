@@ -3,15 +3,15 @@ using System.Collections.Concurrent;
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 
 /// <summary>
-/// In-memory implementation of session mapping between CopilotKit and AG-UI
-/// Thread-safe for concurrent access
+///     In-memory implementation of session mapping between CopilotKit and AG-UI
+///     Thread-safe for concurrent access
 /// </summary>
 public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
 {
     private readonly ConcurrentDictionary<string, SessionMapping> _sessionToThreadMap = new();
     private readonly ConcurrentDictionary<string, string> _threadToSessionMap = new();
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public string CreateOrResumeSession(string? threadId, string? runId)
     {
         // If threadId is provided, try to resume existing session
@@ -24,6 +24,7 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
                 {
                     UpdateRunId(existingSessionId, runId);
                 }
+
                 return existingSessionId;
             }
         }
@@ -47,13 +48,13 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
         return sessionId;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public (string? ThreadId, string? RunId)? GetThreadInfo(string sessionId)
     {
         return _sessionToThreadMap.TryGetValue(sessionId, out var mapping) ? (mapping.ThreadId, mapping.RunId) : null;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public void UpdateRunId(string sessionId, string runId)
     {
         if (_sessionToThreadMap.TryGetValue(sessionId, out var mapping))
@@ -63,7 +64,7 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public bool RemoveSession(string sessionId)
     {
         if (_sessionToThreadMap.TryRemove(sessionId, out var mapping))
@@ -73,19 +74,21 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
             {
                 _ = _threadToSessionMap.TryRemove(mapping.ThreadId, out _);
             }
+
             return true;
         }
+
         return false;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public string? GetSessionByThread(string threadId)
     {
         return _threadToSessionMap.TryGetValue(threadId, out var sessionId) ? sessionId : null;
     }
 
     /// <summary>
-    /// Internal record for storing session mapping data
+    ///     Internal record for storing session mapping data
     /// </summary>
     private sealed record SessionMapping
     {

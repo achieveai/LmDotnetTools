@@ -6,32 +6,28 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 
 /// <summary>
-/// HTTP message handler for test mode that simulates SSE streaming responses.
-/// Processes instruction chains and generates mock LLM responses for testing.
+///     HTTP message handler for test mode that simulates SSE streaming responses.
+///     Processes instruction chains and generates mock LLM responses for testing.
 /// </summary>
 public sealed class TestSseMessageHandler : HttpMessageHandler
 {
     // Default configuration values with clear intent
     private const int DefaultWordsPerChunk = 10; // Number of words to send per SSE chunk
     private const int DefaultChunkDelayMs = 500; // Delay between chunks to simulate streaming
-
-    private readonly ILogger<TestSseMessageHandler> _logger;
     private readonly IInstructionChainParser _chainParser;
     private readonly IConversationAnalyzer _conversationAnalyzer;
 
-    public int WordsPerChunk { get; set; } = DefaultWordsPerChunk;
-    public int ChunkDelayMs { get; set; } = DefaultChunkDelayMs;
+    private readonly ILogger<TestSseMessageHandler> _logger;
 
     /// <summary>
-    /// Initializes a new instance for test mode with default services.
-    /// Used for backward compatibility when DI is not available.
+    ///     Initializes a new instance for test mode with default services.
+    ///     Used for backward compatibility when DI is not available.
     /// </summary>
     public TestSseMessageHandler()
-        : this(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<TestSseMessageHandler>(), null, null)
-    { }
+        : this(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<TestSseMessageHandler>()) { }
 
     /// <summary>
-    /// Initializes a new instance with dependency injection.
+    ///     Initializes a new instance with dependency injection.
     /// </summary>
     public TestSseMessageHandler(
         ILogger<TestSseMessageHandler> logger,
@@ -56,8 +52,11 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             );
     }
 
+    public int WordsPerChunk { get; set; } = DefaultWordsPerChunk;
+    public int ChunkDelayMs { get; set; } = DefaultChunkDelayMs;
+
     /// <summary>
-    /// Processes HTTP requests to simulate LLM chat completions with SSE streaming.
+    ///     Processes HTTP requests to simulate LLM chat completions with SSE streaming.
     /// </summary>
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -76,6 +75,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             _logger.LogTrace("Path doesn't match /v1/chat/completions: {Path}", request.RequestUri.AbsolutePath);
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
+
         _logger.LogTrace("Processing chat completions request");
 
         var body = request.Content == null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
@@ -126,12 +126,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 // Execute the instruction at the calculated index
                 _logger.LogInformation("Executing instruction {Index}: {Id}", responseCount + 1, instruction.IdMessage);
 
-                content = new SseStreamHttpContent(
-                    instructionPlan: instruction,
-                    model: model,
-                    wordsPerChunk: WordsPerChunk,
-                    chunkDelayMs: ChunkDelayMs
-                );
+                content = new SseStreamHttpContent(instruction, model, WordsPerChunk, ChunkDelayMs);
             }
             else
             {
@@ -150,12 +145,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                         [InstructionMessage.ForText(5)] // "Task completed successfully"
                     );
 
-                    content = new SseStreamHttpContent(
-                        instructionPlan: completion,
-                        model: model,
-                        wordsPerChunk: WordsPerChunk,
-                        chunkDelayMs: ChunkDelayMs
-                    );
+                    content = new SseStreamHttpContent(completion, model, WordsPerChunk, ChunkDelayMs);
                 }
                 else
                 {
@@ -166,23 +156,18 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                     if (plan is not null)
                     {
                         _logger.LogInformation("Using single instruction mode (backward compatibility)");
-                        content = new SseStreamHttpContent(
-                            instructionPlan: plan,
-                            model: model,
-                            wordsPerChunk: WordsPerChunk,
-                            chunkDelayMs: ChunkDelayMs
-                        );
+                        content = new SseStreamHttpContent(plan, model, WordsPerChunk, ChunkDelayMs);
                     }
                     else
                     {
                         // Generate simple response based on user message
                         var reasoningFirst = fallbackMessage.Contains("\nReason:", StringComparison.Ordinal);
                         content = new SseStreamHttpContent(
-                            userMessage: fallbackMessage,
-                            model: model,
-                            reasoningFirst: reasoningFirst,
-                            wordsPerChunk: WordsPerChunk,
-                            chunkDelayMs: ChunkDelayMs
+                            fallbackMessage,
+                            model,
+                            reasoningFirst,
+                            WordsPerChunk,
+                            ChunkDelayMs
                         );
                     }
                 }
@@ -196,7 +181,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Attempts to parse an instruction plan from user message for backward compatibility.
+    ///     Attempts to parse an instruction plan from user message for backward compatibility.
     /// </summary>
     private (InstructionPlan? plan, string fallback) TryParseInstructionPlan(string userMessage)
     {

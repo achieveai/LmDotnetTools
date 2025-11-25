@@ -7,22 +7,27 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallMessage : IMessage, ICanGetToolCalls
 {
+    [JsonPropertyName("tool_calls")]
+    public ImmutableList<ToolCall> ToolCalls { get; init; } = [];
+
+    public IEnumerable<ToolCall>? GetToolCalls()
+    {
+        return ToolCalls.Count > 0 ? ToolCalls : null;
+    }
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? FromAgent { get; init; } = null;
+    public string? FromAgent { get; init; }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? GenerationId { get; init; } = null;
-
-    [JsonPropertyName("tool_calls")]
-    public ImmutableList<ToolCall> ToolCalls { get; init; } = [];
+    public string? GenerationId { get; init; }
 
     [JsonPropertyName("threadId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -39,11 +44,6 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonPropertyName("messageOrderIdx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MessageOrderIdx { get; init; }
-
-    public IEnumerable<ToolCall>? GetToolCalls()
-    {
-        return ToolCalls.Count > 0 ? ToolCalls : null;
-    }
 
     public static string? GetText()
     {
@@ -72,6 +72,9 @@ public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<Tools
 [JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallUpdateMessage : IMessage
 {
+    [JsonPropertyName("tool_call_updates")]
+    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = [];
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; } = null;
@@ -85,9 +88,6 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; } = null;
-
-    [JsonPropertyName("tool_call_updates")]
-    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = [];
 
     [JsonPropertyName("threadId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -116,28 +116,19 @@ public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter
 
 public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCallUpdateMessage>
 {
-    public string? FromAgent { get; init; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
-    public Role Role { get; init; } = Role.Assistant;
-
-    public ImmutableDictionary<string, object>? Metadata { get; private set; } = null;
-
-    public string? GenerationId { get; set; } = null;
+    public string? GenerationId { get; set; }
 
     public Action<ToolCall> OnToolCall { get; init; } = _ => { };
 
-    IMessage IMessageBuilder.Build()
-    {
-        return this.Build();
-    }
-
-    public string? CurrentFunctionName { get; private set; } = null;
+    public string? CurrentFunctionName { get; private set; }
 
     public string AccumulatedArgs { get; private set; } = "";
 
-    public string? CurrentToolCallId { get; private set; } = null;
+    public string? CurrentToolCallId { get; private set; }
 
-    public int? CurrentIndex { get; private set; } = null;
+    public int? CurrentIndex { get; private set; }
 
     public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = [];
 
@@ -148,6 +139,14 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     public string? ParentRunId { get; set; }
 
     public int? MessageOrderIdx { get; set; }
+    public string? FromAgent { get; init; } = null;
+
+    public Role Role { get; init; } = Role.Assistant;
+
+    IMessage IMessageBuilder.Build()
+    {
+        return Build();
+    }
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
@@ -223,6 +222,27 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         }
     }
 
+    public ToolsCallMessage Build()
+    {
+        // Rule 2: When build is called, complete any final partial update
+        CompleteCurrentToolCall();
+        var toolCalls = CompletedToolCalls;
+        CompletedToolCalls = [];
+
+        return new ToolsCallMessage
+        {
+            FromAgent = FromAgent,
+            Role = Role,
+            Metadata = Metadata,
+            GenerationId = GenerationId,
+            ToolCalls = toolCalls,
+            ThreadId = ThreadId,
+            RunId = RunId,
+            ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
+        };
+    }
+
     private void CompleteCurrentToolCall()
     {
         if (CurrentFunctionName != null)
@@ -248,26 +268,5 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             CurrentToolCallId = null;
             CurrentIndex = null;
         }
-    }
-
-    public ToolsCallMessage Build()
-    {
-        // Rule 2: When build is called, complete any final partial update
-        CompleteCurrentToolCall();
-        var toolCalls = CompletedToolCalls;
-        CompletedToolCalls = [];
-
-        return new ToolsCallMessage
-        {
-            FromAgent = FromAgent,
-            Role = Role,
-            Metadata = Metadata,
-            GenerationId = GenerationId,
-            ToolCalls = toolCalls,
-            ThreadId = ThreadId,
-            RunId = RunId,
-            ParentRunId = ParentRunId,
-            MessageOrderIdx = MessageOrderIdx,
-        };
     }
 }

@@ -39,6 +39,7 @@ public class MockHttpHandlerBuilderBenchmarks
             var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicMessage("OK").Build();
             handler.Dispose();
         }
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
         var after = GC.GetTotalMemory(true);
@@ -87,6 +88,7 @@ public class MockHttpHandlerBuilderBenchmarks
             var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicMessage("OK").Build();
             handler.Dispose();
         }
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
         var after = GC.GetTotalMemory(true);

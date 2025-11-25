@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Xunit.Abstractions;
@@ -6,15 +7,13 @@ using Xunit.Abstractions;
 namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
-/// Abstract base class for testing MCP functionality across different transports.
-/// This class contains all the core MCP test logic that should work identically
-/// regardless of the transport (STDIO, SSE, WebSocket, etc.).
-///
-/// Concrete implementations provide transport-specific client creation and server setup.
-///
-/// NOTE: Currently only STDIO transport is fully supported. SSE transport implementation
-/// is pending SDK updates with proper SSE client support. When SSE client support is
-/// available, create SseMcpTransportTests.cs that inherits from this base class.
+///     Abstract base class for testing MCP functionality across different transports.
+///     This class contains all the core MCP test logic that should work identically
+///     regardless of the transport (STDIO, SSE, WebSocket, etc.).
+///     Concrete implementations provide transport-specific client creation and server setup.
+///     NOTE: Currently only STDIO transport is fully supported. SSE transport implementation
+///     is pending SDK updates with proper SSE client support. When SSE client support is
+///     available, create SseMcpTransportTests.cs that inherits from this base class.
 /// </summary>
 public abstract class McpTransportTestBase : IDisposable
 {
@@ -29,20 +28,20 @@ public abstract class McpTransportTestBase : IDisposable
     #region Abstract Methods - Transport-Specific Implementation
 
     /// <summary>
-    /// Creates and returns an MCP client for the specific transport.
-    /// This is where transport-specific setup happens (STDIO process, SSE HTTP client, etc.).
+    ///     Creates and returns an MCP client for the specific transport.
+    ///     This is where transport-specific setup happens (STDIO process, SSE HTTP client, etc.).
     /// </summary>
     protected abstract Task<IMcpClient> CreateClientAsync();
 
     /// <summary>
-    /// Gets the name of the transport being tested (for logging/debugging).
+    ///     Gets the name of the transport being tested (for logging/debugging).
     /// </summary>
     protected abstract string GetTransportName();
 
     /// <summary>
-    /// Performs any transport-specific server setup if needed.
-    /// For STDIO: might start a server process
-    /// For SSE: might start an HTTP server
+    ///     Performs any transport-specific server setup if needed.
+    ///     For STDIO: might start a server process
+    ///     For SSE: might start an HTTP server
     /// </summary>
     protected virtual Task SetupServerAsync()
     {
@@ -50,7 +49,7 @@ public abstract class McpTransportTestBase : IDisposable
     }
 
     /// <summary>
-    /// Performs any transport-specific server teardown if needed.
+    ///     Performs any transport-specific server teardown if needed.
     /// </summary>
     protected virtual Task TeardownServerAsync()
     {
@@ -62,7 +61,7 @@ public abstract class McpTransportTestBase : IDisposable
     #region Helper Methods
 
     /// <summary>
-    /// Gets or creates the MCP client for this test session.
+    ///     Gets or creates the MCP client for this test session.
     /// </summary>
     protected async Task<IMcpClient> GetClientAsync()
     {
@@ -72,11 +71,12 @@ public abstract class McpTransportTestBase : IDisposable
             _client = await CreateClientAsync();
             _output.WriteLine($"✅ {GetTransportName()} MCP client created successfully");
         }
+
         return _client;
     }
 
     /// <summary>
-    /// Generates a unique user ID for test isolation.
+    ///     Generates a unique user ID for test isolation.
     /// </summary>
     protected static string GenerateTestUserId(string prefix)
     {
@@ -370,7 +370,9 @@ public abstract class McpTransportTestBase : IDisposable
         _output.WriteLine($"🚫 Testing error handling for invalid tool name via {GetTransportName()}");
 
         // Act & Assert - Expect ModelContextProtocol.McpException which is what 0.2.x actually throws
-        _ = await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () => await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>()));
+        _ = await Assert.ThrowsAsync<McpException>(async () =>
+            await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>())
+        );
 
         _output.WriteLine($"✅ {GetTransportName()}: Invalid tool name error handling works correctly");
     }

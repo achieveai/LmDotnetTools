@@ -36,7 +36,7 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.NotNull(result);
         var firstMessage = result.FirstOrDefault();
         Assert.NotNull(firstMessage);
-        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)firstMessage).GetText());
+        Assert.Equal(message.Text, ((ICanGetText)firstMessage).GetText());
 
         // Verify the agent was called exactly once
         mockAgent.Verify(
@@ -133,10 +133,7 @@ public class MessageUpdateJoinerMiddlewareTests
             Role = Role.Assistant,
         };
 
-        var updateMessages = new List<IMessage>(textUpdates)
-        {
-            usageMessage
-        };
+        var updateMessages = new List<IMessage>(textUpdates) { usageMessage };
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
@@ -170,7 +167,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var textMessage = results[0];
         _ = Assert.IsType<TextMessage>(textMessage);
         Assert.NotNull(textMessage);
-        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)textMessage).GetText());
+        Assert.Equal(testString, ((ICanGetText)textMessage).GetText());
 
         // Verify that the text message doesn't have usage metadata
         Assert.Null(textMessage.Metadata);
@@ -230,5 +227,6 @@ public class MessageUpdateJoinerMiddlewareTests
 
         return messages;
     }
+
     #endregion
 }

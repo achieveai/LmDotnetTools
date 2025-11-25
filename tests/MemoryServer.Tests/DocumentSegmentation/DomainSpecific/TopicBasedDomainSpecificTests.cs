@@ -9,16 +9,16 @@ using Xunit.Abstractions;
 namespace MemoryServer.DocumentSegmentation.Tests.DomainSpecific;
 
 /// <summary>
-/// Domain-specific tests for TopicBasedSegmentationService.
-/// Tests specialized handling of Legal, Technical, Academic, and other document types.
+///     Domain-specific tests for TopicBasedSegmentationService.
+///     Tests specialized handling of Legal, Technical, Academic, and other document types.
 /// </summary>
 public class TopicBasedDomainSpecificTests
 {
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
-    private readonly TopicBasedSegmentationService _service;
     private readonly ITestOutputHelper _output;
+    private readonly TopicBasedSegmentationService _service;
 
     public TopicBasedDomainSpecificTests(ITestOutputHelper output)
     {
@@ -66,15 +66,13 @@ public class TopicBasedDomainSpecificTests
             _ = segment.Metadata["document_type"].Should().Be(DocumentType.Legal.ToString());
         }
 
-        _output.WriteLine($"Legal Document Segmentation:");
+        _output.WriteLine("Legal Document Segmentation:");
         _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
 
         foreach (var (segment, index) in result.Select((s, i) => (s, i)))
         {
-            _output.WriteLine(
-                $"  Segment {index + 1}: {segment.Content[..Math.Min(50, segment.Content.Length)]}..."
-            );
+            _output.WriteLine($"  Segment {index + 1}: {segment.Content[..Math.Min(50, segment.Content.Length)]}...");
         }
     }
 
@@ -101,7 +99,7 @@ public class TopicBasedDomainSpecificTests
             _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
-        _output.WriteLine($"Legal Boundary Detection:");
+        _output.WriteLine("Legal Boundary Detection:");
         _output.WriteLine($"  Boundaries found: {boundaries.Count}");
         foreach (var boundary in boundaries)
         {
@@ -134,7 +132,7 @@ public class TopicBasedDomainSpecificTests
             .CoherenceScore.Should()
             .BeGreaterThan(0.6, "Legal clauses should maintain thematic coherence despite formal language");
 
-        _output.WriteLine($"Legal Coherence Analysis:");
+        _output.WriteLine("Legal Coherence Analysis:");
         _output.WriteLine($"  Coherence Score: {analysis.CoherenceScore:F2}");
         _output.WriteLine($"  Primary Topic: {analysis.PrimaryTopic}");
     }
@@ -167,7 +165,7 @@ public class TopicBasedDomainSpecificTests
         var codeSegments = result.Where(s => s.Content.Contains("```") || s.Content.Contains("function")).ToList();
         _ = codeSegments.Should().NotBeEmpty("Should identify code-containing segments");
 
-        _output.WriteLine($"Technical Document Segmentation:");
+        _output.WriteLine("Technical Document Segmentation:");
         _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Code segments: {codeSegments.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
@@ -194,7 +192,7 @@ public class TopicBasedDomainSpecificTests
             _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
-        _output.WriteLine($"Technical Boundary Detection:");
+        _output.WriteLine("Technical Boundary Detection:");
         _output.WriteLine($"  Boundaries found: {boundaries.Count}");
     }
 
@@ -233,7 +231,7 @@ public class TopicBasedDomainSpecificTests
             .CoherenceScore.Should()
             .BeGreaterThan(0.7, "Code examples with explanations should maintain thematic coherence");
 
-        _output.WriteLine($"Technical Coherence Analysis:");
+        _output.WriteLine("Technical Coherence Analysis:");
         _output.WriteLine($"  Coherence Score: {analysis.CoherenceScore:F2}");
     }
 
@@ -269,7 +267,7 @@ public class TopicBasedDomainSpecificTests
             .Should()
             .BeGreaterThan(300, "Academic sections should be substantial in length");
 
-        _output.WriteLine($"Academic Paper Segmentation:");
+        _output.WriteLine("Academic Paper Segmentation:");
         _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
     }
@@ -295,7 +293,7 @@ public class TopicBasedDomainSpecificTests
             _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
-        _output.WriteLine($"Academic Boundary Detection:");
+        _output.WriteLine("Academic Boundary Detection:");
         _output.WriteLine($"  Boundaries found: {boundaries.Count}");
     }
 
@@ -325,7 +323,7 @@ public class TopicBasedDomainSpecificTests
             .CoherenceScore.Should()
             .BeGreaterThan(0.8, "Academic methodology sections should maintain high thematic coherence");
 
-        _output.WriteLine($"Academic Coherence Analysis:");
+        _output.WriteLine("Academic Coherence Analysis:");
         _output.WriteLine($"  Coherence Score: {analysis.CoherenceScore:F2}");
     }
 
@@ -420,7 +418,7 @@ public class TopicBasedDomainSpecificTests
         // Should not fail on mixed domain content
         _ = result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
 
-        _output.WriteLine($"Mixed Domain Document Segmentation:");
+        _output.WriteLine("Mixed Domain Document Segmentation:");
         _output.WriteLine($"  Segments created: {result.Count}");
     }
 

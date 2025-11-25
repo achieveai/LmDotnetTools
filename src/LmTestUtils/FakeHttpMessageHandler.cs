@@ -5,9 +5,9 @@ using System.Text.Json;
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Fake HTTP message handler for testing HTTP requests without making real network calls
-/// Based on the pattern described in mocking-httpclient.md
-/// Shared utility for all LmDotnetTools provider testing
+///     Fake HTTP message handler for testing HTTP requests without making real network calls
+///     Based on the pattern described in mocking-httpclient.md
+///     Shared utility for all LmDotnetTools provider testing
 /// </summary>
 public class FakeHttpMessageHandler : HttpMessageHandler
 {
@@ -27,18 +27,17 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a simple fake handler with a custom response function
+    ///     Creates a simple fake handler with a custom response function
     /// </summary>
     /// <param name="responseFunc">Function to generate responses</param>
     /// <returns>A configured fake handler</returns>
     public static FakeHttpMessageHandler CreateSimpleHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFunc)
     {
-        return new FakeHttpMessageHandler(
-            (request, cancellationToken) => Task.FromResult(responseFunc(request)));
+        return new FakeHttpMessageHandler((request, cancellationToken) => Task.FromResult(responseFunc(request)));
     }
 
     /// <summary>
-    /// Creates a simple fake handler that returns a successful response with JSON content
+    ///     Creates a simple fake handler that returns a successful response with JSON content
     /// </summary>
     /// <param name="jsonResponse">The JSON response to return</param>
     /// <param name="statusCode">The HTTP status code to return</param>
@@ -61,7 +60,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that can respond to multiple different requests
+    ///     Creates a fake handler that can respond to multiple different requests
     /// </summary>
     /// <param name="responses">Dictionary mapping request patterns to responses</param>
     /// <returns>A configured fake handler</returns>
@@ -95,18 +94,17 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that simulates network errors or timeouts
+    ///     Creates a fake handler that simulates network errors or timeouts
     /// </summary>
     /// <param name="exception">The exception to throw</param>
     /// <returns>A configured fake handler that throws exceptions</returns>
     public static FakeHttpMessageHandler CreateErrorHandler(Exception exception)
     {
-        return new FakeHttpMessageHandler(
-            (request, cancellationToken) => throw exception);
+        return new FakeHttpMessageHandler((request, cancellationToken) => throw exception);
     }
 
     /// <summary>
-    /// Creates a fake handler that simulates retry scenarios
+    ///     Creates a fake handler that simulates retry scenarios
     /// </summary>
     /// <param name="failureCount">Number of times to fail before succeeding</param>
     /// <param name="successResponse">The successful response to return after failures</param>
@@ -133,17 +131,17 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                         }
                     )
                     : Task.FromResult(
-                    new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
-                    }
-                );
+                        new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
+                        }
+                    );
             }
         );
     }
 
     /// <summary>
-    /// Creates a fake handler that returns a sequence of status codes followed by success
+    ///     Creates a fake handler that returns a sequence of status codes followed by success
     /// </summary>
     /// <param name="statusCodes">Sequence of status codes to return</param>
     /// <param name="successResponse">The successful response to return after all status codes</param>
@@ -171,11 +169,11 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                             }
                         )
                         : Task.FromResult(
-                        new HttpResponseMessage(statusCode)
-                        {
-                            Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain"),
-                        }
-                    );
+                            new HttpResponseMessage(statusCode)
+                            {
+                                Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain"),
+                            }
+                        );
                 }
 
                 // If we've exhausted the sequence, return success
@@ -190,8 +188,8 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler with request capture capability
-    /// Essential for validating API request formatting and headers
+    ///     Creates a fake handler with request capture capability
+    ///     Essential for validating API request formatting and headers
     /// </summary>
     /// <param name="responseJson">JSON response to return</param>
     /// <param name="capturedRequest">Out parameter to receive captured request</param>
@@ -222,7 +220,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that returns an OpenAI-formatted chat completion response
+    ///     Creates a fake handler that returns an OpenAI-formatted chat completion response
     /// </summary>
     /// <param name="content">The response content text</param>
     /// <param name="model">The model name</param>
@@ -264,7 +262,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that returns an Anthropic-formatted message response
+    ///     Creates a fake handler that returns an Anthropic-formatted message response
     /// </summary>
     /// <param name="content">The response content text</param>
     /// <param name="model">The model name</param>
@@ -302,7 +300,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that returns a streaming OpenAI response
+    ///     Creates a fake handler that returns a streaming OpenAI response
     /// </summary>
     /// <param name="content">The content to stream</param>
     /// <param name="model">The model name</param>
@@ -389,16 +387,18 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         _ = streamData.AppendLine("data: [DONE]");
 
         return new FakeHttpMessageHandler(
-            (request, cancellationToken) => Task.FromResult(
+            (request, cancellationToken) =>
+                Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/plain"),
                     }
-                ));
+                )
+        );
     }
 
     /// <summary>
-    /// Creates a fake handler that returns a Server-Sent Events (SSE) stream
+    ///     Creates a fake handler that returns a Server-Sent Events (SSE) stream
     /// </summary>
     /// <param name="events">Collection of SSE events to stream</param>
     /// <returns>A configured fake handler for SSE streaming responses</returns>
@@ -450,7 +450,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that returns a simple SSE stream with text data
+    ///     Creates a fake handler that returns a simple SSE stream with text data
     /// </summary>
     /// <param name="messages">Collection of text messages to stream</param>
     /// <param name="eventType">Optional event type for all messages</param>
@@ -474,7 +474,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
-    /// Creates a fake handler that returns an SSE stream with JSON data events
+    ///     Creates a fake handler that returns an SSE stream with JSON data events
     /// </summary>
     /// <param name="jsonObjects">Collection of objects to serialize as JSON events</param>
     /// <param name="eventType">Optional event type for all events</param>
@@ -499,8 +499,8 @@ public class FakeHttpMessageHandler : HttpMessageHandler
 }
 
 /// <summary>
-/// Represents a Server-Sent Event for SSE streaming.
-/// Contains Id, Event, and Data properties for SSE event information.
+///     Represents a Server-Sent Event for SSE streaming.
+///     Contains Id, Event, and Data properties for SSE event information.
 /// </summary>
 public record SseEvent
 {
@@ -510,7 +510,7 @@ public record SseEvent
 }
 
 /// <summary>
-/// Container for captured HTTP request data
+///     Container for captured HTTP request data
 /// </summary>
 public class CapturedRequestContainer
 {

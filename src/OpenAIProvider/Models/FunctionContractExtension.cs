@@ -6,10 +6,12 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 public static class FunctionContractExtension
 {
     /// <summary>
-    /// Convert a <see cref="FunctionContract"/> to a <see cref="FunctionDefinition"/> that can be used in function call.
+    ///     Convert a <see cref="FunctionContract" /> to a <see cref="FunctionDefinition" /> that can be used in function call.
     /// </summary>
     /// <param name="functionContract">function contract</param>
-    /// <returns><see cref="FunctionDefinition"/></returns>
+    /// <returns>
+    ///     <see cref="FunctionDefinition" />
+    /// </returns>
     public static FunctionDefinition ToOpenFunctionDefinition(this FunctionContract functionContract)
     {
         ArgumentNullException.ThrowIfNull(functionContract);
@@ -46,7 +48,7 @@ public static class FunctionContractExtension
     }
 
     /// <summary>
-    /// Creates a JsonSchemaObject based on the .NET type
+    ///     Creates a JsonSchemaObject based on the .NET type
     /// </summary>
     private static JsonSchemaObject CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
     {

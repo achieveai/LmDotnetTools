@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 
 /// <summary>
-/// User message event containing user input
+///     User message event containing user input
 /// </summary>
 public record UserMessageEvent : JsonlEventBase
 {
@@ -43,7 +43,7 @@ public record UserMessageEvent : JsonlEventBase
 }
 
 /// <summary>
-/// User message structure
+///     User message structure
 /// </summary>
 public record UserMessage
 {
@@ -51,5 +51,5 @@ public record UserMessage
     public required string Role { get; init; }
 
     [JsonPropertyName("content")]
-    public required JsonElement Content { get; init; }  // Can be string or array of content blocks
+    public required JsonElement Content { get; init; } // Can be string or array of content blocks
 }

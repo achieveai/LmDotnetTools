@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Tests.Integration;
 
 /// <summary>
-/// End-to-end integration tests for the complete document segmentation workflow.
+///     End-to-end integration tests for the complete document segmentation workflow.
 /// </summary>
 public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 {
@@ -51,6 +51,18 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
             AgentId = "integration-test-agent",
             RunId = "integration-test-run",
         };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sessionFactory is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (_sessionFactory is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     [Fact]
@@ -324,17 +336,5 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
                 CacheExpiration = TimeSpan.FromMinutes(30),
             },
         };
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_sessionFactory is IAsyncDisposable asyncDisposable)
-        {
-            await asyncDisposable.DisposeAsync();
-        }
-        else if (_sessionFactory is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
     }
 }

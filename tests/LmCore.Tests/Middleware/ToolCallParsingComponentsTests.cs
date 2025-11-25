@@ -3,7 +3,7 @@ using System.Text;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 /// <summary>
-/// Unit tests for the tool call parsing components that will be used in the refactored middleware
+///     Unit tests for the tool call parsing components that will be used in the refactored middleware
 /// </summary>
 public class ToolCallParsingComponentsTests
 {

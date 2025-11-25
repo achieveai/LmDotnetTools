@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Custom JsonConverter for ImmutableDictionary to handle serialization and deserialization.
+///     Custom JsonConverter for ImmutableDictionary to handle serialization and deserialization.
 /// </summary>
 /// <typeparam name="TKey">The type of keys in the dictionary.</typeparam>
 /// <typeparam name="TValue">The type of values in the dictionary.</typeparam>
@@ -16,7 +16,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
     private readonly Type _valueType;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ImmutableDictionaryJsonConverter{TKey, TValue}"/> class.
+    ///     Initializes a new instance of the <see cref="ImmutableDictionaryJsonConverter{TKey, TValue}" /> class.
     /// </summary>
     public ImmutableDictionaryJsonConverter()
     {
@@ -141,7 +141,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
                 }
                 else if (typeof(TValue) == typeof(object))
                 {
-                    ImmutableDictionaryJsonConverter<TKey, TValue>.WriteObjectValue(writer, kvp.Value, options);
+                    WriteObjectValue(writer, kvp.Value, options);
                 }
                 else
                 {

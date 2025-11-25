@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -9,22 +10,15 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
 
 /// <summary>
-/// Service for discovering and caching OpenRouter model configurations.
-/// Implements cache-first logic with background refresh capabilities.
+///     Service for discovering and caching OpenRouter model configurations.
+///     Implements cache-first logic with background refresh capabilities.
 /// </summary>
 public class OpenRouterModelService
 {
-    private readonly HttpClient _httpClient;
-    private readonly ILogger<OpenRouterModelService> _logger;
-    private readonly string _cacheFilePath;
-    private readonly SemaphoreSlim _cacheSemaphore = new(1, 1);
-    private readonly SemaphoreSlim _backgroundRefreshSemaphore = new(1, 1);
-    private readonly JsonSerializerOptions _jsonOptions;
-
     private const string OpenRouterModelsUrl = "https://openrouter.ai/api/frontend/models";
+
     private const string OpenRouterStatsUrlTemplate =
         "https://openrouter.ai/api/frontend/stats/endpoint?permaslug={0}&variant=standard";
-    private static readonly TimeSpan CacheExpiration = TimeSpan.FromHours(24);
 
     // Retry and timeout constants
     private const int MaxRetries = 3;
@@ -35,6 +29,13 @@ public class OpenRouterModelService
     private const int CacheSaveTimeoutMs = 500;
     private const int ConcurrentRequestLimit = 5;
     private const int FileBufferSize = 65536;
+    private static readonly TimeSpan CacheExpiration = TimeSpan.FromHours(24);
+    private readonly SemaphoreSlim _backgroundRefreshSemaphore = new(1, 1);
+    private readonly string _cacheFilePath;
+    private readonly SemaphoreSlim _cacheSemaphore = new(1, 1);
+    private readonly HttpClient _httpClient;
+    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILogger<OpenRouterModelService> _logger;
 
     public OpenRouterModelService(HttpClient httpClient, ILogger<OpenRouterModelService> logger)
         : this(httpClient, logger, null) { }
@@ -52,6 +53,7 @@ public class OpenRouterModelService
             {
                 _ = Directory.CreateDirectory(cacheDir);
             }
+
             _cacheFilePath = cacheFilePath;
         }
         else
@@ -80,265 +82,15 @@ public class OpenRouterModelService
         _httpClient.Timeout = TimeSpan.FromSeconds(HttpTimeoutSeconds);
     }
 
-    #region Helper Methods
-
     /// <summary>
-    /// Safely extracts a string value from a JsonNode.
-    /// </summary>
-    private static string? GetStringValue(JsonNode? node, string propertyName)
-    {
-        return node?[propertyName]?.GetValue<string>();
-    }
-
-    /// <summary>
-    /// Safely extracts an integer value from a JsonNode.
-    /// </summary>
-    private static int GetIntValue(JsonNode? node, string propertyName, int defaultValue = 0)
-    {
-        return node?[propertyName]?.GetValue<int>() ?? defaultValue;
-    }
-
-    /// <summary>
-    /// Safely extracts a boolean value from a JsonNode.
-    /// </summary>
-    private static bool GetBoolValue(JsonNode? node, string propertyName, bool defaultValue = false)
-    {
-        return node?[propertyName]?.GetValue<bool>() ?? defaultValue;
-    }
-
-    /// <summary>
-    /// Safely extracts a long value from a JsonNode.
-    /// </summary>
-    private static long? GetLongValue(JsonNode? node, string propertyName)
-    {
-        return node?[propertyName]?.GetValue<long>();
-    }
-
-    /// <summary>
-    /// Safely extracts a string array from a JsonNode.
-    /// </summary>
-    private static string[] GetStringArray(JsonNode? node, string propertyName)
-    {
-        return node?[propertyName]?.AsArray()
-                ?.Select(x => x?.GetValue<string>())
-                .Where(x => !string.IsNullOrEmpty(x))
-                .Cast<string>()
-                .ToArray() ?? [];
-    }
-
-    /// <summary>
-    /// Safely parses an ISO 8601 datetime string.
-    /// </summary>
-    private static DateTime? TryParseDateTime(string? dateTimeString)
-    {
-        return string.IsNullOrWhiteSpace(dateTimeString)
-            ? null
-            : DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
-                ? dateTime.ToUniversalTime()
-            : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime
-            : null;
-    }
-
-    /// <summary>
-    /// Generic method to execute operations with retry logic and exponential backoff.
-    /// </summary>
-    private async Task<T> ExecuteWithRetryAsync<T>(
-        Func<Task<T>> operation,
-        int maxRetries,
-        TimeSpan baseDelay,
-        string operationName,
-        CancellationToken cancellationToken
-    )
-    {
-        for (var attempt = 0; attempt <= maxRetries; attempt++)
-        {
-            try
-            {
-                _logger.LogDebug(
-                    "{OperationName} (attempt {Attempt}/{MaxRetries})",
-                    operationName,
-                    attempt + 1,
-                    maxRetries + 1
-                );
-                return await operation();
-            }
-            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Timeout in {OperationName} (attempt {Attempt}/{MaxRetries})",
-                    operationName,
-                    attempt + 1,
-                    maxRetries + 1
-                );
-                if (attempt == maxRetries)
-                {
-                    throw new HttpRequestException($"Request timed out after multiple attempts", ex);
-                }
-
-                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogDebug("{OperationName} was cancelled", operationName);
-                throw;
-            }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "HTTP error in {OperationName} (attempt {Attempt}/{MaxRetries})",
-                    operationName,
-                    attempt + 1,
-                    maxRetries + 1
-                );
-                if (attempt == maxRetries)
-                {
-                    throw;
-                }
-
-                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
-            }
-            catch (JsonException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Invalid JSON in {OperationName} (attempt {Attempt}/{MaxRetries})",
-                    operationName,
-                    attempt + 1,
-                    maxRetries + 1
-                );
-                if (attempt == maxRetries)
-                {
-                    throw new InvalidOperationException($"Invalid JSON in {operationName}", ex);
-                }
-
-                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Invalid response in {OperationName} (attempt {Attempt}/{MaxRetries})",
-                    operationName,
-                    attempt + 1,
-                    maxRetries + 1
-                );
-                if (attempt == maxRetries)
-                {
-                    throw;
-                }
-
-                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
-            }
-        }
-        throw new InvalidOperationException($"Failed to execute {operationName} after all retry attempts");
-    }
-
-    /// <summary>
-    /// Generic method to fetch and validate JSON data from a URL.
-    /// </summary>
-    private async Task<JsonNode> FetchJsonAsync(
-        string url,
-        Func<JsonNode?, bool> validator,
-        string operationName,
-        CancellationToken cancellationToken
-    )
-    {
-        var response = await _httpClient.GetAsync(url, cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning(
-                "{OperationName} API returned {StatusCode}: {ReasonPhrase}",
-                operationName,
-                response.StatusCode,
-                response.ReasonPhrase
-            );
-            throw new HttpRequestException(
-                $"{operationName} API returned {response.StatusCode}: {response.ReasonPhrase}"
-            );
-        }
-
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            _logger.LogWarning("{OperationName} API returned empty response", operationName);
-            throw new InvalidOperationException($"{operationName} API returned empty response");
-        }
-
-        var jsonData = JsonNode.Parse(content);
-
-        if (!validator(jsonData))
-        {
-            _logger.LogWarning("{OperationName} response has invalid structure", operationName);
-            throw new InvalidOperationException($"{operationName} response has invalid structure");
-        }
-
-        return jsonData!;
-    }
-
-    /// <summary>
-    /// Generic validation method for JSON responses with data arrays.
-    /// </summary>
-    private bool ValidateJsonResponse(JsonNode? jsonData, Func<JsonNode, bool> itemValidator, string responseType)
-    {
-        try
-        {
-            if (jsonData == null)
-            {
-                return false;
-            }
-
-            var dataArray = jsonData["data"]?.AsArray();
-            if (dataArray == null)
-            {
-                return false;
-            }
-
-            // Check if we have at least one valid item
-            foreach (var item in dataArray)
-            {
-                if (item != null && itemValidator(item))
-                {
-                    return true; // Found at least one valid item
-                }
-            }
-
-            return false; // No valid items found
-        }
-        catch (Exception ex)
-        {
-            _logger.LogTrace(ex, "Error validating {ResponseType} response structure", responseType);
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Implements exponential backoff delay for retry logic.
-    /// </summary>
-    private async Task DelayWithExponentialBackoff(int attempt, TimeSpan baseDelay, CancellationToken cancellationToken)
-    {
-        var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(2, attempt));
-        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)(delay.TotalMilliseconds * 0.1)));
-        var totalDelay = delay + jitter;
-
-        _logger.LogTrace("Waiting {DelayMs}ms before retry", totalDelay.TotalMilliseconds);
-        await Task.Delay(totalDelay, cancellationToken);
-    }
-
-    #endregion
-
-    /// <summary>
-    /// Gets model configurations with cache-first logic.
-    /// Returns cached data immediately if valid, then refreshes cache in background.
+    ///     Gets model configurations with cache-first logic.
+    ///     Returns cached data immediately if valid, then refreshes cache in background.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of model configurations</returns>
     public async Task<IReadOnlyList<ModelConfig>> GetModelConfigsAsync(CancellationToken cancellationToken = default)
     {
-        var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var totalStopwatch = Stopwatch.StartNew();
         _logger.LogDebug("Getting OpenRouter model configurations");
 
         // Try to load from cache first
@@ -423,8 +175,8 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Starts a background cache refresh operation that doesn't block foreground requests.
-    /// Implements requirements 1.3, 2.2, 2.3, and 6.2.
+    ///     Starts a background cache refresh operation that doesn't block foreground requests.
+    ///     Implements requirements 1.3, 2.2, 2.3, and 6.2.
     /// </summary>
     /// <returns>A task that represents the background refresh operation</returns>
     private Task StartBackgroundRefreshAsync()
@@ -473,7 +225,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Manually refreshes the cache.
+    ///     Manually refreshes the cache.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task RefreshCacheAsync(CancellationToken cancellationToken = default)
@@ -498,7 +250,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Loads cache from disk if it exists with comprehensive integrity validation.
+    ///     Loads cache from disk if it exists with comprehensive integrity validation.
     /// </summary>
     private async Task<OpenRouterCache?> LoadCacheAsync(CancellationToken cancellationToken)
     {
@@ -508,7 +260,7 @@ public class OpenRouterModelService
             return null;
         }
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
 
         try
         {
@@ -521,7 +273,7 @@ public class OpenRouterModelService
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
-                    bufferSize: FileBufferSize
+                    FileBufferSize
                 );
 
                 // Deserialize directly from stream for better performance
@@ -601,7 +353,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Validates cache integrity to ensure data consistency and completeness.
+    ///     Validates cache integrity to ensure data consistency and completeness.
     /// </summary>
     private bool ValidateCacheIntegrity(OpenRouterCache cache)
     {
@@ -708,7 +460,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Safely deletes a corrupted cache file.
+    ///     Safely deletes a corrupted cache file.
     /// </summary>
     private async Task DeleteCorruptedCacheFileAsync()
     {
@@ -729,7 +481,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Fetches fresh data from OpenRouter API and caches it.
+    ///     Fetches fresh data from OpenRouter API and caches it.
     /// </summary>
     private async Task<OpenRouterCache> FetchAndCacheDataAsync(CancellationToken cancellationToken)
     {
@@ -756,7 +508,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Fetches the models list from OpenRouter API with retry logic and validation.
+    ///     Fetches the models list from OpenRouter API with retry logic and validation.
     /// </summary>
     private async Task<JsonNode> FetchModelsListAsync(CancellationToken cancellationToken)
     {
@@ -776,7 +528,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Fetches detailed model information for each model.
+    ///     Fetches detailed model information for each model.
     /// </summary>
     private async Task<Dictionary<string, JsonNode>> FetchModelDetailsAsync(
         JsonNode modelsData,
@@ -825,7 +577,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Fetches details for a single model with retry logic.
+    ///     Fetches details for a single model with retry logic.
     /// </summary>
     private async Task FetchSingleModelDetailsAsync(
         string modelPermaslug,
@@ -879,7 +631,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Validates the structure of the models list response.
+    ///     Validates the structure of the models list response.
     /// </summary>
     private bool ValidateModelsResponse(JsonNode? modelsData)
     {
@@ -891,7 +643,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Validates the structure of a model details response.
+    ///     Validates the structure of a model details response.
     /// </summary>
     private bool ValidateModelDetailsResponse(JsonNode? detailsData)
     {
@@ -903,7 +655,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Handles network failures by falling back to cache or returning empty list.
+    ///     Handles network failures by falling back to cache or returning empty list.
     /// </summary>
     private async Task<IReadOnlyList<ModelConfig>> HandleNetworkFailure(OpenRouterCache? cache, string errorType)
     {
@@ -924,11 +676,11 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Saves cache to disk atomically with integrity validation and performance optimization.
+    ///     Saves cache to disk atomically with integrity validation and performance optimization.
     /// </summary>
     private async Task SaveCacheAsync(OpenRouterCache cache, CancellationToken cancellationToken)
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
 
         await _cacheSemaphore.WaitAsync(cancellationToken);
         try
@@ -947,7 +699,7 @@ public class OpenRouterModelService
                 // Create backup of existing cache if it exists
                 if (File.Exists(_cacheFilePath))
                 {
-                    File.Copy(_cacheFilePath, backupFile, overwrite: true);
+                    File.Copy(_cacheFilePath, backupFile, true);
                     _logger.LogTrace("Created backup of existing cache file");
                 }
 
@@ -958,7 +710,7 @@ public class OpenRouterModelService
                         FileMode.Create,
                         FileAccess.Write,
                         FileShare.None,
-                        bufferSize: FileBufferSize
+                        FileBufferSize
                     )
                 )
                 {
@@ -973,7 +725,7 @@ public class OpenRouterModelService
                 }
 
                 // Atomic move to final location
-                File.Move(tempFile, _cacheFilePath, overwrite: true);
+                File.Move(tempFile, _cacheFilePath, true);
 
                 // Clean up backup file on successful write
                 if (File.Exists(backupFile))
@@ -1020,7 +772,7 @@ public class OpenRouterModelService
                 {
                     if (File.Exists(backupFile))
                     {
-                        File.Move(backupFile, _cacheFilePath, overwrite: true);
+                        File.Move(backupFile, _cacheFilePath, true);
                         _logger.LogDebug("Restored cache from backup after save failure");
                     }
                 }
@@ -1039,7 +791,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Verifies that a written cache file can be read back correctly.
+    ///     Verifies that a written cache file can be read back correctly.
     /// </summary>
     private async Task<bool> VerifyWrittenCacheFile(string filePath, CancellationToken cancellationToken)
     {
@@ -1075,11 +827,11 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Converts OpenRouter cache data to ModelConfig objects with comprehensive mapping.
-    /// Maps OpenRouter model data to ModelConfig objects with all required fields,
-    /// creates ProviderConfig entries for each model variant with appropriate priorities,
-    /// extracts unique provider information including metadata and capabilities,
-    /// and allows selective filtering of providers during configuration creation.
+    ///     Converts OpenRouter cache data to ModelConfig objects with comprehensive mapping.
+    ///     Maps OpenRouter model data to ModelConfig objects with all required fields,
+    ///     creates ProviderConfig entries for each model variant with appropriate priorities,
+    ///     extracts unique provider information including metadata and capabilities,
+    ///     and allows selective filtering of providers during configuration creation.
     /// </summary>
     private async Task<IReadOnlyList<ModelConfig>> ConvertToModelConfigsAsync(
         OpenRouterCache cache,
@@ -1157,7 +909,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates a ModelConfig from a group of model nodes (same model, different endpoints/providers).
+    ///     Creates a ModelConfig from a group of model nodes (same model, different endpoints/providers).
     /// </summary>
     private async Task<ModelConfig?> CreateModelConfigFromGroupAsync(
         string modelSlug,
@@ -1193,12 +945,7 @@ public class OpenRouterModelService
         var isReasoning = CheckIfReasoningModel(primaryModelNode);
 
         // Create capabilities
-        var capabilities = CreateModelCapabilities(
-            primaryModelNode,
-            inputModalities,
-            outputModalities,
-            contextLength
-        );
+        var capabilities = CreateModelCapabilities(primaryModelNode, inputModalities, outputModalities, contextLength);
 
         // Create providers from model details endpoints
         var providers = new List<ProviderConfig>();
@@ -1322,7 +1069,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates a ProviderConfig from an OpenRouter endpoint.
+    ///     Creates a ProviderConfig from an OpenRouter endpoint.
     /// </summary>
     private Task<ProviderConfig?> CreateProviderConfigFromEndpointAsync(
         JsonNode endpoint,
@@ -1386,7 +1133,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates pricing configuration from endpoint data.
+    ///     Creates pricing configuration from endpoint data.
     /// </summary>
     private static PricingConfig CreatePricingConfig(JsonNode endpoint)
     {
@@ -1417,7 +1164,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates provider tags based on endpoint characteristics.
+    ///     Creates provider tags based on endpoint characteristics.
     /// </summary>
     private static IReadOnlyList<string> CreateProviderTags(
         JsonNode endpoint,
@@ -1497,7 +1244,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates sub-providers from provider info (for aggregators like OpenRouter).
+    ///     Creates sub-providers from provider info (for aggregators like OpenRouter).
     /// </summary>
     private static IReadOnlyList<SubProviderConfig>? CreateSubProviders(JsonNode? providerInfo)
     {
@@ -1507,7 +1254,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates a SubProviderConfig from an OpenRouter endpoint.
+    ///     Creates a SubProviderConfig from an OpenRouter endpoint.
     /// </summary>
     private SubProviderConfig? CreateSubProviderFromEndpoint(JsonNode endpoint, string modelSlug)
     {
@@ -1554,7 +1301,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Gets the best pricing from a list of sub-providers (typically the cheapest).
+    ///     Gets the best pricing from a list of sub-providers (typically the cheapest).
     /// </summary>
     private static PricingConfig GetBestPricingFromSubProviders(IReadOnlyList<SubProviderConfig> subProviders)
     {
@@ -1574,7 +1321,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates model capabilities from OpenRouter model data.
+    ///     Creates model capabilities from OpenRouter model data.
     /// </summary>
     private static ModelCapabilities CreateModelCapabilities(
         JsonNode modelNode,
@@ -1742,7 +1489,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Checks if a model has reasoning capabilities.
+    ///     Checks if a model has reasoning capabilities.
     /// </summary>
     private static bool CheckIfReasoningModel(JsonNode modelNode)
     {
@@ -1762,7 +1509,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Determines the thinking type based on model characteristics.
+    ///     Determines the thinking type based on model characteristics.
     /// </summary>
     private static ThinkingType DetermineThinkingType(JsonNode modelNode)
     {
@@ -1770,8 +1517,7 @@ public class OpenRouterModelService
         var slug = GetStringValue(modelNode, "slug")?.ToLowerInvariant() ?? "";
         var author = GetStringValue(modelNode, "author")?.ToLowerInvariant() ?? "";
 
-        return name.Contains("o1") || slug.Contains("o1") || author.Contains("openai")
-            ? ThinkingType.OpenAI
+        return name.Contains("o1") || slug.Contains("o1") || author.Contains("openai") ? ThinkingType.OpenAI
             : name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
                 ? ThinkingType.DeepSeek
             : author.Contains("anthropic") ? ThinkingType.Anthropic
@@ -1779,7 +1525,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Creates a fallback provider when no endpoints are available.
+    ///     Creates a fallback provider when no endpoints are available.
     /// </summary>
     private static ProviderConfig CreateFallbackProvider(string modelSlug)
     {
@@ -1794,7 +1540,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Gets cache file information for monitoring and diagnostics.
+    ///     Gets cache file information for monitoring and diagnostics.
     /// </summary>
     public CacheInfo GetCacheInfo()
     {
@@ -1828,7 +1574,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Clears the cache by deleting the cache file.
+    ///     Clears the cache by deleting the cache file.
     /// </summary>
     public async Task ClearCacheAsync()
     {
@@ -1853,7 +1599,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Disposes resources.
+    ///     Disposes resources.
     /// </summary>
     public void Dispose()
     {
@@ -1862,7 +1608,7 @@ public class OpenRouterModelService
     }
 
     /// <summary>
-    /// Information about the cache file.
+    ///     Information about the cache file.
     /// </summary>
     public record CacheInfo
     {
@@ -1885,7 +1631,258 @@ public class OpenRouterModelService
                 number /= 1024;
                 counter++;
             }
+
             return $"{number:n1} {suffixes[counter]}";
         }
     }
+
+    #region Helper Methods
+
+    /// <summary>
+    ///     Safely extracts a string value from a JsonNode.
+    /// </summary>
+    private static string? GetStringValue(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName]?.GetValue<string>();
+    }
+
+    /// <summary>
+    ///     Safely extracts an integer value from a JsonNode.
+    /// </summary>
+    private static int GetIntValue(JsonNode? node, string propertyName, int defaultValue = 0)
+    {
+        return node?[propertyName]?.GetValue<int>() ?? defaultValue;
+    }
+
+    /// <summary>
+    ///     Safely extracts a boolean value from a JsonNode.
+    /// </summary>
+    private static bool GetBoolValue(JsonNode? node, string propertyName, bool defaultValue = false)
+    {
+        return node?[propertyName]?.GetValue<bool>() ?? defaultValue;
+    }
+
+    /// <summary>
+    ///     Safely extracts a long value from a JsonNode.
+    /// </summary>
+    private static long? GetLongValue(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName]?.GetValue<long>();
+    }
+
+    /// <summary>
+    ///     Safely extracts a string array from a JsonNode.
+    /// </summary>
+    private static string[] GetStringArray(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName]?.AsArray()
+                ?.Select(x => x?.GetValue<string>())
+                .Where(x => !string.IsNullOrEmpty(x))
+                .Cast<string>()
+                .ToArray() ?? [];
+    }
+
+    /// <summary>
+    ///     Safely parses an ISO 8601 datetime string.
+    /// </summary>
+    private static DateTime? TryParseDateTime(string? dateTimeString)
+    {
+        return string.IsNullOrWhiteSpace(dateTimeString) ? null
+            : DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
+                ? dateTime.ToUniversalTime()
+            : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime
+            : null;
+    }
+
+    /// <summary>
+    ///     Generic method to execute operations with retry logic and exponential backoff.
+    /// </summary>
+    private async Task<T> ExecuteWithRetryAsync<T>(
+        Func<Task<T>> operation,
+        int maxRetries,
+        TimeSpan baseDelay,
+        string operationName,
+        CancellationToken cancellationToken
+    )
+    {
+        for (var attempt = 0; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                _logger.LogDebug(
+                    "{OperationName} (attempt {Attempt}/{MaxRetries})",
+                    operationName,
+                    attempt + 1,
+                    maxRetries + 1
+                );
+                return await operation();
+            }
+            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Timeout in {OperationName} (attempt {Attempt}/{MaxRetries})",
+                    operationName,
+                    attempt + 1,
+                    maxRetries + 1
+                );
+                if (attempt == maxRetries)
+                {
+                    throw new HttpRequestException("Request timed out after multiple attempts", ex);
+                }
+
+                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogDebug("{OperationName} was cancelled", operationName);
+                throw;
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "HTTP error in {OperationName} (attempt {Attempt}/{MaxRetries})",
+                    operationName,
+                    attempt + 1,
+                    maxRetries + 1
+                );
+                if (attempt == maxRetries)
+                {
+                    throw;
+                }
+
+                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Invalid JSON in {OperationName} (attempt {Attempt}/{MaxRetries})",
+                    operationName,
+                    attempt + 1,
+                    maxRetries + 1
+                );
+                if (attempt == maxRetries)
+                {
+                    throw new InvalidOperationException($"Invalid JSON in {operationName}", ex);
+                }
+
+                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Invalid response in {OperationName} (attempt {Attempt}/{MaxRetries})",
+                    operationName,
+                    attempt + 1,
+                    maxRetries + 1
+                );
+                if (attempt == maxRetries)
+                {
+                    throw;
+                }
+
+                await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException($"Failed to execute {operationName} after all retry attempts");
+    }
+
+    /// <summary>
+    ///     Generic method to fetch and validate JSON data from a URL.
+    /// </summary>
+    private async Task<JsonNode> FetchJsonAsync(
+        string url,
+        Func<JsonNode?, bool> validator,
+        string operationName,
+        CancellationToken cancellationToken
+    )
+    {
+        var response = await _httpClient.GetAsync(url, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "{OperationName} API returned {StatusCode}: {ReasonPhrase}",
+                operationName,
+                response.StatusCode,
+                response.ReasonPhrase
+            );
+            throw new HttpRequestException(
+                $"{operationName} API returned {response.StatusCode}: {response.ReasonPhrase}"
+            );
+        }
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            _logger.LogWarning("{OperationName} API returned empty response", operationName);
+            throw new InvalidOperationException($"{operationName} API returned empty response");
+        }
+
+        var jsonData = JsonNode.Parse(content);
+
+        if (!validator(jsonData))
+        {
+            _logger.LogWarning("{OperationName} response has invalid structure", operationName);
+            throw new InvalidOperationException($"{operationName} response has invalid structure");
+        }
+
+        return jsonData!;
+    }
+
+    /// <summary>
+    ///     Generic validation method for JSON responses with data arrays.
+    /// </summary>
+    private bool ValidateJsonResponse(JsonNode? jsonData, Func<JsonNode, bool> itemValidator, string responseType)
+    {
+        try
+        {
+            if (jsonData == null)
+            {
+                return false;
+            }
+
+            var dataArray = jsonData["data"]?.AsArray();
+            if (dataArray == null)
+            {
+                return false;
+            }
+
+            // Check if we have at least one valid item
+            foreach (var item in dataArray)
+            {
+                if (item != null && itemValidator(item))
+                {
+                    return true; // Found at least one valid item
+                }
+            }
+
+            return false; // No valid items found
+        }
+        catch (Exception ex)
+        {
+            _logger.LogTrace(ex, "Error validating {ResponseType} response structure", responseType);
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     Implements exponential backoff delay for retry logic.
+    /// </summary>
+    private async Task DelayWithExponentialBackoff(int attempt, TimeSpan baseDelay, CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(2, attempt));
+        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)(delay.TotalMilliseconds * 0.1)));
+        var totalDelay = delay + jitter;
+
+        _logger.LogTrace("Waiting {DelayMs}ms before retry", totalDelay.TotalMilliseconds);
+        await Task.Delay(totalDelay, cancellationToken);
+    }
+
+    #endregion
 }

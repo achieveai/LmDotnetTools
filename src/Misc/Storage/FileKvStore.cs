@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,17 +7,17 @@ using AchieveAi.LmDotnetTools.Misc.Utils;
 namespace AchieveAi.LmDotnetTools.Misc.Storage;
 
 /// <summary>
-/// File-based implementation of IKvStore that stores cached values as individual files
-/// with SHA256-based filenames in a configurable directory.
+///     File-based implementation of IKvStore that stores cached values as individual files
+///     with SHA256-based filenames in a configurable directory.
 /// </summary>
 public class FileKvStore : IKvStore, IDisposable
 {
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly SemaphoreSlim _semaphore;
-    private bool _disposed = false;
+    private bool _disposed;
 
     /// <summary>
-    /// Creates a new file-based key-value store using the specified directory
+    ///     Creates a new file-based key-value store using the specified directory
     /// </summary>
     /// <param name="cacheDirectory">Directory where cache files will be stored</param>
     /// <param name="jsonOptions">JSON serialization options, or null to use default options</param>
@@ -38,11 +39,22 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <summary>
-    /// Gets the cache directory path
+    ///     Gets the cache directory path
     /// </summary>
     public string CacheDirectory { get; }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _semaphore?.Dispose();
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -76,6 +88,7 @@ public class FileKvStore : IKvStore, IDisposable
             {
                 // Ignore deletion errors
             }
+
             return default;
         }
         finally
@@ -84,7 +97,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -106,7 +119,7 @@ public class FileKvStore : IKvStore, IDisposable
             // This ensures atomic writes and prevents corruption
             var tempFilePath = filePath + ".tmp";
             await File.WriteAllTextAsync(tempFilePath, json, Encoding.UTF8, cancellationToken);
-            File.Move(tempFilePath, filePath, overwrite: true);
+            File.Move(tempFilePath, filePath, true);
         }
         finally
         {
@@ -114,7 +127,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -123,7 +136,7 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     private async IAsyncEnumerable<string> EnumerateKeysInternal(
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
         await _semaphore.WaitAsync(cancellationToken);
@@ -154,7 +167,7 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <summary>
-    /// Clears all cached files from the cache directory
+    ///     Clears all cached files from the cache directory
     /// </summary>
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
@@ -191,7 +204,7 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <summary>
-    /// Gets the total number of cached files
+    ///     Gets the total number of cached files
     /// </summary>
     public async Task<int> GetCountAsync(CancellationToken cancellationToken = default)
     {
@@ -211,7 +224,7 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <summary>
-    /// Generates a file path for the given key using SHA256 hash
+    ///     Generates a file path for the given key using SHA256 hash
     /// </summary>
     private string GetFilePath(string key)
     {
@@ -221,24 +234,13 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <summary>
-    /// Throws ObjectDisposedException if the store has been disposed
+    ///     Throws ObjectDisposedException if the store has been disposed
     /// </summary>
     private void ThrowIfDisposed()
     {
         if (_disposed)
         {
             throw new ObjectDisposedException(nameof(FileKvStore));
-        }
-    }
-
-    /// <inheritdoc/>
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            _semaphore?.Dispose();
-            GC.SuppressFinalize(this);
         }
     }
 }

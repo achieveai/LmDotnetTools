@@ -5,18 +5,18 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that implements model fallback functionality.
-/// It will attempt to use agents based on a model name mapping,
-/// with fallback to other agents in the array if the first agent fails.
+///     Middleware that implements model fallback functionality.
+///     It will attempt to use agents based on a model name mapping,
+///     with fallback to other agents in the array if the first agent fails.
 /// </summary>
 public class ModelFallbackMiddleware : IStreamingMiddleware
 {
-    private readonly Dictionary<string, IAgent[]> _modelAgentMap;
     private readonly IAgent _defaultAgent;
+    private readonly Dictionary<string, IAgent[]> _modelAgentMap;
     private readonly bool _tryDefaultLast;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ModelFallbackMiddleware"/> class.
+    ///     Initializes a new instance of the <see cref="ModelFallbackMiddleware" /> class.
     /// </summary>
     /// <param name="modelAgentMap">A dictionary mapping model names to arrays of agents to try in order.</param>
     /// <param name="defaultAgent">The default agent to use if no mapping is found for the model.</param>
@@ -36,12 +36,12 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name { get; }
 
     /// <summary>
-    /// Invokes the middleware, attempting agents based on the model name in the options.
+    ///     Invokes the middleware, attempting agents based on the model name in the options.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -104,7 +104,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
+    ///     Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
@@ -140,17 +140,15 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                             cancellationToken
                         );
                     }
-                    else
-                    {
-                        // If the agent doesn't support streaming, fall back to non-streaming
-                        // and convert to an async enumerable
-                        var result = await mappedAgent.GenerateReplyAsync(
-                            context.Messages,
-                            context.Options,
-                            cancellationToken
-                        );
-                        return ToAsyncEnumerableInternal(result, cancellationToken);
-                    }
+
+                    // If the agent doesn't support streaming, fall back to non-streaming
+                    // and convert to an async enumerable
+                    var result = await mappedAgent.GenerateReplyAsync(
+                        context.Messages,
+                        context.Options,
+                        cancellationToken
+                    );
+                    return ToAsyncEnumerableInternal(result, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -172,17 +170,15 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                             cancellationToken
                         );
                     }
-                    else
-                    {
-                        // If the agent doesn't support streaming, fall back to non-streaming
-                        // and convert to an async enumerable
-                        var result = await _defaultAgent.GenerateReplyAsync(
-                            context.Messages,
-                            context.Options,
-                            cancellationToken
-                        );
-                        return ToAsyncEnumerableInternal(result, cancellationToken);
-                    }
+
+                    // If the agent doesn't support streaming, fall back to non-streaming
+                    // and convert to an async enumerable
+                    var result = await _defaultAgent.GenerateReplyAsync(
+                        context.Messages,
+                        context.Options,
+                        cancellationToken
+                    );
+                    return ToAsyncEnumerableInternal(result, cancellationToken);
                 }
                 catch (Exception) when (lastException != null)
                 {
@@ -209,17 +205,11 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                     cancellationToken
                 );
             }
-            else
-            {
-                // If the agent doesn't support streaming, fall back to non-streaming
-                // and convert to an async enumerable
-                var result = await _defaultAgent.GenerateReplyAsync(
-                    context.Messages,
-                    context.Options,
-                    cancellationToken
-                );
-                return ToAsyncEnumerableInternal(result, cancellationToken);
-            }
+
+            // If the agent doesn't support streaming, fall back to non-streaming
+            // and convert to an async enumerable
+            var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+            return ToAsyncEnumerableInternal(result, cancellationToken);
         }
 
         // Fall back to using the provided agent if all else fails
@@ -227,7 +217,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Helper method to convert IEnumerable to IAsyncEnumerable
+    ///     Helper method to convert IEnumerable to IAsyncEnumerable
     /// </summary>
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerableInternal(
         IEnumerable<IMessage> messages,
@@ -243,7 +233,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Helper class to create an IAsyncEnumerable from a single item.
+    ///     Helper class to create an IAsyncEnumerable from a single item.
     /// </summary>
     private class SingleItemAsyncEnumerable<T> : IAsyncEnumerable<T>
     {
@@ -261,7 +251,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Helper class for a single item async enumerator.
+    ///     Helper class for a single item async enumerator.
     /// </summary>
     private class SingleItemAsyncEnumerator<T> : IAsyncEnumerator<T>
     {

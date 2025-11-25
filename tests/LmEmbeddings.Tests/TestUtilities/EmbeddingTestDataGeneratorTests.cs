@@ -5,7 +5,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.TestUtilities;
 
 /// <summary>
-/// Tests for EmbeddingTestDataGenerator shared utility
+///     Tests for EmbeddingTestDataGenerator shared utility
 /// </summary>
 public class EmbeddingTestDataGeneratorTests
 {

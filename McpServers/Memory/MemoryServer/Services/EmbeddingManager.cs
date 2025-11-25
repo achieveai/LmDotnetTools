@@ -1,34 +1,38 @@
+using System.Collections;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
+using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using MemoryServer.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using EmbeddingOptions = MemoryServer.Models.EmbeddingOptions;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of embedding manager with caching and batch processing capabilities.
-/// Integrates with LmConfigService for embedding model selection and provides vector search functionality.
+///     Implementation of embedding manager with caching and batch processing capabilities.
+///     Integrates with LmConfigService for embedding model selection and provides vector search functionality.
 /// </summary>
 public class EmbeddingManager : IEmbeddingManager
 {
-    private readonly ILmConfigService _lmConfigService;
-    private readonly IMemoryRepository _memoryRepository;
     private readonly IMemoryCache _cache;
+    private readonly ILmConfigService _lmConfigService;
     private readonly ILogger<EmbeddingManager> _logger;
+    private readonly IMemoryRepository _memoryRepository;
     private readonly EmbeddingOptions _options;
-
-    // Cache statistics
-    private long _totalRequests = 0;
-    private long _cacheHits = 0;
-    private long _cacheMisses = 0;
+    private long _cacheHits;
+    private long _cacheMisses;
+    private int _cachedEmbeddingDimension;
 
     // Cached embedding service to avoid recreating
     private IEmbeddingService? _cachedEmbeddingService;
     private string? _cachedModelName;
-    private int _cachedEmbeddingDimension;
+
+    // Cache statistics
+    private long _totalRequests;
 
     public EmbeddingManager(
         ILmConfigService lmConfigService,
@@ -47,7 +51,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Gets the embedding dimension for the current model.
+    ///     Gets the embedding dimension for the current model.
     /// </summary>
     public int EmbeddingDimension
     {
@@ -59,7 +63,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Gets the current embedding model name.
+    ///     Gets the current embedding model name.
     /// </summary>
     public string ModelName
     {
@@ -71,7 +75,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Generates an embedding for the given content with caching.
+    ///     Generates an embedding for the given content with caching.
     /// </summary>
     public async Task<float[]> GenerateEmbeddingAsync(string content, CancellationToken cancellationToken = default)
     {
@@ -125,7 +129,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Generates embeddings for multiple contents in a batch.
+    ///     Generates embeddings for multiple contents in a batch.
     /// </summary>
     public async Task<List<float[]>> GenerateBatchEmbeddingsAsync(
         List<string> contents,
@@ -173,11 +177,7 @@ public class EmbeddingManager : IEmbeddingManager
                 var embeddingService = await GetEmbeddingServiceAsync(cancellationToken);
                 var uncachedTexts = uncachedContents.Select(x => x.content).ToList();
 
-                var request = new AchieveAi.LmDotnetTools.LmEmbeddings.Models.EmbeddingRequest
-                {
-                    Inputs = uncachedTexts,
-                    Model = ModelName,
-                };
+                var request = new EmbeddingRequest { Inputs = uncachedTexts, Model = ModelName };
 
                 var response = await embeddingService.GenerateEmbeddingsAsync(request, cancellationToken);
 
@@ -221,7 +221,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Searches for similar content using vector similarity search.
+    ///     Searches for similar content using vector similarity search.
     /// </summary>
     public async Task<List<MemorySearchResult>> SearchSimilarAsync(
         float[] queryEmbedding,
@@ -289,7 +289,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Clears the embedding cache.
+    ///     Clears the embedding cache.
     /// </summary>
     public void ClearCache()
     {
@@ -301,7 +301,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Gets cache statistics.
+    ///     Gets cache statistics.
     /// </summary>
     public EmbeddingCacheStats GetCacheStats()
     {
@@ -311,11 +311,8 @@ public class EmbeddingManager : IEmbeddingManager
         // Try to get cache entry count (this is implementation-dependent)
         if (_cache is MemoryCache memoryCache)
         {
-            var field = typeof(MemoryCache).GetField(
-                "_entries",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-            );
-            if (field?.GetValue(memoryCache) is System.Collections.IDictionary entries)
+            var field = typeof(MemoryCache).GetField("_entries", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (field?.GetValue(memoryCache) is IDictionary entries)
             {
                 entryCount = entries.Count;
                 estimatedMemoryUsage = entryCount * EmbeddingDimension * sizeof(float); // Rough estimate
@@ -333,7 +330,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Ensures the embedding service is initialized and cached.
+    ///     Ensures the embedding service is initialized and cached.
     /// </summary>
     private void EnsureEmbeddingServiceInitialized()
     {
@@ -346,7 +343,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Gets or creates the embedding service instance.
+    ///     Gets or creates the embedding service instance.
     /// </summary>
     private async Task<IEmbeddingService> GetEmbeddingServiceAsync(CancellationToken cancellationToken)
     {
@@ -403,7 +400,7 @@ public class EmbeddingManager : IEmbeddingManager
     }
 
     /// <summary>
-    /// Generates a cache key for the given content.
+    ///     Generates a cache key for the given content.
     /// </summary>
     private string GenerateCacheKey(string content)
     {

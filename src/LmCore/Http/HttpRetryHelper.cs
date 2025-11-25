@@ -4,13 +4,13 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
 /// <summary>
-/// Utility class for HTTP retry logic with exponential backoff
-/// Provides common retry functionality for HTTP operations
+///     Utility class for HTTP retry logic with exponential backoff
+///     Provides common retry functionality for HTTP operations
 /// </summary>
 public static class HttpRetryHelper
 {
     /// <summary>
-    /// Executes an operation with retry logic and exponential backoff
+    ///     Executes an operation with retry logic and exponential backoff
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="operation">The operation to execute</param>
@@ -59,8 +59,8 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
-    /// Executes an HTTP operation with retry logic and exponential backoff
-    /// This version handles HttpResponseMessage status codes directly
+    ///     Executes an HTTP operation with retry logic and exponential backoff
+    ///     This version handles HttpResponseMessage status codes directly
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="httpOperation">The HTTP operation that returns HttpResponseMessage</param>
@@ -160,7 +160,7 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
-    /// Determines if an HTTP status code is retryable
+    ///     Determines if an HTTP status code is retryable
     /// </summary>
     /// <param name="statusCode">The HTTP status code</param>
     /// <returns>True if the status code indicates a retryable error</returns>
@@ -171,8 +171,8 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
-    /// Determines if an HTTP error is retryable
-    /// Uses comprehensive error detection logic
+    ///     Determines if an HTTP error is retryable
+    ///     Uses comprehensive error detection logic
     /// </summary>
     /// <param name="exception">The HTTP exception</param>
     /// <returns>True if the error is retryable</returns>
@@ -205,7 +205,7 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
-    /// Calculates the delay for exponential backoff
+    ///     Calculates the delay for exponential backoff
     /// </summary>
     /// <param name="attempt">The current attempt number (1-based)</param>
     /// <returns>The delay for this attempt</returns>

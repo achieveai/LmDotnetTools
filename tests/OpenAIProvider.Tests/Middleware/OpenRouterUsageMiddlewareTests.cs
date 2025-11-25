@@ -14,121 +14,25 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Middleware;
 
 /// <summary>
-/// Comprehensive tests for OpenRouter usage middleware covering all scenarios.
-/// Requirements: 13.1–13.4, 8.1–8.3, 9.1–9.2
+///     Comprehensive tests for OpenRouter usage middleware covering all scenarios.
+///     Requirements: 13.1–13.4, 8.1–8.3, 9.1–9.2
 /// </summary>
 public class OpenRouterUsageMiddlewareTests : IDisposable
 {
     private readonly ILogger<OpenRouterUsageMiddleware> _logger;
-    private readonly UsageCache _usageCache;
     private readonly string _testApiKey = "sk-or-test-api-key";
+    private readonly UsageCache _usageCache;
 
     public OpenRouterUsageMiddlewareTests()
     {
         _logger = TestLoggerFactory.CreateLogger<OpenRouterUsageMiddleware>();
-        _usageCache = new UsageCache(ttlSeconds: 300);
+        _usageCache = new UsageCache(300);
     }
 
-    #region Test Infrastructure
-
-    /// <summary>
-    /// Creates a fake streaming agent that yields predefined messages
-    /// </summary>
-    private class FakeStreamingAgent : IStreamingAgent
+    public void Dispose()
     {
-        private readonly IEnumerable<IMessage> _messages;
-
-        public FakeStreamingAgent(IEnumerable<IMessage> messages)
-        {
-            _messages = messages;
-        }
-
-        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-            IEnumerable<IMessage> messages,
-            GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default
-        )
-        {
-            return Task.FromResult(_messages);
-        }
-
-        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-            IEnumerable<IMessage> messages,
-            GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default
-        )
-        {
-            return Task.FromResult(CreateAsyncEnumerable(_messages));
-        }
-
-        private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
-        {
-            foreach (var message in messages)
-            {
-                yield return message;
-                await Task.Yield(); // This makes the method properly async
-            }
-        }
+        _usageCache?.Dispose();
     }
-
-    /// <summary>
-    /// Creates test messages with various usage scenarios
-    /// </summary>
-    private static IMessage[] CreateTestMessages(string completionId, Usage? usage = null, bool hasInlineUsage = false)
-    {
-        var metadata = ImmutableDictionary<string, object>.Empty.Add("completion_id", completionId);
-
-        if (hasInlineUsage && usage != null)
-        {
-            metadata = metadata.Add("inline_usage", usage);
-        }
-
-        return
-        [
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "Hello",
-                GenerationId = completionId,
-            },
-            new TextMessage
-            {
-                Role = Role.Assistant,
-                Text = "Hi there!",
-                GenerationId = completionId,
-                Metadata = metadata,
-            },
-        ];
-    }
-
-    /// <summary>
-    /// Creates a successful OpenRouter generation response
-    /// </summary>
-    private static string CreateOpenRouterGenerationResponse(
-        string model = "gpt-4",
-        int promptTokens = 100,
-        int completionTokens = 50,
-        double totalCost = 0.005
-    )
-    {
-        return JsonSerializer.Serialize(
-            new
-            {
-                data = new
-                {
-                    model,
-                    tokens_prompt = promptTokens,
-                    tokens_completion = completionTokens,
-                    total_cost = totalCost,
-                    generation_time = 2,
-                    streamed = true,
-                    created_at = "2024-01-01T12:00:00Z",
-                },
-            }
-        );
-    }
-
-    #endregion
 
     #region Requirement 13.1: Mock inline-usage success path
 
@@ -146,7 +50,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("model", "gpt-4"),
         };
 
-        var messages = CreateTestMessages(completionId, inlineUsage, hasInlineUsage: true);
+        var messages = CreateTestMessages(completionId, inlineUsage, true);
         var fakeAgent = new FakeStreamingAgent(messages);
 
         // HTTP handler that should NOT be called (no fallback)
@@ -159,9 +63,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -210,9 +112,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -262,9 +162,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -340,9 +238,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -408,9 +304,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -441,6 +335,144 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
     #endregion
 
+    #region Synchronous Path Testing
+
+    [Fact]
+    public async Task SynchronousPath_ShouldWorkCorrectly()
+    {
+        // Arrange
+        var completionId = "test-sync";
+        var messages = CreateTestMessages(completionId);
+
+        var fakeAgent = new FakeStreamingAgent(messages);
+
+        // Setup generation endpoint response
+        var generationResponse = CreateOpenRouterGenerationResponse();
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
+        var httpClient = new HttpClient(httpHandler);
+
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
+            new GenerateReplyOptions()
+        );
+
+        // Act
+        var result = await middleware.InvokeAsync(context, fakeAgent);
+
+        // Assert
+        var resultList = result.ToList();
+        Assert.Equal(3, resultList.Count); // 2 original + 1 UsageMessage
+
+        // Verify the final message is a UsageMessage
+        var usageMessage = resultList.LastOrDefault() as UsageMessage;
+        Assert.NotNull(usageMessage);
+    }
+
+    #endregion
+
+    #region Test Infrastructure
+
+    /// <summary>
+    ///     Creates a fake streaming agent that yields predefined messages
+    /// </summary>
+    private class FakeStreamingAgent : IStreamingAgent
+    {
+        private readonly IEnumerable<IMessage> _messages;
+
+        public FakeStreamingAgent(IEnumerable<IMessage> messages)
+        {
+            _messages = messages;
+        }
+
+        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
+        {
+            return Task.FromResult(_messages);
+        }
+
+        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
+        {
+            return Task.FromResult(CreateAsyncEnumerable(_messages));
+        }
+
+        private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
+        {
+            foreach (var message in messages)
+            {
+                yield return message;
+                await Task.Yield(); // This makes the method properly async
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Creates test messages with various usage scenarios
+    /// </summary>
+    private static IMessage[] CreateTestMessages(string completionId, Usage? usage = null, bool hasInlineUsage = false)
+    {
+        var metadata = ImmutableDictionary<string, object>.Empty.Add("completion_id", completionId);
+
+        if (hasInlineUsage && usage != null)
+        {
+            metadata = metadata.Add("inline_usage", usage);
+        }
+
+        return
+        [
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "Hello",
+                GenerationId = completionId,
+            },
+            new TextMessage
+            {
+                Role = Role.Assistant,
+                Text = "Hi there!",
+                GenerationId = completionId,
+                Metadata = metadata,
+            },
+        ];
+    }
+
+    /// <summary>
+    ///     Creates a successful OpenRouter generation response
+    /// </summary>
+    private static string CreateOpenRouterGenerationResponse(
+        string model = "gpt-4",
+        int promptTokens = 100,
+        int completionTokens = 50,
+        double totalCost = 0.005
+    )
+    {
+        return JsonSerializer.Serialize(
+            new
+            {
+                data = new
+                {
+                    model,
+                    tokens_prompt = promptTokens,
+                    tokens_completion = completionTokens,
+                    total_cost = totalCost,
+                    generation_time = 2,
+                    streamed = true,
+                    created_at = "2024-01-01T12:00:00Z",
+                },
+            }
+        );
+    }
+
+    #endregion
+
     #region Performance Budget Testing (Requirement 8.1-8.3)
 
     [Fact]
@@ -460,9 +492,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -507,11 +537,11 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Create multiple messages to test per-chunk overhead
         var messages = new[]
         {
-            CreateTestMessages(completionId + "-1", inlineUsage, hasInlineUsage: true)[1],
-            CreateTestMessages(completionId + "-2", inlineUsage, hasInlineUsage: true)[1],
-            CreateTestMessages(completionId + "-3", inlineUsage, hasInlineUsage: true)[1],
-            CreateTestMessages(completionId + "-4", inlineUsage, hasInlineUsage: true)[1],
-            CreateTestMessages(completionId + "-5", inlineUsage, hasInlineUsage: true)[1],
+            CreateTestMessages(completionId + "-1", inlineUsage, true)[1],
+            CreateTestMessages(completionId + "-2", inlineUsage, true)[1],
+            CreateTestMessages(completionId + "-3", inlineUsage, true)[1],
+            CreateTestMessages(completionId + "-4", inlineUsage, true)[1],
+            CreateTestMessages(completionId + "-5", inlineUsage, true)[1],
         };
 
         var fakeAgent = new FakeStreamingAgent(messages);
@@ -526,9 +556,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -554,45 +582,6 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
     #endregion
 
-    #region Synchronous Path Testing
-
-    [Fact]
-    public async Task SynchronousPath_ShouldWorkCorrectly()
-    {
-        // Arrange
-        var completionId = "test-sync";
-        var messages = CreateTestMessages(completionId);
-
-        var fakeAgent = new FakeStreamingAgent(messages);
-
-        // Setup generation endpoint response
-        var generationResponse = CreateOpenRouterGenerationResponse();
-        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
-        var httpClient = new HttpClient(httpHandler);
-
-        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
-
-        var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
-            new GenerateReplyOptions()
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, fakeAgent);
-
-        // Assert
-        var resultList = result.ToList();
-        Assert.Equal(3, resultList.Count); // 2 original + 1 UsageMessage
-
-        // Verify the final message is a UsageMessage
-        var usageMessage = resultList.LastOrDefault() as UsageMessage;
-        Assert.NotNull(usageMessage);
-    }
-
-    #endregion
-
     #region Usage Injection Testing
 
     [Fact]
@@ -611,12 +600,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         var originalOptions = new GenerateReplyOptions { ModelId = "gpt-4", Temperature = 0.7f };
 
-        var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
-            originalOptions
-        );
+        var context = new MiddlewareContext([new TextMessage { Role = Role.User, Text = "Hello" }], originalOptions);
 
         // Act
         var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
@@ -672,9 +656,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -749,9 +731,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            [
-                new TextMessage { Role = Role.User, Text = "Hello" },
-            ],
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
             new GenerateReplyOptions()
         );
 
@@ -795,9 +775,4 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     }
 
     #endregion
-
-    public void Dispose()
-    {
-        _usageCache?.Dispose();
-    }
 }

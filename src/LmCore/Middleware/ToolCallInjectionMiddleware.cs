@@ -6,9 +6,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that injects tool/function definitions into the agent's request options.
-/// This middleware does NOT execute tools - it only makes them available to the LLM.
-/// Use with ToolCallExecutor for explicit tool execution in application code.
+///     Middleware that injects tool/function definitions into the agent's request options.
+///     This middleware does NOT execute tools - it only makes them available to the LLM.
+///     Use with ToolCallExecutor for explicit tool execution in application code.
 /// </summary>
 public class ToolCallInjectionMiddleware : IStreamingMiddleware
 {
@@ -16,7 +16,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     private readonly ILogger<ToolCallInjectionMiddleware> _logger;
 
     /// <summary>
-    /// Creates a new instance of ToolCallInjectionMiddleware
+    ///     Creates a new instance of ToolCallInjectionMiddleware
     /// </summary>
     /// <param name="functions">The function contracts to inject into requests</param>
     /// <param name="name">Optional name for this middleware instance</param>
@@ -42,10 +42,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     {
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug(
-                "Injecting {FunctionCount} functions into request options",
-                _functions.Count()
-            );
+            _logger.LogDebug("Injecting {FunctionCount} functions into request options", _functions.Count());
         }
 
         // Clone options and add functions
@@ -66,10 +63,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     {
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug(
-                "Injecting {FunctionCount} functions into streaming request options",
-                _functions.Count()
-            );
+            _logger.LogDebug("Injecting {FunctionCount} functions into streaming request options", _functions.Count());
         }
 
         // Clone options and add functions
@@ -87,7 +81,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Prepares the options by combining middleware functions with context options functions
+    ///     Prepares the options by combining middleware functions with context options functions
     /// </summary>
     private GenerateReplyOptions PrepareOptions(GenerateReplyOptions? contextOptions)
     {
@@ -97,12 +91,11 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Combines middleware functions with option functions
+    ///     Combines middleware functions with option functions
     /// </summary>
     private IEnumerable<FunctionContract>? CombineFunctions(IEnumerable<FunctionContract>? optionFunctions)
     {
-        return _functions == null && optionFunctions == null
-            ? null
+        return _functions == null && optionFunctions == null ? null
             : _functions == null ? optionFunctions
             : optionFunctions == null ? _functions
             : _functions.Concat(optionFunctions);

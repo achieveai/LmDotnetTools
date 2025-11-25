@@ -7,7 +7,7 @@ using Microsoft.Data.Sqlite;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Repository for document segment operations using the Database Session Pattern.
+///     Repository for document segment operations using the Database Session Pattern.
 /// </summary>
 public class DocumentSegmentRepository : IDocumentSegmentRepository
 {
@@ -19,7 +19,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Stores document segments in the database.
+    ///     Stores document segments in the database.
     /// </summary>
     public async Task<List<int>> StoreSegmentsAsync(
         ISqliteSession session,
@@ -91,7 +91,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Retrieves all segments for a parent document.
+    ///     Retrieves all segments for a parent document.
     /// </summary>
     public async Task<List<DocumentSegment>> GetDocumentSegmentsAsync(
         ISqliteSession session,
@@ -203,7 +203,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Stores segment relationships in the database.
+    ///     Stores segment relationships in the database.
     /// </summary>
     public async Task<int> StoreSegmentRelationshipsAsync(
         ISqliteSession session,
@@ -267,7 +267,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Retrieves segment relationships for a document.
+    ///     Retrieves segment relationships for a document.
     /// </summary>
     public async Task<List<SegmentRelationship>> GetSegmentRelationshipsAsync(
         ISqliteSession session,
@@ -374,7 +374,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Deletes all segments and relationships for a parent document.
+    ///     Deletes all segments and relationships for a parent document.
     /// </summary>
     public async Task<int> DeleteDocumentSegmentsAsync(
         ISqliteSession session,
@@ -426,7 +426,10 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        _ = deleteRelCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                        _ = deleteRelCmd.Parameters.AddWithValue(
+                            "@runId",
+                            sessionContext.RunId ?? (object)DBNull.Value
+                        );
 
                         _ = await deleteRelCmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -447,7 +450,10 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        _ = deleteSegCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                        _ = deleteSegCmd.Parameters.AddWithValue(
+                            "@runId",
+                            sessionContext.RunId ?? (object)DBNull.Value
+                        );
 
                         deletedCount = await deleteSegCmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -481,7 +487,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
     }
 
     /// <summary>
-    /// Searches segments using full-text search.
+    ///     Searches segments using full-text search.
     /// </summary>
     public async Task<List<DocumentSegment>> SearchSegmentsAsync(
         ISqliteSession session,

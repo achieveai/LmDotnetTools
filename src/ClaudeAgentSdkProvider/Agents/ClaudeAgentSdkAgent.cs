@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -7,21 +8,22 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 
 /// <summary>
-/// Agent implementation using claude-agent-sdk CLI
-/// Wraps long-lived Node.js process for continuous agent interaction
+///     Agent implementation using claude-agent-sdk CLI
+///     Wraps long-lived Node.js process for continuous agent interaction
 /// </summary>
 public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
 {
     private readonly IClaudeAgentSdkClient _client;
-    private readonly ClaudeAgentSdkOptions _options;
     private readonly ILogger<ClaudeAgentSdkAgent>? _logger;
+    private readonly ClaudeAgentSdkOptions _options;
     private bool _disposed;
 
     public ClaudeAgentSdkAgent(
         string name,
         IClaudeAgentSdkClient client,
         ClaudeAgentSdkOptions options,
-        ILogger<ClaudeAgentSdkAgent>? logger = null)
+        ILogger<ClaudeAgentSdkAgent>? logger = null
+    )
     {
         Name = name ?? throw new ArgumentNullException(nameof(name));
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -31,13 +33,25 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
 
     public string Name { get; }
 
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _client?.Dispose();
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     /// <summary>
-    /// Generate reply in streaming mode
+    ///     Generate reply in streaming mode
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(messages);
@@ -53,12 +67,13 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Generate reply in non-streaming mode (aggregates streaming responses)
+    ///     Generate reply in non-streaming mode (aggregates streaming responses)
     /// </summary>
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var resultMessages = new List<IMessage>();
         var streamTask = await GenerateReplyStreamingAsync(messages, options, cancellationToken);
@@ -72,9 +87,13 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Start the underlying CLI client with configured options
+    ///     Start the underlying CLI client with configured options
     /// </summary>
-    private async Task StartClientAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options, CancellationToken cancellationToken)
+    private async Task StartClientAsync(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options,
+        CancellationToken cancellationToken
+    )
     {
         var request = BuildClaudeAgentSdkRequest(messages, options);
 
@@ -88,18 +107,19 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Build ClaudeAgentSdkRequest from messages and GenerateReplyOptions
+    ///     Build ClaudeAgentSdkRequest from messages and GenerateReplyOptions
     /// </summary>
-    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
+    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options
+    )
     {
         var modelId = options?.ModelId ?? "claude-sonnet-4-5-20250929";
-        var maxTurns = options?.MaxToken ?? 40;  // MaxToken is repurposed for max turns
-        var maxThinkingTokens = 0;  // Default: no extended thinking
+        var maxTurns = options?.MaxToken ?? 40; // MaxToken is repurposed for max turns
+        var maxThinkingTokens = 0; // Default: no extended thinking
 
         // Extract system message from messages (we only use the first one)
-        var systemMessage = messages
-            .OfType<TextMessage>()
-            .FirstOrDefault(m => m.Role == Role.System);
+        var systemMessage = messages.OfType<TextMessage>().FirstOrDefault(m => m.Role == Role.System);
 
         var systemPrompt = systemMessage?.Text;
 
@@ -116,7 +136,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         {
             try
             {
-                var mcpConfig = ClaudeAgentSdkAgent.LoadMcpConfiguration(_options.McpConfigPath);
+                var mcpConfig = LoadMcpConfiguration(_options.McpConfigPath);
                 mcpServers = mcpConfig?.McpServers;
             }
             catch (Exception ex)
@@ -131,8 +151,8 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         if (options?.Functions != null && options.Functions.Length > 0)
         {
             _logger?.LogWarning(
-                "FunctionContract[] is not supported by claude-agent-sdk. Only MCP tools are supported. " +
-                "Convert your functions to MCP server tools instead."
+                "FunctionContract[] is not supported by claude-agent-sdk. Only MCP tools are supported. "
+                    + "Convert your functions to MCP server tools instead."
             );
         }
 
@@ -145,27 +165,16 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
             SystemPrompt = systemPrompt,
             AllowedTools = allowedTools,
             McpServers = mcpServers,
-            Verbose = true
+            Verbose = true,
         };
     }
 
     /// <summary>
-    /// Load MCP configuration from file
+    ///     Load MCP configuration from file
     /// </summary>
     private static McpConfiguration? LoadMcpConfiguration(string mcpConfigPath)
     {
         var json = File.ReadAllText(mcpConfigPath);
-        return System.Text.Json.JsonSerializer.Deserialize<McpConfiguration>(json);
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _client?.Dispose();
-            _disposed = true;
-        }
-
-        GC.SuppressFinalize(this);
+        return JsonSerializer.Deserialize<McpConfiguration>(json);
     }
 }

@@ -4,30 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 /// <summary>
-/// Represents a function definition for tool calling
+///     Represents a function definition for tool calling
 /// </summary>
 public sealed record FunctionDefinition
 {
     /// <summary>
-    /// The name of the function
-    /// </summary>
-    [JsonPropertyName("name")]
-    public string Name { get; set; }
-
-    /// <summary>
-    /// A description of what the function does
-    /// </summary>
-    [JsonPropertyName("description")]
-    public string Description { get; set; }
-
-    /// <summary>
-    /// The parameters the function accepts, defined as a JSON Schema object
-    /// </summary>
-    [JsonPropertyName("parameters")]
-    public JsonSchemaObject Parameters { get; set; }
-
-    /// <summary>
-    /// Parameterless constructor for JSON deserialization
+    ///     Parameterless constructor for JSON deserialization
     /// </summary>
     public FunctionDefinition()
     {
@@ -37,7 +19,7 @@ public sealed record FunctionDefinition
     }
 
     /// <summary>
-    /// Creates a new function definition
+    ///     Creates a new function definition
     /// </summary>
     /// <param name="name">The name of the function</param>
     /// <param name="description">A description of what the function does</param>
@@ -50,7 +32,25 @@ public sealed record FunctionDefinition
     }
 
     /// <summary>
-    /// Creates a new function definition with parameters defined by a schema builder
+    ///     The name of the function
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; }
+
+    /// <summary>
+    ///     A description of what the function does
+    /// </summary>
+    [JsonPropertyName("description")]
+    public string Description { get; set; }
+
+    /// <summary>
+    ///     The parameters the function accepts, defined as a JSON Schema object
+    /// </summary>
+    [JsonPropertyName("parameters")]
+    public JsonSchemaObject Parameters { get; set; }
+
+    /// <summary>
+    ///     Creates a new function definition with parameters defined by a schema builder
     /// </summary>
     /// <param name="name">The name of the function</param>
     /// <param name="description">A description of what the function does</param>

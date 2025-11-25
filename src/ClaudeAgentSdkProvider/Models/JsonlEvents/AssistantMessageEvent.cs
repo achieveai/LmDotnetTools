@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 
 /// <summary>
-/// Assistant message event containing the assistant's response
+///     Assistant message event containing the assistant's response
 /// </summary>
 public record AssistantMessageEvent : JsonlEventBase
 {
@@ -40,7 +40,7 @@ public record AssistantMessageEvent : JsonlEventBase
 }
 
 /// <summary>
-/// Assistant message structure
+///     Assistant message structure
 /// </summary>
 public record AssistantMessage
 {
@@ -48,7 +48,7 @@ public record AssistantMessage
     public required string Model { get; init; }
 
     [JsonPropertyName("id")]
-    public required string Id { get; init; }  // This is the GenerationId
+    public required string Id { get; init; } // This is the GenerationId
 
     [JsonPropertyName("type")]
     public string Type { get; init; } = "message";
@@ -70,12 +70,12 @@ public record AssistantMessage
 }
 
 /// <summary>
-/// Content block can be text, thinking, tool_use, or tool_result
+///     Content block can be text, thinking, tool_use, or tool_result
 /// </summary>
 public record ContentBlock
 {
     [JsonPropertyName("type")]
-    public required string Type { get; init; }  // "text", "thinking", "tool_use", "tool_result"
+    public required string Type { get; init; } // "text", "thinking", "tool_use", "tool_result"
 
     // For text blocks
     [JsonPropertyName("text")]
@@ -110,7 +110,7 @@ public record ContentBlock
 }
 
 /// <summary>
-/// Usage information for token tracking
+///     Usage information for token tracking
 /// </summary>
 public record UsageInfo
 {
@@ -134,7 +134,7 @@ public record UsageInfo
 }
 
 /// <summary>
-/// Cache creation details
+///     Cache creation details
 /// </summary>
 public record CacheCreationInfo
 {

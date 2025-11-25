@@ -4,12 +4,12 @@ using AchieveAi.LmDotnetTools.McpMiddleware;
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
 /// <summary>
-/// Helper class for creating mock tool calls for testing purposes
+///     Helper class for creating mock tool calls for testing purposes
 /// </summary>
 public static class MockToolCallHelper
 {
     /// <summary>
-    /// Creates function contracts and function map from mock tool call classes
+    ///     Creates function contracts and function map from mock tool call classes
     /// </summary>
     /// <param name="mockToolCallTypes">Types of mock tool call classes</param>
     /// <param name="callbackOverrides">Optional dictionary of function name to callback override</param>

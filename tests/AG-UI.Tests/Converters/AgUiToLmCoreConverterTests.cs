@@ -13,9 +13,9 @@ namespace AchieveAi.LmDotnetTools.AgUi.Tests.Converters;
 
 public class AgUiToLmCoreConverterTests
 {
-    private readonly AgUiToLmCoreConverter _converter;
     private static readonly string[] value = ["END", "STOP"];
     private static readonly string[] expectation = ["END", "STOP"];
+    private readonly AgUiToLmCoreConverter _converter;
 
     public AgUiToLmCoreConverterTests()
     {
@@ -465,10 +465,7 @@ public class AgUiToLmCoreConverterTests
     public void ConvertRunAgentInput_WithEnabledTools_FiltersToolContracts()
     {
         // Arrange
-        var config = new RunConfiguration
-        {
-            EnabledTools = ["get_weather", "calculator"],
-        };
+        var config = new RunConfiguration { EnabledTools = ["get_weather", "calculator"] };
 
         var availableFunctions = new[]
         {

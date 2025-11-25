@@ -1,33 +1,33 @@
 namespace MemoryServer.Models;
 
 /// <summary>
-/// Defines the session scope for memory operations and access control.
-/// Supports hierarchical session isolation: User > Agent > Run.
+///     Defines the session scope for memory operations and access control.
+///     Supports hierarchical session isolation: User > Agent > Run.
 /// </summary>
 public class SessionContext
 {
     /// <summary>
-    /// User identifier (required for all operations).
+    ///     User identifier (required for all operations).
     /// </summary>
     public string UserId { get; set; } = string.Empty;
 
     /// <summary>
-    /// Optional agent identifier for finer session control.
+    ///     Optional agent identifier for finer session control.
     /// </summary>
     public string? AgentId { get; set; }
 
     /// <summary>
-    /// Optional run identifier for conversation-level isolation.
+    ///     Optional run identifier for conversation-level isolation.
     /// </summary>
     public string? RunId { get; set; }
 
     /// <summary>
-    /// Additional session metadata.
+    ///     Additional session metadata.
     /// </summary>
     public Dictionary<string, object>? Metadata { get; set; }
 
     /// <summary>
-    /// Checks if this session context matches another for access control.
+    ///     Checks if this session context matches another for access control.
     /// </summary>
     public bool Matches(SessionContext other)
     {
@@ -64,7 +64,7 @@ public class SessionContext
     }
 
     /// <summary>
-    /// Creates a session context with only user ID.
+    ///     Creates a session context with only user ID.
     /// </summary>
     public static SessionContext ForUser(string userId)
     {
@@ -72,7 +72,7 @@ public class SessionContext
     }
 
     /// <summary>
-    /// Creates a session context with user and agent ID.
+    ///     Creates a session context with user and agent ID.
     /// </summary>
     public static SessionContext ForAgent(string userId, string agentId)
     {
@@ -80,7 +80,7 @@ public class SessionContext
     }
 
     /// <summary>
-    /// Creates a session context with user, agent, and run ID.
+    ///     Creates a session context with user, agent, and run ID.
     /// </summary>
     public static SessionContext ForRun(string userId, string agentId, string runId)
     {
@@ -93,7 +93,7 @@ public class SessionContext
     }
 
     /// <summary>
-    /// Gets a string representation for logging and debugging.
+    ///     Gets a string representation for logging and debugging.
     /// </summary>
     public override string ToString()
     {
@@ -121,31 +121,33 @@ public class SessionContext
     }
 
     /// <summary>
-    /// Gets the session scope level.
+    ///     Gets the session scope level.
     /// </summary>
     public SessionScope GetScope()
     {
-        return !string.IsNullOrEmpty(RunId) ? SessionScope.Run : !string.IsNullOrEmpty(AgentId) ? SessionScope.Agent : SessionScope.User;
+        return !string.IsNullOrEmpty(RunId) ? SessionScope.Run
+            : !string.IsNullOrEmpty(AgentId) ? SessionScope.Agent
+            : SessionScope.User;
     }
 }
 
 /// <summary>
-/// Defines the scope level of a session.
+///     Defines the scope level of a session.
 /// </summary>
 public enum SessionScope
 {
     /// <summary>
-    /// User-level scope (broadest).
+    ///     User-level scope (broadest).
     /// </summary>
     User,
 
     /// <summary>
-    /// Agent-level scope (medium).
+    ///     Agent-level scope (medium).
     /// </summary>
     Agent,
 
     /// <summary>
-    /// Run-level scope (narrowest).
+    ///     Run-level scope (narrowest).
     /// </summary>
     Run,
 }

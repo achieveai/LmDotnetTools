@@ -97,7 +97,7 @@ public class McpFunctionProviderTests
     public void McpFunctionProvider_WithNullAssembly_UsesCallingAssembly()
     {
         // Arrange & Act
-        var provider = new McpFunctionProvider(null);
+        var provider = new McpFunctionProvider();
 
         // Assert
         Assert.NotNull(provider.ProviderName);

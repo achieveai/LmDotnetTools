@@ -6,12 +6,12 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.Misc.Http;
 
 /// <summary>
-/// Collection of common <see cref="IHttpHandlerBuilder"/> wrapper helpers.
+///     Collection of common <see cref="IHttpHandlerBuilder" /> wrapper helpers.
 /// </summary>
 public static class StandardWrappers
 {
     /// <summary>
-    /// Wraps the pipeline with <see cref="CachingHttpMessageHandler"/> that uses the provided KV store.
+    ///     Wraps the pipeline with <see cref="CachingHttpMessageHandler" /> that uses the provided KV store.
     /// </summary>
     public static Func<HttpMessageHandler, ILogger?, HttpMessageHandler> WithKvCache(
         IKvStore store,

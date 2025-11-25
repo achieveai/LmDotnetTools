@@ -8,7 +8,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core;
 
 /// <summary>
-/// Tests for BaseHttpService functionality including disposal, retry operations, and common infrastructure
+///     Tests for BaseHttpService functionality including disposal, retry operations, and common infrastructure
 /// </summary>
 public class BaseHttpServiceTests
 {
@@ -19,6 +19,47 @@ public class BaseHttpServiceTests
         _logger = TestLoggerFactory.CreateLogger<TestHttpService>();
     }
 
+    #region Test Service Implementation
+
+    /// <summary>
+    ///     Test implementation of BaseHttpService for testing purposes
+    /// </summary>
+    public class TestHttpService : BaseHttpService
+    {
+        public TestHttpService(ILogger<TestHttpService> logger, HttpClient httpClient)
+            : base(logger, httpClient) { }
+
+        // Expose protected members for testing
+        public ILogger PublicLogger => Logger;
+        public HttpClient PublicHttpClient => HttpClient;
+
+        public void TestThrowIfDisposed()
+        {
+            ThrowIfDisposed();
+        }
+
+        public async Task<T> TestExecuteWithRetryAsync<T>(
+            Func<Task<T>> operation,
+            int maxRetries = 3,
+            CancellationToken cancellationToken = default
+        )
+        {
+            return await ExecuteWithRetryAsync(operation, maxRetries, cancellationToken);
+        }
+
+        public async Task<T> TestExecuteHttpWithRetryAsync<T>(
+            Func<Task<HttpResponseMessage>> httpOperation,
+            Func<HttpResponseMessage, Task<T>> responseProcessor,
+            int maxRetries = 3,
+            CancellationToken cancellationToken = default
+        )
+        {
+            return await ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, maxRetries, cancellationToken);
+        }
+    }
+
+    #endregion
+
     #region Constructor Tests
 
     [Fact]
@@ -27,7 +68,7 @@ public class BaseHttpServiceTests
         Debug.WriteLine("Testing BaseHttpService constructor with valid parameters");
 
         // Arrange
-        var httpClient = new HttpClient() { BaseAddress = new Uri("https://api.test.com") };
+        var httpClient = new HttpClient { BaseAddress = new Uri("https://api.test.com") };
 
         // Act
         var service = new TestHttpService(_logger, httpClient);
@@ -173,7 +214,9 @@ public class BaseHttpServiceTests
         var result = await service.TestExecuteWithRetryAsync(() =>
         {
             attempts++;
-            return attempts < 3 ? throw new HttpRequestException("Temporary network timeout") : Task.FromResult("success");
+            return attempts < 3
+                ? throw new HttpRequestException("Temporary network timeout")
+                : Task.FromResult("success");
         });
         stopwatch.Stop();
 
@@ -237,8 +280,8 @@ public class BaseHttpServiceTests
                 return attempts < 3
                     ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError))
                     : Task.FromResult(
-                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
-                );
+                        new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
+                    );
             },
             async response =>
             {
@@ -345,47 +388,6 @@ public class BaseHttpServiceTests
             [2, 3, "Two retries (maxRetries=2)"],
             [5, 6, "Five retries (maxRetries=5)"],
         ];
-
-    #endregion
-
-    #region Test Service Implementation
-
-    /// <summary>
-    /// Test implementation of BaseHttpService for testing purposes
-    /// </summary>
-    public class TestHttpService : BaseHttpService
-    {
-        public TestHttpService(ILogger<TestHttpService> logger, HttpClient httpClient)
-            : base(logger, httpClient) { }
-
-        // Expose protected members for testing
-        public ILogger PublicLogger => Logger;
-        public HttpClient PublicHttpClient => HttpClient;
-
-        public void TestThrowIfDisposed()
-        {
-            ThrowIfDisposed();
-        }
-
-        public async Task<T> TestExecuteWithRetryAsync<T>(
-            Func<Task<T>> operation,
-            int maxRetries = 3,
-            CancellationToken cancellationToken = default
-        )
-        {
-            return await ExecuteWithRetryAsync(operation, maxRetries, cancellationToken);
-        }
-
-        public async Task<T> TestExecuteHttpWithRetryAsync<T>(
-            Func<Task<HttpResponseMessage>> httpOperation,
-            Func<HttpResponseMessage, Task<T>> responseProcessor,
-            int maxRetries = 3,
-            CancellationToken cancellationToken = default
-        )
-        {
-            return await ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, maxRetries, cancellationToken);
-        }
-    }
 
     #endregion
 }

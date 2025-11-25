@@ -1,237 +1,9 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageTransformationMiddlewareTests
 {
-    #region Downstream Tests (Ordering Assignment)
-
-    [Fact]
-    public async Task Downstream_AssignsMessageOrderIdx_ToMessagesWithSameGenerationId()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Hello", GenerationId = "gen1" },
-            new TextMessage { Text = "World", GenerationId = "gen1" },
-            new UsageMessage { Usage = new Core.Usage(), GenerationId = "gen1" }
-        );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-        var messages = result.ToList();
-
-        // Assert
-        Assert.Equal(3, messages.Count);
-        Assert.Equal(0, messages[0].MessageOrderIdx);
-        Assert.Equal(1, messages[1].MessageOrderIdx);
-        Assert.Equal(2, messages[2].MessageOrderIdx);
-    }
-
-    [Fact]
-    public async Task Downstream_RestartsOrderingAtZero_ForNewGenerationId()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "First", GenerationId = "gen1" },
-            new TextMessage { Text = "Second", GenerationId = "gen1" },
-            new TextMessage { Text = "Third", GenerationId = "gen2" },
-            new TextMessage { Text = "Fourth", GenerationId = "gen2" }
-        );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-        var messages = result.ToList();
-
-        // Assert
-        Assert.Equal(4, messages.Count);
-        // First generation
-        Assert.Equal(0, messages[0].MessageOrderIdx);
-        Assert.Equal(1, messages[1].MessageOrderIdx);
-        // Second generation - restarts at 0
-        Assert.Equal(0, messages[2].MessageOrderIdx);
-        Assert.Equal(1, messages[3].MessageOrderIdx);
-    }
-
-    [Fact]
-    public async Task Downstream_PassesThrough_MessagesWithoutGenerationId()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "No generation", GenerationId = null },
-            new TextMessage { Text = "Has generation", GenerationId = "gen1" }
-        );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-        var messages = result.ToList();
-
-        // Assert
-        Assert.Equal(2, messages.Count);
-        Assert.Null(messages[0].MessageOrderIdx);
-        Assert.Equal(0, messages[1].MessageOrderIdx);
-    }
-
-    [Fact]
-    public async Task Downstream_AssignsOrdering_ToAllMessageTypes()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Text", GenerationId = "gen1" },
-            new ReasoningMessage { Reasoning = "Reason", GenerationId = "gen1" },
-            new ToolsCallMessage { ToolCalls = [], GenerationId = "gen1" },
-            new UsageMessage { Usage = new Core.Usage(), GenerationId = "gen1" }
-        );
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-        var messages = result.ToList();
-
-        // Assert
-        Assert.Equal(4, messages.Count);
-        Assert.All(messages, m => Assert.NotNull(m.MessageOrderIdx));
-        for (var i = 0; i < messages.Count; i++)
-        {
-            Assert.Equal(i, messages[i].MessageOrderIdx);
-        }
-    }
-
-    #endregion
-
-    #region Upstream Tests (Aggregate Reconstruction)
-
-    [Fact]
-    public async Task Upstream_ReconstructsToolCallAggregate_FromOrderedMessages()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall { FunctionName = "test_function", FunctionArgs = "{\"arg\":\"value\"}", ToolCallId = "call_1", ToolCallIdx = 0 };
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen1" }
-        );
-        var inputMessages = new IMessage[]
-        {
-            new ToolsCallMessage
-            {
-                ToolCalls = [toolCall],
-                GenerationId = "gen1",
-                MessageOrderIdx = 0
-            },
-            new ToolsCallResultMessage
-            {
-                ToolCallResults = [new ToolCallResult("call_1", "result")],
-                GenerationId = "gen1",
-                MessageOrderIdx = 1
-            }
-        };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-
-        // Assert - Agent should have received aggregated message
-        _ = Assert.Single(agent.ReceivedMessages);
-        _ = Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
-    }
-
-    [Fact]
-    public async Task Upstream_ReconstructsCompositeMessage_FromMultipleMessagesWithSameGenerationId()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen2" }
-        );
-        var inputMessages = new IMessage[]
-        {
-            new TextMessage
-            {
-                Text = "First",
-                GenerationId = "gen1",
-                MessageOrderIdx = 0
-            },
-            new TextMessage
-            {
-                Text = "Second",
-                GenerationId = "gen1",
-                MessageOrderIdx = 1
-            },
-            new UsageMessage
-            {
-                Usage = new Core.Usage(),
-                GenerationId = "gen1",
-                MessageOrderIdx = 2
-            }
-        };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-
-        // Assert - Agent should have received composite message
-        _ = Assert.Single(agent.ReceivedMessages);
-        var composite = Assert.IsType<CompositeMessage>(agent.ReceivedMessages[0]);
-        Assert.Equal(3, composite.Messages.Count);
-        Assert.Equal("First", ((TextMessage)composite.Messages[0]).Text);
-        Assert.Equal("Second", ((TextMessage)composite.Messages[1]).Text);
-    }
-
-    [Fact]
-    public async Task Upstream_PassesThrough_SingleMessagesWithGenerationId()
-    {
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new TextMessage { Text = "Response", GenerationId = "gen2" }
-        );
-        var inputMessages = new IMessage[]
-        {
-            new TextMessage
-            {
-                Text = "Single",
-                GenerationId = "gen1",
-                MessageOrderIdx = 0
-            }
-        };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
-
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-
-        // Assert - Single message should pass through unchanged
-        _ = Assert.Single(agent.ReceivedMessages);
-        var textMessage = Assert.IsType<TextMessage>(agent.ReceivedMessages[0]);
-        Assert.Equal("Single", textMessage.Text);
-    }
-
-    #endregion
-
     #region Bidirectional Tests
 
     [Fact]
@@ -239,7 +11,13 @@ public class MessageTransformationMiddlewareTests
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall { FunctionName = "test_func", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 };
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test_func",
+            FunctionArgs = "{}",
+            ToolCallId = "call_1",
+            ToolCallIdx = 0,
+        };
 
         // Mock agent that returns raw messages (simulating provider)
         var agent = new MockAgent(
@@ -254,19 +32,16 @@ public class MessageTransformationMiddlewareTests
             {
                 ToolCalls = [toolCall],
                 GenerationId = "gen0",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call_1", "result")],
                 GenerationId = "gen0",
-                MessageOrderIdx = 1
-            }
+                MessageOrderIdx = 1,
+            },
         };
-        var context = new MiddlewareContext(
-            Messages: inputMessages,
-            Options: null
-        );
+        var context = new MiddlewareContext(inputMessages, null);
 
         // Act
         var result = await middleware.InvokeAsync(context, agent);
@@ -295,14 +70,11 @@ public class MessageTransformationMiddlewareTests
         var streamingMessages = new List<IMessage>
         {
             new TextUpdateMessage { Text = "Hello ", GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "World", GenerationId = "gen1" }
+            new TextUpdateMessage { Text = "World", GenerationId = "gen1" },
         }.ToAsyncEnumerable();
 
         var agent = new MockStreamingAgent(streamingMessages);
-        var context = new MiddlewareContext(
-            Messages: [],
-            Options: null
-        );
+        var context = new MiddlewareContext([], null);
 
         // Act
         var resultStream = await middleware.InvokeStreamingAsync(context, agent);
@@ -316,24 +88,235 @@ public class MessageTransformationMiddlewareTests
 
     #endregion
 
+    #region Downstream Tests (Ordering Assignment)
+
+    [Fact]
+    public async Task Downstream_AssignsMessageOrderIdx_ToMessagesWithSameGenerationId()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextMessage { Text = "Hello", GenerationId = "gen1" },
+            new TextMessage { Text = "World", GenerationId = "gen1" },
+            new UsageMessage { Usage = new Usage(), GenerationId = "gen1" }
+        );
+        var context = new MiddlewareContext([], null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+
+        // Assert
+        Assert.Equal(3, messages.Count);
+        Assert.Equal(0, messages[0].MessageOrderIdx);
+        Assert.Equal(1, messages[1].MessageOrderIdx);
+        Assert.Equal(2, messages[2].MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Downstream_RestartsOrderingAtZero_ForNewGenerationId()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextMessage { Text = "First", GenerationId = "gen1" },
+            new TextMessage { Text = "Second", GenerationId = "gen1" },
+            new TextMessage { Text = "Third", GenerationId = "gen2" },
+            new TextMessage { Text = "Fourth", GenerationId = "gen2" }
+        );
+        var context = new MiddlewareContext([], null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+
+        // Assert
+        Assert.Equal(4, messages.Count);
+        // First generation
+        Assert.Equal(0, messages[0].MessageOrderIdx);
+        Assert.Equal(1, messages[1].MessageOrderIdx);
+        // Second generation - restarts at 0
+        Assert.Equal(0, messages[2].MessageOrderIdx);
+        Assert.Equal(1, messages[3].MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Downstream_PassesThrough_MessagesWithoutGenerationId()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextMessage { Text = "No generation", GenerationId = null },
+            new TextMessage { Text = "Has generation", GenerationId = "gen1" }
+        );
+        var context = new MiddlewareContext([], null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+
+        // Assert
+        Assert.Equal(2, messages.Count);
+        Assert.Null(messages[0].MessageOrderIdx);
+        Assert.Equal(0, messages[1].MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Downstream_AssignsOrdering_ToAllMessageTypes()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextMessage { Text = "Text", GenerationId = "gen1" },
+            new ReasoningMessage { Reasoning = "Reason", GenerationId = "gen1" },
+            new ToolsCallMessage { ToolCalls = [], GenerationId = "gen1" },
+            new UsageMessage { Usage = new Usage(), GenerationId = "gen1" }
+        );
+        var context = new MiddlewareContext([], null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+
+        // Assert
+        Assert.Equal(4, messages.Count);
+        Assert.All(messages, m => Assert.NotNull(m.MessageOrderIdx));
+        for (var i = 0; i < messages.Count; i++)
+        {
+            Assert.Equal(i, messages[i].MessageOrderIdx);
+        }
+    }
+
+    #endregion
+
+    #region Upstream Tests (Aggregate Reconstruction)
+
+    [Fact]
+    public async Task Upstream_ReconstructsToolCallAggregate_FromOrderedMessages()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var toolCall = new ToolCall
+        {
+            FunctionName = "test_function",
+            FunctionArgs = "{\"arg\":\"value\"}",
+            ToolCallId = "call_1",
+            ToolCallIdx = 0,
+        };
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen1" });
+        var inputMessages = new IMessage[]
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = [toolCall],
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("call_1", "result")],
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+        };
+        var context = new MiddlewareContext(inputMessages, null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+
+        // Assert - Agent should have received aggregated message
+        _ = Assert.Single(agent.ReceivedMessages);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
+    }
+
+    [Fact]
+    public async Task Upstream_ReconstructsCompositeMessage_FromMultipleMessagesWithSameGenerationId()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen2" });
+        var inputMessages = new IMessage[]
+        {
+            new TextMessage
+            {
+                Text = "First",
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new TextMessage
+            {
+                Text = "Second",
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new UsageMessage
+            {
+                Usage = new Usage(),
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+        };
+        var context = new MiddlewareContext(inputMessages, null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+
+        // Assert - Agent should have received composite message
+        _ = Assert.Single(agent.ReceivedMessages);
+        var composite = Assert.IsType<CompositeMessage>(agent.ReceivedMessages[0]);
+        Assert.Equal(3, composite.Messages.Count);
+        Assert.Equal("First", ((TextMessage)composite.Messages[0]).Text);
+        Assert.Equal("Second", ((TextMessage)composite.Messages[1]).Text);
+    }
+
+    [Fact]
+    public async Task Upstream_PassesThrough_SingleMessagesWithGenerationId()
+    {
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(new TextMessage { Text = "Response", GenerationId = "gen2" });
+        var inputMessages = new IMessage[]
+        {
+            new TextMessage
+            {
+                Text = "Single",
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+        };
+        var context = new MiddlewareContext(inputMessages, null);
+
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+
+        // Assert - Single message should pass through unchanged
+        _ = Assert.Single(agent.ReceivedMessages);
+        var textMessage = Assert.IsType<TextMessage>(agent.ReceivedMessages[0]);
+        Assert.Equal("Single", textMessage.Text);
+    }
+
+    #endregion
+
     #region Helper Classes
 
     private class MockAgent : IAgent
     {
         private readonly IMessage[] _responsesToReturn;
-        public List<IMessage> ReceivedMessages { get; } = [];
-
-        public static string Name => "MockAgent";
 
         public MockAgent(params IMessage[] responsesToReturn)
         {
             _responsesToReturn = responsesToReturn;
         }
 
+        public List<IMessage> ReceivedMessages { get; } = [];
+
+        public static string Name => "MockAgent";
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             ReceivedMessages.AddRange(messages);
             return Task.FromResult<IEnumerable<IMessage>>(_responsesToReturn);
@@ -344,17 +327,18 @@ public class MessageTransformationMiddlewareTests
     {
         private readonly IAsyncEnumerable<IMessage> _streamToReturn;
 
-        public static string Name => "MockStreamingAgent";
-
         public MockStreamingAgent(IAsyncEnumerable<IMessage> streamToReturn)
         {
             _streamToReturn = streamToReturn;
         }
 
+        public static string Name => "MockStreamingAgent";
+
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             return Task.FromResult(_streamToReturn);
         }
@@ -362,7 +346,8 @@ public class MessageTransformationMiddlewareTests
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             throw new NotImplementedException();
         }
@@ -380,6 +365,7 @@ internal static class AsyncEnumerableExtensions
         {
             list.Add(item);
         }
+
         return list;
     }
 

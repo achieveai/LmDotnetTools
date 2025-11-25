@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
@@ -5,12 +6,12 @@ using ModelContextProtocol.Client;
 namespace AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 
 /// <summary>
-/// Extension methods for FunctionRegistry to support MCP clients
+///     Extension methods for FunctionRegistry to support MCP clients
 /// </summary>
 public static class FunctionRegistryExtensions
 {
     /// <summary>
-    /// Adds functions from an MCP client to the registry
+    ///     Adds functions from an MCP client to the registry
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="mcpClient">The MCP client</param>
@@ -42,7 +43,7 @@ public static class FunctionRegistryExtensions
     }
 
     /// <summary>
-    /// Adds functions from multiple MCP clients to the registry
+    ///     Adds functions from multiple MCP clients to the registry
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
@@ -67,7 +68,7 @@ public static class FunctionRegistryExtensions
     }
 
     /// <summary>
-    /// Adds functions from multiple MCP clients to the registry with configuration
+    ///     Adds functions from multiple MCP clients to the registry with configuration
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
@@ -80,8 +81,8 @@ public static class FunctionRegistryExtensions
     public static async Task<FunctionRegistry> AddMcpClientsAsync(
         this FunctionRegistry registry,
         Dictionary<string, IMcpClient> mcpClients,
-        AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig? toolFilterConfig,
-        Dictionary<string, AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig>? serverConfigs,
+        FunctionFilterConfig? toolFilterConfig,
+        Dictionary<string, ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
@@ -103,7 +104,7 @@ public static class FunctionRegistryExtensions
     }
 
     /// <summary>
-    /// Adds functions from an MCP client to the registry (convenience method with automatic client ID)
+    ///     Adds functions from an MCP client to the registry (convenience method with automatic client ID)
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="mcpClient">The MCP client</param>

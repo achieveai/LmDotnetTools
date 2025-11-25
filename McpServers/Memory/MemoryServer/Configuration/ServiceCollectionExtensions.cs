@@ -28,7 +28,9 @@ public static class ServiceCollectionExtensions
         // Configure options from appsettings
         _ = services.Configure<DatabaseOptions>(configuration.GetSection("MemoryServer:Database"));
         _ = services.Configure<MemoryServerOptions>(configuration.GetSection("MemoryServer"));
-        _ = services.Configure<DocumentSegmentationOptions>(configuration.GetSection("MemoryServer:DocumentSegmentation"));
+        _ = services.Configure<DocumentSegmentationOptions>(
+            configuration.GetSection("MemoryServer:DocumentSegmentation")
+        );
 
         // Register Database Session Pattern infrastructure
         _ = services.AddDatabaseServices(environment);

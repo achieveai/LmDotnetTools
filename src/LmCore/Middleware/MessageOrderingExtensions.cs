@@ -4,13 +4,13 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Extension methods for easily wrapping agents with MessageOrderingMiddleware
+///     Extension methods for easily wrapping agents with MessageOrderingMiddleware
 /// </summary>
 public static class MessageOrderingExtensions
 {
     /// <summary>
-    /// Wraps a streaming agent with MessageOrderingMiddleware to assign messageOrderIdx to messages.
-    /// This should typically be the first middleware applied after the provider agent.
+    ///     Wraps a streaming agent with MessageOrderingMiddleware to assign messageOrderIdx to messages.
+    ///     This should typically be the first middleware applied after the provider agent.
     /// </summary>
     /// <param name="agent">The agent to wrap</param>
     /// <param name="logger">Optional logger for the middleware</param>
@@ -25,25 +25,22 @@ public static class MessageOrderingExtensions
     }
 
     /// <summary>
-    /// Wraps a non-streaming agent with MessageOrderingMiddleware to assign messageOrderIdx to messages.
-    /// This should typically be the first middleware applied after the provider agent.
+    ///     Wraps a non-streaming agent with MessageOrderingMiddleware to assign messageOrderIdx to messages.
+    ///     This should typically be the first middleware applied after the provider agent.
     /// </summary>
     /// <param name="agent">The agent to wrap</param>
     /// <param name="logger">Optional logger for the middleware</param>
     /// <returns>A new agent with MessageOrderingMiddleware inserted before the original agent</returns>
-    public static IAgent WithMessageOrdering(
-        this IAgent agent,
-        ILogger<MessageOrderingMiddleware>? logger = null
-    )
+    public static IAgent WithMessageOrdering(this IAgent agent, ILogger<MessageOrderingMiddleware>? logger = null)
     {
         var middleware = new MessageOrderingMiddleware(logger: logger);
         return new MiddlewareWrappingAgent(agent, middleware);
     }
 
     /// <summary>
-    /// Wraps a streaming agent with both MessageOrderingMiddleware and MessageAggregationMiddleware
-    /// in the correct order for backward compatibility with existing code.
-    /// Order: Agent → MessageOrdering → MessageAggregation
+    ///     Wraps a streaming agent with both MessageOrderingMiddleware and MessageAggregationMiddleware
+    ///     in the correct order for backward compatibility with existing code.
+    ///     Order: Agent → MessageOrdering → MessageAggregation
     /// </summary>
     /// <param name="agent">The agent to wrap</param>
     /// <param name="orderingLogger">Optional logger for the ordering middleware</param>
@@ -56,15 +53,13 @@ public static class MessageOrderingExtensions
     )
     {
         // Apply ordering first, then aggregation
-        return agent
-            .WithMessageOrdering(orderingLogger)
-            .WithMessageAggregation(aggregationLogger);
+        return agent.WithMessageOrdering(orderingLogger).WithMessageAggregation(aggregationLogger);
     }
 
     /// <summary>
-    /// Wraps a non-streaming agent with both MessageOrderingMiddleware and MessageAggregationMiddleware
-    /// in the correct order for backward compatibility with existing code.
-    /// Order: Agent → MessageOrdering → MessageAggregation
+    ///     Wraps a non-streaming agent with both MessageOrderingMiddleware and MessageAggregationMiddleware
+    ///     in the correct order for backward compatibility with existing code.
+    ///     Order: Agent → MessageOrdering → MessageAggregation
     /// </summary>
     /// <param name="agent">The agent to wrap</param>
     /// <param name="orderingLogger">Optional logger for the ordering middleware</param>
@@ -77,8 +72,6 @@ public static class MessageOrderingExtensions
     )
     {
         // Apply ordering first, then aggregation
-        return agent
-            .WithMessageOrdering(orderingLogger)
-            .WithMessageAggregation(aggregationLogger);
+        return agent.WithMessageOrdering(orderingLogger).WithMessageAggregation(aggregationLogger);
     }
 }

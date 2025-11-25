@@ -3,8 +3,8 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Tracks comprehensive metrics for individual provider requests.
-/// Supports OpenAI, Anthropic, and other provider-specific metrics.
+///     Tracks comprehensive metrics for individual provider requests.
+///     Supports OpenAI, Anthropic, and other provider-specific metrics.
 /// </summary>
 public record RequestMetrics
 {

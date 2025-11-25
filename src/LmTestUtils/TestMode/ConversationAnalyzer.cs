@@ -4,14 +4,15 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 
 /// <summary>
-/// Default implementation of conversation analyzer for test mode.
+///     Default implementation of conversation analyzer for test mode.
 /// </summary>
 public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, IInstructionChainParser chainParser)
     : IConversationAnalyzer
 {
-    private readonly ILogger<ConversationAnalyzer> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IInstructionChainParser _chainParser =
         chainParser ?? throw new ArgumentNullException(nameof(chainParser));
+
+    private readonly ILogger<ConversationAnalyzer> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <inheritdoc />
     public (InstructionPlan? plan, int assistantResponseCount) AnalyzeConversation(JsonElement root)
@@ -39,7 +40,7 @@ public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, I
         );
 
         // Return instruction at index or null if out of bounds
-        var instruction = (assistantCount < chain.Length) ? chain[assistantCount] : null;
+        var instruction = assistantCount < chain.Length ? chain[assistantCount] : null;
 
         if (instruction != null)
         {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
@@ -12,8 +13,8 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core;
 
 /// <summary>
-/// Core functionality tests for BaseEmbeddingService
-/// Tests business logic, validation, and non-HTTP specific functionality
+///     Core functionality tests for BaseEmbeddingService
+///     Tests business logic, validation, and non-HTTP specific functionality
 /// </summary>
 public class BaseEmbeddingServiceTests
 {
@@ -241,18 +242,112 @@ public class BaseEmbeddingServiceTests
         Debug.WriteLine($"✓ EmbeddingSize is {embeddingSize} as expected");
     }
 
+    #region Test Implementation
+
+    public class TestEmbeddingService : BaseEmbeddingService
+    {
+        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient)
+            : base(logger, httpClient) { }
+
+        public override int EmbeddingSize => 1536;
+
+        public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
+            EmbeddingRequest request,
+            CancellationToken cancellationToken = default
+        )
+        {
+            // Validate the request (this will call the base class validation)
+            ValidateRequest(request);
+
+            // Format the payload (this tests the base class formatting logic)
+            var payload = FormatRequestPayload(request);
+
+            // Simulate HTTP call
+            var jsonContent = JsonSerializer.Serialize(payload);
+            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+            var response = await HttpClient.PostAsync("/embeddings", httpContent, cancellationToken);
+            _ = response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseContent);
+
+            return new EmbeddingResponse
+            {
+                Embeddings =
+                [
+                    .. embeddingResponse!.Embeddings.Select(e => new EmbeddingItem
+                    {
+                        Vector = e.Vector,
+                        Index = e.Index,
+                        Text = e.Text,
+                    }),
+                ],
+                Model = embeddingResponse.Model,
+                Usage = new EmbeddingUsage
+                {
+                    PromptTokens = embeddingResponse.Usage.PromptTokens,
+                    TotalTokens = embeddingResponse.Usage.TotalTokens,
+                },
+            };
+        }
+
+        public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+            CancellationToken cancellationToken = default
+        )
+        {
+            var models = new List<string> { "test-model-1", "test-model-2" };
+            return Task.FromResult<IReadOnlyList<string>>(models);
+        }
+
+        // Expose protected method for testing
+        public Dictionary<string, object> TestFormatRequestPayload(EmbeddingRequest request)
+        {
+            return FormatRequestPayload(request);
+        }
+
+        private class TestEmbeddingResponse
+        {
+            [JsonPropertyName("Embeddings")]
+            public List<TestEmbeddingItem> Embeddings { get; set; } = [];
+
+            [JsonPropertyName("Model")]
+            public string Model { get; set; } = "";
+
+            [JsonPropertyName("Usage")]
+            public TestUsage Usage { get; set; } = new();
+        }
+
+        private class TestEmbeddingItem
+        {
+            [JsonPropertyName("Vector")]
+            public float[] Vector { get; } = [];
+
+            [JsonPropertyName("Index")]
+            public int Index { get; set; }
+
+            [JsonPropertyName("Text")]
+            public string Text { get; } = "";
+        }
+
+        private class TestUsage
+        {
+            [JsonPropertyName("PromptTokens")]
+            public int PromptTokens { get; set; }
+
+            [JsonPropertyName("TotalTokens")]
+            public int TotalTokens { get; set; }
+        }
+    }
+
+    #endregion
+
     #region Test Data
 
     public static IEnumerable<object[]> GetEmbeddingAsyncTestCases =>
         [
             ["Valid text input", true, "", "Valid input should succeed"],
             ["", false, "Value cannot be null, empty, or whitespace", "Empty string should fail"],
-            [
-                "   ",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Whitespace-only string should fail",
-            ],
+            ["   ", false, "Value cannot be null, empty, or whitespace", "Whitespace-only string should fail"],
             [
                 "A very long text that should still work fine for embedding generation",
                 true,
@@ -264,44 +359,15 @@ public class BaseEmbeddingServiceTests
     public static IEnumerable<object[]> GenerateEmbeddingAsyncTestCases =>
         [
             ["Valid text", "test-model", true, "", "Valid text and model should succeed"],
-            [
-                "",
-                "test-model",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Empty text should fail",
-            ],
-            [
-                "Valid text",
-                "",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Empty model should fail",
-            ],
-            [
-                "   ",
-                "test-model",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Whitespace text should fail",
-            ],
-            [
-                "Valid text",
-                "   ",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Whitespace model should fail",
-            ],
+            ["", "test-model", false, "Value cannot be null, empty, or whitespace", "Empty text should fail"],
+            ["Valid text", "", false, "Value cannot be null, empty, or whitespace", "Empty model should fail"],
+            ["   ", "test-model", false, "Value cannot be null, empty, or whitespace", "Whitespace text should fail"],
+            ["Valid text", "   ", false, "Value cannot be null, empty, or whitespace", "Whitespace model should fail"],
         ];
 
     public static IEnumerable<object[]> RequestValidationTestCases =>
         [
-            [
-                new EmbeddingRequest { Model = "test-model", Inputs = item },
-                true,
-                "",
-                "Valid request should succeed",
-            ],
+            [new EmbeddingRequest { Model = "test-model", Inputs = item }, true, "", "Valid request should succeed"],
             [
                 new EmbeddingRequest { Model = "", Inputs = itemArray },
                 false,
@@ -399,16 +465,12 @@ public class BaseEmbeddingServiceTests
     private static readonly string[] itemArray2 = ["input", "model", "encoding_format", "dimensions", "user"];
     private static readonly string[] itemArray3 = ["normalized", "embedding_type"];
     private static readonly string[] itemArray4 = ["text1"];
-    private static readonly string[] itemArray5 =
-    [
-        "input",
-        "model",
-        "normalized",
-        "embedding_type",
-        "dimensions",
-    ];
+
+    private static readonly string[] itemArray5 = ["input", "model", "normalized", "embedding_type", "dimensions"];
+
     private static readonly string[] itemArray6 = ["encoding_format", "user"];
     private static readonly string[] itemArray7 = ["input", "model"];
+
     private static readonly string[] itemArray8 =
     [
         "normalized",
@@ -417,104 +479,8 @@ public class BaseEmbeddingServiceTests
         "dimensions",
         "user",
     ];
+
     private static readonly string[] request = ["text"];
-
-    #endregion
-
-    #region Test Implementation
-
-    public class TestEmbeddingService : BaseEmbeddingService
-    {
-        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient)
-            : base(logger, httpClient) { }
-
-        public override int EmbeddingSize => 1536;
-
-        public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
-            EmbeddingRequest request,
-            CancellationToken cancellationToken = default
-        )
-        {
-            // Validate the request (this will call the base class validation)
-            ValidateRequest(request);
-
-            // Format the payload (this tests the base class formatting logic)
-            var payload = FormatRequestPayload(request);
-
-            // Simulate HTTP call
-            var jsonContent = JsonSerializer.Serialize(payload);
-            var httpContent = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-            var response = await HttpClient.PostAsync("/embeddings", httpContent, cancellationToken);
-            _ = response.EnsureSuccessStatusCode();
-
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseContent);
-
-            return new EmbeddingResponse
-            {
-                Embeddings = [.. embeddingResponse!
-                    .Embeddings.Select(e => new EmbeddingItem
-                    {
-                        Vector = e.Vector,
-                        Index = e.Index,
-                        Text = e.Text,
-                    })],
-                Model = embeddingResponse.Model,
-                Usage = new EmbeddingUsage
-                {
-                    PromptTokens = embeddingResponse.Usage.PromptTokens,
-                    TotalTokens = embeddingResponse.Usage.TotalTokens,
-                },
-            };
-        }
-
-        public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-            CancellationToken cancellationToken = default
-        )
-        {
-            var models = new List<string> { "test-model-1", "test-model-2" };
-            return Task.FromResult<IReadOnlyList<string>>(models);
-        }
-
-        // Expose protected method for testing
-        public Dictionary<string, object> TestFormatRequestPayload(EmbeddingRequest request)
-        {
-            return FormatRequestPayload(request);
-        }
-
-        private class TestEmbeddingResponse
-        {
-            [JsonPropertyName("Embeddings")]
-            public List<TestEmbeddingItem> Embeddings { get; set; } = [];
-
-            [JsonPropertyName("Model")]
-            public string Model { get; set; } = "";
-
-            [JsonPropertyName("Usage")]
-            public TestUsage Usage { get; set; } = new();
-        }
-
-        private class TestEmbeddingItem
-        {
-            [JsonPropertyName("Vector")]
-            public float[] Vector { get; set; } = [];
-
-            [JsonPropertyName("Index")]
-            public int Index { get; set; }
-
-            [JsonPropertyName("Text")]
-            public string Text { get; set; } = "";
-        }
-
-        private class TestUsage
-        {
-            [JsonPropertyName("PromptTokens")]
-            public int PromptTokens { get; set; }
-
-            [JsonPropertyName("TotalTokens")]
-            public int TotalTokens { get; set; }
-        }
-    }
 
     #endregion
 }
