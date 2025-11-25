@@ -43,23 +43,16 @@ public class OpenAiGrokAgenticExample
         _logger = logger;
     }
 
-    public async Task RunAsync(string prompt)
+    public async Task RunAsync(string prompt, string modelId = "grok-4.1", float temperature = 0.7f, int maxTurns = 10)
     {
-        _logger.LogInformation("=== OpenAI Grok4.1 Agentic Loop Example ===\n");
+        _logger.LogInformation("=== Agentic Loop Example with {ModelId} ===\n", modelId);
 
-        // ===== Step 1: Check Grok4.1 availability =====
-        var isAvailable = await _modelResolver.IsProviderAvailableAsync("xAI");
-        if (!isAvailable)
-        {
-            _logger.LogWarning("xAI provider is not available. Set XAI_API_KEY environment variable.");
-            return;
-        }
-
-        // ===== Step 2: Resolve Grok4.1 model =====
-        var resolution = await _modelResolver.ResolveProviderAsync("grok-4.1");
+        // ===== Step 1: Resolve the specified model =====
+        var resolution = await _modelResolver.ResolveProviderAsync(modelId);
         if (resolution == null)
         {
-            _logger.LogError("Failed to resolve grok-4.1 model");
+            _logger.LogError("Failed to resolve model: {ModelId}", modelId);
+            _logger.LogWarning("Make sure the model exists in models.json and the provider has an API key set.");
             return;
         }
 
@@ -81,16 +74,16 @@ public class OpenAiGrokAgenticExample
                         Name = "location",
                         Description = "The city name (e.g., 'San Francisco', 'New York')",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit: 'celsius' or 'fahrenheit'",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                ]
+                        IsRequired = false,
+                    },
+                ],
             },
             new FunctionContract
             {
@@ -103,9 +96,9 @@ public class OpenAiGrokAgenticExample
                         Name = "timezone",
                         Description = "Timezone (e.g., 'PST', 'EST', 'UTC')",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                ]
+                        IsRequired = true,
+                    },
+                ],
             },
             new FunctionContract
             {
@@ -118,10 +111,10 @@ public class OpenAiGrokAgenticExample
                         Name = "expression",
                         Description = "Mathematical expression (e.g., '2 + 2', '10 * 5')",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                ]
-            }
+                        IsRequired = true,
+                    },
+                ],
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -138,7 +131,7 @@ public class OpenAiGrokAgenticExample
                     location = weatherArgs?.Location,
                     temperature = Random.Shared.Next(60, 85),
                     unit = weatherArgs?.Unit ?? "fahrenheit",
-                    condition = new[] { "sunny", "cloudy", "rainy", "partly cloudy" }[Random.Shared.Next(4)]
+                    condition = new[] { "sunny", "cloudy", "rainy", "partly cloudy" }[Random.Shared.Next(4)],
                 };
 
                 return JsonSerializer.Serialize(weather);
@@ -154,7 +147,7 @@ public class OpenAiGrokAgenticExample
                 {
                     timezone = timeArgs?.Timezone,
                     time = DateTime.UtcNow.ToString("HH:mm:ss"),
-                    date = DateTime.UtcNow.ToString("yyyy-MM-dd")
+                    date = DateTime.UtcNow.ToString("yyyy-MM-dd"),
                 };
 
                 return JsonSerializer.Serialize(time);
@@ -176,7 +169,7 @@ public class OpenAiGrokAgenticExample
                 {
                     return JsonSerializer.Serialize(new { error = ex.Message });
                 }
-            }
+            },
         };
 
         // ===== Step 4: Create Provider Agent =====
@@ -217,18 +210,13 @@ public class OpenAiGrokAgenticExample
         // ===== Step 6: Start Conversation =====
         var conversationHistory = new List<IMessage>
         {
-            new TextMessage
-            {
-                Text = prompt,
-                Role = Role.User
-            }
+            new TextMessage { Text = prompt, Role = Role.User },
         };
 
         _logger.LogInformation("User: {Prompt}\n", prompt);
 
         // ===== Step 7: Agentic Loop =====
         int turnCount = 0;
-        const int maxTurns = 10; // Safety limit
 
         while (turnCount < maxTurns)
         {
@@ -238,11 +226,7 @@ public class OpenAiGrokAgenticExample
             // Call LLM through middleware chain (streaming)
             var streamTask = await agentWithMiddleware.GenerateReplyStreamingAsync(
                 conversationHistory,
-                new GenerateReplyOptions
-                {
-                    ModelId = "grok-4.1",
-                    Temperature = 0.7f
-                }
+                new GenerateReplyOptions { ModelId = modelId, Temperature = temperature }
             );
 
             // Collect messages from stream
@@ -320,10 +304,7 @@ public class OpenAiGrokAgenticExample
             }
 
             // ===== Step 9: Execute Tools =====
-            _logger.LogInformation(
-                "Executing {Count} tool call(s)...",
-                toolCallMessage.ToolCalls.Count
-            );
+            _logger.LogInformation("Executing {Count} tool call(s)...", toolCallMessage.ToolCalls.Count);
 
             foreach (var toolCall in toolCallMessage.ToolCalls)
             {
@@ -338,19 +319,13 @@ public class OpenAiGrokAgenticExample
             try
             {
                 // Execute tools using ToolCallExecutor
-                var toolResult = await ToolCallExecutor.ExecuteAsync(
-                    toolCallMessage,
-                    functionMap,
-                    logger: _logger
-                );
+                var toolResult = await ToolCallExecutor.ExecuteAsync(toolCallMessage, functionMap, logger: _logger);
 
                 // Log tool results
                 _logger.LogInformation("Tool execution completed:");
                 foreach (var result in toolResult.ToolCallResults)
                 {
-                    var resultPreview = result.Result.Length > 100
-                        ? result.Result[..100] + "..."
-                        : result.Result;
+                    var resultPreview = result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result;
                     _logger.LogInformation("  Result for {ToolCallId}: {Result}", result.ToolCallId, resultPreview);
                 }
 
@@ -364,11 +339,7 @@ public class OpenAiGrokAgenticExample
                 _logger.LogError(ex, "Tool execution failed");
 
                 // Add error message to conversation
-                var errorMessage = new TextMessage
-                {
-                    Text = $"Error executing tools: {ex.Message}",
-                    Role = Role.User
-                };
+                var errorMessage = new TextMessage { Text = $"Error executing tools: {ex.Message}", Role = Role.User };
                 conversationHistory.Add(errorMessage);
             }
         }

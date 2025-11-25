@@ -3,54 +3,247 @@ using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace LmConfigUsageExample;
 
 internal class Program
 {
-    private static async Task Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
-        // Parse command-line arguments
-        var promptArg = Array.FindIndex(args, a => a == "--prompt" || a == "-p");
-        var prompt = promptArg >= 0 && promptArg + 1 < args.Length
-            ? args[promptArg + 1]
-            : "Hello! Can you tell me what MCP tools are available to you?";
+        return await Parser.Default.ParseArguments<CommandLineOptions>(args)
+            .MapResult(
+                async options => await RunWithOptionsAsync(options),
+                _ => Task.FromResult(1)
+            );
+    }
 
-        // Check if user wants to run all examples (excluding ClaudeAgentSDK and Grok)
-        var runAllExamples = args.Contains("--all");
-
-        // Check if user wants to run Grok agentic example
-        var runGrokExample = args.Contains("--grok");
-
-        if (runGrokExample)
+    private static async Task<int> RunWithOptionsAsync(CommandLineOptions options)
+    {
+        try
         {
-            Console.WriteLine("=== OpenAI Grok4.1 Agentic Loop Example ===\n");
-            await RunGrokAgenticExample(prompt);
-            return;
+            // Handle list commands first
+            if (options.ListModels)
+            {
+                await ListModelsAsync(options.Verbose);
+                return 0;
+            }
+
+            if (options.ListProviders)
+            {
+                await ListProvidersAsync(options.Verbose);
+                return 0;
+            }
+
+            // Handle run modes
+            if (options.RunAll)
+            {
+                Console.WriteLine("=== LmConfig Usage Examples ===\n");
+                RunFileBasedExample();
+                RunEmbeddedResourceExample();
+                RunStreamFactoryExample();
+                RunIOptionsExample();
+                await RunProviderAvailabilityExample();
+                await RunModelIdResolutionExample();
+                Console.WriteLine("\nNote: Use --claude for ClaudeAgentSDK one-shot mode.");
+                Console.WriteLine("Note: Use --grok for Grok agentic example.");
+                Console.WriteLine("Note: Use --model <model-id> to specify a different model.\n");
+                return 0;
+            }
+
+            if (options.RunGrok)
+            {
+                var model = options.Model ?? "grok-4.1";
+                Console.WriteLine($"=== Agentic Loop Example with {model} ===\n");
+                await RunAgenticExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            if (options.RunClaude)
+            {
+                Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
+                await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
+                return 0;
+            }
+
+            // Default: If model is specified, run agentic example with that model
+            if (!string.IsNullOrEmpty(options.Model))
+            {
+                Console.WriteLine($"=== Agentic Loop Example with {options.Model} ===\n");
+                await RunAgenticExample(options.Prompt, options.Model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            // Default: Run ClaudeAgentSDK in OneShot mode
+            Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode (default) ===\n");
+            Console.WriteLine("Tip: Use --help to see all options, --grok for Grok example, --model <id> for other models.\n");
+            await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+            if (options.Verbose)
+            {
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            }
+
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Lists all available models from the configuration.
+    /// </summary>
+    private static async Task ListModelsAsync(bool verbose)
+    {
+        Console.WriteLine("=== Available Models ===\n");
+
+        var services = new ServiceCollection();
+        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
+        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLmConfigFromFile("models.json");
+
+        var serviceProvider = services.BuildServiceProvider();
+        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+
+        var models = appConfig.Value.Models;
+        Console.WriteLine($"Total models: {models.Count}\n");
+
+        // Group models by provider family
+        var groupedModels = models
+            .GroupBy(m => GetModelFamily(m.Id))
+            .OrderBy(g => g.Key);
+
+        foreach (var group in groupedModels)
+        {
+            Console.WriteLine($"--- {group.Key} ({group.Count()} models) ---");
+            foreach (var model in group.OrderBy(m => m.Id).Take(verbose ? int.MaxValue : 5))
+            {
+                var isReasoning = model.IsReasoning ? " [reasoning]" : "";
+                var contextLength = model.Capabilities?.TokenLimits?.MaxContextTokens;
+                var contextStr = contextLength.HasValue ? $" ({contextLength.Value / 1000}K ctx)" : "";
+
+                // Check if model can be resolved
+                var resolution = await modelResolver.ResolveProviderAsync(model.Id);
+                var status = resolution != null ? "✓" : "✗";
+
+                Console.WriteLine($"  {status} {model.Id}{isReasoning}{contextStr}");
+            }
+
+            if (!verbose && group.Count() > 5)
+            {
+                Console.WriteLine($"  ... and {group.Count() - 5} more (use --verbose to see all)");
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Lists all available providers and their status.
+    /// </summary>
+    private static async Task ListProvidersAsync(bool verbose)
+    {
+        Console.WriteLine("=== Available Providers ===\n");
+
+        var services = new ServiceCollection();
+        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
+        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLmConfigFromFile("models.json");
+
+        var serviceProvider = services.BuildServiceProvider();
+        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+
+        var providers = appConfig.Value.ProviderRegistry ?? new Dictionary<string, AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConnectionInfo>();
+        Console.WriteLine($"Total providers: {providers.Count}\n");
+
+        foreach (var (providerName, providerInfo) in providers.OrderBy(p => p.Key))
+        {
+            var isAvailable = await modelResolver.IsProviderAvailableAsync(providerName);
+            var status = isAvailable ? "✓ Available" : "✗ Not available";
+            var envVar = providerInfo.ApiKeyEnvironmentVariable ?? "N/A";
+            var hasKey = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envVar ?? ""));
+
+            Console.WriteLine($"{status}: {providerName}");
+            Console.WriteLine($"  Endpoint: {providerInfo.EndpointUrl}");
+            Console.WriteLine($"  API Key Env: {envVar} {(hasKey ? "(set)" : "(not set)")}");
+            Console.WriteLine($"  Compatibility: {providerInfo.Compatibility}");
+
+            if (verbose && providerInfo.Description != null)
+            {
+                Console.WriteLine($"  Description: {providerInfo.Description}");
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    private static string GetModelFamily(string modelId)
+    {
+        var id = modelId.ToLowerInvariant();
+        if (id.Contains("grok") || id.Contains("x-ai"))
+        {
+            return "xAI (Grok)";
         }
 
-        if (runAllExamples)
+        if (id.Contains("claude") || id.Contains("anthropic"))
         {
-            Console.WriteLine("=== LmConfig Usage Examples ===\n");
-            RunFileBasedExample();
-            RunEmbeddedResourceExample();
-            RunStreamFactoryExample();
-            RunIOptionsExample();
-            await RunProviderAvailabilityExample();
-            await RunModelIdResolutionExample();
-            Console.WriteLine("\nNote: ClaudeAgentSDK example (Example 7) requires OneShot mode.");
-            Console.WriteLine("Run with: dotnet run --prompt \"Your question here\"");
-            Console.WriteLine("\nNote: Grok Agentic example (Example 8) requires xAI API key.");
-            Console.WriteLine("Run with: dotnet run --grok --prompt \"Your question here\"\n");
-            return;
+            return "Anthropic (Claude)";
         }
 
-        // Default: Run ClaudeAgentSDK in OneShot mode
-        Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
-        await RunClaudeAgentSdkOneShotExample(prompt);
+        if (id.Contains("gpt") || id.Contains("openai"))
+        {
+            return "OpenAI (GPT)";
+        }
+
+        if (id.Contains("gemini") || id.Contains("google"))
+        {
+            return "Google (Gemini)";
+        }
+
+        if (id.Contains("deepseek"))
+        {
+            return "DeepSeek";
+        }
+
+        if (id.Contains("qwen"))
+        {
+            return "Alibaba (Qwen)";
+        }
+
+        if (id.Contains("kimi") || id.Contains("moonshot"))
+        {
+            return "Moonshot (Kimi)";
+        }
+
+        if (id.Contains("minimax"))
+        {
+            return "MiniMax";
+        }
+
+        if (id.Contains("openrouter/"))
+        {
+            return "OpenRouter (Cloaked)";
+        }
+
+        if (id.Contains("mistral"))
+        {
+            return "Mistral";
+        }
+
+        if (id.Contains("llama") || id.Contains("meta"))
+        {
+            return "Meta (Llama)";
+        }
+
+        return "Other";
     }
 
     /// <summary>
@@ -355,11 +548,11 @@ internal class Program
             }
 
             Console.WriteLine("Key Benefits:");
-            Console.WriteLine("  • Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'");
-            Console.WriteLine("  • UnifiedAgent automatically resolves to the best available provider");
-            Console.WriteLine("  • Provider agents receive the correct provider-specific model names");
-            Console.WriteLine("  • Supports complex routing through aggregators like OpenRouter");
-            Console.WriteLine("  • Enables seamless model switching without code changes");
+            Console.WriteLine("  - Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'");
+            Console.WriteLine("  - UnifiedAgent automatically resolves to the best available provider");
+            Console.WriteLine("  - Provider agents receive the correct provider-specific model names");
+            Console.WriteLine("  - Supports complex routing through aggregators like OpenRouter");
+            Console.WriteLine("  - Enables seamless model switching without code changes");
             Console.WriteLine();
         }
         catch (Exception ex)
@@ -368,14 +561,11 @@ internal class Program
         }
     }
 
-    // NOTE: Interactive mode is not yet fully implemented.
-    // Example 7 has been removed. Use OneShot mode (default) for ClaudeAgentSDK testing.
-
     /// <summary>
     /// ClaudeAgentSDK Provider in One-Shot Mode
     /// Sends a prompt, runs to completion, and exits
     /// </summary>
-    private static async Task RunClaudeAgentSdkOneShotExample(string prompt)
+    private static async Task RunClaudeAgentSdkOneShotExample(string prompt, float temperature)
     {
         try
         {
@@ -383,12 +573,14 @@ internal class Program
             _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Configure ClaudeAgentSdkOptions with OneShot mode
-            _ = services.AddSingleton(new AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkOptions
-            {
-                ProjectRoot = Directory.GetCurrentDirectory(),
-                McpConfigPath = ".mcp.json",
-                Mode = AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkMode.OneShot
-            });
+            _ = services.AddSingleton(
+                new AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkOptions
+                {
+                    ProjectRoot = Directory.GetCurrentDirectory(),
+                    McpConfigPath = ".mcp.json",
+                    Mode = AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkMode.OneShot,
+                }
+            );
 
             // Use AddLmConfigFromFile to directly load the JSON file
             _ = services.AddLmConfigFromFile("models.json");
@@ -405,7 +597,9 @@ internal class Program
                 Console.WriteLine("  - Node.js installed");
                 Console.WriteLine("  - @anthropic-ai/claude-agent-sdk npm package installed globally");
                 Console.WriteLine("  - .mcp.json configuration file in the project root");
-                Console.WriteLine("  - Authentication: Claude Code subscription OR ANTHROPIC_API_KEY environment variable");
+                Console.WriteLine(
+                    "  - Authentication: Claude Code subscription OR ANTHROPIC_API_KEY environment variable"
+                );
                 Console.WriteLine();
                 return;
             }
@@ -431,18 +625,14 @@ internal class Program
             // Configure OneShot mode via options
             var messages = new List<IMessage>
             {
-                new TextMessage
-                {
-                    Text = prompt,
-                    Role = Role.User
-                }
+                new TextMessage { Text = prompt, Role = Role.User },
             };
 
             var options = new GenerateReplyOptions
             {
                 ModelId = "claude-sonnet-4-5",
-                Temperature = 0.7f,
-                MaxToken = 10 // Max turns in one-shot mode
+                Temperature = temperature,
+                MaxToken = 10, // Max turns in one-shot mode
             };
 
             Console.WriteLine("\nAgent response (streaming):");
@@ -459,13 +649,16 @@ internal class Program
                             Console.Write(textMsg.Text);
                             break;
                         case ReasoningMessage reasoningMsg:
-                            Console.WriteLine($"\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]");
+                            Console.WriteLine(
+                                $"\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]"
+                            );
                             break;
                         case ToolsCallMessage toolCallMsg:
                             if (!toolCallMsg.ToolCalls.IsEmpty)
                             {
                                 Console.WriteLine($"\n[Tool Call: {toolCallMsg.ToolCalls[0].FunctionName}]");
                             }
+
                             break;
                         case ToolsCallResultMessage toolResultMsg:
                             if (!toolResultMsg.ToolCallResults.IsEmpty)
@@ -473,16 +666,16 @@ internal class Program
                                 var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
                                 Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
                             }
+
                             break;
                         case UsageMessage usageMsg:
-                            Console.WriteLine($"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]");
+                            Console.WriteLine(
+                                $"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]"
+                            );
                             break;
                     }
 
-                    messages = [
-                        .. messages,
-                        msg,
-                    ];
+                    messages = [.. messages, msg];
                 }
 
                 var userInput = Console.ReadLine();
@@ -492,15 +685,7 @@ internal class Program
                 }
                 else
                 {
-                    messages =
-                    [
-                        .. messages,
-                        new TextMessage
-                        {
-                            Text = userInput ?? string.Empty,
-                            Role = Role.User
-                        },
-                    ];
+                    messages = [.. messages, new TextMessage { Text = userInput ?? string.Empty, Role = Role.User }];
                 }
             }
 
@@ -521,17 +706,16 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 8: OpenAI Grok4.1 Agentic Loop Example
+    /// Agentic Loop Example with configurable model
     /// Demonstrates the agentic loop pattern with middleware chain
     /// </summary>
-    private static async Task RunGrokAgenticExample(string prompt)
+    private static async Task RunAgenticExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
     {
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder
-                .AddConsole()
-                .SetMinimumLevel(LogLevel.Information));
+            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
@@ -541,13 +725,13 @@ internal class Program
             var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
             var logger = serviceProvider.GetRequiredService<ILogger<OpenAiGrokAgenticExample>>();
 
-            // Create and run the example
+            // Create and run the example with the specified model
             var example = new OpenAiGrokAgenticExample(modelResolver, agentFactory, logger);
-            await example.RunAsync(prompt);
+            await example.RunAsync(prompt, modelId, temperature, maxTurns);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"✗ Grok agentic example failed: {ex.Message}");
+            Console.WriteLine($"✗ Agentic example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }

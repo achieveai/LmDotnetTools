@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "ClaudeAgentSDK (default)": {
+      "commandName": "Project",
+      "commandLineArgs": "--claude -p \"Hello! What MCP tools are available to you?\""
+    },
+    "Grok Agentic Loop": {
+      "commandName": "Project",
+      "commandLineArgs": "--grok -p \"What's the weather in San Francisco and what time is it in PST?\""
+    },
+    "Custom Model: gpt-4.1": {
+      "commandName": "Project",
+      "commandLineArgs": "-m gpt-4.1 -p \"Calculate 25 * 4 and then get the weather in New York\" -t 0.5"
+    },
+    "Custom Model: gemini-2.5-pro": {
+      "commandName": "Project",
+      "commandLineArgs": "-m gemini-2.5-pro -p \"Hello! Tell me about yourself.\""
+    },
+    "Custom Model: deepseek-r1": {
+      "commandName": "Project",
+      "commandLineArgs": "-m deepseek-r1 -p \"Solve this step by step: What is 17 * 23?\""
+    },
+    "Custom Model: qwen3-235b": {
+      "commandName": "Project",
+      "commandLineArgs": "-m qwen/qwen3-235b-a22b -p \"Hello! What can you help me with?\""
+    },
+    "OpenRouter Cloaked: sherlock-think-alpha": {
+      "commandName": "Project",
+      "commandLineArgs": "-m openrouter/sherlock-think-alpha -p \"What can you help me with?\""
+    },
+    "MiniMax Model": {
+      "commandName": "Project",
+      "commandLineArgs": "-m minimax/minimax-m2 -p \"Hello! How are you?\""
+    },
+    "List All Models": {
+      "commandName": "Project",
+      "commandLineArgs": "--list-models"
+    },
+    "List All Models (verbose)": {
+      "commandName": "Project",
+      "commandLineArgs": "--list-models -v"
+    },
+    "List Providers": {
+      "commandName": "Project",
+      "commandLineArgs": "--list-providers"
+    },
+    "Run All Config Examples": {
+      "commandName": "Project",
+      "commandLineArgs": "--all"
+    }
+  }
+}

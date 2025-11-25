@@ -3,11 +3,131 @@
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
-    "configurations": [{
-        "name": "C#: Example Project Debug",
-        "type": "dotnet",
-        "request": "launch",
-        "projectPath": "${workspaceFolder}/example/ExamplePythonMCPClient/ExamplePythonMCPClient.csproj"
-      }
+    "configurations": [
+        {
+            "name": "LmConfig: ClaudeAgentSDK (default)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--claude",
+                "-p", "Hello! What MCP tools are available to you?"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: Grok Agentic Loop",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--grok",
+                "-p", "What's the weather in San Francisco and what time is it in PST?"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: Custom Model (gpt-4.1)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "-m", "gpt-4.1",
+                "-p", "Calculate 25 * 4 and then get the weather in New York",
+                "-t", "0.5"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: Custom Model (gemini-2.5-pro)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "-m", "gemini-2.5-pro",
+                "-p", "Hello! Tell me about yourself."
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: Custom Model (deepseek-r1)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "-m", "deepseek-r1",
+                "-p", "Solve this step by step: What is 17 * 23?"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: OpenRouter Cloaked (sherlock-think-alpha)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "-m", "openrouter/sherlock-think-alpha",
+                "-p", "What can you help me with?"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: MiniMax Model",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "-m", "minimax/minimax-m2",
+                "-p", "Hello! How are you?"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: List All Models",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--list-models"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: List All Models (verbose)",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--list-models",
+                "-v"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: List Providers",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--list-providers"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LmConfig: Run All Config Examples",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
+            "args": [
+                "--all"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "ExamplePythonMCPClient: Debug",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/example/ExamplePythonMCPClient/ExamplePythonMCPClient.csproj"
+        }
     ]
 }
