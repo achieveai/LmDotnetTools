@@ -190,6 +190,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "tools_call";
         }
 
+        if (type == typeof(ToolCallMessage))
+        {
+            return "tool_call";
+        }
+
         if (type == typeof(TextUpdateMessage))
         {
             return "text_update";
@@ -200,9 +205,19 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "tools_call_result";
         }
 
+        if (type == typeof(ToolCallResultMessage))
+        {
+            return "tool_call_result";
+        }
+
         if (type == typeof(ToolsCallUpdateMessage))
         {
             return "tools_call_update";
+        }
+
+        if (type == typeof(ToolCallUpdateMessage))
+        {
+            return "tool_call_update";
         }
 
         if (type == typeof(ToolsCallAggregateMessage))
@@ -283,6 +298,19 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         {
             return typeof(ToolsCallAggregateMessage);
         }
+        // Singular tool call types (check after plural types)
+        else if (element.TryGetProperty("function_name", out _) || element.TryGetProperty("function_args", out _))
+        {
+            // Check if this is an update or a complete message
+            return
+                element.TryGetProperty("isUpdate", out var isUpdateProp) && isUpdateProp.ValueKind == JsonValueKind.True
+                ? typeof(ToolCallUpdateMessage)
+                : typeof(ToolCallMessage);
+        }
+        else if (element.TryGetProperty("result", out _) && element.TryGetProperty("tool_call_id", out _))
+        {
+            return typeof(ToolCallResultMessage);
+        }
 
         // Default to TextMessage if we can't infer the type
         return typeof(TextMessage);
@@ -319,9 +347,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "text" => typeof(TextMessage),
             "image" => typeof(ImageMessage),
             "tools_call" => typeof(ToolsCallMessage),
+            "tool_call" => typeof(ToolCallMessage),
             "text_update" => typeof(TextUpdateMessage),
             "tools_call_result" => typeof(ToolsCallResultMessage),
+            "tool_call_result" => typeof(ToolCallResultMessage),
             "tools_call_update" => typeof(ToolsCallUpdateMessage),
+            "tool_call_update" => typeof(ToolCallUpdateMessage),
             "tools_call_aggregate" => typeof(ToolsCallAggregateMessage),
             "usage" => typeof(UsageMessage),
             "reasoning" => typeof(ReasoningMessage),

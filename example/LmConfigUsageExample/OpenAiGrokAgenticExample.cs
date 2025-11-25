@@ -1,6 +1,5 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -43,7 +42,7 @@ public class OpenAiGrokAgenticExample
         _logger = logger;
     }
 
-    public async Task RunAsync(string prompt, string modelId = "grok-4.1", float temperature = 0.7f, int maxTurns = 10)
+    public async Task RunAsync(string prompt, string modelId = "x-ai/grok-4.1-fast", float temperature = 0.7f, int maxTurns = 10)
     {
         _logger.LogInformation("=== Agentic Loop Example with {ModelId} ===\n", modelId);
 
@@ -53,6 +52,16 @@ public class OpenAiGrokAgenticExample
         {
             _logger.LogError("Failed to resolve model: {ModelId}", modelId);
             _logger.LogWarning("Make sure the model exists in models.json and the provider has an API key set.");
+            _logger.LogWarning("");
+            _logger.LogWarning("Required API keys by model:");
+            _logger.LogWarning("  grok-4.1, x-ai/*       -> XAI_API_KEY");
+            _logger.LogWarning("  gpt-4.1*, openai/*     -> OPENAI_API_KEY");
+            _logger.LogWarning("  claude-3-*, anthropic/* -> ANTHROPIC_API_KEY");
+            _logger.LogWarning("  openrouter/*           -> OPENROUTER_API_KEY");
+            _logger.LogWarning("  deepseek/*             -> DEEPSEEK_API_KEY");
+            _logger.LogWarning("  claude-sonnet-4-5      -> ClaudeAgentSDK (no API key needed if Claude Code authenticated)");
+            _logger.LogWarning("");
+            _logger.LogWarning("Use '--list-providers' to see provider status.");
             return;
         }
 
@@ -60,9 +69,11 @@ public class OpenAiGrokAgenticExample
         _logger.LogInformation("  Provider: {ProviderName}", resolution.EffectiveProviderName);
         _logger.LogInformation("  Endpoint: {Endpoint}\n", resolution.Connection.EndpointUrl);
 
-        // ===== Step 3: Define Tools =====
-        var functions = new[]
-        {
+        // ===== Step 3: Define Tools using FunctionRegistry =====
+        var registry = new FunctionRegistry();
+
+        // get_weather
+        _ = registry.AddFunction(
             new FunctionContract
             {
                 Name = "get_weather",
@@ -85,41 +96,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            new FunctionContract
-            {
-                Name = "get_time",
-                Description = "Get the current time for a timezone",
-                Parameters =
-                [
-                    new FunctionParameterContract
-                    {
-                        Name = "timezone",
-                        Description = "Timezone (e.g., 'PST', 'EST', 'UTC')",
-                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true,
-                    },
-                ],
-            },
-            new FunctionContract
-            {
-                Name = "calculate",
-                Description = "Perform a mathematical calculation",
-                Parameters =
-                [
-                    new FunctionParameterContract
-                    {
-                        Name = "expression",
-                        Description = "Mathematical expression (e.g., '2 + 2', '10 * 5')",
-                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true,
-                    },
-                ],
-            },
-        };
-
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
-        {
-            ["get_weather"] = async (args) =>
+            async (args) =>
             {
                 var weatherArgs = JsonSerializer.Deserialize<WeatherArgs>(args);
                 _logger.LogInformation("[TOOL] Getting weather for {Location}", weatherArgs?.Location);
@@ -136,7 +113,27 @@ public class OpenAiGrokAgenticExample
 
                 return JsonSerializer.Serialize(weather);
             },
-            ["get_time"] = async (args) =>
+            providerName: "Example"
+        );
+
+        // get_time
+        _ = registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_time",
+                Description = "Get the current time for a timezone",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "timezone",
+                        Description = "Timezone (e.g., 'PST', 'EST', 'UTC')",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            async (args) =>
             {
                 var timeArgs = JsonSerializer.Deserialize<TimeArgs>(args);
                 _logger.LogInformation("[TOOL] Getting time for {Timezone}", timeArgs?.Timezone);
@@ -152,7 +149,27 @@ public class OpenAiGrokAgenticExample
 
                 return JsonSerializer.Serialize(time);
             },
-            ["calculate"] = async (args) =>
+            providerName: "Example"
+        );
+
+        // calculate
+        _ = registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "calculate",
+                Description = "Perform a mathematical calculation",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "expression",
+                        Description = "Mathematical expression (e.g., '2 + 2', '10 * 5')",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            async (args) =>
             {
                 var calcArgs = JsonSerializer.Deserialize<CalculateArgs>(args);
                 _logger.LogInformation("[TOOL] Calculating: {Expression}", calcArgs?.Expression);
@@ -170,42 +187,18 @@ public class OpenAiGrokAgenticExample
                     return JsonSerializer.Serialize(new { error = ex.Message });
                 }
             },
-        };
+            providerName: "Example"
+        );
+
+        // Build middleware and handlers from registry
+        var (toolCallMiddleware, functionHandlers) = registry.BuildToolCallComponents(name: "ToolCallInjection");
 
         // ===== Step 4: Create Provider Agent =====
-        var providerAgent = _agentFactory.CreateStreamingAgent(resolution);
-
-        // ===== Step 5: Build Middleware Chain =====
-        // Chain structure (innermost to outermost):
-        // Provider Agent -> ToolCallInjectionMiddleware -> MessageUpdateJoinerMiddleware
-        // -> JsonFragmentUpdateMiddleware -> MessageTransformationMiddleware
-
-        // Build middleware chain by wrapping one at a time (innermost first)
-        IStreamingAgent agentWithMiddleware = providerAgent;
-
-        // 1. ToolCallInjectionMiddleware (innermost - closest to provider)
-        agentWithMiddleware = new MiddlewareWrappingStreamingAgent(
-            agentWithMiddleware,
-            new ToolCallInjectionMiddleware(functions: functions, name: "ToolCallInjection")
-        );
-
-        // 2. MessageUpdateJoinerMiddleware
-        agentWithMiddleware = new MiddlewareWrappingStreamingAgent(
-            agentWithMiddleware,
-            new MessageUpdateJoinerMiddleware(name: "MessageJoiner")
-        );
-
-        // 3. JsonFragmentUpdateMiddleware
-        agentWithMiddleware = new MiddlewareWrappingStreamingAgent(
-            agentWithMiddleware,
-            new JsonFragmentUpdateMiddleware()
-        );
-
-        // 4. MessageTransformationMiddleware (outermost)
-        agentWithMiddleware = new MiddlewareWrappingStreamingAgent(
-            agentWithMiddleware,
-            new MessageTransformationMiddleware(name: "MessageTransformation")
-        );
+        var providerAgent = _agentFactory.CreateStreamingAgent(resolution)
+            .WithMessageTransformation()
+            .WithMiddleware(new JsonFragmentUpdateMiddleware())
+            .WithMiddleware(new MessageUpdateJoinerMiddleware(name: "MessageJoiner"))
+            .WithMiddleware(toolCallMiddleware);
 
         // ===== Step 6: Start Conversation =====
         var conversationHistory = new List<IMessage>
@@ -216,7 +209,7 @@ public class OpenAiGrokAgenticExample
         _logger.LogInformation("User: {Prompt}\n", prompt);
 
         // ===== Step 7: Agentic Loop =====
-        int turnCount = 0;
+        var turnCount = 0;
 
         while (turnCount < maxTurns)
         {
@@ -224,49 +217,56 @@ public class OpenAiGrokAgenticExample
             _logger.LogInformation("=== Turn {Turn} ===", turnCount);
 
             // Call LLM through middleware chain (streaming)
-            var streamTask = await agentWithMiddleware.GenerateReplyStreamingAsync(
+            var streamTask = await providerAgent.GenerateReplyStreamingAsync(
                 conversationHistory,
-                new GenerateReplyOptions { ModelId = modelId, Temperature = temperature }
+                new GenerateReplyOptions
+                {
+                    ModelId = modelId,
+                    // Temperature = temperature,
+                    RunId = Guid.NewGuid().ToString(),
+                    ParentRunId = null,
+                    ThreadId = Guid.NewGuid().ToString(),
+                }
             );
 
-            // Collect messages from stream
+            // Collect messages from stream and execute tool calls in parallel as they arrive
             var messages = new List<IMessage>();
             var textContent = new System.Text.StringBuilder();
+            var pendingToolCalls = new Dictionary<string, Task<ToolCallResultMessage>>();
 
             await foreach (var message in streamTask)
             {
                 messages.Add(message);
 
-                // Display streaming content in real-time
+                // Display streaming content in real-time and handle tool calls
                 switch (message)
                 {
-                    case TextUpdateMessage textUpdate:
-                        Console.Write(textUpdate.Text);
-                        textContent.Append(textUpdate.Text);
+                    case ReasoningMessage reasoningMsg:
+                        if (!string.IsNullOrEmpty(reasoningMsg.Reasoning))
+                        {
+                            Console.Write(reasoningMsg.Reasoning);
+                            _ = textContent.Append(reasoningMsg.Reasoning);
+                        }
                         break;
 
                     case TextMessage textMsg:
                         if (!string.IsNullOrEmpty(textMsg.Text))
                         {
                             Console.Write(textMsg.Text);
-                            textContent.Append(textMsg.Text);
+                            _ = textContent.Append(textMsg.Text);
                         }
                         break;
 
-                    case ReasoningUpdateMessage reasoningUpdate:
-                        // Optionally display reasoning
-                        break;
+                    case ToolCallMessage toolCall:
+                        // Start executing tool call immediately when we receive it
+                        _logger.LogInformation(
+                            "[Tool Call] Starting execution: {FunctionName} (id: {ToolCallId})",
+                            toolCall.FunctionName,
+                            toolCall.ToolCallId
+                        );
 
-                    case ToolCallUpdateMessage toolCallUpdate:
-                        // Display tool call progress
-                        if (!string.IsNullOrEmpty(toolCallUpdate.FunctionName))
-                        {
-                            _logger.LogDebug(
-                                "[Tool Update] {FunctionName}: {Args}",
-                                toolCallUpdate.FunctionName,
-                                toolCallUpdate.FunctionArgs
-                            );
-                        }
+                        var executionTask = ExecuteToolCallAsync(toolCall, functionHandlers);
+                        pendingToolCalls[toolCall.ToolCallId ?? $"call_{pendingToolCalls.Count}"] = executionTask;
                         break;
 
                     case UsageMessage usage:
@@ -286,11 +286,8 @@ public class OpenAiGrokAgenticExample
 
             _logger.LogInformation("Received {Count} message(s)", messages.Count);
 
-            // ===== Step 8: Check for Tool Calls =====
-            // Look for ToolsCallMessage (plural) in the messages
-            var toolCallMessage = messages.OfType<ToolsCallMessage>().FirstOrDefault();
-
-            if (toolCallMessage == null)
+            // ===== Step 8: Check for Tool Calls and Await Results =====
+            if (pendingToolCalls.Count == 0)
             {
                 // No tool calls, conversation complete
                 _logger.LogInformation("✓ No tool calls - conversation complete\n");
@@ -303,35 +300,26 @@ public class OpenAiGrokAgenticExample
                 break;
             }
 
-            // ===== Step 9: Execute Tools =====
-            _logger.LogInformation("Executing {Count} tool call(s)...", toolCallMessage.ToolCalls.Count);
-
-            foreach (var toolCall in toolCallMessage.ToolCalls)
-            {
-                _logger.LogInformation(
-                    "  [{Idx}] {Name} with args: {Args}",
-                    toolCall.ToolCallIdx,
-                    toolCall.FunctionName,
-                    toolCall.FunctionArgs
-                );
-            }
+            // ===== Step 9: Await Tool Results and Add to Conversation =====
+            _logger.LogInformation("Awaiting {Count} tool call result(s)...", pendingToolCalls.Count);
 
             try
             {
-                // Execute tools using ToolCallExecutor
-                var toolResult = await ToolCallExecutor.ExecuteAsync(toolCallMessage, functionMap, logger: _logger);
+                // Await all pending tool executions
+                _ = await Task.WhenAll(pendingToolCalls.Values);
 
-                // Log tool results
-                _logger.LogInformation("Tool execution completed:");
-                foreach (var result in toolResult.ToolCallResults)
+                // Collect results and add to conversation
+                foreach (var kvp in pendingToolCalls)
                 {
+                    var result = await kvp.Value;
                     var resultPreview = result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result;
-                    _logger.LogInformation("  Result for {ToolCallId}: {Result}", result.ToolCallId, resultPreview);
+                    _logger.LogInformation("  Result for {ToolCallId}: {Result}", kvp.Key, resultPreview);
+
+                    // Add each tool result to conversation history
+                    conversationHistory.Add(result);
                 }
 
-                // Add tool results to conversation
-                conversationHistory.Add(toolResult);
-
+                _logger.LogInformation("Tool execution completed.");
                 Console.WriteLine(); // Spacing
             }
             catch (Exception ex)
@@ -350,6 +338,61 @@ public class OpenAiGrokAgenticExample
         }
 
         _logger.LogInformation("\n=== Agentic Loop Complete ===");
+    }
+
+    // ===== Helper Methods =====
+
+    /// <summary>
+    /// Executes a single tool call and returns the result message.
+    /// </summary>
+    private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
+        ToolCallMessage toolCall,
+        IDictionary<string, Func<string, Task<string>>> handlers
+    )
+    {
+        var toolCallId = toolCall.ToolCallId ?? $"call_{toolCall.Index}";
+        var functionName = toolCall.FunctionName ?? "unknown";
+        var functionArgs = toolCall.FunctionArgs ?? "{}";
+
+        try
+        {
+            if (handlers.TryGetValue(functionName, out var handler))
+            {
+                var result = await handler(functionArgs);
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    Result = result,
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
+            }
+            else
+            {
+                _logger.LogWarning("No handler found for function: {FunctionName}", functionName);
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    Result = JsonSerializer.Serialize(new { error = $"Unknown function: {functionName}" }),
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error executing tool call: {FunctionName}", functionName);
+            return new ToolCallResultMessage
+            {
+                ToolCallId = toolCallId,
+                Result = JsonSerializer.Serialize(new { error = ex.Message }),
+                Role = Role.User,
+                FromAgent = toolCall.FromAgent,
+                GenerationId = toolCall.GenerationId,
+            };
+        }
     }
 
     // ===== Helper Classes =====

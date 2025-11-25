@@ -118,6 +118,12 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
     public int? MessageOrderIdx { get; set; }
 
     /// <summary>
+    /// Order index of this tool call within its containing message/stream.
+    /// Enables deterministic reconstruction of tool call order for KV cache optimization.
+    /// </summary>
+    public int ToolCallIdx { get; set; }
+
+    /// <summary>
     /// List to accumulate all JSON fragment updates across all streaming chunks.
     /// </summary>
     public List<JsonFragmentUpdate> AccumulatedJsonFragments { get; private set; } = new();
@@ -199,6 +205,7 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
             FunctionArgs = AccumulatedArgs,
             ToolCallId = CurrentToolCallId,
             Index = CurrentIndex,
+            ToolCallIdx = ToolCallIdx,
             Role = Role,
             FromAgent = FromAgent,
             GenerationId = GenerationId,

@@ -80,8 +80,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent, nameof(agent));
+
         // UPSTREAM: Reconstruct aggregates for provider
-        var aggregatedMessages = MessageTransformationMiddleware.ReconstructAggregates(context.Messages);
+        var aggregatedMessages = ReconstructAggregates(context.Messages);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -103,7 +105,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return MessageTransformationMiddleware.AssignMessageOrderingStreaming(streamingResponse);
+        return AssignMessageOrderingStreaming(streamingResponse);
     }
 
     #region Downstream: Assign Message Ordering
@@ -283,6 +285,20 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
 
                     IncrementChunk();
                 }
+                break;
+
+            case ToolCallUpdateMessage m:
+                // Handle singular ToolCallUpdateMessage - track identity based on tool call ID
+                var singularToolCallIdentity = $"tool_call_update_{m.ToolCallId ?? m.Index?.ToString() ?? "unknown"}";
+                CheckAndHandleIdentityChange(singularToolCallIdentity);
+
+                var (singularOrderIdx, singularChunkIdx) = GetCurrentIndices();
+                yield return m with
+                {
+                    MessageOrderIdx = singularOrderIdx,
+                    ChunkIdx = singularChunkIdx,
+                };
+                IncrementChunk();
                 break;
 
             case ToolsCallResultMessage m:

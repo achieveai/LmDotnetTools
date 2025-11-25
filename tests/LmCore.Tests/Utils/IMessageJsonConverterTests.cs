@@ -17,6 +17,10 @@ public class IMessageJsonConverterTests
         options.Converters.Add(new ToolsCallAggregateMessageJsonConverter());
         options.Converters.Add(new TextUpdateMessageJsonConverter());
         options.Converters.Add(new ToolsCallUpdateMessageJsonConverter());
+        // Add singular tool call converters
+        options.Converters.Add(new ToolCallMessageJsonConverter());
+        options.Converters.Add(new ToolCallUpdateMessageJsonConverter());
+        options.Converters.Add(new ToolCallResultMessageJsonConverter());
         return options;
     }
 
@@ -268,5 +272,172 @@ public class IMessageJsonConverterTests
         Assert.NotNull(textMessage.Metadata);
         Assert.True(textMessage.Metadata.ContainsKey("custom"));
         Assert.Equal("value", textMessage.Metadata["custom"]);
+    }
+
+    [Fact]
+    public void RoundTrip_ToolCallMessage_Singular_PreservesAllData()
+    {
+        // Arrange
+        IMessage originalMessage = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = """{"location":"San Francisco"}""",
+            ToolCallId = "call_123",
+            Index = 0,
+            ToolCallIdx = 0,
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = "gen-1",
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        Console.WriteLine($"Serialized ToolCallMessage: {json}");
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        _ = Assert.IsType<ToolCallMessage>(deserializedMessage);
+
+        var toolCallMessage = (ToolCallMessage)deserializedMessage;
+        Assert.Equal("get_weather", toolCallMessage.FunctionName);
+        Assert.Equal("""{"location":"San Francisco"}""", toolCallMessage.FunctionArgs);
+        Assert.Equal("call_123", toolCallMessage.ToolCallId);
+        Assert.Equal(0, toolCallMessage.Index);
+        Assert.Equal(0, toolCallMessage.ToolCallIdx);
+        Assert.Equal(Role.Assistant, toolCallMessage.Role);
+        Assert.Equal("test-agent", toolCallMessage.FromAgent);
+        Assert.Equal("gen-1", toolCallMessage.GenerationId);
+    }
+
+    [Fact]
+    public void RoundTrip_ToolCallUpdateMessage_Singular_PreservesAllData()
+    {
+        // Arrange
+        IMessage originalMessage = new ToolCallUpdateMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = """{"loc""",
+            ToolCallId = "call_123",
+            Index = 0,
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = "gen-1",
+            ChunkIdx = 0,
+            IsUpdate = true,
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        Console.WriteLine($"Serialized ToolCallUpdateMessage: {json}");
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        _ = Assert.IsType<ToolCallUpdateMessage>(deserializedMessage);
+
+        var toolCallUpdateMessage = (ToolCallUpdateMessage)deserializedMessage;
+        Assert.Equal("get_weather", toolCallUpdateMessage.FunctionName);
+        Assert.Equal("""{"loc""", toolCallUpdateMessage.FunctionArgs);
+        Assert.Equal("call_123", toolCallUpdateMessage.ToolCallId);
+        Assert.Equal(0, toolCallUpdateMessage.Index);
+        Assert.Equal(Role.Assistant, toolCallUpdateMessage.Role);
+        Assert.Equal("test-agent", toolCallUpdateMessage.FromAgent);
+        Assert.Equal("gen-1", toolCallUpdateMessage.GenerationId);
+        Assert.True(toolCallUpdateMessage.IsUpdate);
+    }
+
+    [Fact]
+    public void RoundTrip_ToolCallResultMessage_Singular_PreservesAllData()
+    {
+        // Arrange
+        IMessage originalMessage = new ToolCallResultMessage
+        {
+            ToolCallId = "call_123",
+            Result = "Sunny, 72°F",
+            Role = Role.User,
+            FromAgent = "tool-executor",
+            GenerationId = "gen-1",
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        Console.WriteLine($"Serialized ToolCallResultMessage: {json}");
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        _ = Assert.IsType<ToolCallResultMessage>(deserializedMessage);
+
+        var toolCallResultMessage = (ToolCallResultMessage)deserializedMessage;
+        Assert.Equal("call_123", toolCallResultMessage.ToolCallId);
+        Assert.Equal("Sunny, 72°F", toolCallResultMessage.Result);
+        Assert.Equal(Role.User, toolCallResultMessage.Role);
+        Assert.Equal("tool-executor", toolCallResultMessage.FromAgent);
+        Assert.Equal("gen-1", toolCallResultMessage.GenerationId);
+    }
+
+    [Theory]
+    [InlineData("tool_call", typeof(ToolCallMessage))]
+    [InlineData("tool_call_update", typeof(ToolCallUpdateMessage))]
+    [InlineData("tool_call_result", typeof(ToolCallResultMessage))]
+    public void Deserialize_SingularToolCallTypes_WithTypeDiscriminator_ReturnsCorrectType(
+        string typeDiscriminator,
+        Type expectedType
+    )
+    {
+        // Arrange
+        string json;
+        if (expectedType == typeof(ToolCallMessage))
+        {
+            json =
+                $@"{{
+                ""$type"": ""{typeDiscriminator}"",
+                ""function_name"": ""test_function"",
+                ""function_args"": ""{{}}"",
+                ""tool_call_id"": ""call_1"",
+                ""role"": ""assistant""
+            }}";
+        }
+        else if (expectedType == typeof(ToolCallUpdateMessage))
+        {
+            json =
+                $@"{{
+                ""$type"": ""{typeDiscriminator}"",
+                ""function_name"": ""test_function"",
+                ""function_args"": ""{{\""{{}}"",
+                ""tool_call_id"": ""call_1"",
+                ""isUpdate"": true,
+                ""role"": ""assistant""
+            }}";
+        }
+        else
+        {
+            json =
+                $@"{{
+                ""$type"": ""{typeDiscriminator}"",
+                ""tool_call_id"": ""call_1"",
+                ""result"": ""test result"",
+                ""role"": ""user""
+            }}";
+        }
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(message);
+        Assert.IsType(expectedType, message);
     }
 }

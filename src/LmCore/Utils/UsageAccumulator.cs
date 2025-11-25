@@ -11,6 +11,8 @@ public class UsageAccumulator
 {
     private string? _fromAgent;
     private string? _generationId;
+    private string? _threadId;
+    private string? _runId;
     private Role _role = Role.Assistant;
     private ImmutableDictionary<string, object>? _extraMetadata;
     private bool _hasRawUsage = false;
@@ -41,6 +43,8 @@ public class UsageAccumulator
         // Store context for the usage message
         _fromAgent = message.FromAgent;
         _generationId = message.GenerationId;
+        _threadId = message.ThreadId;
+        _runId = message.RunId;
         _role = message.Role;
 
         // Copy any other metadata (except usage)
@@ -68,6 +72,8 @@ public class UsageAccumulator
         // Store context for the usage message
         _fromAgent = usageMessage.FromAgent;
         _generationId = usageMessage.GenerationId;
+        _threadId = usageMessage.ThreadId;
+        _runId = usageMessage.RunId;
         _role = usageMessage.Role;
 
         // Copy any metadata
@@ -93,6 +99,8 @@ public class UsageAccumulator
                 Usage = CurrentUsage,
                 FromAgent = _fromAgent,
                 GenerationId = _generationId,
+                ThreadId = _threadId,
+                RunId = _runId,
                 Role = _role,
                 Metadata = _extraMetadata,
             };
