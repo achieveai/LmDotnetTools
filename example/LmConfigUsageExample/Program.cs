@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using CommandLine;
+using DotNetEnv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,10 @@ internal class Program
 {
     private static async Task<int> Main(string[] args)
     {
+        // Load environment variables from .env file if it exists
+        // Searches current directory and parent directories
+        _ = Env.TraversePath().Load();
+
         return await Parser.Default.ParseArguments<CommandLineOptions>(args)
             .MapResult(
                 async options => await RunWithOptionsAsync(options),
@@ -57,7 +62,7 @@ internal class Program
 
             if (options.RunGrok)
             {
-                var model = options.Model ?? "grok-4.1";
+                var model = options.Model ?? "x-ai/grok-4-fast"; // "openai/gpt-5.1-codex-mini""x-ai/grok-4-fast";
                 Console.WriteLine($"=== Agentic Loop Example with {model} ===\n");
                 await RunAgenticExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
                 return 0;
