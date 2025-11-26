@@ -9,6 +9,14 @@
       "commandName": "Project",
       "commandLineArgs": "--grok -p \"What's the weather in San Francisco and what time is it in PST?\""
     },
+    "Background Agentic Loop": {
+      "commandName": "Project",
+      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 5"
+    },
+    "Background Agentic Loop (verbose)": {
+      "commandName": "Project",
+      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 5 -v"
+    },
     "Custom Model: gpt-4.1": {
       "commandName": "Project",
       "commandLineArgs": "-m gpt-4.1 -p \"Calculate 25 * 4 and then get the weather in New York\" -t 0.5"

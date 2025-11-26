@@ -2,7 +2,13 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
+using ModelContextProtocol.Client;
 using CommandLine;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
@@ -65,6 +71,14 @@ internal class Program
                 var model = options.Model ?? "x-ai/grok-4-fast"; // "openai/gpt-5.1-codex-mini""x-ai/grok-4-fast";
                 Console.WriteLine($"=== Agentic Loop Example with {model} ===\n");
                 await RunAgenticExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            if (options.RunBackground)
+            {
+                var model = options.Model ?? "x-ai/grok-4-fast";
+                Console.WriteLine($"=== Background Agentic Loop Example with {model} ===\n");
+                await RunBackgroundAgenticLoopExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
                 return 0;
             }
 
@@ -737,6 +751,289 @@ internal class Program
         catch (Exception ex)
         {
             Console.WriteLine($"✗ Agentic example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Background Agentic Loop Example
+    /// Demonstrates the background agentic loop with event queues and multiple subscribers
+    /// </summary>
+    private static async Task RunBackgroundAgenticLoopExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
+    {
+        try
+        {
+            var services = new ServiceCollection();
+            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+
+            // Load configuration
+            _ = services.AddLmConfigFromFile("models.json");
+
+            var serviceProvider = services.BuildServiceProvider();
+            var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+            var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+            var logger = serviceProvider.GetRequiredService<ILogger<BackgroundAgenticLoop>>();
+
+            // Resolve the model
+            var resolution = await modelResolver.ResolveProviderAsync(modelId);
+            if (resolution == null)
+            {
+                Console.WriteLine($"✗ Failed to resolve model: {modelId}");
+                return;
+            }
+
+            Console.WriteLine($"✓ Resolved model: {resolution.EffectiveModelName}");
+            Console.WriteLine($"  Provider: {resolution.EffectiveProviderName}");
+            Console.WriteLine($"  Endpoint: {resolution.Connection.EndpointUrl}\n");
+
+            // Create function registry with tools
+            var registry = new FunctionRegistry();
+
+            // Add built-in demo tool
+            _ = registry.AddFunction(
+                new FunctionContract
+                {
+                    Name = "get_weather",
+                    Description = "Get the current weather for a location",
+                    Parameters =
+                    [
+                        new FunctionParameterContract
+                        {
+                            Name = "location",
+                            Description = "The city name",
+                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                            IsRequired = true,
+                        },
+                    ],
+                },
+                async (args) =>
+                {
+                    await Task.Delay(100);
+                    return System.Text.Json.JsonSerializer.Serialize(new { location = args, temperature = 72, condition = "sunny" });
+                },
+                providerName: "Demo"
+            );
+
+            // Load MCP tools from .mcp.json if it exists
+            var mcpConfigPath = ".mcp.json";
+            var mcpLogger = serviceProvider.GetRequiredService<ILogger<McpConfigLoader>>();
+            var mcpProviderLogger = serviceProvider.GetService<ILogger<McpClientFunctionProvider>>();
+            await using var mcpLoader = new McpConfigLoader(mcpLogger);
+
+            if (File.Exists(mcpConfigPath))
+            {
+                Console.WriteLine("Loading MCP tools from .mcp.json...");
+                var mcpClients = await mcpLoader.LoadFromFileAsync(mcpConfigPath);
+
+                if (mcpClients.Count > 0)
+                {
+                    // Collect tool names from all MCP clients for display
+                    var allMcpTools = new List<string>();
+                    foreach (var (serverName, client) in mcpClients)
+                    {
+                        try
+                        {
+                            var tools = await client.ListToolsAsync();
+                            allMcpTools.AddRange(tools.Select(t => $"{serverName}-{t.Name}"));
+                        }
+                        catch
+                        {
+                            // Ignore errors listing tools - they'll be logged by the provider
+                        }
+                    }
+
+                    // Add MCP tools to the function registry
+                    _ = await registry.AddMcpClientsAsync(
+                        new Dictionary<string, IMcpClient>(mcpClients),
+                        providerName: "MCP",
+                        logger: mcpProviderLogger);
+
+                    Console.WriteLine($"✓ Loaded {mcpClients.Count} MCP server(s) with {allMcpTools.Count} tool(s)");
+                    if (allMcpTools.Count > 0)
+                    {
+                        Console.WriteLine($"  MCP tools: [{string.Join(", ", allMcpTools)}]\n");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("  No MCP servers could be started\n");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Note: No .mcp.json found at {mcpConfigPath}, running with built-in tools only\n");
+            }
+
+            // Create the base provider agent (no middleware - BackgroundAgenticLoop owns the stack)
+            var providerAgent = agentFactory.CreateStreamingAgent(resolution);
+
+            // Create the background loop - it builds the full middleware stack internally:
+            // MessageTransformation -> JsonFragmentUpdate -> MessageUpdateJoiner -> ToolCallInjection
+            var threadId = Guid.NewGuid().ToString("N");
+            await using var loop = new BackgroundAgenticLoop(
+                providerAgent,
+                registry,
+                threadId,
+                maxTurnsPerRun: maxTurns,
+                logger: logger);
+
+            using var cts = new CancellationTokenSource();
+
+            // Track run completions for "send and wait" pattern
+            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<bool>>();
+
+            // Start UI subscriber (displays messages)
+            var uiTask = Task.Run(async () =>
+            {
+                Console.WriteLine("[UI Subscriber] Connected\n");
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                {
+                    switch (msg)
+                    {
+                        case RunAssignmentMessage assignment:
+                            Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
+                            Console.WriteLine($"              GenerationId: {assignment.Assignment.GenerationId}");
+                            if (assignment.Assignment.WasInjected)
+                            {
+                                Console.WriteLine($"              (Injected from parent: {assignment.Assignment.ParentRunId})");
+                            }
+                            break;
+                        case RunCompletedMessage completed:
+                            Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
+                            if (completed.WasForked)
+                            {
+                                Console.WriteLine($"                Forked to: {completed.ForkedToRunId}");
+                            }
+                            // Signal completion for any waiters
+                            if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
+                            {
+                                _ = tcs.TrySetResult(true);
+                            }
+                            break;
+                        case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                            Console.Write(textMsg.Text);
+                            break;
+                        case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
+                            Console.Write(textUpdate.Text);
+                            break;
+                        case ToolCallMessage toolCall:
+                            Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
+                            break;
+                        case ToolCallResultMessage toolResult:
+                            Console.WriteLine($"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}...");
+                            break;
+                    }
+                }
+            }, cts.Token);
+
+            // Start persistence subscriber (just logs)
+            var persistTask = Task.Run(async () =>
+            {
+                Console.WriteLine("[Persistence Subscriber] Connected\n");
+                var count = 0;
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                {
+                    if (msg is TextMessage or ToolsCallMessage or ToolsCallResultMessage or RunAssignmentMessage or RunCompletedMessage)
+                    {
+                        count++;
+                        if (verbose)
+                        {
+                            Console.WriteLine($"[Persist] Stored message #{count}: {msg.GetType().Name}");
+                        }
+                    }
+                }
+                Console.WriteLine($"[Persistence] Total messages stored: {count}");
+            }, cts.Token);
+
+            // Start the background loop
+            var loopTask = loop.RunAsync(cts.Token);
+
+            Console.WriteLine("Background loop started. Type messages to send, or 'exit' to quit.\n");
+
+            // Helper to send and optionally wait for completion
+            async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
+            {
+                var assignment = await loop.SendAsync(
+                    [new TextMessage { Text = text, Role = Role.User }],
+                    inputId: inputId);
+
+                if (waitForCompletion && !assignment.WasInjected)
+                {
+                    // Register completion waiter before the run might complete
+                    var completionTcs = new TaskCompletionSource<bool>();
+                    runCompletions[assignment.RunId] = completionTcs;
+
+                    // Wait for run to complete (with timeout)
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
+
+                    try
+                    {
+                        _ = await completionTcs.Task.WaitAsync(linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        Console.WriteLine("\n[Timeout] Run did not complete within 5 minutes");
+                    }
+                }
+
+                return assignment;
+            }
+
+            // Send initial prompt and wait for completion
+            Console.WriteLine($"Sending initial prompt: \"{prompt}\"\n");
+            var assignment1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
+            Console.WriteLine($"[Client] Message assigned to run: {assignment1.RunId}\n");
+
+            // Check if we should go interactive (stdin available) or exit
+            var isInteractive = !Console.IsInputRedirected;
+
+            if (isInteractive)
+            {
+                // Interactive loop
+                while (true)
+                {
+                    Console.Write("\n> ");
+                    var input = Console.ReadLine();
+                    if (string.IsNullOrEmpty(input) || input.Equals("exit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    // Send the message and wait for completion
+                    var assignment = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+
+                    Console.WriteLine($"[Client] Message assigned to run: {assignment.RunId}");
+                    if (assignment.WasInjected)
+                    {
+                        Console.WriteLine($"         (Injected, will fork from: {assignment.ParentRunId})");
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine("\n[Non-interactive mode] Initial prompt completed, exiting.");
+            }
+
+            // Stop the loop
+            Console.WriteLine("\nStopping background loop...");
+            await cts.CancelAsync();
+
+            try
+            {
+                await Task.WhenAll(loopTask, uiTask, persistTask).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+
+            Console.WriteLine("\n✓ Background agentic loop example completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ Background agentic loop example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }

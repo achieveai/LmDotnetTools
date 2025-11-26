@@ -6,14 +6,12 @@
   "configurations": [
     {
       "name": "LmConfig: ClaudeAgentSDK (default)",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "--claude",
-        "-p",
-        "Hello! What MCP tools are available to you?"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "ClaudeAgentSDK (default)",
       "console": "integratedTerminal"
     },
     {
@@ -27,118 +25,133 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "LmConfig: Custom Model (gpt-4.1)",
-      "type": "dotnet",
+      "name": "LmConfig: Background Agentic Loop",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "-m",
-        "gpt-4.1",
-        "-p",
-        "Calculate 25 * 4 and then get the weather in New York",
-        "-t",
-        "0.5"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Background Agentic Loop",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "LmConfig: Background Agentic Loop (verbose)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Background Agentic Loop (verbose)",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "LmConfig: Custom Model (gpt-4.1)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Custom Model: gpt-4.1",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: Custom Model (gemini-2.5-pro)",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "-m",
-        "gemini-2.5-pro",
-        "-p",
-        "Hello! Tell me about yourself."
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Custom Model: gemini-2.5-pro",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: Custom Model (deepseek-r1)",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "-m",
-        "deepseek-r1",
-        "-p",
-        "Solve this step by step: What is 17 * 23?"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Custom Model: deepseek-r1",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "LmConfig: Custom Model (qwen3-235b)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Custom Model: qwen3-235b",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: OpenRouter Cloaked (sherlock-think-alpha)",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "-m",
-        "openrouter/sherlock-think-alpha",
-        "-p",
-        "What can you help me with?"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "OpenRouter Cloaked: sherlock-think-alpha",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: MiniMax Model",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "-m",
-        "minimax/minimax-m2",
-        "-p",
-        "Hello! How are you?"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "MiniMax Model",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: List All Models",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "--list-models"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "List All Models",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: List All Models (verbose)",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "--list-models",
-        "-v"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "List All Models (verbose)",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: List Providers",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "--list-providers"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "List Providers",
       "console": "integratedTerminal"
     },
     {
       "name": "LmConfig: Run All Config Examples",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/LmConfigUsageExample/LmConfigUsageExample.csproj",
-      "args": [
-        "--all"
-      ],
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "Run All Config Examples",
       "console": "integratedTerminal"
     },
     {
       "name": "ExamplePythonMCPClient: Debug",
-      "type": "dotnet",
+      "type": "coreclr",
       "request": "launch",
-      "projectPath": "${workspaceFolder}/example/ExamplePythonMCPClient/ExamplePythonMCPClient.csproj"
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/ExamplePythonMCPClient/bin/Debug/net9.0/ExamplePythonMCPClient.dll",
+      "cwd": "${workspaceFolder}/example/ExamplePythonMCPClient",
+      "console": "integratedTerminal"
     }
   ]
 }

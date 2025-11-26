@@ -20,6 +20,10 @@ public class CommandLineOptions
         HelpText = "Run the OpenAI Grok agentic loop example.")]
     public bool RunGrok { get; set; }
 
+    [Option("background", Required = false, Default = false,
+        HelpText = "Run the background agentic loop example with event queues.")]
+    public bool RunBackground { get; set; }
+
     [Option("claude", Required = false, Default = false,
         HelpText = "Run the ClaudeAgentSDK one-shot example.")]
     public bool RunClaude { get; set; }
