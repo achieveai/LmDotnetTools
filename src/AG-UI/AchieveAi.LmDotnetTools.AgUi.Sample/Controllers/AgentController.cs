@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.AspNetCore.Mvc;
 

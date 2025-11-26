@@ -4,6 +4,7 @@ using System;
 using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Xunit;
 using Xunit.Abstractions;
 

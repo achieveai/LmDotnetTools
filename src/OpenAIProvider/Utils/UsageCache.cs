@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Utils;

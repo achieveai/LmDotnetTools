@@ -8,7 +8,7 @@ public sealed record ResponseFormat
     /// <summary>
     /// Predefined instance for JSON object response format
     /// </summary>
-    public static readonly ResponseFormat JSON = new ResponseFormat();
+    public static readonly ResponseFormat JSON = new();
 
     /// <summary>
     /// The type of response format.

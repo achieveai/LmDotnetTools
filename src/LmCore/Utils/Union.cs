@@ -246,13 +246,13 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
 
     public static implicit operator T4(Union<T1, T2, T3, T4> union) => union.Get<T4>();
 
-    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {

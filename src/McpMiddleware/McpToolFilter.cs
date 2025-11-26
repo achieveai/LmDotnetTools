@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
@@ -72,7 +74,7 @@ public class McpToolFilter
         // Create a temporary descriptor to pass to the generalized filter
         var descriptor = new FunctionDescriptor
         {
-            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = originalToolName },
+            Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = originalToolName },
             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
             ProviderName = serverId,
         };

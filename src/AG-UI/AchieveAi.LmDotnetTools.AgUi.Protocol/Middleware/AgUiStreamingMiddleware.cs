@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;

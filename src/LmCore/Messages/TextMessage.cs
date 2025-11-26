@@ -73,7 +73,7 @@ public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessag
 
 public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage>
 {
-    private readonly StringBuilder _textBuilder = new StringBuilder();
+    private readonly StringBuilder _textBuilder = new();
 
     public string? FromAgent { get; set; }
 

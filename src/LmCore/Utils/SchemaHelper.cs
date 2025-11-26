@@ -1,9 +1,9 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Utils;
-
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+
+namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Helper utilities for working with JSON schema objects

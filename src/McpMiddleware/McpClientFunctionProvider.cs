@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
@@ -165,7 +166,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 var descriptor = new FunctionDescriptor
                 {
-                    Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
+                    Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract
                     {
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
@@ -703,7 +704,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     {
                         var descriptor = new FunctionDescriptor
                         {
-                            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = tool.Name },
+                            Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = tool.Name },
                             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                             ProviderName = serverId,
                         };
@@ -791,7 +792,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 {
                     var descriptor = new FunctionDescriptor
                     {
-                        Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = tool.Name },
+                        Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = tool.Name },
                         Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                         ProviderName = serverId,
                     };

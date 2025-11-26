@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -920,7 +921,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             ],
                         },
                     ]
-                
+
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 

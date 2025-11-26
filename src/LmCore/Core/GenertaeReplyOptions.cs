@@ -1,5 +1,3 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Agents;
-
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -7,6 +5,8 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+
+namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
 /// <summary>
 /// Options for generating a reply.

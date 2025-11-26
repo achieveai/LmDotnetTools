@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing

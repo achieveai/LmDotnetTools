@@ -5,9 +5,13 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -115,7 +119,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             var completedMetrics = metrics.Complete(
                 statusCode: 200,
                 usage: response.Usage != null
-                    ? new AchieveAi.LmDotnetTools.LmCore.Core.Usage
+                    ? new AchieveAi.LmDotnetTools.LmCore.Models.Usage
                     {
                         PromptTokens = response.Usage.InputTokens,
                         CompletionTokens = response.Usage.OutputTokens,

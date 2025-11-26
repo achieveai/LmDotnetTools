@@ -126,7 +126,7 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
     /// <summary>
     /// List to accumulate all JSON fragment updates across all streaming chunks.
     /// </summary>
-    public List<JsonFragmentUpdate> AccumulatedJsonFragments { get; private set; } = new();
+    public List<JsonFragmentUpdate> AccumulatedJsonFragments { get; private set; } = [];
 
     /// <summary>
     /// Adds a streaming update to the builder, accumulating function arguments and metadata.

@@ -3,9 +3,13 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using Microsoft.Extensions.Logging;
@@ -203,7 +207,7 @@ public class OpenClient : BaseHttpService, IOpenClient
             var completedMetrics = metrics.Complete(
                 statusCode: 200,
                 usage: response.Usage != null
-                    ? new AchieveAi.LmDotnetTools.LmCore.Core.Usage
+                    ? new AchieveAi.LmDotnetTools.LmCore.Models.Usage
                     {
                         PromptTokens = response.Usage.PromptTokens,
                         CompletionTokens = response.Usage.CompletionTokens,

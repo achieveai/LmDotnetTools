@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
+using LmModels = AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 
@@ -230,13 +231,13 @@ public class JsonlStreamParser
         string threadId
     )
     {
-        var usage = new Usage
+        var usage = new LmModels.Usage
         {
             PromptTokens = usageInfo.InputTokens,
             CompletionTokens = usageInfo.OutputTokens,
             TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens,
             InputTokenDetails = usageInfo.CacheReadInputTokens > 0 || usageInfo.CacheCreationInputTokens > 0
-                ? new InputTokenDetails
+                ? new LmModels.InputTokenDetails
                 {
                     CachedTokens = usageInfo.CacheReadInputTokens ?? 0
                 }

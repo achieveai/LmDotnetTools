@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Agents;
+namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
 /// <summary>
 /// Represents a contract for a function parameter, defining its name, type, and other metadata.

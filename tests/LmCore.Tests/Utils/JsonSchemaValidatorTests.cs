@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
+using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Utils;
 
 public class JsonSchemaValidatorTests

@@ -3,6 +3,7 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests;
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 public class ThinkingTests
