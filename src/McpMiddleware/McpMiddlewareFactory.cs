@@ -181,18 +181,93 @@ public class McpMiddlewareFactory
     /// <returns>The created transport</returns>
     private static IClientTransport CreateTransportFromJsonElement(string clientId, JsonElement jsonElement)
     {
-        string? command = null;
-        string[]? arguments = null;
+        // Check transport type - default to stdio if command is present, otherwise http
+        var transportType = GetStringProperty(jsonElement, "type", "Type") ?? "stdio";
 
-        // Try to extract command from various possible property names
-        if (jsonElement.TryGetProperty("command", out var commandElement))
+        // Check for HTTP transport indicators
+        var url = GetStringProperty(jsonElement, "url", "Url", "endpoint", "Endpoint");
+        if (!string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
+            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase))
         {
-            command = commandElement.GetString();
+            return CreateHttpTransportFromJsonElement(clientId, jsonElement, url);
         }
-        else if (jsonElement.TryGetProperty("Command", out commandElement))
+
+        // Default to stdio transport
+        return CreateStdioTransportFromJsonElement(clientId, jsonElement);
+    }
+
+    /// <summary>
+    /// Creates an HTTP/SSE transport from JSON configuration
+    /// </summary>
+    private static IClientTransport CreateHttpTransportFromJsonElement(
+        string clientId,
+        JsonElement jsonElement,
+        string? url)
+    {
+        if (string.IsNullOrEmpty(url))
         {
-            command = commandElement.GetString();
+            throw new InvalidOperationException(
+                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
         }
+
+        var options = new SseClientTransportOptions
+        {
+            Name = clientId,
+            Endpoint = new Uri(url),
+        };
+
+        // Extract headers if present
+        if (jsonElement.TryGetProperty("headers", out var headersElement)
+            && headersElement.ValueKind == JsonValueKind.Object)
+        {
+            var headers = new Dictionary<string, string>();
+            foreach (var prop in headersElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    headers[prop.Name] = prop.Value.GetString() ?? string.Empty;
+                }
+            }
+            if (headers.Count > 0)
+            {
+                options.AdditionalHeaders = headers;
+            }
+        }
+        else if (jsonElement.TryGetProperty("Headers", out headersElement)
+            && headersElement.ValueKind == JsonValueKind.Object)
+        {
+            var headers = new Dictionary<string, string>();
+            foreach (var prop in headersElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    headers[prop.Name] = prop.Value.GetString() ?? string.Empty;
+                }
+            }
+            if (headers.Count > 0)
+            {
+                options.AdditionalHeaders = headers;
+            }
+        }
+
+        // Check for timeout
+        if (jsonElement.TryGetProperty("timeout", out var timeoutElement)
+            && timeoutElement.TryGetInt32(out var timeoutSeconds))
+        {
+            options.ConnectionTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+        }
+
+        return new SseClientTransport(options);
+    }
+
+    /// <summary>
+    /// Creates a stdio transport from JSON configuration
+    /// </summary>
+    private static IClientTransport CreateStdioTransportFromJsonElement(string clientId, JsonElement jsonElement)
+    {
+        string? command = GetStringProperty(jsonElement, "command", "Command");
+        string[]? arguments = null;
+        Dictionary<string, string?>? environmentVariables = null;
 
         // Try to extract arguments
         if (
@@ -212,6 +287,32 @@ public class McpMiddlewareFactory
         else if (jsonElement.TryGetProperty("args", out argsElement) && argsElement.ValueKind == JsonValueKind.Array)
         {
             arguments = [.. argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty)];
+        }
+
+        // Extract environment variables
+        if (jsonElement.TryGetProperty("env", out var envElement)
+            && envElement.ValueKind == JsonValueKind.Object)
+        {
+            environmentVariables = [];
+            foreach (var prop in envElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    environmentVariables[prop.Name] = prop.Value.GetString();
+                }
+            }
+        }
+        else if (jsonElement.TryGetProperty("Env", out envElement)
+            && envElement.ValueKind == JsonValueKind.Object)
+        {
+            environmentVariables = [];
+            foreach (var prop in envElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    environmentVariables[prop.Name] = prop.Value.GetString();
+                }
+            }
         }
 
         // If no command found, try to parse from a single command string that might include arguments
@@ -237,17 +338,39 @@ public class McpMiddlewareFactory
             }
         }
 
-        return string.IsNullOrEmpty(command)
-            ? throw new InvalidOperationException($"No command found in configuration for client '{clientId}'")
-            : (IClientTransport)
-                new StdioClientTransport(
-                    new StdioClientTransportOptions
-                    {
-                        Name = clientId,
-                        Command = command,
-                        Arguments = arguments ?? [],
-                    }
-                );
+        if (string.IsNullOrEmpty(command))
+        {
+            throw new InvalidOperationException($"No command found in configuration for client '{clientId}'");
+        }
+
+        var options = new StdioClientTransportOptions
+        {
+            Name = clientId,
+            Command = command,
+            Arguments = arguments ?? [],
+        };
+
+        if (environmentVariables != null && environmentVariables.Count > 0)
+        {
+            options.EnvironmentVariables = environmentVariables;
+        }
+
+        return new StdioClientTransport(options);
+    }
+
+    /// <summary>
+    /// Helper to get a string property from JsonElement with multiple possible names
+    /// </summary>
+    private static string? GetStringProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var name in propertyNames)
+        {
+            if (element.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String)
+            {
+                return prop.GetString();
+            }
+        }
+        return null;
     }
 
     /// <summary>
@@ -261,18 +384,66 @@ public class McpMiddlewareFactory
         Dictionary<string, object> configDict
     )
     {
-        string? command = null;
-        string[]? arguments = null;
+        // Check transport type
+        var transportType = GetDictStringValue(configDict, "type", "Type") ?? "stdio";
 
-        // Try to extract command
-        if (configDict.TryGetValue("command", out var commandObj) && commandObj is string commandStr)
+        // Check for HTTP transport indicators
+        var url = GetDictStringValue(configDict, "url", "Url", "endpoint", "Endpoint");
+        if (!string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
+            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase))
         {
-            command = commandStr;
+            return CreateHttpTransportFromDictionary(clientId, configDict, url);
         }
-        else if (configDict.TryGetValue("Command", out commandObj) && commandObj is string commandStr2)
+
+        return CreateStdioTransportFromDictionary(clientId, configDict);
+    }
+
+    /// <summary>
+    /// Creates an HTTP/SSE transport from dictionary configuration
+    /// </summary>
+    private static IClientTransport CreateHttpTransportFromDictionary(
+        string clientId,
+        Dictionary<string, object> configDict,
+        string? url)
+    {
+        if (string.IsNullOrEmpty(url))
         {
-            command = commandStr2;
+            throw new InvalidOperationException(
+                $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
         }
+
+        var options = new SseClientTransportOptions
+        {
+            Name = clientId,
+            Endpoint = new Uri(url),
+        };
+
+        // Extract headers if present
+        var headers = GetDictDictionaryValue(configDict, "headers", "Headers");
+        if (headers != null && headers.Count > 0)
+        {
+            options.AdditionalHeaders = headers;
+        }
+
+        // Check for timeout
+        if (configDict.TryGetValue("timeout", out var timeoutObj) && timeoutObj is int timeoutSeconds)
+        {
+            options.ConnectionTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+        }
+
+        return new SseClientTransport(options);
+    }
+
+    /// <summary>
+    /// Creates a stdio transport from dictionary configuration
+    /// </summary>
+    private static IClientTransport CreateStdioTransportFromDictionary(
+        string clientId,
+        Dictionary<string, object> configDict)
+    {
+        string? command = GetDictStringValue(configDict, "command", "Command");
+        string[]? arguments = null;
+        Dictionary<string, string?>? environmentVariables = null;
 
         // Try to extract arguments
         if (configDict.TryGetValue("arguments", out var argsObj))
@@ -288,17 +459,84 @@ public class McpMiddlewareFactory
             arguments = ExtractArgumentsFromObject(argsObj);
         }
 
-        return string.IsNullOrEmpty(command)
-            ? throw new InvalidOperationException($"No command found in configuration for client '{clientId}'")
-            : (IClientTransport)
-                new StdioClientTransport(
-                    new StdioClientTransportOptions
+        // Extract environment variables
+        environmentVariables = GetDictDictionaryValue(configDict, "env", "Env");
+
+        if (string.IsNullOrEmpty(command))
+        {
+            throw new InvalidOperationException($"No command found in configuration for client '{clientId}'");
+        }
+
+        var options = new StdioClientTransportOptions
+        {
+            Name = clientId,
+            Command = command,
+            Arguments = arguments ?? [],
+        };
+
+        if (environmentVariables != null && environmentVariables.Count > 0)
+        {
+            options.EnvironmentVariables = environmentVariables;
+        }
+
+        return new StdioClientTransport(options);
+    }
+
+    /// <summary>
+    /// Helper to get a string value from dictionary with multiple possible keys
+    /// </summary>
+    private static string? GetDictStringValue(Dictionary<string, object> dict, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (dict.TryGetValue(key, out var value) && value is string strValue)
+            {
+                return strValue;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Helper to get a dictionary value from dictionary with multiple possible keys
+    /// </summary>
+    private static Dictionary<string, string?>? GetDictDictionaryValue(
+        Dictionary<string, object> dict,
+        params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (dict.TryGetValue(key, out var value))
+            {
+                if (value is Dictionary<string, string> stringDict)
+                {
+                    // Convert to nullable value dictionary
+                    var result = new Dictionary<string, string?>();
+                    foreach (var kvp in stringDict)
                     {
-                        Name = clientId,
-                        Command = command,
-                        Arguments = arguments ?? [],
+                        result[kvp.Key] = kvp.Value;
                     }
-                );
+                    return result;
+                }
+                if (value is Dictionary<string, object> objDict)
+                {
+                    var result = new Dictionary<string, string?>();
+                    foreach (var kvp in objDict)
+                    {
+                        if (kvp.Value is string strVal)
+                        {
+                            result[kvp.Key] = strVal;
+                        }
+                        else
+                        {
+                            result[kvp.Key] = kvp.Value?.ToString();
+                        }
+                    }
+                    return result;
+                }
+            }
+        }
+        return null;
     }
 
     /// <summary>
