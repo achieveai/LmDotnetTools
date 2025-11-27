@@ -868,6 +868,13 @@ internal class Program
             // Create the base provider agent (no middleware - BackgroundAgenticLoop owns the stack)
             var providerAgent = agentFactory.CreateStreamingAgent(resolution);
 
+            // Create default options with resolved model configuration
+            var defaultOptions = new GenerateReplyOptions
+            {
+                ModelId = resolution.EffectiveModelName,
+                Temperature = temperature,
+            };
+
             // Create the background loop - it builds the full middleware stack internally:
             // MessageTransformation -> JsonFragmentUpdate -> MessageUpdateJoiner -> ToolCallInjection
             var threadId = Guid.NewGuid().ToString("N");
@@ -875,6 +882,7 @@ internal class Program
                 providerAgent,
                 registry,
                 threadId,
+                defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
                 logger: logger);
 

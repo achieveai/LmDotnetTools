@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
@@ -422,7 +423,8 @@ public class McpMiddlewareFactory
         var headers = GetDictDictionaryValue(configDict, "headers", "Headers");
         if (headers != null && headers.Count > 0)
         {
-            options.AdditionalHeaders = headers;
+            options.AdditionalHeaders = headers.Where(kvp => kvp.Value != null)
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value!);
         }
 
         // Check for timeout

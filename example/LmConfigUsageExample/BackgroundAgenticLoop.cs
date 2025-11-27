@@ -155,6 +155,7 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
     private readonly IDictionary<string, Func<string, Task<string>>> _toolHandlers;
     private readonly string _threadId;
     private readonly int _maxTurnsPerRun;
+    private readonly GenerateReplyOptions _defaultOptions;
     private readonly ILogger<BackgroundAgenticLoop> _logger;
 
     #endregion
@@ -230,6 +231,7 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
     /// <param name="providerAgent">The base provider streaming agent (without middleware - the loop builds the stack)</param>
     /// <param name="functionRegistry">The function registry containing tool definitions and handlers</param>
     /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template (ModelId, Temperature, MaxThinkingTokens, etc.)</param>
     /// <param name="maxTurnsPerRun">Maximum turns per run before stopping (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
@@ -238,6 +240,7 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
         string threadId,
+        GenerateReplyOptions? defaultOptions = null,
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
@@ -252,6 +255,7 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         _threadId = threadId;
         _maxTurnsPerRun = maxTurnsPerRun;
         _outputChannelCapacity = outputChannelCapacity;
+        _defaultOptions = defaultOptions ?? new GenerateReplyOptions();
 
         // Build tool call components from registry
         var (toolCallMiddleware, handlers) = functionRegistry.BuildToolCallComponents(name: "BackgroundLoopTools");
@@ -346,6 +350,70 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         _logger.LogDebug("Message queued for processing. InputId: {InputId}", inputId);
 
         return await tcs.Task;
+    }
+
+    /// <summary>
+    /// Execute a single run synchronously (foreground-style).
+    /// Sends the user input, subscribes to messages, and yields all messages for this run until completion.
+    /// This provides a simpler API for cases where you don't need the full background loop capabilities.
+    /// </summary>
+    /// <param name="userInput">The user input containing messages to process</param>
+    /// <param name="ct">Cancellation token</param>
+    /// <returns>AsyncEnumerable of all messages produced during this run</returns>
+    public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
+        UserInput userInput,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(userInput);
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        // Subscribe first to ensure we don't miss any messages
+        var subscriberId = Guid.NewGuid().ToString("N");
+        var outputChannel = Channel.CreateBounded<IMessage>(new BoundedChannelOptions(_outputChannelCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true,
+        });
+
+        if (!_outputSubscribers.TryAdd(subscriberId, outputChannel))
+        {
+            throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
+        }
+
+        try
+        {
+            // Send the input and get the run assignment
+            var assignment = await SendAsync(userInput.Messages, userInput.InputId, userInput.ParentRunId, ct);
+            var targetRunId = assignment.RunId;
+
+            _logger.LogDebug("ExecuteRun started for RunId: {RunId}", targetRunId);
+
+            // Yield messages until run completes
+            await foreach (var msg in outputChannel.Reader.ReadAllAsync(ct))
+            {
+                // Filter to only messages for this run (or null RunId for backwards compatibility)
+                if (msg.RunId == targetRunId || msg.RunId == null)
+                {
+                    yield return msg;
+
+                    // Check for run completion
+                    if (msg is RunCompletedMessage completed && completed.CompletedRunId == targetRunId)
+                    {
+                        _logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
+                        yield break;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            // Clean up subscriber
+            if (_outputSubscribers.TryRemove(subscriberId, out var channel))
+            {
+                channel.Writer.TryComplete();
+            }
+        }
     }
 
     #endregion
@@ -597,9 +665,6 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
             // Execute agentic turns
             var wasForked = await ExecuteAgenticLoopAsync(runId, generationId, ct);
 
-            // Update latest run
-            _latestRunId = runId;
-
             // Publish completion
             string? forkedToRunId = null;
             if (wasForked && _pendingInjections.TryPeek(out var pending))
@@ -636,6 +701,7 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         {
             lock (_stateLock)
             {
+                _latestRunId = runId;
                 _currentRunId = null;
             }
         }
@@ -687,7 +753,8 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         int turnNumber,
         CancellationToken ct)
     {
-        var options = new GenerateReplyOptions
+        // Use defaultOptions as template, override run-specific fields
+        var options = _defaultOptions with
         {
             RunId = runId,
             ThreadId = _threadId,
@@ -700,11 +767,8 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
 
         await foreach (var msg in stream.WithCancellation(ct))
         {
-            // Add to history
+            // Add to history (messages already published by MessagePublishingMiddleware)
             _conversationHistory.Add(msg);
-
-            // Publish to all subscribers
-            await PublishToAllAsync(msg, ct);
 
             // Handle tool calls
             if (msg is ToolCallMessage toolCall)
@@ -781,12 +845,26 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
         {
             if (!_toolHandlers.TryGetValue(toolCall.FunctionName, out var handler))
             {
-                // Unknown function is a programming error (function not registered) or LLM hallucination
-                // Throw to make it clear this is unexpected - the LLM should only call known functions
-                throw new InvalidOperationException(
-                    $"No handler registered for function '{toolCall.FunctionName}'. " +
-                    $"ToolCallId: {toolCall.ToolCallId}. " +
-                    $"Available functions: [{string.Join(", ", _toolHandlers.Keys)}]");
+                // Unknown function - likely LLM hallucination, return error to allow self-correction
+                _logger.LogWarning(
+                    "No handler registered for function '{FunctionName}'. Returning error to LLM. " +
+                    "ToolCallId: {ToolCallId}. Available functions: [{AvailableFunctions}]",
+                    toolCall.FunctionName,
+                    toolCall.ToolCallId,
+                    string.Join(", ", _toolHandlers.Keys));
+
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCall.ToolCallId,
+                    Result = JsonSerializer.Serialize(new
+                    {
+                        error = $"Unknown function: {toolCall.FunctionName}",
+                        available_functions = _toolHandlers.Keys.ToArray(),
+                    }),
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
             }
 
             var result = await handler(functionArgs);
@@ -798,11 +876,6 @@ public sealed class BackgroundAgenticLoop : IAsyncDisposable
                 FromAgent = toolCall.FromAgent,
                 GenerationId = toolCall.GenerationId,
             };
-        }
-        catch (InvalidOperationException)
-        {
-            // Re-throw validation/registration errors as-is
-            throw;
         }
         catch (Exception ex)
         {
