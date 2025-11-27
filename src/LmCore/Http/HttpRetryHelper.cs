@@ -211,6 +211,6 @@ public static class HttpRetryHelper
     /// <returns>The delay for this attempt</returns>
     private static TimeSpan CalculateDelay(int attempt)
     {
-        return TimeSpan.FromSeconds(Math.Pow(2, attempt));
+        return TimeSpan.FromSeconds(Math.Pow(2, attempt + 3));
     }
 }
