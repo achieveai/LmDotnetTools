@@ -6,18 +6,18 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for memory operations with business logic and validation.
+///     Service for memory operations with business logic and validation.
 /// </summary>
 public class MemoryService : IMemoryService
 {
-    private readonly IMemoryRepository _memoryRepository;
-    private readonly IGraphMemoryService _graphMemoryService;
-    private readonly IEmbeddingManager _embeddingManager;
     private readonly IDocumentSegmentationService? _documentSegmentationService;
-    private readonly ILogger<MemoryService> _logger;
-    private readonly MemoryOptions _options;
-    private readonly LLMOptions _llmOptions;
+    private readonly IEmbeddingManager _embeddingManager;
     private readonly EmbeddingOptions _embeddingOptions;
+    private readonly IGraphMemoryService _graphMemoryService;
+    private readonly LLMOptions _llmOptions;
+    private readonly ILogger<MemoryService> _logger;
+    private readonly IMemoryRepository _memoryRepository;
+    private readonly MemoryOptions _options;
 
     public MemoryService(
         IMemoryRepository memoryRepository,
@@ -28,6 +28,7 @@ public class MemoryService : IMemoryService
         IDocumentSegmentationService? documentSegmentationService = null
     )
     {
+        ArgumentNullException.ThrowIfNull(options);
         _memoryRepository = memoryRepository;
         _graphMemoryService = graphMemoryService;
         _embeddingManager = embeddingManager;
@@ -39,7 +40,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Adds a new memory from content.
+    ///     Adds a new memory from content.
     /// </summary>
     public async Task<Memory> AddMemoryAsync(
         string content,
@@ -139,6 +140,7 @@ public class MemoryService : IMemoryService
                 // Don't throw - memory was successfully saved, graph processing is supplementary
             }
         }
+
         // Process document segmentation if enabled and service is available
         if (_documentSegmentationService != null)
         {
@@ -209,7 +211,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Searches memories using text query.
+    ///     Searches memories using text query.
     /// </summary>
     public async Task<List<Memory>> SearchMemoriesAsync(
         string query,
@@ -314,7 +316,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Gets all memories for a session.
+    ///     Gets all memories for a session.
     /// </summary>
     public async Task<List<Memory>> GetAllMemoriesAsync(
         SessionContext sessionContext,
@@ -345,7 +347,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Updates an existing memory.
+    ///     Updates an existing memory.
     /// </summary>
     public async Task<Memory?> UpdateMemoryAsync(
         int id,
@@ -467,7 +469,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Deletes a memory by ID.
+    ///     Deletes a memory by ID.
     /// </summary>
     public async Task<bool> DeleteMemoryAsync(
         int id,
@@ -496,7 +498,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Deletes all memories for a session.
+    ///     Deletes all memories for a session.
     /// </summary>
     public async Task<int> DeleteAllMemoriesAsync(
         SessionContext sessionContext,
@@ -512,7 +514,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Gets memory statistics for a session.
+    ///     Gets memory statistics for a session.
     /// </summary>
     public async Task<MemoryStats> GetMemoryStatsAsync(
         SessionContext sessionContext,
@@ -533,7 +535,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Gets memory history for a specific memory ID.
+    ///     Gets memory history for a specific memory ID.
     /// </summary>
     public async Task<List<MemoryHistoryEntry>> GetMemoryHistoryAsync(
         int id,
@@ -556,7 +558,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Gets all agents for a specific user.
+    ///     Gets all agents for a specific user.
     /// </summary>
     public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
@@ -575,7 +577,7 @@ public class MemoryService : IMemoryService
     }
 
     /// <summary>
-    /// Gets all run IDs for a specific user and agent.
+    ///     Gets all run IDs for a specific user and agent.
     /// </summary>
     public async Task<List<string>> GetRunsAsync(
         string userId,

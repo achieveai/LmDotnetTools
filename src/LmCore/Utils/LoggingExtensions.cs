@@ -3,14 +3,14 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Extension methods for common logging patterns in the LmDotnetTools library.
+///     Extension methods for common logging patterns in the LmDotnetTools library.
 /// </summary>
 public static class LoggingExtensions
 {
     #region LLM Operation Logging Extensions
 
     /// <summary>
-    /// Logs the initiation of an LLM request with structured parameters.
+    ///     Logs the initiation of an LLM request with structured parameters.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="modelId">The model ID being used.</param>
@@ -36,7 +36,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the completion of an LLM request with structured parameters.
+    ///     Logs the completion of an LLM request with structured parameters.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="completionId">The completion ID.</param>
@@ -68,7 +68,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the failure of an LLM request with structured parameters.
+    ///     Logs the failure of an LLM request with structured parameters.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>
@@ -94,7 +94,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the initiation of streaming with structured parameters.
+    ///     Logs the initiation of streaming with structured parameters.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="modelId">The model ID being used.</param>
@@ -112,7 +112,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the completion of streaming with structured parameters.
+    ///     Logs the completion of streaming with structured parameters.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="completionId">The completion ID.</param>
@@ -139,7 +139,7 @@ public static class LoggingExtensions
     #region Function Call Logging Extensions
 
     /// <summary>
-    /// Logs the successful execution of a function call.
+    ///     Logs the successful execution of a function call.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="functionName">The name of the function executed.</param>
@@ -162,7 +162,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the failure of a function call execution.
+    ///     Logs the failure of a function call execution.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>
@@ -185,7 +185,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the processing of function arguments.
+    ///     Logs the processing of function arguments.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="functionName">The name of the function.</param>
@@ -208,7 +208,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs the transformation of function call results.
+    ///     Logs the transformation of function call results.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="functionName">The name of the function.</param>
@@ -231,7 +231,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs MCP tool execution.
+    ///     Logs MCP tool execution.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="toolName">The name of the MCP tool.</param>
@@ -257,7 +257,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs MCP tool execution failure.
+    ///     Logs MCP tool execution failure.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>
@@ -284,7 +284,7 @@ public static class LoggingExtensions
     #region Performance Metrics Logging Extensions
 
     /// <summary>
-    /// Logs streaming performance metrics.
+    ///     Logs streaming performance metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="completionId">The completion ID.</param>
@@ -310,7 +310,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs token processing metrics.
+    ///     Logs token processing metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="promptTokens">The number of prompt tokens.</param>
@@ -336,7 +336,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs operation latency metrics.
+    ///     Logs operation latency metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the operation.</param>
@@ -361,7 +361,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs API response time metrics.
+    ///     Logs API response time metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="provider">The API provider name.</param>
@@ -387,7 +387,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs cache performance metrics.
+    ///     Logs cache performance metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="cacheType">The type of cache (e.g., "usage", "agent").</param>
@@ -413,7 +413,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs memory usage metrics.
+    ///     Logs memory usage metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="component">The component name.</param>
@@ -435,7 +435,7 @@ public static class LoggingExtensions
     #region Middleware Logging Extensions
 
     /// <summary>
-    /// Logs middleware processing initiation.
+    ///     Logs middleware processing initiation.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="middlewareName">The name of the middleware.</param>
@@ -451,7 +451,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs middleware processing completion.
+    ///     Logs middleware processing completion.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="middlewareName">The name of the middleware.</param>
@@ -474,7 +474,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs middleware processing failure.
+    ///     Logs middleware processing failure.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>
@@ -490,7 +490,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs usage data enrichment with the specific format required.
+    ///     Logs usage data enrichment with the specific format required.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="completionId">The completion ID.</param>
@@ -526,7 +526,7 @@ public static class LoggingExtensions
     #region Provider and Agent Logging Extensions
 
     /// <summary>
-    /// Logs model resolution results.
+    ///     Logs model resolution results.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="modelId">The requested model ID.</param>
@@ -552,7 +552,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs agent delegation decisions.
+    ///     Logs agent delegation decisions.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="agentType">The type of agent being delegated to.</param>
@@ -570,7 +570,7 @@ public static class LoggingExtensions
     }
 
     /// <summary>
-    /// Logs provider resolution failures.
+    ///     Logs provider resolution failures.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>

@@ -6,14 +6,14 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Factory for creating JsonSerializerOptions with LmCore converters.
-/// Provides base configurations that can be extended by other projects.
+///     Factory for creating JsonSerializerOptions with LmCore converters.
+///     Provides base configurations that can be extended by other projects.
 /// </summary>
 public static class JsonSerializerOptionsFactory
 {
     /// <summary>
-    /// Creates JsonSerializerOptions with all LmCore-native converters registered.
-    /// This includes IMessage converters, ImmutableDictionary support, and LmCore-specific converters.
+    ///     Creates JsonSerializerOptions with all LmCore-native converters registered.
+    ///     This includes IMessage converters, ImmutableDictionary support, and LmCore-specific converters.
     /// </summary>
     /// <param name="writeIndented">Whether to format JSON with indentation</param>
     /// <param name="namingPolicy">JSON property naming policy</param>
@@ -45,12 +45,14 @@ public static class JsonSerializerOptionsFactory
     }
 
     /// <summary>
-    /// Adds all LmCore-native converters to the provided JsonSerializerOptions.
-    /// This method can be used by other projects to extend their own configurations.
+    ///     Adds all LmCore-native converters to the provided JsonSerializerOptions.
+    ///     This method can be used by other projects to extend their own configurations.
     /// </summary>
     /// <param name="options">The JsonSerializerOptions to add converters to</param>
     public static void AddLmCoreConverters(JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         // IMessage polymorphic converters
         options.Converters.Add(new IMessageJsonConverter());
         options.Converters.Add(new TextMessageJsonConverter());
@@ -79,26 +81,26 @@ public static class JsonSerializerOptionsFactory
     }
 
     /// <summary>
-    /// Creates JsonSerializerOptions optimized for production use.
-    /// Uses compact formatting and standard settings.
+    ///     Creates JsonSerializerOptions optimized for production use.
+    ///     Uses compact formatting and standard settings.
     /// </summary>
     public static JsonSerializerOptions CreateForProduction()
     {
-        return CreateBase(writeIndented: false);
+        return CreateBase(false);
     }
 
     /// <summary>
-    /// Creates JsonSerializerOptions optimized for testing and debugging.
-    /// Uses indented formatting for better readability.
+    ///     Creates JsonSerializerOptions optimized for testing and debugging.
+    ///     Uses indented formatting for better readability.
     /// </summary>
     public static JsonSerializerOptions CreateForTesting()
     {
-        return CreateBase(writeIndented: true);
+        return CreateBase(true);
     }
 
     /// <summary>
-    /// Creates JsonSerializerOptions with case-insensitive property matching.
-    /// Useful for scenarios where JSON property casing might vary.
+    ///     Creates JsonSerializerOptions with case-insensitive property matching.
+    ///     Useful for scenarios where JSON property casing might vary.
     /// </summary>
     public static JsonSerializerOptions CreateCaseInsensitive()
     {
@@ -106,8 +108,8 @@ public static class JsonSerializerOptionsFactory
     }
 
     /// <summary>
-    /// Creates JsonSerializerOptions with camelCase property naming.
-    /// Commonly used for web APIs and JavaScript interop.
+    ///     Creates JsonSerializerOptions with camelCase property naming.
+    ///     Commonly used for web APIs and JavaScript interop.
     /// </summary>
     public static JsonSerializerOptions CreateWithCamelCase()
     {
@@ -115,8 +117,8 @@ public static class JsonSerializerOptionsFactory
     }
 
     /// <summary>
-    /// Creates JsonSerializerOptions with snake_case property naming.
-    /// Commonly used for Python APIs and some REST services.
+    ///     Creates JsonSerializerOptions with snake_case property naming.
+    ///     Commonly used for Python APIs and some REST services.
     /// </summary>
     public static JsonSerializerOptions CreateWithSnakeCase()
     {
@@ -124,8 +126,8 @@ public static class JsonSerializerOptionsFactory
     }
 
     /// <summary>
-    /// Creates minimal JsonSerializerOptions with only basic settings.
-    /// No LmCore converters are registered - useful for simple scenarios.
+    ///     Creates minimal JsonSerializerOptions with only basic settings.
+    ///     No LmCore converters are registered - useful for simple scenarios.
     /// </summary>
     public static JsonSerializerOptions CreateMinimal(bool writeIndented = false, JsonNamingPolicy? namingPolicy = null)
     {

@@ -6,13 +6,13 @@ using Moq;
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// Tests for RetryPolicyService implementation.
-/// Validates AC-3.1, AC-3.2, AC-3.3, and AC-3.4 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests for RetryPolicyService implementation.
+///     Validates AC-3.1, AC-3.2, AC-3.3, and AC-3.4 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public class RetryPolicyServiceTests
 {
-    private readonly Mock<ILogger<RetryPolicyService>> _mockLogger;
     private readonly RetryConfiguration _configuration;
+    private readonly Mock<ILogger<RetryPolicyService>> _mockLogger;
     private readonly RetryPolicyService _service;
 
     public RetryPolicyServiceTests()
@@ -28,6 +28,20 @@ public class RetryPolicyServiceTests
         };
         _service = new RetryPolicyService(_configuration, _mockLogger.Object);
     }
+
+    /// <summary>
+    ///     Test data for retry behavior with different error types.
+    ///     Validates AC-3.1 retry count logic for different scenarios.
+    /// </summary>
+    public static IEnumerable<object[]> RetryBehaviorTestCases =>
+        [
+            [new HttpRequestException("503 Service Unavailable"), true, "Service unavailable should be retried"],
+            [new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should be retried"],
+            [new HttpRequestException("401 Unauthorized"), false, "Authentication errors should not be retried"],
+            [new HttpRequestException("400 Bad Request"), false, "Bad request should not be retried"],
+            [new TaskCanceledException("Timeout"), true, "Timeout should be retried"],
+            [new ArgumentException("Invalid argument"), true, "Generic errors should be retried by default"],
+        ];
 
     [Fact]
     public async Task ExecuteAsync_WithSuccessfulOperation_ShouldReturnResult()
@@ -56,7 +70,9 @@ public class RetryPolicyServiceTests
             () =>
             {
                 attempts++;
-                return attempts < 3 ? throw new HttpRequestException("503 Service Unavailable") : Task.FromResult(expectedResult);
+                return attempts < 3
+                    ? throw new HttpRequestException("503 Service Unavailable")
+                    : Task.FromResult(expectedResult);
             },
             operationName
         );
@@ -175,36 +191,6 @@ public class RetryPolicyServiceTests
         );
     }
 
-    /// <summary>
-    /// Test data for retry behavior with different error types.
-    /// Validates AC-3.1 retry count logic for different scenarios.
-    /// </summary>
-    public static IEnumerable<object[]> RetryBehaviorTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new HttpRequestException("503 Service Unavailable"),
-                true,
-                "Service unavailable should be retried",
-            },
-            new object[] { new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should be retried" },
-            new object[]
-            {
-                new HttpRequestException("401 Unauthorized"),
-                false,
-                "Authentication errors should not be retried",
-            },
-            new object[] { new HttpRequestException("400 Bad Request"), false, "Bad request should not be retried" },
-            new object[] { new TaskCanceledException("Timeout"), true, "Timeout should be retried" },
-            new object[]
-            {
-                new ArgumentException("Invalid argument"),
-                true,
-                "Generic errors should be retried by default",
-            },
-        };
-
     [Theory]
     [MemberData(nameof(RetryBehaviorTestCases))]
     public void ShouldRetry_WithDifferentErrorTypes_ShouldBehaveCorrectly(
@@ -293,10 +279,12 @@ public class RetryPolicyServiceTests
 
         Assert.All(
             delays,
-            delay => Assert.True(
+            delay =>
+                Assert.True(
                     delay >= expectedMin && delay <= expectedMax,
                     $"Delay {delay}ms should be between {expectedMin}ms and {expectedMax}ms"
-                ));
+                )
+        );
     }
 
     [Fact]
@@ -311,7 +299,9 @@ public class RetryPolicyServiceTests
             () =>
             {
                 attempts++;
-                return attempts < 2 ? throw new HttpRequestException("503 Service Unavailable") : Task.FromResult("success");
+                return attempts < 2
+                    ? throw new HttpRequestException("503 Service Unavailable")
+                    : Task.FromResult("success");
             },
             operationName
         );

@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Serialization;
 
 /// <summary>
-/// JSON converter that serializes enum values to lowercase strings
+///     JSON converter that serializes enum values to lowercase strings
 /// </summary>
 /// <typeparam name="TEnum">The enum type to convert</typeparam>
 public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum>
@@ -19,7 +19,7 @@ public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum>
         }
 
         // Try case-insensitive parse to be flexible on input
-        return Enum.TryParse<TEnum>(value, ignoreCase: true, out var result)
+        return Enum.TryParse<TEnum>(value, true, out var result)
             ? result
             : throw new JsonException($"Cannot convert '{value}' to {typeof(TEnum).Name}");
     }

@@ -1,15 +1,13 @@
-namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
-
-using System.Collections.Generic;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
+
 /// <summary>
-/// Tests for validating that ChatCompletionRequest is serialized correctly.
+///     Tests for validating that ChatCompletionRequest is serialized correctly.
 /// </summary>
 public class ChatCompletionRequestSerializationTests
 {
@@ -28,28 +26,20 @@ public class ChatCompletionRequestSerializationTests
 
         var messages = new List<ChatMessage>
         {
-            new ChatMessage
+            new()
             {
                 Role = RoleEnum.System,
                 Content = new Union<string, Union<TextContent, ImageContent>[]>("You are a helpful assistant."),
             },
-            new ChatMessage
-            {
-                Role = RoleEnum.User,
-                Content = new Union<string, Union<TextContent, ImageContent>[]>("Hello!"),
-            },
+            new() { Role = RoleEnum.User, Content = new Union<string, Union<TextContent, ImageContent>[]>("Hello!") },
         };
 
         var request = new ChatCompletionRequest(
             "gpt-4",
             messages,
-            temperature: 0.7,
-            maxTokens: 1000,
-            additionalParameters: new Dictionary<string, object>
-            {
-                ["frequency_penalty"] = 0.5,
-                ["custom_parameter"] = "custom_value",
-            }
+            0.7,
+            1000,
+            new Dictionary<string, object> { ["frequency_penalty"] = 0.5, ["custom_parameter"] = "custom_value" }
         )
         {
             FrequencyPenalty = 0.5, // Set this property directly so it's not null

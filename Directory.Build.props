@@ -31,6 +31,10 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Suppress warnings that don't align with project conventions -->
+    <NoWarn>$(NoWarn);IDE0130;IDE0330</NoWarn>
+    <!-- IDE0130: Namespace does not match folder structure (intentional naming convention) -->
+    <!-- IDE0330: Prefer readonly span (uses .NET 9 Lock type, incompatible with .NET 8) -->
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>

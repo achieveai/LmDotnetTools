@@ -1,46 +1,49 @@
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Interface for classes that provide HTTP responses in the mock system
+///     Interface for classes that provide HTTP responses in the mock system
 /// </summary>
 public interface IResponseProvider
 {
     /// <summary>
-    /// Determines if this provider can handle the given request
+    ///     Determines if this provider can handle the given request
     /// </summary>
     bool CanHandle(HttpRequestMessage request, int requestIndex);
 
     /// <summary>
-    /// Creates an HTTP response for the given request
+    ///     Creates an HTTP response for the given request
     /// </summary>
     Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex);
 }
 
 /// <summary>
-/// Interface for classes that process requests (for capture, validation, etc.)
+///     Interface for classes that process requests (for capture, validation, etc.)
 /// </summary>
 public interface IRequestProcessor
 {
     /// <summary>
-    /// Processes a request before response generation
+    ///     Processes a request before response generation
     /// </summary>
     Task ProcessRequestAsync(HttpRequestMessage request, int requestIndex);
 }
 
 /// <summary>
-/// Interface for HTTP handler middleware that can process requests in a chain
+///     Interface for HTTP handler middleware that can process requests in a chain
 /// </summary>
 public interface IHttpHandlerMiddleware
 {
     /// <summary>
-    /// Handles the HTTP request, optionally calling the next middleware in the chain
+    ///     Handles the HTTP request, optionally calling the next middleware in the chain
     /// </summary>
     /// <param name="request">The HTTP request</param>
     /// <param name="requestIndex">The index of this request in the sequence</param>
@@ -54,7 +57,7 @@ public interface IHttpHandlerMiddleware
 }
 
 /// <summary>
-/// Adapter that converts IResponseProvider to IHttpHandlerMiddleware
+///     Adapter that converts IResponseProvider to IHttpHandlerMiddleware
 /// </summary>
 internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
 {
@@ -89,7 +92,7 @@ internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
 }
 
 /// <summary>
-/// Adapter that converts IRequestProcessor to IHttpHandlerMiddleware
+///     Adapter that converts IRequestProcessor to IHttpHandlerMiddleware
 /// </summary>
 internal class RequestProcessorMiddleware : IHttpHandlerMiddleware
 {
@@ -112,7 +115,7 @@ internal class RequestProcessorMiddleware : IHttpHandlerMiddleware
 }
 
 /// <summary>
-/// Adapter that converts RequestCaptureBase to IHttpHandlerMiddleware
+///     Adapter that converts RequestCaptureBase to IHttpHandlerMiddleware
 /// </summary>
 internal class RequestCaptureMiddleware : IHttpHandlerMiddleware
 {
@@ -135,13 +138,13 @@ internal class RequestCaptureMiddleware : IHttpHandlerMiddleware
 }
 
 /// <summary>
-/// Middleware that forwards requests to a real HTTP handler
+///     Middleware that forwards requests to a real HTTP handler
 /// </summary>
 internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
 {
-    private readonly HttpClient _httpClient;
-    private readonly string _baseUrl;
     private readonly string _apiKey;
+    private readonly string _baseUrl;
+    private readonly HttpClient _httpClient;
     private readonly Action<RecordedInteraction>? _onNewInteraction;
     private bool _disposed;
 
@@ -155,6 +158,15 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
         _apiKey = apiKey;
         _onNewInteraction = onNewInteraction;
         _httpClient = new HttpClient();
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _httpClient.Dispose();
+        }
     }
 
     public async Task<HttpResponseMessage?> HandleAsync(
@@ -174,10 +186,7 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
             var forwardRequest = await CloneRequestAsync(request);
 
             // Set authentication
-            forwardRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                "Bearer",
-                _apiKey
-            );
+            forwardRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
             // Forward to real API
             var response = await _httpClient.SendAsync(forwardRequest, HttpCompletionOption.ResponseHeadersRead);
@@ -261,26 +270,14 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            _httpClient.Dispose();
-        }
+        return request.IsAnthropicRequest() ? "Anthropic"
+            : request.IsOpenAIRequest() ? "OpenAI"
+            : "OpenAI";
     }
 }
 
 /// <summary>
-/// Middleware that supports delegate functions
+///     Middleware that supports delegate functions
 /// </summary>
 internal class DelegateMiddleware : IHttpHandlerMiddleware
 {
@@ -309,12 +306,12 @@ internal class DelegateMiddleware : IHttpHandlerMiddleware
 }
 
 /// <summary>
-/// Extensions for request matching and analysis
+///     Extensions for request matching and analysis
 /// </summary>
 public static class RequestExtensions
 {
     /// <summary>
-    /// Checks if this is the first request (index 0)
+    ///     Checks if this is the first request (index 0)
     /// </summary>
     public static bool IsFirstMessage(this HttpRequestMessage request, int requestIndex)
     {
@@ -322,7 +319,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if this is the second request (index 1)
+    ///     Checks if this is the second request (index 1)
     /// </summary>
     public static bool IsSecondMessage(this HttpRequestMessage request, int requestIndex)
     {
@@ -330,7 +327,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if this is the nth request (index n-1)
+    ///     Checks if this is the nth request (index n-1)
     /// </summary>
     public static bool IsNthMessage(this HttpRequestMessage request, int requestIndex, int n)
     {
@@ -338,7 +335,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if the request contains tool results
+    ///     Checks if the request contains tool results
     /// </summary>
     public static bool HasToolResults(this HttpRequestMessage request)
     {
@@ -394,7 +391,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if the request contains a specific text in any message content
+    ///     Checks if the request contains a specific text in any message content
     /// </summary>
     public static bool ContainsText(this HttpRequestMessage request, string text)
     {
@@ -415,7 +412,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if the request has a specific role in messages
+    ///     Checks if the request has a specific role in messages
     /// </summary>
     public static bool HasRole(this HttpRequestMessage request, string role)
     {
@@ -458,7 +455,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Gets the count of messages in the request
+    ///     Gets the count of messages in the request
     /// </summary>
     public static int GetMessageCount(this HttpRequestMessage request)
     {
@@ -478,7 +475,8 @@ public static class RequestExtensions
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
 
-            return root.TryGetProperty("messages", out var messagesElement)
+            return
+                root.TryGetProperty("messages", out var messagesElement)
                 && messagesElement.ValueKind == JsonValueKind.Array
                 ? messagesElement.GetArrayLength()
                 : 0;
@@ -490,7 +488,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if the request mentions a specific tool name
+    ///     Checks if the request mentions a specific tool name
     /// </summary>
     public static bool MentionsTool(this HttpRequestMessage request, string toolName)
     {
@@ -511,7 +509,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if this is an Anthropic API request
+    ///     Checks if this is an Anthropic API request
     /// </summary>
     public static bool IsAnthropicRequest(this HttpRequestMessage request)
     {
@@ -520,7 +518,7 @@ public static class RequestExtensions
     }
 
     /// <summary>
-    /// Checks if this is an OpenAI API request
+    ///     Checks if this is an OpenAI API request
     /// </summary>
     public static bool IsOpenAIRequest(this HttpRequestMessage request)
     {
@@ -530,7 +528,7 @@ public static class RequestExtensions
 }
 
 /// <summary>
-/// Multi-conditional response provider for complex scenarios
+///     Multi-conditional response provider for complex scenarios
 /// </summary>
 internal class MultiConditionalResponseProvider : IResponseProvider
 {
@@ -538,16 +536,12 @@ internal class MultiConditionalResponseProvider : IResponseProvider
         Func<HttpRequestMessage, int, bool> condition,
         IResponseProvider provider
     )> _conditionalProviders = [];
+
     private readonly IResponseProvider? _defaultProvider;
 
     public MultiConditionalResponseProvider(IResponseProvider? defaultProvider = null)
     {
         _defaultProvider = defaultProvider;
-    }
-
-    public void AddCondition(Func<HttpRequestMessage, int, bool> condition, IResponseProvider provider)
-    {
-        _conditionalProviders.Add((condition, provider));
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -593,16 +587,21 @@ internal class MultiConditionalResponseProvider : IResponseProvider
         };
         return Task.FromResult(errorResponse);
     }
+
+    public void AddCondition(Func<HttpRequestMessage, int, bool> condition, IResponseProvider provider)
+    {
+        _conditionalProviders.Add((condition, provider));
+    }
 }
 
 /// <summary>
-/// State management for tracking conversation state across requests
+///     State management for tracking conversation state across requests
 /// </summary>
 public class ConversationState
 {
     private readonly Dictionary<string, object> _state = [];
-    private int _requestCount = 0;
     private int _currentRequestIndex = -1;
+    private int _requestCount;
 
     public int RequestCount => _requestCount;
 
@@ -617,7 +616,7 @@ public class ConversationState
     }
 
     /// <summary>
-    /// Ensures request count is incremented only once per request index
+    ///     Ensures request count is incremented only once per request index
     /// </summary>
     public void EnsureRequestCounted(int requestIndex)
     {
@@ -658,13 +657,13 @@ public class ConversationState
 }
 
 /// <summary>
-/// Stateful response provider that tracks conversation state
+///     Stateful response provider that tracks conversation state
 /// </summary>
 internal class StatefulResponseProvider : IResponseProvider
 {
-    private readonly ConversationState _state;
     private readonly Func<HttpRequestMessage, int, ConversationState, bool> _condition;
     private readonly IResponseProvider _innerProvider;
+    private readonly ConversationState _state;
 
     public StatefulResponseProvider(
         ConversationState state,
@@ -691,14 +690,14 @@ internal class StatefulResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Simple JSON response provider
+///     Simple JSON response provider
 /// </summary>
 internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
 {
-    private readonly string _jsonResponse;
-    private readonly HttpStatusCode _statusCode;
     private readonly byte[] _cachedContentBytes;
-    private readonly object _lock = new object();
+    private readonly string _jsonResponse;
+    private readonly object _lock = new();
+    private readonly HttpStatusCode _statusCode;
     private bool _disposed;
 
     public SimpleJsonResponseProvider(string jsonResponse, HttpStatusCode statusCode = HttpStatusCode.OK)
@@ -707,6 +706,14 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
         _statusCode = statusCode;
         // Pre-encode the JSON content bytes once during construction
         _cachedContentBytes = Encoding.UTF8.GetBytes(_jsonResponse);
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+        }
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -730,24 +737,16 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
-/// Error response provider for testing error scenarios
+///     Error response provider for testing error scenarios
 /// </summary>
 internal class ErrorResponseProvider : IResponseProvider, IDisposable
 {
-    private readonly HttpStatusCode _statusCode;
-    private readonly string? _errorMessage;
     private readonly byte[]? _cachedContentBytes;
+    private readonly string? _errorMessage;
+    private readonly HttpStatusCode _statusCode;
     private bool _disposed;
 
     public ErrorResponseProvider(HttpStatusCode statusCode, string? errorMessage = null)
@@ -759,6 +758,14 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
         if (!string.IsNullOrEmpty(_errorMessage))
         {
             _cachedContentBytes = Encoding.UTF8.GetBytes(_errorMessage);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
         }
     }
 
@@ -785,25 +792,17 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
-/// Provider for Anthropic-specific error response formats
+///     Provider for Anthropic-specific error response formats
 /// </summary>
 internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
 {
-    private readonly HttpStatusCode _statusCode;
-    private readonly string _errorType;
-    private readonly string _errorMessage;
     private readonly byte[] _cachedContentBytes;
+    private readonly string _errorMessage;
+    private readonly string _errorType;
+    private readonly HttpStatusCode _statusCode;
     private bool _disposed;
 
     public AnthropicErrorResponseProvider(HttpStatusCode statusCode, string errorType, string errorMessage)
@@ -817,6 +816,14 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
 
         var jsonContent = JsonSerializer.Serialize(errorResponse);
         _cachedContentBytes = Encoding.UTF8.GetBytes(jsonContent);
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+        }
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -838,27 +845,19 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
-/// Provider for OpenAI-specific error response formats
+///     Provider for OpenAI-specific error response formats
 /// </summary>
 internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
 {
-    private readonly HttpStatusCode _statusCode;
-    private readonly string _errorType;
-    private readonly string _errorMessage;
-    private readonly string? _param;
-    private readonly string? _code;
     private readonly byte[] _cachedContentBytes;
+    private readonly string? _code;
+    private readonly string _errorMessage;
+    private readonly string _errorType;
+    private readonly string? _param;
+    private readonly HttpStatusCode _statusCode;
     private bool _disposed;
 
     public OpenAIErrorResponseProvider(
@@ -891,6 +890,14 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
         _cachedContentBytes = Encoding.UTF8.GetBytes(jsonContent);
     }
 
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+        }
+    }
+
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
     {
         return true;
@@ -910,24 +917,16 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
-/// Provider for status code sequence testing (useful for retry scenarios)
+///     Provider for status code sequence testing (useful for retry scenarios)
 /// </summary>
 internal class StatusCodeSequenceResponseProvider : IResponseProvider
 {
-    private readonly HttpStatusCode[] _statusCodes;
     private readonly string? _finalSuccessMessage;
-    private int _requestCount = 0;
+    private readonly HttpStatusCode[] _statusCodes;
+    private int _requestCount;
 
     public StatusCodeSequenceResponseProvider(HttpStatusCode[] statusCodes, string? finalSuccessMessage = null)
     {
@@ -980,12 +979,12 @@ internal class StatusCodeSequenceResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Provider for rate limiting error responses with Retry-After header
+///     Provider for rate limiting error responses with Retry-After header
 /// </summary>
 internal class RateLimitErrorResponseProvider : IResponseProvider
 {
-    private readonly int _retryAfterSeconds;
     private readonly string _providerType;
+    private readonly int _retryAfterSeconds;
 
     public RateLimitErrorResponseProvider(int retryAfterSeconds, string providerType = "generic")
     {
@@ -1046,7 +1045,7 @@ internal class RateLimitErrorResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Provider for authentication error responses
+///     Provider for authentication error responses
 /// </summary>
 internal class AuthenticationErrorResponseProvider : IResponseProvider
 {
@@ -1098,7 +1097,7 @@ internal class AuthenticationErrorResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Provider for timeout simulation
+///     Provider for timeout simulation
 /// </summary>
 internal class TimeoutResponseProvider : IResponseProvider
 {
@@ -1131,17 +1130,16 @@ internal class TimeoutResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Streaming file response provider (placeholder for WI-MM004)
+///     Streaming file response provider (placeholder for WI-MM004)
 /// </summary>
 internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
 {
-    private readonly string _filePath;
-    private string? _cachedFileContent;
-    private readonly int _streamingDelayMs;
-    private bool _disposed;
-
     // Static cache for file contents to avoid repeated disk reads
     private static readonly ConcurrentDictionary<string, string> _fileContentCache = new();
+    private readonly string _filePath;
+    private readonly int _streamingDelayMs;
+    private string? _cachedFileContent;
+    private bool _disposed;
 
     public StreamingFileResponseProvider(string filePath, int streamingDelayMs = 5)
     {
@@ -1152,6 +1150,15 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
         if (File.Exists(_filePath))
         {
             _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, File.ReadAllText);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _cachedFileContent = null;
         }
     }
 
@@ -1191,25 +1198,16 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            _cachedFileContent = null;
-        }
-    }
 }
 
 /// <summary>
-/// Retry scenario response provider for testing retry logic
+///     Retry scenario response provider for testing retry logic
 /// </summary>
 internal class RetryScenarioResponseProvider : IResponseProvider
 {
     private readonly int _failureCount;
     private readonly HttpStatusCode _failureStatus;
-    private int _requestCount = 0;
+    private int _requestCount;
 
     public RetryScenarioResponseProvider(int failureCount, HttpStatusCode failureStatus)
     {
@@ -1242,13 +1240,13 @@ internal class RetryScenarioResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Streaming sequence response provider (placeholder for WI-MM004)
+///     Streaming sequence response provider (placeholder for WI-MM004)
 /// </summary>
 internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposable
 {
+    private readonly byte[] _cachedContentBytes;
     private readonly object _sequence;
     private readonly int _streamingDelayMs;
-    private readonly byte[] _cachedContentBytes;
     private bool _disposed;
 
     public StreamingSequenceResponseProvider(object sequence, int streamingDelayMs = 5)
@@ -1259,6 +1257,14 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         // Pre-serialize the sequence to JSON and cache the bytes
         var json = JsonSerializer.Serialize(_sequence);
         _cachedContentBytes = Encoding.UTF8.GetBytes(json);
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+        }
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -1298,7 +1304,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         try
         {
             // If the sequence is an array or enumerable, convert each item to an SSE event
-            if (sequence is System.Collections.IEnumerable enumerable and not string)
+            if (sequence is IEnumerable enumerable and not string)
             {
                 foreach (var item in enumerable)
                 {
@@ -1329,21 +1335,13 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         return sseBuilder.ToString();
     }
 
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
-
     /// <summary>
-    /// A memory stream wrapper that adds configurable delays to simulate streaming
+    ///     A memory stream wrapper that adds configurable delays to simulate streaming
     /// </summary>
     private class StreamingMemoryStream : Stream
     {
-        private readonly MemoryStream _innerStream;
         private readonly int _delayMs;
+        private readonly MemoryStream _innerStream;
         private bool _disposed;
 
         public StreamingMemoryStream(MemoryStream innerStream, int delayMs)
@@ -1356,6 +1354,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => _innerStream.Length;
+
         public override long Position
         {
             get => _innerStream.Position;
@@ -1385,7 +1384,9 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            return _disposed ? throw new ObjectDisposedException(nameof(StreamingMemoryStream)) : _innerStream.Read(buffer, offset, count);
+            return _disposed
+                ? throw new ObjectDisposedException(nameof(StreamingMemoryStream))
+                : _innerStream.Read(buffer, offset, count);
         }
 
         public override void Flush() { }
@@ -1415,13 +1416,14 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
                     _innerStream.Dispose();
                 }
             }
+
             base.Dispose(disposing);
         }
     }
 }
 
 /// <summary>
-/// Tool result response provider for handling tool result conversations
+///     Tool result response provider for handling tool result conversations
 /// </summary>
 internal class ToolResultResponseProvider : IResponseProvider
 {
@@ -1473,7 +1475,7 @@ internal class ToolResultResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Conditional response provider that wraps another provider with a condition
+///     Conditional response provider that wraps another provider with a condition
 /// </summary>
 internal class ConditionalResponseProvider : IResponseProvider
 {
@@ -1498,7 +1500,7 @@ internal class ConditionalResponseProvider : IResponseProvider
 }
 
 /// <summary>
-/// Builder for streaming sequences (placeholder for WI-MM004)
+///     Builder for streaming sequences (placeholder for WI-MM004)
 /// </summary>
 public class StreamingSequenceBuilder
 {
@@ -1510,12 +1512,12 @@ public class StreamingSequenceBuilder
 }
 
 /// <summary>
-/// Enhanced conditional builder for multi-conditional scenarios
+///     Enhanced conditional builder for multi-conditional scenarios
 /// </summary>
 public class EnhancedConditionalBuilder
 {
-    private readonly MockHttpHandlerBuilder _parent;
     private readonly MultiConditionalResponseProvider _multiProvider;
+    private readonly MockHttpHandlerBuilder _parent;
     private readonly ConversationState? _state;
 
     public EnhancedConditionalBuilder(MockHttpHandlerBuilder parent, ConversationState? state = null)
@@ -1526,7 +1528,7 @@ public class EnhancedConditionalBuilder
     }
 
     /// <summary>
-    /// Add a condition with response - supports multiple conditions
+    ///     Add a condition with response - supports multiple conditions
     /// </summary>
     public EnhancedConditionalBuilder When(Func<HttpRequestMessage, int, bool> condition, string jsonResponse)
     {
@@ -1536,7 +1538,7 @@ public class EnhancedConditionalBuilder
     }
 
     /// <summary>
-    /// Add a condition with Anthropic message response
+    ///     Add a condition with Anthropic message response
     /// </summary>
     public EnhancedConditionalBuilder WhenAnthropicMessage(
         Func<HttpRequestMessage, int, bool> condition,
@@ -1551,7 +1553,7 @@ public class EnhancedConditionalBuilder
             type = "message",
             id = "msg_" + Guid.NewGuid().ToString("N")[..8],
             role = "assistant",
-            model = model,
+            model,
             stop_reason = "end_turn",
             content = new object[] { new { type = "text", text = content } },
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
@@ -1564,7 +1566,7 @@ public class EnhancedConditionalBuilder
     }
 
     /// <summary>
-    /// Add a stateful condition that has access to conversation state
+    ///     Add a stateful condition that has access to conversation state
     /// </summary>
     public EnhancedConditionalBuilder WhenStateful(
         Func<HttpRequestMessage, int, ConversationState, bool> condition,
@@ -1583,7 +1585,7 @@ public class EnhancedConditionalBuilder
     }
 
     /// <summary>
-    /// Set default response when no conditions match
+    ///     Set default response when no conditions match
     /// </summary>
     public MockHttpHandlerBuilder Otherwise(string jsonResponse)
     {
@@ -1593,7 +1595,7 @@ public class EnhancedConditionalBuilder
         // Copy existing conditions via reflection
         var field = typeof(MultiConditionalResponseProvider).GetField(
             "_conditionalProviders",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            BindingFlags.NonPublic | BindingFlags.Instance
         );
         if (
             field?.GetValue(_multiProvider) is List<(Func<HttpRequestMessage, int, bool>, IResponseProvider)> conditions
@@ -1610,7 +1612,7 @@ public class EnhancedConditionalBuilder
     }
 
     /// <summary>
-    /// Finish building and return to parent builder
+    ///     Finish building and return to parent builder
     /// </summary>
     public HttpMessageHandler Build()
     {
@@ -1620,12 +1622,12 @@ public class EnhancedConditionalBuilder
 }
 
 /// <summary>
-/// Builder for conditional responses
+///     Builder for conditional responses
 /// </summary>
 public class ConditionalBuilder
 {
-    private readonly MockHttpHandlerBuilder _parent;
     private readonly Func<HttpRequestMessage, bool> _condition;
+    private readonly MockHttpHandlerBuilder _parent;
 
     public ConditionalBuilder(MockHttpHandlerBuilder parent, Func<HttpRequestMessage, bool> condition)
     {
@@ -1654,7 +1656,7 @@ public class ConditionalBuilder
             id = "msg_" + Guid.NewGuid().ToString("N")[..8],
             role = "assistant",
             content = new[] { new { type = "text", text = content } },
-            model = model,
+            model,
             stop_reason = "end_turn",
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
@@ -1700,7 +1702,7 @@ public class ConditionalBuilder
 }
 
 /// <summary>
-/// Builder for sequential responses (placeholder for WI-MM005)
+///     Builder for sequential responses (placeholder for WI-MM005)
 /// </summary>
 public class SequentialBuilder
 {
@@ -1721,16 +1723,25 @@ public class SequentialBuilder
 }
 
 /// <summary>
-/// The actual HttpMessageHandler that processes requests using configured middleware
+///     The actual HttpMessageHandler that processes requests using configured middleware
 /// </summary>
 internal class MockHttpHandler : HttpMessageHandler, IDisposable
 {
     private readonly Func<HttpRequestMessage, int, Task<HttpResponseMessage?>> _middlewarePipeline;
-    private int _requestIndex = 0;
+    private int _requestIndex;
 
     public MockHttpHandler(IEnumerable<IHttpHandlerMiddleware> middlewares)
     {
         _middlewarePipeline = BuildPipeline(middlewares);
+    }
+
+    public new void Dispose()
+    {
+        // Dispose any middleware that implement IDisposable
+        // Note: We can't access the middleware list here, but they should be disposed by their owners
+
+        // Call base dispose
+        base.Dispose();
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -1742,11 +1753,10 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
 
         var response = await _middlewarePipeline(request, requestIndex);
 
-        return response == null
-            ? throw new InvalidOperationException(
+        return response
+            ?? throw new InvalidOperationException(
                 $"No middleware handled request #{requestIndex} to {request.RequestUri}"
-            )
-            : response;
+            );
     }
 
     private static Func<HttpRequestMessage, int, Task<HttpResponseMessage?>> BuildPipeline(
@@ -1772,43 +1782,43 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
             return next != null ? await next() : null;
         };
     }
-
-    public new void Dispose()
-    {
-        // Dispose any middleware that implement IDisposable
-        // Note: We can't access the middleware list here, but they should be disposed by their owners
-
-        // Call base dispose
-        base.Dispose();
-    }
 }
 
 /// <summary>
-/// Fluent builder for creating sophisticated HTTP message handlers for testing
-/// Provides a unified, powerful API for HTTP mocking
+///     Fluent builder for creating sophisticated HTTP message handlers for testing
+///     Provides a unified, powerful API for HTTP mocking
 /// </summary>
 public class MockHttpHandlerBuilder
 {
     private readonly List<IHttpHandlerMiddleware> _middlewares = [];
-    private string? _recordPlaybackPath;
-    private bool _allowAdditionalRequests = false;
-    private string? _forwardToBaseUrl;
+    private bool _allowAdditionalRequests;
     private string? _forwardToApiKey;
+    private string? _forwardToBaseUrl;
+    private string? _recordPlaybackPath;
 
     private MockHttpHandlerBuilder() { }
 
     /// <summary>
-    /// Creates a new builder instance
+    ///     Creates a new builder instance
     /// </summary>
     public static MockHttpHandlerBuilder Create()
     {
-        return new();
+        return new MockHttpHandlerBuilder();
     }
+
+    #region Internal Helper Methods
+
+    internal void AddResponseProvider(IResponseProvider provider)
+    {
+        _middlewares.Add(new ResponseProviderMiddleware(provider));
+    }
+
+    #endregion
 
     #region Request Handling
 
     /// <summary>
-    /// Captures requests for detailed inspection
+    ///     Captures requests for detailed inspection
     /// </summary>
     /// <param name="capture">Output parameter that receives the capture object</param>
     public MockHttpHandlerBuilder CaptureRequests(out RequestCapture capture)
@@ -1819,7 +1829,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Captures requests with type safety for inspection and returns the builder for chaining
+    ///     Captures requests with type safety for inspection and returns the builder for chaining
     /// </summary>
     public MockHttpHandlerBuilder CaptureRequests<TRequest, TResponse>(out RequestCapture<TRequest, TResponse> capture)
         where TRequest : class
@@ -1831,7 +1841,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Enables record/playback functionality
+    ///     Enables record/playback functionality
     /// </summary>
     /// <param name="filePath">Path to test data file</param>
     /// <param name="allowAdditional">Allow additional requests beyond recorded ones</param>
@@ -1843,7 +1853,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Configure API forwarding for unmatched requests in record/playback mode
+    ///     Configure API forwarding for unmatched requests in record/playback mode
     /// </summary>
     /// <param name="baseUrl">Base URL for the real API</param>
     /// <param name="apiKey">API key for authentication</param>
@@ -1855,7 +1865,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Allows collecting additional requests when predefined ones are exhausted
+    ///     Allows collecting additional requests when predefined ones are exhausted
     /// </summary>
     public MockHttpHandlerBuilder AllowAdditionalRequests()
     {
@@ -1868,7 +1878,7 @@ public class MockHttpHandlerBuilder
     #region Simple Response Methods
 
     /// <summary>
-    /// Responds with a simple JSON response
+    ///     Responds with a simple JSON response
     /// </summary>
     public MockHttpHandlerBuilder RespondWithJson(string jsonResponse, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
@@ -1878,7 +1888,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with JSON, automatically detecting arrays and converting them to SSE format
+    ///     Responds with JSON, automatically detecting arrays and converting them to SSE format
     /// </summary>
     public MockHttpHandlerBuilder RespondWithJsonOrSSE(
         string jsonResponse,
@@ -1921,7 +1931,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an Anthropic-formatted message
+    ///     Responds with an Anthropic-formatted message
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAnthropicMessage(
         string content = "Hello! How can I help you?",
@@ -1946,7 +1956,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an OpenAI-formatted chat completion
+    ///     Responds with an OpenAI-formatted chat completion
     /// </summary>
     public MockHttpHandlerBuilder RespondWithOpenAIMessage(
         string content = "Hello! How can I help you?",
@@ -1960,13 +1970,13 @@ public class MockHttpHandlerBuilder
             id = "chatcmpl_test" + Guid.NewGuid().ToString("N")[..8],
             @object = "chat.completion",
             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
+            model,
             choices = new[]
             {
                 new
                 {
                     index = 0,
-                    message = new { role = "assistant", content = content },
+                    message = new { role = "assistant", content },
                     finish_reason = "stop",
                 },
             },
@@ -1987,7 +1997,7 @@ public class MockHttpHandlerBuilder
     #region Tool Response Methods
 
     /// <summary>
-    /// Responds with tool use
+    ///     Responds with tool use
     /// </summary>
     public MockHttpHandlerBuilder RespondWithToolUse(string toolName, object inputData)
     {
@@ -1995,7 +2005,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with tool use with custom text
+    ///     Responds with tool use with custom text
     /// </summary>
     public MockHttpHandlerBuilder RespondWithToolUse(string toolName, object inputData, string textContent)
     {
@@ -2025,7 +2035,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with multiple tool uses in a single response
+    ///     Responds with multiple tool uses in a single response
     /// </summary>
     public MockHttpHandlerBuilder RespondWithMultipleToolUse(params (string toolName, object inputData)[] toolCalls)
     {
@@ -2063,7 +2073,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a tool use based on Anthropic's Python MCP pattern
+    ///     Responds with a tool use based on Anthropic's Python MCP pattern
     /// </summary>
     public MockHttpHandlerBuilder RespondWithPythonMcpTool(string baseName, object inputData)
     {
@@ -2075,7 +2085,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Detects tool result messages and responds appropriately
+    ///     Detects tool result messages and responds appropriately
     /// </summary>
     public MockHttpHandlerBuilder RespondToToolResults(
         string finalResponse = "Based on the tool results, here's what I found."
@@ -2087,7 +2097,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Creates a conditional response based on whether the request contains tool results
+    ///     Creates a conditional response based on whether the request contains tool results
     /// </summary>
     public MockHttpHandlerBuilder WhenToolResults(string responseText)
     {
@@ -2095,7 +2105,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Creates a conditional response based on whether the request is a first tool request
+    ///     Creates a conditional response based on whether the request is a first tool request
     /// </summary>
     public MockHttpHandlerBuilder WhenFirstToolRequest(string toolName, object inputData)
     {
@@ -2144,7 +2154,7 @@ public class MockHttpHandlerBuilder
     #region Streaming Methods
 
     /// <summary>
-    /// Responds with streaming data from a file
+    ///     Responds with streaming data from a file
     /// </summary>
     public MockHttpHandlerBuilder RespondWithStreamingFile(string filePath)
     {
@@ -2154,7 +2164,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a programmatically built streaming sequence
+    ///     Responds with a programmatically built streaming sequence
     /// </summary>
     public MockHttpHandlerBuilder RespondWithStreamingSequence(
         Func<StreamingSequenceBuilder, StreamingSequenceBuilder> sequenceBuilder
@@ -2168,7 +2178,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an array of items as Server-Sent Events
+    ///     Responds with an array of items as Server-Sent Events
     /// </summary>
     public MockHttpHandlerBuilder RespondWithSSEArray<T>(IEnumerable<T> items)
     {
@@ -2178,7 +2188,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an array of JSON objects as Server-Sent Events
+    ///     Responds with an array of JSON objects as Server-Sent Events
     /// </summary>
     public MockHttpHandlerBuilder RespondWithSSEArray(params object[] items)
     {
@@ -2188,7 +2198,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a single object as a Server-Sent Event
+    ///     Responds with a single object as a Server-Sent Event
     /// </summary>
     public MockHttpHandlerBuilder RespondWithSSE(object item)
     {
@@ -2202,7 +2212,7 @@ public class MockHttpHandlerBuilder
     #region Error and Retry Methods
 
     /// <summary>
-    /// Simulates retry scenarios with eventual success
+    ///     Simulates retry scenarios with eventual success
     /// </summary>
     public MockHttpHandlerBuilder RetryScenario(
         int failureCount,
@@ -2215,7 +2225,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a specific HTTP status code and optional error message
+    ///     Responds with a specific HTTP status code and optional error message
     /// </summary>
     public MockHttpHandlerBuilder RespondWithError(HttpStatusCode statusCode, string? errorMessage = null)
     {
@@ -2225,7 +2235,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an Anthropic-specific error response
+    ///     Responds with an Anthropic-specific error response
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAnthropicError(
         HttpStatusCode statusCode,
@@ -2239,7 +2249,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a common Anthropic rate limit error
+    ///     Responds with a common Anthropic rate limit error
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAnthropicRateLimit(string errorMessage = "Rate limit exceeded")
     {
@@ -2247,7 +2257,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a common Anthropic authentication error
+    ///     Responds with a common Anthropic authentication error
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAnthropicAuthError(string errorMessage = "Invalid API key")
     {
@@ -2255,7 +2265,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an OpenAI-specific error response
+    ///     Responds with an OpenAI-specific error response
     /// </summary>
     public MockHttpHandlerBuilder RespondWithOpenAIError(
         HttpStatusCode statusCode,
@@ -2271,7 +2281,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a common OpenAI rate limit error
+    ///     Responds with a common OpenAI rate limit error
     /// </summary>
     public MockHttpHandlerBuilder RespondWithOpenAIRateLimit(string errorMessage = "Rate limit exceeded")
     {
@@ -2279,7 +2289,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a common OpenAI authentication error
+    ///     Responds with a common OpenAI authentication error
     /// </summary>
     public MockHttpHandlerBuilder RespondWithOpenAIAuthError(string errorMessage = "Invalid API key")
     {
@@ -2293,7 +2303,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a sequence of HTTP status codes for testing retry logic
+    ///     Responds with a sequence of HTTP status codes for testing retry logic
     /// </summary>
     public MockHttpHandlerBuilder RespondWithStatusCodeSequence(
         HttpStatusCode[] statusCodes,
@@ -2306,7 +2316,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a retry sequence (503, 429, then success)
+    ///     Responds with a retry sequence (503, 429, then success)
     /// </summary>
     public MockHttpHandlerBuilder RespondWithRetrySequence(string? finalSuccessMessage = null)
     {
@@ -2320,7 +2330,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a rate limit error including Retry-After header
+    ///     Responds with a rate limit error including Retry-After header
     /// </summary>
     public MockHttpHandlerBuilder RespondWithRateLimitError(int retryAfterSeconds, string providerType = "generic")
     {
@@ -2330,7 +2340,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an authentication error (401)
+    ///     Responds with an authentication error (401)
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAuthenticationError(string providerType = "generic")
     {
@@ -2340,7 +2350,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with a timeout after specified delay
+    ///     Responds with a timeout after specified delay
     /// </summary>
     public MockHttpHandlerBuilder RespondWithTimeout(int timeoutMilliseconds = 30000)
     {
@@ -2350,7 +2360,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Follows a retry scenario with a success response
+    ///     Follows a retry scenario with a success response
     /// </summary>
     public MockHttpHandlerBuilder ThenRespondWithAnthropicMessage(string content = "Success!")
     {
@@ -2362,7 +2372,7 @@ public class MockHttpHandlerBuilder
     #region Conditional Methods
 
     /// <summary>
-    /// Conditional response based on request content
+    ///     Conditional response based on request content
     /// </summary>
     public ConditionalBuilder When(Func<HttpRequestMessage, bool> condition)
     {
@@ -2370,7 +2380,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Enhanced multi-conditional builder
+    ///     Enhanced multi-conditional builder
     /// </summary>
     public EnhancedConditionalBuilder WithConditions()
     {
@@ -2378,7 +2388,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Enhanced multi-conditional builder with conversation state
+    ///     Enhanced multi-conditional builder with conversation state
     /// </summary>
     public EnhancedConditionalBuilder WithState(ConversationState state)
     {
@@ -2386,7 +2396,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Conditional response with request extensions support
+    ///     Conditional response with request extensions support
     /// </summary>
     public ConditionalBuilder WhenRequest(Func<HttpRequestMessage, int, bool> condition)
     {
@@ -2394,23 +2404,23 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request is first message
+    ///     Response when request is first message
     /// </summary>
     public ConditionalBuilder WhenFirstMessage()
     {
-        return new ConditionalBuilder(this, (req) => req.IsFirstMessage(0));
+        return new ConditionalBuilder(this, req => req.IsFirstMessage(0));
     }
 
     /// <summary>
-    /// Response when request is second message
+    ///     Response when request is second message
     /// </summary>
     public ConditionalBuilder WhenSecondMessage()
     {
-        return new ConditionalBuilder(this, (req) => req.IsSecondMessage(1));
+        return new ConditionalBuilder(this, req => req.IsSecondMessage(1));
     }
 
     /// <summary>
-    /// Response when request has tool results
+    ///     Response when request has tool results
     /// </summary>
     public ConditionalBuilder WhenHasToolResults()
     {
@@ -2418,7 +2428,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request contains specific text
+    ///     Response when request contains specific text
     /// </summary>
     public ConditionalBuilder WhenContainsText(string text)
     {
@@ -2426,7 +2436,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request has specific role
+    ///     Response when request has specific role
     /// </summary>
     public ConditionalBuilder WhenHasRole(string role)
     {
@@ -2434,7 +2444,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request mentions specific tool
+    ///     Response when request mentions specific tool
     /// </summary>
     public ConditionalBuilder WhenMentionsTool(string toolName)
     {
@@ -2442,7 +2452,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when message count matches
+    ///     Response when message count matches
     /// </summary>
     public ConditionalBuilder WhenMessageCount(int count)
     {
@@ -2450,7 +2460,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request is to Anthropic API
+    ///     Response when request is to Anthropic API
     /// </summary>
     public ConditionalBuilder WhenAnthropicRequest()
     {
@@ -2458,7 +2468,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response when request is to OpenAI API
+    ///     Response when request is to OpenAI API
     /// </summary>
     public ConditionalBuilder WhenOpenAIRequest()
     {
@@ -2466,7 +2476,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response for the first request in a sequence
+    ///     Response for the first request in a sequence
     /// </summary>
     public SequentialBuilder ForFirstRequest()
     {
@@ -2474,7 +2484,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Response for the second request in a sequence
+    ///     Response for the second request in a sequence
     /// </summary>
     public SequentialBuilder ForSecondRequest()
     {
@@ -2482,7 +2492,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Default response for remaining requests
+    ///     Default response for remaining requests
     /// </summary>
     public MockHttpHandlerBuilder ForRemainingRequests()
     {
@@ -2497,7 +2507,7 @@ public class MockHttpHandlerBuilder
     #region Middleware Registration Methods
 
     /// <summary>
-    /// Registers a middleware instance
+    ///     Registers a middleware instance
     /// </summary>
     public MockHttpHandlerBuilder UseMiddleware(IHttpHandlerMiddleware middleware)
     {
@@ -2506,7 +2516,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Registers a middleware type
+    ///     Registers a middleware type
     /// </summary>
     public MockHttpHandlerBuilder UseMiddleware<T>()
         where T : IHttpHandlerMiddleware, new()
@@ -2515,7 +2525,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Registers a delegate middleware
+    ///     Registers a delegate middleware
     /// </summary>
     public MockHttpHandlerBuilder Use(
         Func<HttpRequestMessage, int, Func<Task<HttpResponseMessage?>>?, Task<HttpResponseMessage?>> middlewareFunc
@@ -2528,7 +2538,7 @@ public class MockHttpHandlerBuilder
     #endregion
 
     /// <summary>
-    /// Builds the final HttpMessageHandler with all configured behaviors
+    ///     Builds the final HttpMessageHandler with all configured behaviors
     /// </summary>
     public HttpMessageHandler Build()
     {
@@ -2562,31 +2572,24 @@ public class MockHttpHandlerBuilder
     }
 
     #endregion
-
-    #region Internal Helper Methods
-
-    internal void AddResponseProvider(IResponseProvider provider)
-    {
-        _middlewares.Add(new ResponseProviderMiddleware(provider));
-    }
-
-    #endregion
 }
 
 /// <summary>
-/// Stream implementation for Server-Sent Events from file content
+///     Stream implementation for Server-Sent Events from file content
 /// </summary>
 internal class SseFileStream : Stream, IDisposable
 {
     // Static cache for parsed SSE events to avoid repeated parsing
     private static readonly ConcurrentDictionary<string, byte[]> _parsedContentCache = new();
 
+    internal static readonly string[] separator = ["\r\n", "\n"];
+
     private readonly byte[] _content;
-    private int _position = 0;
-    private bool _disposed;
 
     // Configurable delay for streaming simulation (0 for no delay)
     private readonly int _streamingDelayMs;
+    private bool _disposed;
+    private int _position;
 
     public SseFileStream(string fileContent, int streamingDelayMs = 5)
     {
@@ -2600,13 +2603,12 @@ internal class SseFileStream : Stream, IDisposable
     public override bool CanSeek => false;
     public override bool CanWrite => false;
     public override long Length => _content.Length;
+
     public override long Position
     {
         get => _position;
         set => throw new NotSupportedException();
     }
-
-    internal static readonly string[] separator = ["\r\n", "\n"];
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
@@ -2676,6 +2678,7 @@ internal class SseFileStream : Stream, IDisposable
         {
             _disposed = true;
         }
+
         base.Dispose(disposing);
     }
 
@@ -2692,10 +2695,12 @@ internal class SseFileStream : Stream, IDisposable
             {
                 _ = totalContent.AppendLine($"event: {sseEvent.EventType}");
             }
+
             if (!string.IsNullOrEmpty(sseEvent.Data))
             {
                 _ = totalContent.AppendLine($"data: {sseEvent.Data}");
             }
+
             _ = totalContent.AppendLine(); // Empty line to separate events
         }
 
@@ -2719,6 +2724,7 @@ internal class SseFileStream : Stream, IDisposable
                     events.Add(currentEvent);
                     currentEvent = null;
                 }
+
                 continue;
             }
 
@@ -2730,12 +2736,12 @@ internal class SseFileStream : Stream, IDisposable
                     events.Add(currentEvent);
                 }
 
-                currentEvent = new SseEvent { EventType = line.Substring(7).Trim() };
+                currentEvent = new SseEvent { EventType = line[7..].Trim() };
             }
             else if (line.StartsWith("data: ") && currentEvent != null)
             {
                 // Data for the current event
-                currentEvent.Data = line.Substring(6).Trim();
+                currentEvent.Data = line[6..].Trim();
             }
         }
 
@@ -2756,7 +2762,7 @@ internal class SseFileStream : Stream, IDisposable
 }
 
 /// <summary>
-/// Data model for recorded request/response interactions
+///     Data model for recorded request/response interactions
 /// </summary>
 public class RecordPlaybackData
 {
@@ -2764,7 +2770,7 @@ public class RecordPlaybackData
 }
 
 /// <summary>
-/// Single recorded interaction between request and response
+///     Single recorded interaction between request and response
 /// </summary>
 public class RecordedInteraction
 {
@@ -2777,12 +2783,12 @@ public class RecordedInteraction
 }
 
 /// <summary>
-/// Utility for matching incoming requests against recorded requests
+///     Utility for matching incoming requests against recorded requests
 /// </summary>
 public static class RequestMatcher
 {
     /// <summary>
-    /// Matches an incoming request JsonElement against a recorded request with flexible matching
+    ///     Matches an incoming request JsonElement against a recorded request with flexible matching
     /// </summary>
     public static bool MatchesRecordedRequest(
         JsonElement incomingRequest,
@@ -2949,20 +2955,19 @@ public static class RequestMatcher
 }
 
 /// <summary>
-/// Response provider that forwards unmatched requests to real APIs
+///     Response provider that forwards unmatched requests to real APIs
 /// </summary>
 internal class ApiForwardingProvider : IResponseProvider, IDisposable
 {
-    private readonly string _baseUrl;
-    private readonly string _apiKey;
-    private readonly HttpClient _httpClient;
-    private readonly Action<RecordedInteraction>? _onNewInteraction;
-    private readonly string _baseUrlTrimmed;
-    private readonly AuthenticationHeaderValue _authHeader;
-    private bool _disposed;
-
     // Static cache for provider determination to avoid repeated string checks
     private static readonly ConcurrentDictionary<string, string> _providerCache = new();
+    private readonly string _apiKey;
+    private readonly AuthenticationHeaderValue _authHeader;
+    private readonly string _baseUrl;
+    private readonly string _baseUrlTrimmed;
+    private readonly HttpClient _httpClient;
+    private readonly Action<RecordedInteraction>? _onNewInteraction;
+    private bool _disposed;
 
     public ApiForwardingProvider(string baseUrl, string apiKey, Action<RecordedInteraction>? onNewInteraction = null)
     {
@@ -2974,6 +2979,15 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
         // Pre-compute frequently used values
         _baseUrlTrimmed = _baseUrl.TrimEnd('/');
         _authHeader = new AuthenticationHeaderValue("Bearer", _apiKey);
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _httpClient.Dispose();
+        }
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -3079,38 +3093,26 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            _httpClient.Dispose();
-        }
+        return request.IsAnthropicRequest() ? "Anthropic"
+            : request.IsOpenAIRequest() ? "OpenAI"
+            : "OpenAI";
     }
 }
 
 /// <summary>
-/// Middleware for record/playback functionality with proper fallback
+///     Middleware for record/playback functionality with proper fallback
 /// </summary>
 internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
 {
-    private readonly string _filePath;
-    private readonly RecordPlaybackData _recordedData;
-    private readonly Dictionary<string, byte[]> _cachedResponseBytes = [];
-    private readonly List<RecordedInteraction> _newInteractions = [];
-    private readonly object _cacheLock = new();
-    private int _matchedInteractions = 0;
-    private bool _disposed;
     internal static readonly string[] separator = ["\n\n", "\r\n\r\n"];
     internal static readonly char[] separatorArray = ['\n', '\r'];
+    private readonly object _cacheLock = new();
+    private readonly Dictionary<string, byte[]> _cachedResponseBytes = [];
+    private readonly string _filePath;
+    private readonly List<RecordedInteraction> _newInteractions = [];
+    private readonly RecordPlaybackData _recordedData;
+    private bool _disposed;
+    private int _matchedInteractions;
 
     public RecordPlaybackMiddleware(string filePath)
     {
@@ -3123,59 +3125,18 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         PreCacheResponses();
     }
 
-    private void PreCacheResponses()
+    public void Dispose()
     {
-        foreach (var interaction in _recordedData.Interactions)
+        if (!_disposed)
         {
-            // Generate a cache key based on the interaction's unique properties
-            var cacheKey = GenerateCacheKey(interaction);
-            if (!_cachedResponseBytes.ContainsKey(cacheKey))
-            {
-                byte[] responseBytes;
+            _disposed = true;
 
-                if (interaction.IsStreaming && interaction.SerializedResponseFragments.Count > 0)
-                {
-                    // For SSE responses, reconstruct the SSE format from fragments
-                    var sseContent = ReconstructSSEFromFragments(interaction.SerializedResponseFragments);
-                    responseBytes = Encoding.UTF8.GetBytes(sseContent);
-                }
-                else
-                {
-                    // For regular JSON responses - handle both old and new formats
-                    // Old format: JsonElement that needs to be serialized
-                    // New format: Raw JSON content (we'll detect this by checking if it's a simple string)
-                    var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
-                    responseBytes = Encoding.UTF8.GetBytes(responseJson);
-                }
+            // Save any remaining new interactions before disposing
+            SaveNewInteractions();
 
-                _cachedResponseBytes[cacheKey] = responseBytes;
-            }
+            // Clear caches
+            _cachedResponseBytes.Clear();
         }
-    }
-
-    private static string GenerateCacheKey(RecordedInteraction interaction)
-    {
-        // Generate SHA256 hash based on the complete shape of the SerializedRequest
-        if (interaction.SerializedRequest.ValueKind == JsonValueKind.Undefined)
-        {
-            return "undefined-request";
-        }
-
-        // Serialize to canonical JSON to ensure consistent hashing
-        var jsonOptions = new JsonSerializerOptions
-        {
-            WriteIndented = false,
-            PropertyNamingPolicy = null,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
-        };
-
-        var canonicalJson = JsonSerializer.Serialize(interaction.SerializedRequest, jsonOptions);
-
-        // Compute SHA256 hash
-        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
-
-        // Convert to hex string
-        return Convert.ToHexString(hashBytes);
     }
 
     public async Task<HttpResponseMessage?> HandleAsync(
@@ -3271,15 +3232,71 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         }
     }
 
+    private void PreCacheResponses()
+    {
+        foreach (var interaction in _recordedData.Interactions)
+        {
+            // Generate a cache key based on the interaction's unique properties
+            var cacheKey = GenerateCacheKey(interaction);
+            if (!_cachedResponseBytes.ContainsKey(cacheKey))
+            {
+                byte[] responseBytes;
+
+                if (interaction.IsStreaming && interaction.SerializedResponseFragments.Count > 0)
+                {
+                    // For SSE responses, reconstruct the SSE format from fragments
+                    var sseContent = ReconstructSSEFromFragments(interaction.SerializedResponseFragments);
+                    responseBytes = Encoding.UTF8.GetBytes(sseContent);
+                }
+                else
+                {
+                    // For regular JSON responses - handle both old and new formats
+                    // Old format: JsonElement that needs to be serialized
+                    // New format: Raw JSON content (we'll detect this by checking if it's a simple string)
+                    var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
+                    responseBytes = Encoding.UTF8.GetBytes(responseJson);
+                }
+
+                _cachedResponseBytes[cacheKey] = responseBytes;
+            }
+        }
+    }
+
+    private static string GenerateCacheKey(RecordedInteraction interaction)
+    {
+        // Generate SHA256 hash based on the complete shape of the SerializedRequest
+        if (interaction.SerializedRequest.ValueKind == JsonValueKind.Undefined)
+        {
+            return "undefined-request";
+        }
+
+        // Serialize to canonical JSON to ensure consistent hashing
+        var jsonOptions = new JsonSerializerOptions
+        {
+            WriteIndented = false,
+            PropertyNamingPolicy = null,
+            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        };
+
+        var canonicalJson = JsonSerializer.Serialize(interaction.SerializedRequest, jsonOptions);
+
+        // Compute SHA256 hash
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson));
+
+        // Convert to hex string
+        return Convert.ToHexString(hashBytes);
+    }
+
     private RecordedInteraction? FindMatchingInteraction(JsonElement requestElement)
     {
         foreach (var interaction in _recordedData.Interactions)
         {
-            if (RequestMatcher.MatchesRecordedRequest(requestElement, interaction.SerializedRequest, exactMatch: false))
+            if (RequestMatcher.MatchesRecordedRequest(requestElement, interaction.SerializedRequest))
             {
                 return interaction;
             }
         }
+
         return null;
     }
 
@@ -3385,6 +3402,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                         // This preserves all fields including reasoning tokens
                         responseBytes = Encoding.UTF8.GetBytes(responseContent);
                     }
+
                     _cachedResponseBytes[cacheKey] = responseBytes;
                 }
             }
@@ -3400,12 +3418,9 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
+        return request.IsAnthropicRequest() ? "Anthropic"
+            : request.IsOpenAIRequest() ? "OpenAI"
+            : "OpenAI";
     }
 
     private static bool IsServerSentEventsResponse(HttpResponseMessage response)
@@ -3439,7 +3454,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     // Extract data lines (lines starting with "data: ")
                     if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
                     {
-                        var data = line.Substring(6); // Remove "data: " prefix
+                        var data = line[6..]; // Remove "data: " prefix
                         if (!string.IsNullOrWhiteSpace(data) && data.Trim() != "[DONE]")
                         {
                             dataLines.Add(data.Trim());
@@ -3525,7 +3540,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 new JsonSerializerOptions
                 {
                     WriteIndented = true,
-                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault,
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
                 }
             );
             File.WriteAllText(_filePath, json);
@@ -3561,6 +3576,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
                     responseBytes = Encoding.UTF8.GetBytes(responseJson);
                 }
+
                 _cachedResponseBytes[cacheKey] = responseBytes;
             }
         }
@@ -3573,7 +3589,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         if (interaction.IsStreaming)
         {
             content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
-            response.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
+            response.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
             response.Headers.Add("Connection", "keep-alive");
         }
         else
@@ -3601,20 +3617,6 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         catch
         {
             return new RecordPlaybackData();
-        }
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-
-            // Save any remaining new interactions before disposing
-            SaveNewInteractions();
-
-            // Clear caches
-            _cachedResponseBytes.Clear();
         }
     }
 }

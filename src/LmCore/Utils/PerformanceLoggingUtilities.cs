@@ -4,14 +4,54 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Utilities for measuring and logging performance metrics in the LmDotnetTools library.
+///     Utilities for measuring and logging performance metrics in the LmDotnetTools library.
 /// </summary>
 public static class PerformanceLoggingUtilities
 {
+    #region Private Helper Classes
+
+    private class OperationTimer : IDisposable
+    {
+        private readonly LogLevel _logLevel;
+        private readonly ILogger _logger;
+        private readonly string _operationName;
+        private readonly Stopwatch _stopwatch;
+        private bool _disposed;
+
+        public OperationTimer(ILogger logger, string operationName, LogLevel logLevel)
+        {
+            _logger = logger;
+            _operationName = operationName;
+            _logLevel = logLevel;
+            _stopwatch = Stopwatch.StartNew();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _stopwatch.Stop();
+            _logger.Log(
+                _logLevel,
+                LogEventIds.OperationDurationMetrics,
+                "Operation timer completed: Name={OperationName}, Duration={Duration}ms",
+                _operationName,
+                _stopwatch.ElapsedMilliseconds
+            );
+
+            _disposed = true;
+        }
+    }
+
+    #endregion
+
     #region Operation Duration Utilities
 
     /// <summary>
-    /// Measures the duration of an operation and logs the result.
+    ///     Measures the duration of an operation and logs the result.
     /// </summary>
     /// <typeparam name="T">The return type of the operation.</typeparam>
     /// <param name="logger">The logger instance.</param>
@@ -26,6 +66,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -56,7 +98,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Measures the duration of an async operation and logs the result.
+    ///     Measures the duration of an async operation and logs the result.
     /// </summary>
     /// <typeparam name="T">The return type of the operation.</typeparam>
     /// <param name="logger">The logger instance.</param>
@@ -71,6 +113,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -101,7 +145,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Measures the duration of an async operation without return value and logs the result.
+    ///     Measures the duration of an async operation without return value and logs the result.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the operation being measured.</param>
@@ -114,6 +158,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -142,7 +188,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Creates a disposable timer that logs the duration when disposed.
+    ///     Creates a disposable timer that logs the duration when disposed.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the operation being measured.</param>
@@ -162,7 +208,7 @@ public static class PerformanceLoggingUtilities
     #region Token Rate Calculation Utilities
 
     /// <summary>
-    /// Calculates and logs tokens per second metrics.
+    ///     Calculates and logs tokens per second metrics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="totalTokens">The total number of tokens processed.</param>
@@ -197,7 +243,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Calculates tokens per second without logging.
+    ///     Calculates tokens per second without logging.
     /// </summary>
     /// <param name="totalTokens">The total number of tokens processed.</param>
     /// <param name="durationMs">The duration in milliseconds.</param>
@@ -208,7 +254,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Logs comprehensive token metrics including rates and efficiency.
+    ///     Logs comprehensive token metrics including rates and efficiency.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="promptTokens">The number of prompt tokens.</param>
@@ -246,7 +292,7 @@ public static class PerformanceLoggingUtilities
     #region Memory Usage Utilities
 
     /// <summary>
-    /// Measures and logs current memory usage for a component.
+    ///     Measures and logs current memory usage for a component.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="componentName">The name of the component.</param>
@@ -269,7 +315,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Measures memory usage before and after an operation and logs the difference.
+    ///     Measures memory usage before and after an operation and logs the difference.
     /// </summary>
     /// <typeparam name="T">The return type of the operation.</typeparam>
     /// <param name="logger">The logger instance.</param>
@@ -286,6 +332,8 @@ public static class PerformanceLoggingUtilities
         bool forceGC = false
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         if (forceGC)
         {
             GC.Collect();
@@ -317,7 +365,7 @@ public static class PerformanceLoggingUtilities
     #region Cache Statistics Utilities
 
     /// <summary>
-    /// Logs cache hit statistics.
+    ///     Logs cache hit statistics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="cacheType">The type of cache.</param>
@@ -335,7 +383,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Logs cache miss statistics.
+    ///     Logs cache miss statistics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="cacheType">The type of cache.</param>
@@ -353,7 +401,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Logs cache set operations.
+    ///     Logs cache set operations.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="cacheType">The type of cache.</param>
@@ -379,7 +427,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Logs comprehensive cache statistics.
+    ///     Logs comprehensive cache statistics.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="cacheType">The type of cache.</param>
@@ -415,18 +463,18 @@ public static class PerformanceLoggingUtilities
     #region Streaming Performance Utilities
 
     /// <summary>
-    /// Tracks streaming performance metrics and logs them.
+    ///     Tracks streaming performance metrics and logs them.
     /// </summary>
     public class StreamingMetricsTracker : IDisposable
     {
+        private readonly Stopwatch _firstTokenStopwatch;
         private readonly ILogger _logger;
         private readonly string _operationName;
         private readonly Stopwatch _totalStopwatch;
-        private readonly Stopwatch _firstTokenStopwatch;
         private int _chunkCount;
-        private int _totalTokens;
-        private bool _firstTokenReceived;
         private bool _disposed;
+        private bool _firstTokenReceived;
+        private int _totalTokens;
 
         public StreamingMetricsTracker(ILogger logger, string operationName)
         {
@@ -434,34 +482,6 @@ public static class PerformanceLoggingUtilities
             _operationName = operationName;
             _totalStopwatch = Stopwatch.StartNew();
             _firstTokenStopwatch = Stopwatch.StartNew();
-        }
-
-        /// <summary>
-        /// Records a chunk received during streaming.
-        /// </summary>
-        /// <param name="tokenCount">The number of tokens in this chunk.</param>
-        public void RecordChunk(int tokenCount = 0)
-        {
-            _chunkCount++;
-            _totalTokens += tokenCount;
-
-            if (!_firstTokenReceived && tokenCount > 0)
-            {
-                _firstTokenReceived = true;
-                _firstTokenStopwatch.Stop();
-            }
-        }
-
-        /// <summary>
-        /// Records the first token received.
-        /// </summary>
-        public void RecordFirstToken()
-        {
-            if (!_firstTokenReceived)
-            {
-                _firstTokenReceived = true;
-                _firstTokenStopwatch.Stop();
-            }
         }
 
         public void Dispose()
@@ -492,10 +512,38 @@ public static class PerformanceLoggingUtilities
 
             _disposed = true;
         }
+
+        /// <summary>
+        ///     Records a chunk received during streaming.
+        /// </summary>
+        /// <param name="tokenCount">The number of tokens in this chunk.</param>
+        public void RecordChunk(int tokenCount = 0)
+        {
+            _chunkCount++;
+            _totalTokens += tokenCount;
+
+            if (!_firstTokenReceived && tokenCount > 0)
+            {
+                _firstTokenReceived = true;
+                _firstTokenStopwatch.Stop();
+            }
+        }
+
+        /// <summary>
+        ///     Records the first token received.
+        /// </summary>
+        public void RecordFirstToken()
+        {
+            if (!_firstTokenReceived)
+            {
+                _firstTokenReceived = true;
+                _firstTokenStopwatch.Stop();
+            }
+        }
     }
 
     /// <summary>
-    /// Creates a streaming metrics tracker.
+    ///     Creates a streaming metrics tracker.
     /// </summary>
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the streaming operation.</param>
@@ -510,7 +558,7 @@ public static class PerformanceLoggingUtilities
     #region Serialization Performance Utilities
 
     /// <summary>
-    /// Measures and logs serialization performance.
+    ///     Measures and logs serialization performance.
     /// </summary>
     /// <typeparam name="T">The type being serialized.</typeparam>
     /// <param name="logger">The logger instance.</param>
@@ -525,6 +573,8 @@ public static class PerformanceLoggingUtilities
         T obj
     )
     {
+        ArgumentNullException.ThrowIfNull(serializer);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -555,7 +605,7 @@ public static class PerformanceLoggingUtilities
     }
 
     /// <summary>
-    /// Measures and logs deserialization performance.
+    ///     Measures and logs deserialization performance.
     /// </summary>
     /// <typeparam name="T">The type being deserialized.</typeparam>
     /// <param name="logger">The logger instance.</param>
@@ -570,6 +620,9 @@ public static class PerformanceLoggingUtilities
         string data
     )
     {
+        ArgumentNullException.ThrowIfNull(deserializer);
+        ArgumentNullException.ThrowIfNull(data);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -597,46 +650,6 @@ public static class PerformanceLoggingUtilities
                 data.Length
             );
             throw;
-        }
-    }
-
-    #endregion
-
-    #region Private Helper Classes
-
-    private class OperationTimer : IDisposable
-    {
-        private readonly ILogger _logger;
-        private readonly string _operationName;
-        private readonly LogLevel _logLevel;
-        private readonly Stopwatch _stopwatch;
-        private bool _disposed;
-
-        public OperationTimer(ILogger logger, string operationName, LogLevel logLevel)
-        {
-            _logger = logger;
-            _operationName = operationName;
-            _logLevel = logLevel;
-            _stopwatch = Stopwatch.StartNew();
-        }
-
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _stopwatch.Stop();
-            _logger.Log(
-                _logLevel,
-                LogEventIds.OperationDurationMetrics,
-                "Operation timer completed: Name={OperationName}, Duration={Duration}ms",
-                _operationName,
-                _stopwatch.ElapsedMilliseconds
-            );
-
-            _disposed = true;
         }
     }
 

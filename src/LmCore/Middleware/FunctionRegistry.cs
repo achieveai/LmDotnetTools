@@ -9,152 +9,29 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Builder for combining functions from multiple sources with conflict resolution.
-///
-/// IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded
-/// context during application initialization. The registry should be built once during startup
-/// and the resulting function collections should be treated as read-only.
-///
-/// Typical usage pattern:
-/// 1. Create a FunctionRegistry instance during initialization
-/// 2. Configure it with providers and settings
-/// 3. Call Build() once to generate the final function collections
-/// 4. Use the built collections (which are immutable) throughout the application lifetime
-///
-/// Do not modify the registry after calling Build(), and do not share a FunctionRegistry
-/// instance across multiple threads during configuration.
+///     Builder for combining functions from multiple sources with conflict resolution.
+///     IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded
+///     context during application initialization. The registry should be built once during startup
+///     and the resulting function collections should be treated as read-only.
+///     Typical usage pattern:
+///     1. Create a FunctionRegistry instance during initialization
+///     2. Configure it with providers and settings
+///     3. Call Build() once to generate the final function collections
+///     4. Use the built collections (which are immutable) throughout the application lifetime
+///     Do not modify the registry after calling Build(), and do not share a FunctionRegistry
+///     instance across multiple threads during configuration.
 /// </summary>
 public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithProviders, IConfiguredFunctionRegistry
 {
-    private readonly List<IFunctionProvider> _providers = [];
     private readonly Dictionary<string, FunctionDescriptor> _explicitFunctions = [];
-    private ConflictResolution _conflictResolution = ConflictResolution.Throw;
+    private readonly List<IFunctionProvider> _providers = [];
     private Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor>? _conflictHandler;
+    private ConflictResolution _conflictResolution = ConflictResolution.Throw;
     private FunctionFilterConfig? _filterConfig;
     private ILogger? _logger;
 
     /// <summary>
-    /// Add functions from a provider (MCP, Natural, etc.)
-    /// </summary>
-    public FunctionRegistry AddProvider(IFunctionProvider provider)
-    {
-        _providers.Add(provider);
-        return this;
-    }
-
-    /// <summary>
-    /// Add functions from a provider (MCP, Natural, etc.) - Explicit interface implementation
-    /// </summary>
-    IFunctionRegistryWithProviders IFunctionRegistryBuilder.AddProvider(IFunctionProvider provider)
-    {
-        return AddProvider(provider);
-    }
-
-    /// <summary>
-    /// Add a single function explicitly
-    /// </summary>
-    public FunctionRegistry AddFunction(
-        FunctionContract contract,
-        Func<string, Task<string>> handler,
-        string? providerName = null
-    )
-    {
-        var descriptor = new FunctionDescriptor
-        {
-            Contract = contract,
-            Handler = handler,
-            ProviderName = providerName ?? "Explicit",
-        };
-        _explicitFunctions[descriptor.Key] = descriptor;
-        return this;
-    }
-
-    /// <summary>
-    /// Add a single function explicitly - Explicit interface implementation
-    /// </summary>
-    IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(
-        FunctionContract contract,
-        Func<string, Task<string>> handler,
-        string? providerName
-    )
-    {
-        return AddFunction(contract, handler, providerName);
-    }
-
-    /// <summary>
-    /// Set conflict resolution strategy
-    /// </summary>
-    public FunctionRegistry WithConflictResolution(ConflictResolution strategy)
-    {
-        _conflictResolution = strategy;
-        return this;
-    }
-
-    /// <summary>
-    /// Set conflict resolution strategy - Explicit interface implementation
-    /// </summary>
-    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictResolution(ConflictResolution strategy)
-    {
-        return WithConflictResolution(strategy);
-    }
-
-    /// <summary>
-    /// Set custom conflict resolution handler
-    /// </summary>
-    public FunctionRegistry WithConflictHandler(
-        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
-    )
-    {
-        _conflictHandler = handler;
-        return this;
-    }
-
-    /// <summary>
-    /// Set custom conflict resolution handler - Explicit interface implementation
-    /// </summary>
-    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictHandler(
-        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
-    )
-    {
-        return WithConflictHandler(handler);
-    }
-
-    /// <summary>
-    /// Configure function filtering for all providers
-    /// </summary>
-    public FunctionRegistry WithFilterConfig(FunctionFilterConfig? filterConfig)
-    {
-        _filterConfig = filterConfig;
-        return this;
-    }
-
-    /// <summary>
-    /// Configure function filtering for all providers - Explicit interface implementation
-    /// </summary>
-    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.WithFilterConfig(FunctionFilterConfig? filterConfig)
-    {
-        return WithFilterConfig(filterConfig);
-    }
-
-    /// <summary>
-    /// Set logger for debugging
-    /// </summary>
-    public FunctionRegistry WithLogger(ILogger? logger)
-    {
-        _logger = logger;
-        return this;
-    }
-
-    /// <summary>
-    /// Set logger for debugging - Explicit interface implementation
-    /// </summary>
-    IFunctionRegistryBuilder IFunctionRegistryBuilder.WithLogger(ILogger? logger)
-    {
-        return WithLogger(logger);
-    }
-
-    /// <summary>
-    /// Get all registered providers (for inspection/debugging)
+    ///     Get all registered providers (for inspection/debugging)
     /// </summary>
     public IReadOnlyList<IFunctionProvider> GetProviders()
     {
@@ -162,24 +39,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
-    /// Proceeds to build without additional filtering configuration.
-    /// </summary>
-    /// <returns>A configured registry ready for building</returns>
-    public IConfiguredFunctionRegistry Configure()
-    {
-        return this;
-    }
-
-    /// <summary>
-    /// Proceeds to build without additional filtering configuration - Explicit interface implementation
-    /// </summary>
-    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.Configure()
-    {
-        return Configure();
-    }
-
-    /// <summary>
-    /// Validates the current configuration and returns any issues found.
+    ///     Validates the current configuration and returns any issues found.
     /// </summary>
     /// <returns>A collection of validation issues, empty if configuration is valid</returns>
     public IEnumerable<string> ValidateConfiguration()
@@ -229,7 +89,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
-    /// Build the final function collections for FunctionCallMiddleware
+    ///     Build the final function collections for FunctionCallMiddleware
     /// </summary>
     public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build()
     {
@@ -327,7 +187,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
-    /// Build and create FunctionCallMiddleware directly
+    ///     Build and create FunctionCallMiddleware directly
     /// </summary>
     public FunctionCallMiddleware BuildMiddleware(
         string? name = null,
@@ -356,48 +216,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         return (middleware, handlers);
     }
 
-    private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
-    {
-        // Explicit functions always take precedence over provider functions
-        var explicitFunction = candidates.FirstOrDefault(c => c.ProviderName == "Explicit");
-        if (explicitFunction != null)
-        {
-            return explicitFunction;
-        }
-
-        // Custom handler takes precedence
-        return _conflictHandler != null
-            ? _conflictHandler(key, candidates)
-            : _conflictResolution switch
-            {
-                ConflictResolution.TakeFirst => candidates.First(),
-                ConflictResolution.TakeLast => candidates.Last(),
-                ConflictResolution.PreferMcp => candidates.FirstOrDefault(IsMcpProvider) ?? candidates.First(),
-                ConflictResolution.PreferNatural => candidates.FirstOrDefault(IsNaturalProvider) ?? candidates.First(),
-                ConflictResolution.RequireExplicit => throw new InvalidOperationException(
-                    $"Function '{key}' has conflicts from multiple providers. "
-                        + $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. "
-                        + $"Use WithConflictHandler() to resolve explicitly."
-                ),
-                ConflictResolution.Throw => throw new InvalidOperationException(
-                    $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"
-                ),
-                _ => throw new ArgumentOutOfRangeException(),
-            };
-    }
-
-    private static bool IsMcpProvider(FunctionDescriptor descriptor)
-    {
-        return descriptor.Contract.ClassName != null; // MCP functions have class names
-    }
-
-    private static bool IsNaturalProvider(FunctionDescriptor descriptor)
-    {
-        return descriptor.Contract.ClassName == null; // Natural functions typically don't
-    }
-
     /// <summary>
-    /// Generate markdown documentation for all registered functions and providers
+    ///     Generate markdown documentation for all registered functions and providers
     /// </summary>
     /// <returns>Markdown-formatted string containing comprehensive function documentation</returns>
     public string GetMarkdownDocumentation()
@@ -451,6 +271,183 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         return sb.ToString();
     }
 
+    /// <summary>
+    ///     Add functions from a provider (MCP, Natural, etc.) - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryBuilder.AddProvider(IFunctionProvider provider)
+    {
+        return AddProvider(provider);
+    }
+
+    /// <summary>
+    ///     Add a single function explicitly - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        string? providerName
+    )
+    {
+        return AddFunction(contract, handler, providerName);
+    }
+
+    /// <summary>
+    ///     Set logger for debugging - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryBuilder IFunctionRegistryBuilder.WithLogger(ILogger? logger)
+    {
+        return WithLogger(logger);
+    }
+
+    /// <summary>
+    ///     Set conflict resolution strategy - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictResolution(ConflictResolution strategy)
+    {
+        return WithConflictResolution(strategy);
+    }
+
+    /// <summary>
+    ///     Set custom conflict resolution handler - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictHandler(
+        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
+    )
+    {
+        return WithConflictHandler(handler);
+    }
+
+    /// <summary>
+    ///     Configure function filtering for all providers - Explicit interface implementation
+    /// </summary>
+    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.WithFilterConfig(FunctionFilterConfig? filterConfig)
+    {
+        return WithFilterConfig(filterConfig);
+    }
+
+    /// <summary>
+    ///     Proceeds to build without additional filtering configuration - Explicit interface implementation
+    /// </summary>
+    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.Configure()
+    {
+        return Configure();
+    }
+
+    /// <summary>
+    ///     Add functions from a provider (MCP, Natural, etc.)
+    /// </summary>
+    public FunctionRegistry AddProvider(IFunctionProvider provider)
+    {
+        _providers.Add(provider);
+        return this;
+    }
+
+    /// <summary>
+    ///     Add a single function explicitly
+    /// </summary>
+    public FunctionRegistry AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        string? providerName = null
+    )
+    {
+        var descriptor = new FunctionDescriptor
+        {
+            Contract = contract,
+            Handler = handler,
+            ProviderName = providerName ?? "Explicit",
+        };
+        _explicitFunctions[descriptor.Key] = descriptor;
+        return this;
+    }
+
+    /// <summary>
+    ///     Set conflict resolution strategy
+    /// </summary>
+    public FunctionRegistry WithConflictResolution(ConflictResolution strategy)
+    {
+        _conflictResolution = strategy;
+        return this;
+    }
+
+    /// <summary>
+    ///     Set custom conflict resolution handler
+    /// </summary>
+    public FunctionRegistry WithConflictHandler(
+        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
+    )
+    {
+        _conflictHandler = handler;
+        return this;
+    }
+
+    /// <summary>
+    ///     Configure function filtering for all providers
+    /// </summary>
+    public FunctionRegistry WithFilterConfig(FunctionFilterConfig? filterConfig)
+    {
+        _filterConfig = filterConfig;
+        return this;
+    }
+
+    /// <summary>
+    ///     Set logger for debugging
+    /// </summary>
+    public FunctionRegistry WithLogger(ILogger? logger)
+    {
+        _logger = logger;
+        return this;
+    }
+
+    /// <summary>
+    ///     Proceeds to build without additional filtering configuration.
+    /// </summary>
+    /// <returns>A configured registry ready for building</returns>
+    public IConfiguredFunctionRegistry Configure()
+    {
+        return this;
+    }
+
+    private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
+    {
+        // Explicit functions always take precedence over provider functions
+        var explicitFunction = candidates.FirstOrDefault(c => c.ProviderName == "Explicit");
+        if (explicitFunction != null)
+        {
+            return explicitFunction;
+        }
+
+        // Custom handler takes precedence
+        return _conflictHandler != null
+            ? _conflictHandler(key, candidates)
+            : _conflictResolution switch
+            {
+                ConflictResolution.TakeFirst => candidates.First(),
+                ConflictResolution.TakeLast => candidates.Last(),
+                ConflictResolution.PreferMcp => candidates.FirstOrDefault(IsMcpProvider) ?? candidates.First(),
+                ConflictResolution.PreferNatural => candidates.FirstOrDefault(IsNaturalProvider) ?? candidates.First(),
+                ConflictResolution.RequireExplicit => throw new InvalidOperationException(
+                    $"Function '{key}' has conflicts from multiple providers. "
+                        + $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. "
+                        + $"Use WithConflictHandler() to resolve explicitly."
+                ),
+                ConflictResolution.Throw => throw new InvalidOperationException(
+                    $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"
+                ),
+                _ => throw new ArgumentOutOfRangeException(),
+            };
+    }
+
+    private static bool IsMcpProvider(FunctionDescriptor descriptor)
+    {
+        return descriptor.Contract.ClassName != null; // MCP functions have class names
+    }
+
+    private static bool IsNaturalProvider(FunctionDescriptor descriptor)
+    {
+        return descriptor.Contract.ClassName == null; // Natural functions typically don't
+    }
+
     private void GenerateSummarySection(StringBuilder sb, Dictionary<string, FunctionDescriptor> resolvedFunctions)
     {
         var totalFunctions = resolvedFunctions.Count;
@@ -485,6 +482,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                 $"- **{provider.Name}**{priorityText}: {provider.Count} function{(provider.Count == 1 ? "" : "s")}"
             );
         }
+
         _ = sb.AppendLine();
     }
 
@@ -544,6 +542,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                     _ = sb.AppendLine($"  {param.Description}");
                 }
             }
+
             _ = sb.AppendLine();
         }
         else
@@ -561,10 +560,12 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             {
                 _ = sb.AppendLine($"- **Type:** `{function.Contract.ReturnType.Name}`");
             }
+
             if (!string.IsNullOrWhiteSpace(function.Contract.ReturnDescription))
             {
                 _ = sb.AppendLine($"- **Description:** {function.Contract.ReturnDescription}");
             }
+
             _ = sb.AppendLine();
         }
 
@@ -601,6 +602,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                 {
                     enumValues += " \\| ...";
                 }
+
                 return $"`{baseType}` ({enumValues})";
             }
 

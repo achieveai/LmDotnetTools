@@ -8,15 +8,15 @@ using ModelContextProtocol.Client;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// Factory for creating MCP middleware
+///     Factory for creating MCP middleware
 /// </summary>
 public class McpMiddlewareFactory
 {
-    private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger<McpMiddlewareFactory> _logger;
+    private readonly ILoggerFactory? _loggerFactory;
 
     /// <summary>
-    /// Creates a new instance of the McpMiddlewareFactory
+    ///     Creates a new instance of the McpMiddlewareFactory
     /// </summary>
     /// <param name="loggerFactory">Optional logger factory for creating typed loggers</param>
     public McpMiddlewareFactory(ILoggerFactory? loggerFactory = null)
@@ -26,7 +26,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a configuration file asynchronously
+    ///     Creates a new MCP middleware from a configuration file asynchronously
     /// </summary>
     /// <param name="configFilePath">Path to the configuration file</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -58,7 +58,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a configuration object asynchronously
+    ///     Creates a new MCP middleware from a configuration object asynchronously
     /// </summary>
     /// <param name="config">The configuration object</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -68,6 +68,8 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(config);
+
         _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
 
         _logger.LogDebug(
@@ -100,6 +102,7 @@ public class McpMiddlewareFactory
                         $"Client settings for '{clientId}' cannot be null"
                     );
                 }
+
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
                 _logger.LogDebug(
                     "Transport created for client: ClientId={ClientId}, TransportType={TransportType}",
@@ -153,7 +156,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a transport object from configuration
+    ///     Creates a transport object from configuration
     /// </summary>
     /// <param name="clientId">The client ID</param>
     /// <param name="clientSettings">The client configuration settings</param>
@@ -175,7 +178,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a transport from a JsonElement configuration
+    ///     Creates a transport from a JsonElement configuration
     /// </summary>
     /// <param name="clientId">The client ID</param>
     /// <param name="jsonElement">The JSON configuration</param>
@@ -375,7 +378,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a transport from a dictionary configuration
+    ///     Creates a transport from a dictionary configuration
     /// </summary>
     /// <param name="clientId">The client ID</param>
     /// <param name="configDict">The configuration dictionary</param>
@@ -542,7 +545,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Extracts arguments from various object types
+    ///     Extracts arguments from various object types
     /// </summary>
     /// <param name="argsObj">The arguments object</param>
     /// <returns>Array of argument strings</returns>
@@ -559,7 +562,7 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a collection of MCP clients asynchronously
+    ///     Creates a new MCP middleware from a collection of MCP clients asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -569,6 +572,8 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
 
         _logger.LogDebug(
@@ -585,6 +590,7 @@ public class McpMiddlewareFactory
                 _logger.LogDebug("Client validation failed: ClientId={ClientId} has null client instance", kvp.Key);
                 throw new ArgumentException($"Client '{kvp.Key}' is null", nameof(mcpClients));
             }
+
             _logger.LogDebug(
                 "Client validation passed: ClientId={ClientId}, ClientType={ClientType}",
                 kvp.Key,

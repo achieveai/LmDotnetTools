@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
@@ -45,7 +47,7 @@ public class RequestCaptureTests
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+        var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
         var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
@@ -55,7 +57,7 @@ public class RequestCaptureTests
 
         // Debug: Print the captured JSON to understand the format
         var capturedJson = requestCapture.LastRequestBody;
-        System.Diagnostics.Debug.WriteLine($"Captured JSON: {capturedJson}");
+        Debug.WriteLine($"Captured JSON: {capturedJson}");
 
         // This is the critical test - can we deserialize the captured request back to ChatCompletionRequest?
         var chatRequest = requestCapture.GetRequestAs<ChatCompletionRequest>();
@@ -110,9 +112,9 @@ public class RequestCaptureTests
                         properties = new
                         {
                             location = new { type = "string", description = "City name" },
-                            units = new { type = "string", @enum = new string[] { "celsius", "fahrenheit" } },
+                            units = new { type = "string", @enum = new[] { "celsius", "fahrenheit" } },
                         },
-                        required = new string[] { "location" },
+                        required = new[] { "location" },
                     },
                 },
                 new
@@ -123,7 +125,7 @@ public class RequestCaptureTests
                     {
                         type = "object",
                         properties = new { code = new { type = "string", description = "Python code to execute" } },
-                        required = new string[] { "code" },
+                        required = new[] { "code" },
                     },
                 },
             },
@@ -131,7 +133,7 @@ public class RequestCaptureTests
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+        var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
         var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", content);
@@ -200,7 +202,7 @@ public class RequestCaptureTests
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+        var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
         var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", content);
 
         var anthropicRequest = requestCapture.GetAnthropicRequest()!;

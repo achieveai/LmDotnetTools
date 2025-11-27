@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -6,14 +5,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Stateless executor for tool calls. Takes a ToolCallMessage and executes the tools,
-/// returning a ToolsCallResultMessage. Designed for explicit tool execution in application code
-/// for the new simplified message flow where applications control the agentic loop.
+///     Stateless executor for tool calls. Takes a ToolCallMessage and executes the tools,
+///     returning a ToolsCallResultMessage. Designed for explicit tool execution in application code
+///     for the new simplified message flow where applications control the agentic loop.
 /// </summary>
 public class ToolCallExecutor
 {
     /// <summary>
-    /// Executes all tool calls in the provided message using the given function map
+    ///     Executes all tool calls in the provided message using the given function map
     /// </summary>
     /// <param name="toolCallMessage">The message containing tool calls to execute</param>
     /// <param name="functionMap">Map of function names to their implementations</param>
@@ -39,10 +38,7 @@ public class ToolCallExecutor
         var toolCallCount = toolCalls.Count;
         var startTime = DateTime.UtcNow;
 
-        effectiveLogger.LogInformation(
-            "Tool call execution started: ToolCallCount={ToolCallCount}",
-            toolCallCount
-        );
+        effectiveLogger.LogInformation("Tool call execution started: ToolCallCount={ToolCallCount}", toolCallCount);
 
         foreach (var toolCall in toolCalls)
         {
@@ -75,9 +71,9 @@ public class ToolCallExecutor
 
         var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
         var successCount = toolCallResults.Count(r =>
-            !r.Result.StartsWith("Error executing function:") &&
-            !r.Result.Contains("is not available") &&
-            !r.Result.StartsWith("Tool call execution error:")
+            !r.Result.StartsWith("Error executing function:")
+            && !r.Result.Contains("is not available")
+            && !r.Result.StartsWith("Tool call execution error:")
         );
 
         effectiveLogger.LogInformation(
@@ -91,7 +87,7 @@ public class ToolCallExecutor
         // Preserve GenerationId from the original tool call message
         return new ToolsCallResultMessage
         {
-            ToolCallResults = toolCallResults.ToImmutableList(),
+            ToolCallResults = [.. toolCallResults],
             Role = Role.Tool,
             FromAgent = string.Empty,
             GenerationId = toolCallMessage.GenerationId,
@@ -101,7 +97,7 @@ public class ToolCallExecutor
     }
 
     /// <summary>
-    /// Executes a single tool call and returns the result
+    ///     Executes a single tool call and returns the result
     /// </summary>
     private static async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
@@ -203,7 +199,7 @@ public class ToolCallExecutor
                 return errorResult;
             }
         }
-        else
+
         {
             // Return error for unavailable function
             var availableFunctions = string.Join(", ", functionMap.Keys);
@@ -239,11 +235,7 @@ public class ToolCallExecutor
             // Still notify with result (containing error)
             if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
             {
-                await resultCallback.OnToolResultAvailableAsync(
-                    toolCall.ToolCallId,
-                    errorResult,
-                    cancellationToken
-                );
+                await resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, errorResult, cancellationToken);
             }
 
             return errorResult;

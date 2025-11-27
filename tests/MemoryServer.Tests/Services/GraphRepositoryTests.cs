@@ -7,19 +7,19 @@ using Moq;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Comprehensive tests for GraphRepository implementation.
-/// Uses data-driven testing approach with file-based SQLite database for realistic testing.
-/// ARCHITECTURE: Only the GraphRepository manages database connections to avoid deadlocks.
+///     Comprehensive tests for GraphRepository implementation.
+///     Uses data-driven testing approach with file-based SQLite database for realistic testing.
+///     ARCHITECTURE: Only the GraphRepository manages database connections to avoid deadlocks.
 /// </summary>
 [Collection("GraphRepository")]
 public class GraphRepositoryTests : IDisposable
 {
-    private readonly TestSqliteSessionFactory _sessionFactory;
-    private readonly GraphRepository _repository;
+    private static int _instanceCounter;
+    private readonly int _instanceId;
     private readonly Mock<ILogger<GraphRepository>> _mockLogger;
     private readonly Mock<ILoggerFactory> _mockLoggerFactory;
-    private readonly int _instanceId;
-    private static int _instanceCounter = 0;
+    private readonly GraphRepository _repository;
+    private readonly TestSqliteSessionFactory _sessionFactory;
 
     public GraphRepositoryTests()
     {
@@ -37,6 +37,82 @@ public class GraphRepositoryTests : IDisposable
         // Initialize the repository with session factory
         _repository = new GraphRepository(_sessionFactory, _mockLogger.Object);
     }
+
+    public void Dispose()
+    {
+        try
+        {
+            // Cleanup the TestSqliteSessionFactory to remove test database files
+            _sessionFactory?.Cleanup();
+
+            // Force garbage collection to help release any remaining resources
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+        catch (Exception ex)
+        {
+            // Log disposal errors but don't throw
+            Debug.WriteLine($"Error during disposal: {ex.Message}");
+        }
+    }
+
+    #region Session Isolation Tests
+
+    [Theory]
+    [MemberData(nameof(SessionIsolationTestCases))]
+    public async Task SessionIsolation_WithDifferentSessions_ShouldIsolateData(
+        SessionContext session1,
+        SessionContext session2,
+        Entity entity1,
+        Entity entity2
+    )
+    {
+        // Arrange
+        // Act
+        _ = await _repository.AddEntityAsync(entity1, session1);
+        _ = await _repository.AddEntityAsync(entity2, session2);
+
+        var entitiesSession1 = await _repository.GetEntitiesAsync(session1);
+        var entitiesSession2 = await _repository.GetEntitiesAsync(session2);
+
+        // Assert
+        _ = Assert.Single(entitiesSession1);
+        _ = Assert.Single(entitiesSession2);
+        Assert.Equal(entity1.Name, entitiesSession1.First().Name);
+        Assert.Equal(entity2.Name, entitiesSession2.First().Name);
+    }
+
+    #endregion
+
+    #region Deadlock Detection Test
+
+    [Fact]
+    public async Task DeadlockDetection_SingleEntityAddition_ShouldCompleteWithinTimeout()
+    {
+        // Create a simple entity
+        var entity = new Entity
+        {
+            Name = "TestEntity",
+            Type = "test",
+            UserId = "deadlock_test_user",
+            Confidence = 0.8f,
+        };
+
+        var sessionContext = new SessionContext { UserId = "deadlock_test_user" };
+
+        // Use timeout wrapper to detect deadlocks quickly
+        var result = await WithTimeoutAsync(
+            _repository.AddEntityAsync(entity, sessionContext),
+            8,
+            "Deadlock Detection Entity Addition"
+        );
+
+        Assert.NotNull(result);
+        Assert.True(result.Id > 0);
+    }
+
+    #endregion
 
     #region Entity CRUD Tests
 
@@ -162,70 +238,11 @@ public class GraphRepositoryTests : IDisposable
 
     #endregion
 
-    #region Session Isolation Tests
-
-    [Theory]
-    [MemberData(nameof(SessionIsolationTestCases))]
-    public async Task SessionIsolation_WithDifferentSessions_ShouldIsolateData(
-        SessionContext session1,
-        SessionContext session2,
-        Entity entity1,
-        Entity entity2
-    )
-    {
-        // Arrange
-        // Act
-        _ = await _repository.AddEntityAsync(entity1, session1);
-        _ = await _repository.AddEntityAsync(entity2, session2);
-
-        var entitiesSession1 = await _repository.GetEntitiesAsync(session1);
-        var entitiesSession2 = await _repository.GetEntitiesAsync(session2);
-
-        // Assert
-        _ = Assert.Single(entitiesSession1);
-        _ = Assert.Single(entitiesSession2);
-        Assert.Equal(entity1.Name, entitiesSession1.First().Name);
-        Assert.Equal(entity2.Name, entitiesSession2.First().Name);
-    }
-
-    #endregion
-
-    #region Deadlock Detection Test
-
-    [Fact]
-    public async Task DeadlockDetection_SingleEntityAddition_ShouldCompleteWithinTimeout()
-    {
-        // Create a simple entity
-        var entity = new Entity
-        {
-            Name = "TestEntity",
-            Type = "test",
-            UserId = "deadlock_test_user",
-            Confidence = 0.8f,
-        };
-
-        var sessionContext = new SessionContext { UserId = "deadlock_test_user" };
-
-        // Use timeout wrapper to detect deadlocks quickly
-        var result = await WithTimeoutAsync(
-            _repository.AddEntityAsync(entity, sessionContext),
-            8,
-            "Deadlock Detection Entity Addition"
-        );
-
-        Assert.NotNull(result);
-        Assert.True(result.Id > 0);
-    }
-
-    #endregion
-
     #region Test Data
 
     public static IEnumerable<object[]> EntityTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Entity
                 {
                     Name = "John Doe",
@@ -234,9 +251,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "New York",
@@ -246,9 +262,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user456", AgentId = "agent789" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "Machine Learning",
@@ -263,14 +278,12 @@ public class GraphRepositoryTests : IDisposable
                     AgentId = "agent123",
                     RunId = "run456",
                 },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> EntityUpdateTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Entity
                 {
                     Name = "John",
@@ -286,9 +299,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "Entity",
@@ -304,14 +316,12 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user456" },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RelationshipTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Relationship
                 {
                     Source = "John",
@@ -321,9 +331,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Relationship
                 {
                     Source = "Alice",
@@ -334,14 +343,12 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user456", AgentId = "agent789" },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> SessionIsolationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new SessionContext { UserId = "user1" },
                 new SessionContext { UserId = "user2" },
                 new Entity
@@ -356,9 +363,8 @@ public class GraphRepositoryTests : IDisposable
                     UserId = "user2",
                     Confidence = 0.8f,
                 },
-            },
-            new object[]
-            {
+            ],
+            [
                 new SessionContext { UserId = "user1", AgentId = "agent1" },
                 new SessionContext { UserId = "user1", AgentId = "agent2" },
                 new Entity
@@ -375,8 +381,8 @@ public class GraphRepositoryTests : IDisposable
                     AgentId = "agent2",
                     Confidence = 0.8f,
                 },
-            },
-        };
+            ],
+        ];
 
     #endregion
 
@@ -410,25 +416,6 @@ public class GraphRepositoryTests : IDisposable
     }
 
     #endregion
-
-    public void Dispose()
-    {
-        try
-        {
-            // Cleanup the TestSqliteSessionFactory to remove test database files
-            _sessionFactory?.Cleanup();
-
-            // Force garbage collection to help release any remaining resources
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-        }
-        catch (Exception ex)
-        {
-            // Log disposal errors but don't throw
-            Debug.WriteLine($"Error during disposal: {ex.Message}");
-        }
-    }
 }
 
 [CollectionDefinition("GraphRepository")]

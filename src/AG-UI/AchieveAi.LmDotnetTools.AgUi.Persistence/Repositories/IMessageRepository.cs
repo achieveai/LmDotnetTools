@@ -3,16 +3,16 @@ using AchieveAi.LmDotnetTools.AgUi.Persistence.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 
 /// <summary>
-/// Repository interface for persisting and querying LmCore messages.
+///     Repository interface for persisting and querying LmCore messages.
 /// </summary>
 /// <remarks>
-/// All operations are async and thread-safe.
-/// Messages are stored as complete JSON objects for accurate session recovery.
+///     All operations are async and thread-safe.
+///     Messages are stored as complete JSON objects for accurate session recovery.
 /// </remarks>
 public interface IMessageRepository
 {
     /// <summary>
-    /// Retrieves a message by its unique identifier.
+    ///     Retrieves a message by its unique identifier.
     /// </summary>
     /// <param name="id">The message identifier.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -20,8 +20,8 @@ public interface IMessageRepository
     Task<MessageEntity?> GetByIdAsync(string id, CancellationToken ct = default);
 
     /// <summary>
-    /// Retrieves all messages for a specific session with optional pagination.
-    /// Messages are returned in chronological order (oldest first).
+    ///     Retrieves all messages for a specific session with optional pagination.
+    ///     Messages are returned in chronological order (oldest first).
     /// </summary>
     /// <param name="sessionId">The session identifier.</param>
     /// <param name="skip">Number of records to skip (for pagination).</param>
@@ -36,8 +36,8 @@ public interface IMessageRepository
     );
 
     /// <summary>
-    /// Retrieves all messages for all sessions in a conversation with optional pagination.
-    /// Messages are returned in chronological order (oldest first).
+    ///     Retrieves all messages for all sessions in a conversation with optional pagination.
+    ///     Messages are returned in chronological order (oldest first).
     /// </summary>
     /// <param name="conversationId">The conversation identifier.</param>
     /// <param name="skip">Number of records to skip (for pagination).</param>
@@ -52,7 +52,7 @@ public interface IMessageRepository
     );
 
     /// <summary>
-    /// Creates a new message in the database.
+    ///     Creates a new message in the database.
     /// </summary>
     /// <param name="message">The message entity to create.</param>
     /// <param name="ct">Cancellation token.</param>

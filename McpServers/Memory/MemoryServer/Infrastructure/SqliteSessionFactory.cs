@@ -7,22 +7,22 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Production implementation of ISqliteSessionFactory with proper session management and metrics.
+///     Production implementation of ISqliteSessionFactory with proper session management and metrics.
 /// </summary>
 public class SqliteSessionFactory : ISqliteSessionFactory
 {
-    private readonly string _connectionString;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly ILogger<SqliteSessionFactory> _logger;
-    private readonly SemaphoreSlim _initializationSemaphore;
     private readonly ConcurrentDictionary<string, DateTime> _activeSessions;
+    private readonly string _connectionString;
+    private readonly SemaphoreSlim _initializationSemaphore;
+    private readonly ILogger<SqliteSessionFactory> _logger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly Lock _metricsLock = new();
+    private readonly List<double> _sessionCreationTimes = [];
+    private readonly List<double> _sessionLifetimes = [];
+    private int _failedSessionCreations;
 
     private bool _isInitialized;
     private int _totalSessionsCreated;
-    private int _failedSessionCreations;
-    private readonly List<double> _sessionCreationTimes = [];
-    private readonly List<double> _sessionLifetimes = [];
 
     public SqliteSessionFactory(IOptions<DatabaseOptions> options, ILoggerFactory loggerFactory)
     {
@@ -143,7 +143,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     }
 
     /// <summary>
-    /// Initializes the database schema and applies any necessary migrations.
+    ///     Initializes the database schema and applies any necessary migrations.
     /// </summary>
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
@@ -185,15 +185,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         {
             _ = _initializationSemaphore.Release();
         }
-    }
-
-    /// <summary>
-    /// Applies database migrations for schema updates.
-    /// </summary>
-    private static Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
-    {
-        // No migrations needed after removing session_defaults table
-        return Task.CompletedTask;
     }
 
     public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
@@ -239,6 +230,15 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
+    /// <summary>
+    ///     Applies database migrations for schema updates.
+    /// </summary>
+    private static Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        // No migrations needed after removing session_defaults table
+        return Task.CompletedTask;
+    }
+
     internal void OnSessionDisposed(string sessionId)
     {
         if (_activeSessions.TryRemove(sessionId, out var createdAt))
@@ -268,10 +268,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
-    private async Task ExecuteSchemaScriptsAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         var schemaScripts = GetSchemaScripts();
 
@@ -460,12 +457,12 @@ public class SqliteSessionFactory : ISqliteSessionFactory
 }
 
 /// <summary>
-/// Wrapper for SqliteSession that tracks disposal for metrics.
+///     Wrapper for SqliteSession that tracks disposal for metrics.
 /// </summary>
 internal class TrackedSqliteSession : ISqliteSession
 {
-    private readonly ISqliteSession _innerSession;
     private readonly SqliteSessionFactory _factory;
+    private readonly ISqliteSession _innerSession;
     private bool _disposed;
 
     public TrackedSqliteSession(ISqliteSession innerSession, SqliteSessionFactory factory)
@@ -478,7 +475,7 @@ internal class TrackedSqliteSession : ISqliteSession
     public bool IsDisposed => _disposed || _innerSession.IsDisposed;
 
     public Task<T> ExecuteAsync<T>(
-        Func<Microsoft.Data.Sqlite.SqliteConnection, Task<T>> operation,
+        Func<SqliteConnection, Task<T>> operation,
         CancellationToken cancellationToken = default
     )
     {
@@ -486,23 +483,20 @@ internal class TrackedSqliteSession : ISqliteSession
     }
 
     public Task<T> ExecuteInTransactionAsync<T>(
-        Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task<T>> operation,
+        Func<SqliteConnection, SqliteTransaction, Task<T>> operation,
         CancellationToken cancellationToken = default
     )
     {
         return _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
     }
 
-    public Task ExecuteAsync(
-        Func<Microsoft.Data.Sqlite.SqliteConnection, Task> operation,
-        CancellationToken cancellationToken = default
-    )
+    public Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default)
     {
         return _innerSession.ExecuteAsync(operation, cancellationToken);
     }
 
     public Task ExecuteInTransactionAsync(
-        Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task> operation,
+        Func<SqliteConnection, SqliteTransaction, Task> operation,
         CancellationToken cancellationToken = default
     )
     {

@@ -8,10 +8,10 @@ namespace MemoryServer.Tests.Services;
 
 public class TransportSessionInitializerTests
 {
-    private readonly Mock<ISessionManager> _mockSessionManager;
-    private readonly Mock<ILogger<TransportSessionInitializer>> _mockLogger;
-    private readonly MemoryServerOptions _options;
     private readonly TransportSessionInitializer _initializer;
+    private readonly Mock<ILogger<TransportSessionInitializer>> _mockLogger;
+    private readonly Mock<ISessionManager> _mockSessionManager;
+    private readonly MemoryServerOptions _options;
 
     public TransportSessionInitializerTests()
     {

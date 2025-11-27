@@ -7,16 +7,16 @@ using Microsoft.Data.Sqlite;
 namespace AchieveAi.LmDotnetTools.Misc.Storage;
 
 /// <summary>
-/// SQLite-backed implementation of IKvStore
+///     SQLite-backed implementation of IKvStore
 /// </summary>
 public class SqliteKvStore : IKvStore
 {
     private readonly SqliteConnection _connection;
     private readonly JsonSerializerOptions _jsonOptions;
-    private bool _initialized = false;
+    private bool _initialized;
 
     /// <summary>
-    /// Creates a new SQLite key-value store using the specified connection
+    ///     Creates a new SQLite key-value store using the specified connection
     /// </summary>
     /// <param name="connection">SQLite connection to use</param>
     /// <param name="jsonOptions">JSON serialization options, or null to use default options</param>
@@ -28,7 +28,7 @@ public class SqliteKvStore : IKvStore
     }
 
     /// <summary>
-    /// Creates a new SQLite key-value store using the specified database path
+    ///     Creates a new SQLite key-value store using the specified database path
     /// </summary>
     /// <param name="dbPath">Path to the SQLite database file</param>
     /// <param name="jsonOptions">JSON serialization options, or null to use default options</param>
@@ -45,30 +45,7 @@ public class SqliteKvStore : IKvStore
         InitializeDatabase();
     }
 
-    private void InitializeDatabase()
-    {
-        if (_initialized)
-        {
-            return;
-        }
-
-        if (_connection.State != ConnectionState.Open)
-        {
-            _connection.Open();
-        }
-
-        using var command = _connection.CreateCommand();
-        command.CommandText =
-            @"
-      CREATE TABLE IF NOT EXISTS cache (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )";
-        _ = command.ExecuteNonQuery();
-        _initialized = true;
-    }
-
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(key))
@@ -93,7 +70,7 @@ public class SqliteKvStore : IKvStore
         return JsonSerializer.Deserialize<T>(serializedValue, _jsonOptions);
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(key))
@@ -122,11 +99,34 @@ public class SqliteKvStore : IKvStore
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
     {
         InitializeDatabase();
         return Task.FromResult(GetKeysEnumerable(cancellationToken));
+    }
+
+    private void InitializeDatabase()
+    {
+        if (_initialized)
+        {
+            return;
+        }
+
+        if (_connection.State != ConnectionState.Open)
+        {
+            _connection.Open();
+        }
+
+        using var command = _connection.CreateCommand();
+        command.CommandText =
+            @"
+      CREATE TABLE IF NOT EXISTS cache (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )";
+        _ = command.ExecuteNonQuery();
+        _initialized = true;
     }
 
     private async IAsyncEnumerable<string> GetKeysEnumerable(

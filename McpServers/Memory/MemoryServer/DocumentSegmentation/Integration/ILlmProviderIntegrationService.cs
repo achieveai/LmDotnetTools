@@ -4,13 +4,13 @@ using MemoryServer.DocumentSegmentation.Services;
 namespace MemoryServer.DocumentSegmentation.Integration;
 
 /// <summary>
-/// Interface for LLM provider integration services.
-/// Provides access to LLM capabilities for document segmentation analysis.
+///     Interface for LLM provider integration services.
+///     Provides access to LLM capabilities for document segmentation analysis.
 /// </summary>
 public interface ILlmProviderIntegrationService
 {
     /// <summary>
-    /// Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
+    ///     Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
     /// </summary>
     /// <param name="content">The document content to analyze</param>
     /// <param name="documentType">Type of document for context</param>
@@ -23,15 +23,15 @@ public interface ILlmProviderIntegrationService
     );
 
     /// <summary>
-    /// Tests connectivity to LLM providers.
+    ///     Tests connectivity to LLM providers.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if connectivity is successful</returns>
     Task<bool> TestConnectivityAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Generates topic-based segmentation using an LLM and returns the raw JSON response.
-    /// A default implementation is provided so existing implementers remain compatible.
+    ///     Generates topic-based segmentation using an LLM and returns the raw JSON response.
+    ///     A default implementation is provided so existing implementers remain compatible.
     /// </summary>
     /// <param name="content">Document content to segment</param>
     /// <param name="documentType">Type of document (provides additional context)</param>

@@ -7,11 +7,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 
 /// <summary>
-/// SQLite implementation of <see cref="IMessageRepository"/>.
+///     SQLite implementation of <see cref="IMessageRepository" />.
 /// </summary>
 /// <remarks>
-/// Thread-safe implementation using parameterized queries.
-/// All database operations are async and support cancellation.
+///     Thread-safe implementation using parameterized queries.
+///     All database operations are async and support cancellation.
 /// </remarks>
 public sealed class MessageRepository : IMessageRepository
 {
@@ -19,7 +19,7 @@ public sealed class MessageRepository : IMessageRepository
     private readonly ILogger<MessageRepository> _logger;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="MessageRepository"/> class.
+    ///     Initializes a new instance of the <see cref="MessageRepository" /> class.
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
@@ -29,7 +29,7 @@ public sealed class MessageRepository : IMessageRepository
         _logger = logger ?? NullLogger<MessageRepository>.Instance;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<MessageEntity?> GetByIdAsync(string id, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -48,7 +48,7 @@ public sealed class MessageRepository : IMessageRepository
         return await reader.ReadAsync(ct) ? MapMessageEntity(reader) : null;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<MessageEntity>> GetMessagesBySessionIdAsync(
         string sessionId,
         int skip = 0,
@@ -90,7 +90,7 @@ public sealed class MessageRepository : IMessageRepository
         return messages;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<MessageEntity>> GetMessagesByConversationIdAsync(
         string conversationId,
         int skip = 0,
@@ -133,7 +133,7 @@ public sealed class MessageRepository : IMessageRepository
         return messages;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task CreateAsync(MessageEntity message, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -163,7 +163,7 @@ public sealed class MessageRepository : IMessageRepository
     }
 
     /// <summary>
-    /// Maps a data reader row to a MessageEntity.
+    ///     Maps a data reader row to a MessageEntity.
     /// </summary>
     private static MessageEntity MapMessageEntity(SqliteDataReader reader)
     {

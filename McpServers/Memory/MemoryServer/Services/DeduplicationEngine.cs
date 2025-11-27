@@ -1,11 +1,12 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Engine for intelligent deduplication of search results while preserving valuable context
+///     Engine for intelligent deduplication of search results while preserving valuable context
 /// </summary>
 public partial class DeduplicationEngine : IDeduplicationEngine
 {
@@ -14,6 +15,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
 
     public DeduplicationEngine(IOptions<MemoryServerOptions> options, ILogger<DeduplicationEngine> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value.Deduplication;
         _logger = logger;
 
@@ -152,6 +154,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
         {
             await AnalyzeSourceRelationshipsAsync(results, duplicateGroups, options, cancellationToken);
         }
+
         sourceStopwatch.Stop();
         metrics.SourceAnalysisDuration = sourceStopwatch.Elapsed;
 
@@ -168,6 +171,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
                     deduplicatedResults.Add(result);
                     _ = processedIds.Add(result.Id);
                 }
+
                 continue;
             }
 
@@ -420,6 +424,6 @@ public partial class DeduplicationEngine : IDeduplicationEngine
         };
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"[^\w\s]")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
+    [GeneratedRegex(@"[^\w\s]")]
+    private static partial Regex MyRegex();
 }

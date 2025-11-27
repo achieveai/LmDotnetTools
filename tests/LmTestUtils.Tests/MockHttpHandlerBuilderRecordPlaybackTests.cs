@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -265,7 +266,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
     public async Task WithRecordPlayback_NonExistentFile_ShouldCreateEmptyDataSet()
     {
         // Arrange - Use a non-existent file path
-        var testFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".json");
+        var testFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
 
         try
         {
@@ -308,7 +309,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(requestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: true);
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, true);
 
         // Assert
         Assert.True(matches);
@@ -342,7 +343,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, false);
 
         // Assert
         Assert.True(matches);
@@ -374,7 +375,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, false);
 
         // Assert
         Assert.False(matches);
@@ -456,8 +457,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
             // Debug: Check what was captured
-            System.Diagnostics.Debug.WriteLine($"Request count: {capture.RequestCount}");
-            System.Diagnostics.Debug.WriteLine($"Last request body: {capture.LastRequestBody}");
+            Debug.WriteLine($"Request count: {capture.RequestCount}");
+            Debug.WriteLine($"Last request body: {capture.LastRequestBody}");
 
             // Verify request was captured
             var capturedRequest = capture.GetAnthropicRequest();

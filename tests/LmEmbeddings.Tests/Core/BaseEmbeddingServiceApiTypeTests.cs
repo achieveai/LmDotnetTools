@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
@@ -13,17 +14,233 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core;
 
 /// <summary>
-/// HTTP-based tests for API type functionality in BaseEmbeddingService
-/// Following patterns from mocking-httpclient.md
+///     HTTP-based tests for API type functionality in BaseEmbeddingService
+///     Following patterns from mocking-httpclient.md
 /// </summary>
 public class BaseEmbeddingServiceApiTypeTests
 {
+    private static readonly string[] item = ["Hello world"];
+    private static readonly string[] itemArray = ["Hello", "World"];
+    private static readonly string[] itemArray0 = ["Hello world"];
+    private static readonly string[] itemArray1 = ["Hello", "World"];
+    private static readonly string[] itemArray2 = ["test"];
+    private static readonly string[] itemArray3 = ["test"];
+    private static readonly string[] itemArray4 = ["test"];
+    private static readonly string[] itemArray5 = ["test"];
+    private static readonly string[] itemArray6 = ["test1", "test2"];
+    private static readonly string[] itemArray7 = ["input", "model", "custom_param", "another_param"];
+    private static readonly string[] itemArray8 = ["test"];
+    private static readonly string[] itemArray9 = ["input", "model", "jina_specific"];
     private readonly ILogger<TestEmbeddingService> _logger;
 
     public BaseEmbeddingServiceApiTypeTests()
     {
         _logger = TestLoggerFactory.CreateLogger<TestEmbeddingService>();
     }
+
+    public static IEnumerable<object[]> OpenAIRequestFormattingTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = item,
+                    Model = "text-embedding-3-small",
+                    ApiType = EmbeddingApiType.Default,
+                },
+                new Dictionary<string, object> { ["input"] = item, ["model"] = "text-embedding-3-small" },
+                "Basic OpenAI request",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray,
+                    Model = "text-embedding-3-large",
+                    ApiType = EmbeddingApiType.Default,
+                    EncodingFormat = "float",
+                    Dimensions = 1536,
+                    User = "test-user",
+                },
+                new Dictionary<string, object>
+                {
+                    ["input"] = itemArray,
+                    ["model"] = "text-embedding-3-large",
+                    ["encoding_format"] = "float",
+                    ["dimensions"] = 1536,
+                    ["user"] = "test-user",
+                },
+                "OpenAI request with all parameters",
+            ],
+        ];
+
+    public static IEnumerable<object[]> JinaRequestFormattingTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray0,
+                    Model = "jina-embeddings-v3",
+                    ApiType = EmbeddingApiType.Jina,
+                },
+                new Dictionary<string, object> { ["input"] = itemArray0, ["model"] = "jina-embeddings-v3" },
+                "Basic Jina request",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray1,
+                    Model = "jina-embeddings-v3",
+                    ApiType = EmbeddingApiType.Jina,
+                    EncodingFormat = "float",
+                    Normalized = true,
+                    Dimensions = 1024,
+                },
+                new Dictionary<string, object>
+                {
+                    ["input"] = itemArray1,
+                    ["model"] = "jina-embeddings-v3",
+                    ["embedding_type"] = "float",
+                    ["normalized"] = true,
+                    ["dimensions"] = 1024,
+                },
+                "Jina request with all parameters",
+            ],
+        ];
+
+    public static IEnumerable<object[]> ValidationTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray2,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Default,
+                    EncodingFormat = "float",
+                },
+                true,
+                "",
+                "Valid OpenAI request with float encoding",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray2,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Default,
+                    EncodingFormat = "binary",
+                },
+                false,
+                "Invalid value 'binary'. Allowed values: float, base64",
+                "Invalid OpenAI request with binary encoding",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray3,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Jina,
+                    EncodingFormat = "binary",
+                },
+                true,
+                "",
+                "Valid Jina request with binary encoding",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray3,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Jina,
+                    EncodingFormat = "invalid",
+                },
+                false,
+                "Invalid value 'invalid'. Allowed values: float, binary, base64",
+                "Invalid Jina request with unsupported encoding",
+            ],
+        ];
+
+    public static IEnumerable<object[]> HttpErrorHandlingTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray4,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Default,
+                },
+                HttpStatusCode.BadRequest,
+                "{\"error\": \"Bad request\"}",
+                typeof(HttpRequestException),
+                "400 Bad Request error",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray4,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Jina,
+                },
+                HttpStatusCode.Unauthorized,
+                "{\"error\": \"Unauthorized\"}",
+                typeof(HttpRequestException),
+                "401 Unauthorized error",
+            ],
+        ];
+
+    public static IEnumerable<object[]> RetryLogicTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray5,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Default,
+                },
+                2, // Fail twice, then succeed
+                HttpStatusCode.InternalServerError,
+                "Retry after 2 server errors",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray6,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Jina,
+                },
+                1, // Fail once, then succeed
+                HttpStatusCode.BadGateway,
+                "Retry after 1 bad gateway error",
+            ],
+        ];
+
+    public static IEnumerable<object[]> AdditionalOptionsTestCases =>
+        [
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray5,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Default,
+                    AdditionalOptions = new Dictionary<string, object>
+                    {
+                        ["custom_param"] = "custom_value",
+                        ["another_param"] = 42,
+                    },
+                },
+                itemArray7,
+                "OpenAI request with additional options",
+            ],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray8,
+                    Model = "test-model",
+                    ApiType = EmbeddingApiType.Jina,
+                    AdditionalOptions = new Dictionary<string, object> { ["jina_specific"] = true },
+                },
+                itemArray9,
+                "Jina request with additional options",
+            ],
+        ];
 
     [Theory]
     [MemberData(nameof(OpenAIRequestFormattingTestCases))]
@@ -50,7 +267,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                        Content = new StringContent(response, Encoding.UTF8, "application/json"),
                     }
                 );
             }
@@ -102,7 +319,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                        Content = new StringContent(response, Encoding.UTF8, "application/json"),
                     }
                 );
             }
@@ -255,6 +472,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 Debug.WriteLine($"Result.Embeddings.Count: {result.Embeddings.Count}");
             }
         }
+
         Assert.True(
             result?.Embeddings?.Count > 0,
             $"Expected embeddings count > 0, but got {result?.Embeddings?.Count ?? 0}"
@@ -286,7 +504,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                        Content = new StringContent(response, Encoding.UTF8, "application/json"),
                     }
                 );
             }
@@ -315,16 +533,16 @@ public class BaseEmbeddingServiceApiTypeTests
     }
 
     /// <summary>
-    /// Test implementation of BaseEmbeddingService for HTTP testing
+    ///     Test implementation of BaseEmbeddingService for HTTP testing
     /// </summary>
     private class TestEmbeddingService : BaseEmbeddingService
     {
+        private static readonly string[] result = ["test-model"];
+
         public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient)
             : base(logger, httpClient) { }
 
         public override int EmbeddingSize => 1536;
-
-        private static readonly string[] result = ["test-model"];
 
         public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
             EmbeddingRequest request,
@@ -338,11 +556,11 @@ public class BaseEmbeddingServiceApiTypeTests
                 {
                     var requestPayload = FormatRequestPayload(request);
                     var json = JsonSerializer.Serialize(requestPayload);
-                    var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                    var content = new StringContent(json, Encoding.UTF8, "application/json");
 
                     return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
                 },
-                async (response) =>
+                async response =>
                 {
                     var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                     var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
@@ -350,24 +568,26 @@ public class BaseEmbeddingServiceApiTypeTests
                     return embeddingResponse?.Embeddings == null
                         ? throw new InvalidOperationException("Invalid response from API")
                         : new EmbeddingResponse
-                    {
-                        Embeddings = [.. embeddingResponse
-                            .Embeddings.Select(e => new EmbeddingItem
-                            {
-                                Vector = e.Vector,
-                                Index = e.Index,
-                                Text = e.Text,
-                            })],
-                        Model = embeddingResponse.Model,
-                        Usage =
-                            embeddingResponse.Usage != null
-                                ? new EmbeddingUsage
+                        {
+                            Embeddings =
+                            [
+                                .. embeddingResponse.Embeddings.Select(e => new EmbeddingItem
                                 {
-                                    PromptTokens = embeddingResponse.Usage.PromptTokens,
-                                    TotalTokens = embeddingResponse.Usage.TotalTokens,
-                                }
-                                : null,
-                    };
+                                    Vector = e.Vector,
+                                    Index = e.Index,
+                                    Text = e.Text,
+                                }),
+                            ],
+                            Model = embeddingResponse.Model,
+                            Usage =
+                                embeddingResponse.Usage != null
+                                    ? new EmbeddingUsage
+                                    {
+                                        PromptTokens = embeddingResponse.Usage.PromptTokens,
+                                        TotalTokens = embeddingResponse.Usage.TotalTokens,
+                                    }
+                                    : null,
+                        };
                 },
                 cancellationToken: cancellationToken
             );
@@ -383,7 +603,7 @@ public class BaseEmbeddingServiceApiTypeTests
         private class TestEmbeddingResponse
         {
             [JsonPropertyName("Embeddings")]
-            public TestEmbeddingItem[] Embeddings { get; set; } = Array.Empty<TestEmbeddingItem>();
+            public TestEmbeddingItem[] Embeddings { get; set; } = [];
 
             [JsonPropertyName("Model")]
             public string Model { get; set; } = "";
@@ -395,7 +615,7 @@ public class BaseEmbeddingServiceApiTypeTests
         private class TestEmbeddingItem
         {
             [JsonPropertyName("Vector")]
-            public float[] Vector { get; set; } = Array.Empty<float>();
+            public float[] Vector { get; } = [];
 
             [JsonPropertyName("Index")]
             public int Index { get; set; }
@@ -413,241 +633,4 @@ public class BaseEmbeddingServiceApiTypeTests
             public int TotalTokens { get; set; }
         }
     }
-
-    public static IEnumerable<object[]> OpenAIRequestFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = item,
-                    Model = "text-embedding-3-small",
-                    ApiType = EmbeddingApiType.Default,
-                },
-                new Dictionary<string, object> { ["input"] = item, ["model"] = "text-embedding-3-small" },
-                "Basic OpenAI request",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray,
-                    Model = "text-embedding-3-large",
-                    ApiType = EmbeddingApiType.Default,
-                    EncodingFormat = "float",
-                    Dimensions = 1536,
-                    User = "test-user",
-                },
-                new Dictionary<string, object>
-                {
-                    ["input"] = itemArray,
-                    ["model"] = "text-embedding-3-large",
-                    ["encoding_format"] = "float",
-                    ["dimensions"] = 1536,
-                    ["user"] = "test-user",
-                },
-                "OpenAI request with all parameters",
-            },
-        };
-
-    public static IEnumerable<object[]> JinaRequestFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray0,
-                    Model = "jina-embeddings-v3",
-                    ApiType = EmbeddingApiType.Jina,
-                },
-                new Dictionary<string, object> { ["input"] = itemArray0, ["model"] = "jina-embeddings-v3" },
-                "Basic Jina request",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray1,
-                    Model = "jina-embeddings-v3",
-                    ApiType = EmbeddingApiType.Jina,
-                    EncodingFormat = "float",
-                    Normalized = true,
-                    Dimensions = 1024,
-                },
-                new Dictionary<string, object>
-                {
-                    ["input"] = itemArray1,
-                    ["model"] = "jina-embeddings-v3",
-                    ["embedding_type"] = "float",
-                    ["normalized"] = true,
-                    ["dimensions"] = 1024,
-                },
-                "Jina request with all parameters",
-            },
-        };
-
-    public static IEnumerable<object[]> ValidationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray2,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Default,
-                    EncodingFormat = "float",
-                },
-                true,
-                "",
-                "Valid OpenAI request with float encoding",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray2,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Default,
-                    EncodingFormat = "binary",
-                },
-                false,
-                "Invalid value 'binary'. Allowed values: float, base64",
-                "Invalid OpenAI request with binary encoding",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray3,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Jina,
-                    EncodingFormat = "binary",
-                },
-                true,
-                "",
-                "Valid Jina request with binary encoding",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray3,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Jina,
-                    EncodingFormat = "invalid",
-                },
-                false,
-                "Invalid value 'invalid'. Allowed values: float, binary, base64",
-                "Invalid Jina request with unsupported encoding",
-            },
-        };
-
-    public static IEnumerable<object[]> HttpErrorHandlingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray4,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Default,
-                },
-                HttpStatusCode.BadRequest,
-                "{\"error\": \"Bad request\"}",
-                typeof(HttpRequestException),
-                "400 Bad Request error",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray4,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Jina,
-                },
-                HttpStatusCode.Unauthorized,
-                "{\"error\": \"Unauthorized\"}",
-                typeof(HttpRequestException),
-                "401 Unauthorized error",
-            },
-        };
-
-    public static IEnumerable<object[]> RetryLogicTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray5,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Default,
-                },
-                2, // Fail twice, then succeed
-                HttpStatusCode.InternalServerError,
-                "Retry after 2 server errors",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray6,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Jina,
-                },
-                1, // Fail once, then succeed
-                HttpStatusCode.BadGateway,
-                "Retry after 1 bad gateway error",
-            },
-        };
-
-    public static IEnumerable<object[]> AdditionalOptionsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray5,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Default,
-                    AdditionalOptions = new Dictionary<string, object>
-                    {
-                        ["custom_param"] = "custom_value",
-                        ["another_param"] = 42,
-                    },
-                },
-                itemArray7,
-                "OpenAI request with additional options",
-            },
-            new object[]
-            {
-                new EmbeddingRequest
-                {
-                    Inputs = itemArray8,
-                    Model = "test-model",
-                    ApiType = EmbeddingApiType.Jina,
-                    AdditionalOptions = new Dictionary<string, object> { ["jina_specific"] = true },
-                },
-                itemArray9,
-                "Jina request with additional options",
-            },
-        };
-
-    private static readonly string[] item = ["Hello world"];
-    private static readonly string[] itemArray = ["Hello", "World"];
-    private static readonly string[] itemArray0 = ["Hello world"];
-    private static readonly string[] itemArray1 = ["Hello", "World"];
-    private static readonly string[] itemArray2 = ["test"];
-    private static readonly string[] itemArray3 = ["test"];
-    private static readonly string[] itemArray4 = ["test"];
-    private static readonly string[] itemArray5 = ["test"];
-    private static readonly string[] itemArray6 = ["test1", "test2"];
-    private static readonly string[] itemArray7 = ["input", "model", "custom_param", "another_param"];
-    private static readonly string[] itemArray8 = ["test"];
-    private static readonly string[] itemArray9 = ["input", "model", "jina_specific"];
 }

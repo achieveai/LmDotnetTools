@@ -9,7 +9,7 @@ using McpToolFilterConfig = AchieveAi.LmDotnetTools.McpMiddleware.McpToolFilterC
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 /// <summary>
-/// Test suite for MCP-specific middleware wrapper classes ensuring backward compatibility
+///     Test suite for MCP-specific middleware wrapper classes ensuring backward compatibility
 /// </summary>
 public class McpMiddlewareTests
 {
@@ -19,6 +19,43 @@ public class McpMiddlewareTests
     {
         _mockLogger = new Mock<ILogger>();
     }
+
+    #region Integration Tests
+
+    [Fact]
+    public void McpWrappers_IntegrateWithGeneralizedClasses()
+    {
+        // Test that MCP wrappers correctly delegate to generalized classes
+        // This ensures the refactoring maintains backward compatibility
+
+        // Arrange
+#pragma warning disable CS0618 // Type or member is obsolete
+        var mcpConfig = new McpToolFilterConfig
+        {
+            EnableFiltering = true,
+            GlobalBlockedFunctions = ["dangerous_*"],
+            ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
+            {
+                ["testServer"] = new McpServerFilterConfig { Enabled = true, CustomPrefix = "ts" },
+            },
+        };
+
+        var serverConfigs = new Dictionary<string, McpServerFilterConfig>
+        {
+            ["testServer"] = new() { Enabled = true, BlockedFunctions = ["specific_blocked"] },
+        };
+
+        var filter = new McpToolFilter(mcpConfig, serverConfigs, _mockLogger.Object);
+#pragma warning restore CS0618
+
+        // Act & Assert
+        _ = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
+        _ = filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
+    }
+
+    #endregion
 
     #region McpToolFilter Tests
 
@@ -66,7 +103,7 @@ public class McpMiddlewareTests
         var globalConfig = new McpToolFilterConfig { EnableFiltering = true };
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>
         {
-            ["blockedServer"] = new McpServerFilterConfig { Enabled = false },
+            ["blockedServer"] = new() { Enabled = false },
         };
 
         var filter = new McpToolFilter(globalConfig, serverConfigs, _mockLogger.Object);
@@ -323,49 +360,8 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        _ = (mcpToolFilterAttr?.Message.Should().Contain("FunctionFilter"));
-        _ = (mcpToolFilterConfigAttr?.Message.Should().Contain("FunctionFilterConfig"));
-    }
-
-    #endregion
-
-    #region Integration Tests
-
-    [Fact]
-    public void McpWrappers_IntegrateWithGeneralizedClasses()
-    {
-        // Test that MCP wrappers correctly delegate to generalized classes
-        // This ensures the refactoring maintains backward compatibility
-
-        // Arrange
-#pragma warning disable CS0618 // Type or member is obsolete
-        var mcpConfig = new McpToolFilterConfig
-        {
-            EnableFiltering = true,
-            GlobalBlockedFunctions = ["dangerous_*"],
-            ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
-            {
-                ["testServer"] = new McpServerFilterConfig { Enabled = true, CustomPrefix = "ts" },
-            },
-        };
-
-        var serverConfigs = new Dictionary<string, McpServerFilterConfig>
-        {
-            ["testServer"] = new McpServerFilterConfig
-            {
-                Enabled = true,
-                BlockedFunctions = ["specific_blocked"],
-            },
-        };
-
-        var filter = new McpToolFilter(mcpConfig, serverConfigs, _mockLogger.Object);
-#pragma warning restore CS0618
-
-        // Act & Assert
-        _ = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
-        _ = filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
-        _ = filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
-        _ = filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
+        _ = mcpToolFilterAttr?.Message.Should().Contain("FunctionFilter");
+        _ = mcpToolFilterConfigAttr?.Message.Should().Contain("FunctionFilterConfig");
     }
 
     #endregion

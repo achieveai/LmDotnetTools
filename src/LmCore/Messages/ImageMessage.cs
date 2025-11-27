@@ -8,6 +8,19 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ImageMessageJsonConverter))]
 public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 {
+    [JsonPropertyName("image_data")]
+    public required BinaryData ImageData { get; init; }
+
+    public BinaryData? GetBinary()
+    {
+        return ImageData;
+    }
+
+    public string? GetText()
+    {
+        return ImageData.ToDataUrl();
+    }
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; set; }
@@ -22,9 +35,6 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; set; }
 
-    [JsonPropertyName("image_data")]
-    public required BinaryData ImageData { get; init; }
-
     [JsonPropertyName("threadId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ThreadId { get; set; }
@@ -36,16 +46,6 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonPropertyName("messageOrderIdx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MessageOrderIdx { get; set; }
-
-    public string? GetText()
-    {
-        return ImageData.ToDataUrl();
-    }
-
-    public BinaryData? GetBinary()
-    {
-        return ImageData;
-    }
 
     public static ToolCall? GetToolCalls()
     {
@@ -68,10 +68,6 @@ public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMess
 
 public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 {
-    public string? FromAgent { get; init; }
-
-    public Role Role { get; init; }
-
     public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; init; }
@@ -83,14 +79,18 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
     public string? RunId { get; init; }
 
     public int? MessageOrderIdx { get; init; }
+    public string? FromAgent { get; init; }
+
+    public Role Role { get; init; }
 
     IMessage IMessageBuilder.Build()
     {
-        return this.Build();
+        return Build();
     }
 
     public void Add(ImageMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         ImageData.Add(streamingMessageUpdate.ImageData);
 
         // Merge metadata from the update

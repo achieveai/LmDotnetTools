@@ -27,10 +27,10 @@ public class MessageUpdateJoinerMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new[] { message });
+            .ReturnsAsync([message]);
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
@@ -39,7 +39,7 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.NotNull(result);
         var firstMessage = result.FirstOrDefault();
         Assert.NotNull(firstMessage);
-        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)firstMessage).GetText());
+        Assert.Equal(message.Text, ((ICanGetText)firstMessage).GetText());
 
         // Verify the agent was called exactly once
         mockAgent.Verify(
@@ -78,7 +78,7 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
@@ -136,10 +136,7 @@ public class MessageUpdateJoinerMiddlewareTests
             Role = Role.Assistant,
         };
 
-        var updateMessages = new List<IMessage>(textUpdates)
-        {
-            usageMessage
-        };
+        var updateMessages = new List<IMessage>(textUpdates) { usageMessage };
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
@@ -154,7 +151,7 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
@@ -173,7 +170,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var textMessage = results[0];
         _ = Assert.IsType<TextMessage>(textMessage);
         Assert.NotNull(textMessage);
-        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)textMessage).GetText());
+        Assert.Equal(testString, ((ICanGetText)textMessage).GetText());
 
         // Verify that the text message doesn't have usage metadata
         Assert.Null(textMessage.Metadata);
@@ -233,5 +230,6 @@ public class MessageUpdateJoinerMiddlewareTests
 
         return messages;
     }
+
     #endregion
 }

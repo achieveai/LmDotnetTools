@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -8,8 +9,8 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 
 /// <summary>
-/// Agent that demonstrates tool calling capabilities
-/// Analyzes user messages and calls appropriate tools (weather, calculator, search, etc.)
+///     Agent that demonstrates tool calling capabilities
+///     Analyzes user messages and calls appropriate tools (weather, calculator, search, etc.)
 /// </summary>
 public partial class ToolCallingAgent : IStreamingAgent
 {
@@ -120,13 +121,16 @@ public partial class ToolCallingAgent : IStreamingAgent
         // Yield tool call
         yield return new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall
+            ToolCalls =
+            [
+                new ToolCall
                 {
                     FunctionName = toolToCall,
                     FunctionArgs = arguments,
                     ToolCallId = Guid.NewGuid().ToString(),
                     Index = 0,
-                }],
+                },
+            ],
             FromAgent = Name,
             Role = Role.Assistant,
             GenerationId = generationId,
@@ -246,10 +250,11 @@ public partial class ToolCallingAgent : IStreamingAgent
             var index = text.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
             if (index >= 0)
             {
-                var query = text.Substring(index + keyword.Length).Trim();
+                var query = text[(index + keyword.Length)..].Trim();
                 return string.IsNullOrWhiteSpace(query) ? "AG-UI protocol" : query;
             }
         }
+
         return "AG-UI protocol";
     }
 
@@ -266,9 +271,9 @@ public partial class ToolCallingAgent : IStreamingAgent
         };
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"\d+\s*[\+\-\*\/]\s*\d+")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
+    [GeneratedRegex(@"\d+\s*[\+\-\*\/]\s*\d+")]
+    private static partial Regex MyRegex();
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex1();
+    [GeneratedRegex(@"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)")]
+    private static partial Regex MyRegex1();
 }

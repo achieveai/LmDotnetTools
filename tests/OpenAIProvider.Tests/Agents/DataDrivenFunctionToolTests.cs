@@ -11,15 +11,12 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
-    private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
-    private static string EnvTestPath =>
-        Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            ".env.test"
-        );
-
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
+    private readonly ProviderTestDataManager _testDataManager = new();
+
+    private static string EnvTestPath =>
+        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
@@ -44,7 +41,7 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -61,12 +58,8 @@ public class DataDrivenFunctionToolTests
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
 
         Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count ?? 0}");
-        Debug.WriteLine(
-            $"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
-        );
-        Debug.WriteLine(
-            $"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
-        );
+        Debug.WriteLine($"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? [])}");
+        Debug.WriteLine($"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? [])}");
 
         Assert.NotNull(response);
 
@@ -120,7 +113,7 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Gets all test cases from the TestData directory.
+    ///     Gets all test cases from the TestData directory.
     /// </summary>
     public static IEnumerable<object[]> GetFunctionToolTestCases()
     {
@@ -132,7 +125,7 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Creates a test case data file. Run this method to generate test data.
+    ///     Creates a test case data file. Run this method to generate test data.
     /// </summary>
     [Fact]
     public async Task CreateWeatherFunctionToolTestData()
@@ -157,8 +150,8 @@ public class DataDrivenFunctionToolTests
         {
             Name = "getWeather",
             Description = "Get current weather for a location",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "location",
@@ -166,7 +159,7 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [weatherFunction] };
@@ -185,7 +178,7 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .WithRecordPlayback(testDataFilePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -201,7 +194,7 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Creates a multi-function test case data file. Run this method to generate test data.
+    ///     Creates a multi-function test case data file. Run this method to generate test data.
     /// </summary>
     [Fact]
     public async Task CreateMultiFunctionToolTestData()
@@ -232,8 +225,8 @@ public class DataDrivenFunctionToolTests
         {
             Name = "python_mcp-list_directory",
             Description = "List the contents of a directory within the code directory",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "relative_path",
@@ -241,15 +234,15 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var getDirTreeFunction = new FunctionContract
         {
             Name = "python_mcp-get_directory_tree",
             Description = "Get an ASCII tree representation of a directory structure",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "relative_path",
@@ -257,7 +250,7 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions
@@ -282,7 +275,7 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .WithRecordPlayback(testDataFilePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -298,18 +291,18 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
     }
 
     /// <summary>
-    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
     }
 }

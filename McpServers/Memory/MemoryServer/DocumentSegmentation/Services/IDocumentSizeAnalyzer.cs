@@ -3,12 +3,12 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service interface for analyzing document size and determining segmentation requirements.
+///     Service interface for analyzing document size and determining segmentation requirements.
 /// </summary>
 public interface IDocumentSizeAnalyzer
 {
     /// <summary>
-    /// Analyzes document content to determine size metrics.
+    ///     Analyzes document content to determine size metrics.
     /// </summary>
     /// <param name="content">Document content to analyze</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -16,7 +16,7 @@ public interface IDocumentSizeAnalyzer
     Task<DocumentStatistics> AnalyzeDocumentAsync(string content, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Determines if a document should be segmented based on configured thresholds.
+    ///     Determines if a document should be segmented based on configured thresholds.
     /// </summary>
     /// <param name="statistics">Document statistics from analysis</param>
     /// <param name="documentType">Type of document for specific thresholds</param>
@@ -24,7 +24,7 @@ public interface IDocumentSizeAnalyzer
     bool ShouldSegmentDocument(DocumentStatistics statistics, DocumentType documentType = DocumentType.Generic);
 
     /// <summary>
-    /// Calculates optimal segment count for a document.
+    ///     Calculates optimal segment count for a document.
     /// </summary>
     /// <param name="statistics">Document statistics from analysis</param>
     /// <param name="targetSegmentSize">Target size per segment in words</param>
@@ -37,7 +37,7 @@ public interface IDocumentSizeAnalyzer
     );
 
     /// <summary>
-    /// Estimates processing time for document segmentation.
+    ///     Estimates processing time for document segmentation.
     /// </summary>
     /// <param name="statistics">Document statistics from analysis</param>
     /// <param name="strategy">Segmentation strategy to use</param>

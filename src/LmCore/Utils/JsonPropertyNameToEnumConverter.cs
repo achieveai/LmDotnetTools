@@ -9,6 +9,8 @@ public class JsonPropertyNameEnumConverter<T> : JsonConverter<T>
 {
     public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(typeToConvert);
+
         var value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
 
         foreach (var field in typeToConvert.GetFields())
@@ -25,6 +27,8 @@ public class JsonPropertyNameEnumConverter<T> : JsonConverter<T>
 
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+
         var field = value.GetType().GetField(value.ToString())!;
         var attribute = field.GetCustomAttribute<JsonPropertyNameAttribute>();
 

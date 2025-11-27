@@ -11,6 +11,7 @@ public class MiddlewareWrappingAgent : IAgent
 
     public MiddlewareWrappingAgent(IAgent agent, IMiddleware middleware)
     {
+        ArgumentNullException.ThrowIfNull(middleware);
         _agent = agent;
         _middleware = middleware.InvokeAsync;
     }

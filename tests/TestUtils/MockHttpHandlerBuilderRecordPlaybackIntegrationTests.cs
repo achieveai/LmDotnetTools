@@ -9,6 +9,10 @@ namespace AchieveAi.LmDotnetTools.TestUtils.Tests;
 
 public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
 {
+    private static readonly string[] fallbackApiKeys = ["LLM_API_KEY"];
+
+    private static readonly string[] fallbackBaseUrls = ["LLM_API_BASE_URL"];
+
     [Fact]
     public async Task MockHttpHandlerBuilder_RecordPlayback_ShouldHandleNewTestData()
     {
@@ -18,7 +22,7 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         // Create MockHttpHandlerBuilder with record/playback and OpenAI response
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataPath, allowAdditional: true)
+            .WithRecordPlayback(testDataPath, true)
             .ForwardToApi(
                 EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
                 EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY")
@@ -69,31 +73,19 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         }
     }
 
-    private static readonly string[] fallbackApiKeys = ["LLM_API_KEY"];
-
     /// <summary>
-    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            fallbackApiKeys,
-            "test-api-key"
-        );
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackApiKeys);
     }
 
-    private static readonly string[] fallbackBaseUrls = ["LLM_API_BASE_URL"];
-
     /// <summary>
-    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            fallbackBaseUrls,
-            "https://api.openai.com/v1"
-        );
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackBaseUrls);
     }
 }

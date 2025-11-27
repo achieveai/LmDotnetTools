@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Unit tests for SegmentationPromptManager service.
+///     Unit tests for SegmentationPromptManager service.
 /// </summary>
 public class SegmentationPromptManagerTests : IDisposable
 {
@@ -37,6 +37,14 @@ public class SegmentationPromptManagerTests : IDisposable
 
         var optionsWrapper = Options.Create(_options);
         _promptManager = new SegmentationPromptManager(_logger, optionsWrapper);
+    }
+
+    public void Dispose()
+    {
+        if (File.Exists(_testPromptsPath))
+        {
+            File.Delete(_testPromptsPath);
+        }
     }
 
     [Fact]
@@ -205,13 +213,5 @@ domain_instructions:
 ";
 
         File.WriteAllText(_testPromptsPath, testYamlContent);
-    }
-
-    public void Dispose()
-    {
-        if (File.Exists(_testPromptsPath))
-        {
-            File.Delete(_testPromptsPath);
-        }
     }
 }

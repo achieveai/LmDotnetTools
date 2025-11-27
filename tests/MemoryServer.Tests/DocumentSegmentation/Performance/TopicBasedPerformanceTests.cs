@@ -10,16 +10,16 @@ using Xunit.Abstractions;
 namespace MemoryServer.DocumentSegmentation.Tests.Performance;
 
 /// <summary>
-/// Performance and scalability tests for TopicBasedSegmentationService.
-/// These tests ensure the service can handle production-scale workloads efficiently.
+///     Performance and scalability tests for TopicBasedSegmentationService.
+///     These tests ensure the service can handle production-scale workloads efficiently.
 /// </summary>
 public class TopicBasedPerformanceTests
 {
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
-    private readonly TopicBasedSegmentationService _service;
     private readonly ITestOutputHelper _output;
+    private readonly TopicBasedSegmentationService _service;
 
     public TopicBasedPerformanceTests(ITestOutputHelper output)
     {
@@ -75,7 +75,7 @@ public class TopicBasedPerformanceTests
         _ = result.All(s => s.Content.Length >= options.MinSegmentSize).Should().BeTrue();
         _ = result.All(s => s.Content.Length <= options.MaxSegmentSize * 1.2).Should().BeTrue(); // Allow 20% variance
 
-        _output.WriteLine($"Large Document Performance:");
+        _output.WriteLine("Large Document Performance:");
         _output.WriteLine($"  Document size: {largeDocument.Length:N0} characters");
         _output.WriteLine($"  Word count: {largeDocument.Split(' ').Length:N0} words");
         _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms ({processingTimeMs / 1000.0:F2}s)");
@@ -108,14 +108,10 @@ public class TopicBasedPerformanceTests
 
         // Processing should scale reasonably with document size
         // Larger documents may be slightly less efficient due to complexity
-        if (wordCount <= 10000)
-        {
-            _ = wordsPerSecond.Should().BeGreaterThan(800);
-        }
-        else
-        {
-            _ = wordCount <= 20000 ? wordsPerSecond.Should().BeGreaterThan(600) : wordsPerSecond.Should().BeGreaterThan(400);
-        }
+        _ =
+            wordCount <= 10000 ? wordsPerSecond.Should().BeGreaterThan(800)
+            : wordCount <= 20000 ? wordsPerSecond.Should().BeGreaterThan(600)
+            : wordsPerSecond.Should().BeGreaterThan(400);
 
         _output.WriteLine($"Document Size Scaling Test ({wordCount} words):");
         _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms");
@@ -164,7 +160,7 @@ public class TopicBasedPerformanceTests
         _ = allSegments.Should().NotBeEmpty();
         _ = allSegments.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
 
-        _output.WriteLine($"Concurrent Processing Test:");
+        _output.WriteLine("Concurrent Processing Test:");
         _output.WriteLine($"  Documents processed: {documentCount}");
         _output.WriteLine($"  Total time: {totalProcessingTime:N0}ms");
         _output.WriteLine($"  Average per document: {totalProcessingTime / (double)documentCount:F0}ms");
@@ -214,7 +210,7 @@ public class TopicBasedPerformanceTests
             .Should()
             .BeLessThan(1000, $"Average processing time was {averageTimePerDocument:F0}ms, should be <1000ms");
 
-        _output.WriteLine($"High Concurrency Test:");
+        _output.WriteLine("High Concurrency Test:");
         _output.WriteLine($"  Documents: {documentCount}");
         _output.WriteLine($"  Total time: {totalProcessingTime:N0}ms");
         _output.WriteLine($"  Average per document: {averageTimePerDocument:F0}ms");
@@ -261,7 +257,7 @@ public class TopicBasedPerformanceTests
                 $"Memory per word was {memoryPerWord:F0} bytes, should be <1000 bytes"
             );
 
-        _output.WriteLine($"Memory Usage Test:");
+        _output.WriteLine("Memory Usage Test:");
         _output.WriteLine($"  Document size: {largeDocument.Length:N0} characters");
         _output.WriteLine($"  Memory used: {memoryUsedMB:F2}MB");
         _output.WriteLine($"  Memory per word: {memoryPerWord:F0} bytes");
@@ -306,7 +302,7 @@ public class TopicBasedPerformanceTests
                 $"Memory increased by {memoryIncreaseMB:F2}MB after {iterations} iterations, should be <10MB"
             );
 
-        _output.WriteLine($"Memory Leak Test:");
+        _output.WriteLine("Memory Leak Test:");
         _output.WriteLine($"  Iterations: {iterations}");
         _output.WriteLine($"  Baseline memory: {baselineMemory / (1024.0 * 1024.0):F2}MB");
         _output.WriteLine($"  Final memory: {finalMemory / (1024.0 * 1024.0):F2}MB");
@@ -361,7 +357,7 @@ public class TopicBasedPerformanceTests
         for (var i = 0; i < iterations; i++)
         {
             var stopwatch = Stopwatch.StartNew();
-            var boundaries = await _service.DetectTopicBoundariesAsync(document, DocumentType.Generic);
+            var boundaries = await _service.DetectTopicBoundariesAsync(document);
             stopwatch.Stop();
 
             _ = boundaries.Should().NotBeNull();

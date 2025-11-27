@@ -20,14 +20,14 @@ public sealed class InstructionPlan(string idMessage, int? reasoningLength, List
 
 public sealed class InstructionMessage
 {
-    public int? TextLength { get; }
-    public List<InstructionToolCall>? ToolCalls { get; }
-
     private InstructionMessage(int? textLength, List<InstructionToolCall>? toolCalls)
     {
         TextLength = textLength;
         ToolCalls = toolCalls;
     }
+
+    public int? TextLength { get; }
+    public List<InstructionToolCall>? ToolCalls { get; }
 
     public static InstructionMessage ForText(int length)
     {
@@ -57,12 +57,13 @@ public sealed class SseStreamHttpContent : HttpContent
     private static readonly JsonSerializerOptions _jsonSerializerOptionsWithReasoning =
         OpenClient.S_jsonSerializerOptions;
 
-    private readonly string _userMessage;
-    private readonly string? _model;
-    private readonly bool _reasoningFirst;
-    private readonly int _wordsPerChunk;
     private readonly int _chunkDelayMs;
     private readonly InstructionPlan? _instructionPlan;
+    private readonly string? _model;
+    private readonly bool _reasoningFirst;
+
+    private readonly string _userMessage;
+    private readonly int _wordsPerChunk;
 
     public SseStreamHttpContent(
         string userMessage,
@@ -122,7 +123,7 @@ public sealed class SseStreamHttpContent : HttpContent
                 Exception? error = null;
                 try
                 {
-                    using var writerStream = pipe.Writer.AsStream(leaveOpen: false);
+                    using var writerStream = pipe.Writer.AsStream(false);
                     await SerializeCoreAsync(writerStream, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
@@ -145,7 +146,7 @@ public sealed class SseStreamHttpContent : HttpContent
             CancellationToken.None
         );
 
-        return pipe.Reader.AsStream(leaveOpen: false);
+        return pipe.Reader.AsStream(false);
     }
 
     protected override Task<Stream> CreateContentReadStreamAsync()
@@ -161,10 +162,7 @@ public sealed class SseStreamHttpContent : HttpContent
     private async Task SerializeCoreAsync(Stream stream, CancellationToken cancellationToken)
     {
         // Important: leave the provided stream open so HttpContent can buffer/read it after serialization
-        using var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, leaveOpen: true)
-        {
-            AutoFlush = false,
-        };
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false), 1024, true) { AutoFlush = false };
 
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var generationId = $"gen-{created}-{Guid.NewGuid().ToString("N")[..16]}";

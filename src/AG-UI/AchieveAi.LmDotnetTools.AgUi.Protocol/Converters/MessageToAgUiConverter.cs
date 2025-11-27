@@ -10,14 +10,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 
 /// <summary>
-/// Converts LmCore messages to AG-UI protocol events
+///     Converts LmCore messages to AG-UI protocol events
 /// </summary>
 public class MessageToAgUiConverter : IMessageConverter
 {
-    private readonly IToolCallTracker _toolCallTracker;
+    private readonly Dictionary<string, int> _chunkCounters = [];
     private readonly ILogger<MessageToAgUiConverter> _logger;
     private readonly Dictionary<string, MessageState> _messageStates = [];
-    private readonly Dictionary<string, int> _chunkCounters = [];
+    private readonly IToolCallTracker _toolCallTracker;
     private (string messageId, string messageType)? _activeMessageKey;
 
     public MessageToAgUiConverter(IToolCallTracker toolCallTracker, ILogger<MessageToAgUiConverter>? logger = null)
@@ -26,7 +26,7 @@ public class MessageToAgUiConverter : IMessageConverter
         _logger = logger ?? NullLogger<MessageToAgUiConverter>.Instance;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public IEnumerable<AgUiEventBase> ConvertToAgUiEvents(
         IMessage message,
         string sessionId,
@@ -66,6 +66,7 @@ public class MessageToAgUiConverter : IMessageConverter
             {
                 yield return endEvent;
             }
+
             _activeMessageKey = null;
         }
     }
@@ -549,7 +550,7 @@ public class MessageToAgUiConverter : IMessageConverter
     }
 
     /// <summary>
-    /// Closes an orphaned message by emitting appropriate END events
+    ///     Closes an orphaned message by emitting appropriate END events
     /// </summary>
     private IEnumerable<AgUiEventBase> CloseOrphanedMessage(
         string messageId,
@@ -619,7 +620,9 @@ public class MessageToAgUiConverter : IMessageConverter
                     ToolCallId = messageId,
                 };
                 break;
+
             default:
+                _logger.LogWarning("Attempted to close orphaned message {MessageId} with unknown type {MessageType}", messageId, state.Type);
                 break;
         }
 

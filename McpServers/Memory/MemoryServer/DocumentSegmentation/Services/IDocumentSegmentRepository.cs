@@ -5,12 +5,12 @@ using MemoryServer.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Repository interface for document segment operations using the Database Session Pattern.
+///     Repository interface for document segment operations using the Database Session Pattern.
 /// </summary>
 public interface IDocumentSegmentRepository
 {
     /// <summary>
-    /// Stores document segments in the database.
+    ///     Stores document segments in the database.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="segments">List of segments to store</param>
@@ -27,7 +27,7 @@ public interface IDocumentSegmentRepository
     );
 
     /// <summary>
-    /// Retrieves all segments for a parent document.
+    ///     Retrieves all segments for a parent document.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="parentDocumentId">ID of the parent document</param>
@@ -42,7 +42,7 @@ public interface IDocumentSegmentRepository
     );
 
     /// <summary>
-    /// Stores segment relationships in the database.
+    ///     Stores segment relationships in the database.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="relationships">List of segment relationships to store</param>
@@ -57,7 +57,7 @@ public interface IDocumentSegmentRepository
     );
 
     /// <summary>
-    /// Retrieves segment relationships for a document.
+    ///     Retrieves segment relationships for a document.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="parentDocumentId">ID of the parent document</param>
@@ -72,7 +72,7 @@ public interface IDocumentSegmentRepository
     );
 
     /// <summary>
-    /// Deletes all segments and relationships for a parent document.
+    ///     Deletes all segments and relationships for a parent document.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="parentDocumentId">ID of the parent document</param>
@@ -87,7 +87,7 @@ public interface IDocumentSegmentRepository
     );
 
     /// <summary>
-    /// Searches segments using full-text search.
+    ///     Searches segments using full-text search.
     /// </summary>
     /// <param name="session">Database session for transaction management</param>
     /// <param name="query">Search query</param>

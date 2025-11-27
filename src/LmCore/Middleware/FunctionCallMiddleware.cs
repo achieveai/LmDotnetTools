@@ -1,7 +1,6 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
@@ -10,15 +9,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware for handling function calls in agent responses
+///     Middleware for handling function calls in agent responses
 /// </summary>
 public class FunctionCallMiddleware : IStreamingMiddleware
 {
+    private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
     private readonly IEnumerable<FunctionContract> _functions;
 
-    private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
-
     private readonly ILogger<FunctionCallMiddleware> _logger;
+
+    // Dictionary to track pending tool call results by their ID
+    private readonly Dictionary<string, Task<ToolCallResult>> _pendingToolCallResults = [];
 
     private IToolResultCallback? _resultCallback;
 
@@ -68,17 +69,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     public string? Name { get; }
 
-    /// <summary>
-    /// Sets or updates the tool result callback for this middleware instance.
-    /// </summary>
-    /// <param name="callback">The callback to notify when tool results are available</param>
-    /// <returns>This middleware instance for chaining</returns>
-    public FunctionCallMiddleware WithResultCallback(IToolResultCallback? callback)
-    {
-        _resultCallback = callback;
-        return this;
-    }
-
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
@@ -118,6 +108,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Generate reply with the configured options
+        ArgumentNullException.ThrowIfNull(agent);
         var replies = await agent.GenerateReplyAsync(context.Messages, options, cancellationToken);
 
         var processedReplies = new List<IMessage>();
@@ -142,6 +133,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 {
                     _logger.LogDebug("Message transformation: UsageMessage accumulated");
                 }
+
                 _ = usageAccumulator.AddUsageFromMessage(usageMessage);
                 continue; // We'll add a consolidated usage message at the end
             }
@@ -154,6 +146,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 {
                     _logger.LogDebug("Message transformation: Usage data extracted from metadata");
                 }
+
                 _ = usageAccumulator.AddUsageFromMessageMetadata(reply);
 
                 // If this is an empty text message just for usage, don't add it to results
@@ -164,6 +157,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     {
                         _logger.LogDebug("Message transformation: Empty text message with usage skipped");
                     }
+
                     continue;
                 }
             }
@@ -298,23 +292,34 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Get the streaming response from the agent
+        ArgumentNullException.ThrowIfNull(agent);
         var streamingResponse = await agent.GenerateReplyStreamingAsync(context.Messages, options, cancellationToken);
 
         // Return a transformed stream that applies the builder pattern
         return TransformStreamWithBuilder(streamingResponse, cancellationToken);
     }
 
+    /// <summary>
+    ///     Sets or updates the tool result callback for this middleware instance.
+    /// </summary>
+    /// <param name="callback">The callback to notify when tool results are available</param>
+    /// <returns>This middleware instance for chaining</returns>
+    public FunctionCallMiddleware WithResultCallback(IToolResultCallback? callback)
+    {
+        _resultCallback = callback;
+        return this;
+    }
+
     private IEnumerable<FunctionContract>? CombineFunctions(IEnumerable<FunctionContract>? optionFunctions)
     {
-        return _functions == null && optionFunctions == null
-            ? null
+        return _functions == null && optionFunctions == null ? null
             : _functions == null ? optionFunctions
             : optionFunctions == null ? _functions
             : _functions.Concat(optionFunctions);
     }
 
     /// <summary>
-    /// Common method to prepare invocation by checking for tool calls and configuring options
+    ///     Common method to prepare invocation by checking for tool calls and configuring options
     /// </summary>
     private (
         bool HasPendingToolCalls,
@@ -336,8 +341,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Execute multiple tool calls and return a message with results.
-    /// This method now delegates to ToolCallExecutor for actual execution.
+    ///     Execute multiple tool calls and return a message with results.
+    ///     This method now delegates to ToolCallExecutor for actual execution.
     /// </summary>
     private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(
         IEnumerable<ToolCall> toolCalls,
@@ -348,7 +353,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Create a ToolsCallMessage from the tool calls for the executor
         var toolsCallMessage = new ToolsCallMessage
         {
-            ToolCalls = toolCalls.ToImmutableList(),
+            ToolCalls = [.. toolCalls],
             Role = Role.Assistant,
             FromAgent = string.Empty,
         };
@@ -364,8 +369,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Execute a single tool call and return the result.
-    /// Helper method for streaming scenarios. Delegates to ToolCallExecutor.
+    ///     Execute a single tool call and return the result.
+    ///     Helper method for streaming scenarios. Delegates to ToolCallExecutor.
     /// </summary>
     private async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
@@ -394,7 +399,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Transform a stream of messages using a message builder for aggregation
+    ///     Transform a stream of messages using a message builder for aggregation
     /// </summary>
     private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
@@ -558,9 +563,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return builder;
     }
 
-    // Dictionary to track pending tool call results by their ID
-    private readonly Dictionary<string, Task<ToolCallResult>> _pendingToolCallResults = [];
-
     // Execute tool calls as soon as they're received during streaming
     private void OnToolCall(ToolCall call)
     {
@@ -578,7 +580,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Process a complete tool call message by executing all tool calls
+    ///     Process a complete tool call message by executing all tool calls
     /// </summary>
     private async Task<IMessage> ProcessCompleteToolCallMessage(ToolsCallMessage toolCallMessage)
     {
@@ -676,7 +678,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Process a final tool call message by executing all tool calls synchronously
+    ///     Process a final tool call message by executing all tool calls synchronously
     /// </summary>
     private async Task<ToolsCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
     {

@@ -10,24 +10,20 @@ using AchieveAi.LmDotnetTools.TestUtils;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 /// <summary>
-/// Data-driven tests that exercise the full HTTP stack (record / playback) for reasoning support.
-/// The first time <see cref="CreateBasicReasoningTestData"/> is executed it will hit the real provider
-/// using the credentials in .env.test, persist the cassette under tests/TestData/OpenAI/, and serialise
-/// both the original LmCore request and the translated Core response. Subsequent CI runs replay the
-/// interaction offline.
+///     Data-driven tests that exercise the full HTTP stack (record / playback) for reasoning support.
+///     The first time <see cref="CreateBasicReasoningTestData" /> is executed it will hit the real provider
+///     using the credentials in .env.test, persist the cassette under tests/TestData/OpenAI/, and serialise
+///     both the original LmCore request and the translated Core response. Subsequent CI runs replay the
+///     interaction offline.
 /// </summary>
 public class DataDrivenReasoningTests
 {
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
     private readonly ProviderTestDataManager _testDataManager = new();
 
     private static string EnvTestPath =>
-        Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            ".env.test"
-        );
-
-    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
-    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
+        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
     #region Playback test
 
@@ -49,7 +45,7 @@ public class DataDrivenReasoningTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: false)
+            .WithRecordPlayback(cassettePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -88,8 +84,8 @@ public class DataDrivenReasoningTests
     #region Test-data creation (one-off)
 
     /// <summary>
-    /// Executes a real call to the provider (if no cassette exists yet) and stores the artefacts.
-    /// Marked as a Fact so that it can be run manually – CI will skip if the cassette already exists.
+    ///     Executes a real call to the provider (if no cassette exists yet) and stores the artefacts.
+    ///     Marked as a Fact so that it can be run manually – CI will skip if the cassette already exists.
     /// </summary>
     [Fact]
     public async Task CreateBasicReasoningTestData()
@@ -97,11 +93,7 @@ public class DataDrivenReasoningTests
         const string testName = "BasicReasoning";
 
         // Short-circuit if data already there
-        var lmCoreRequestPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.OpenAI,
-            DataType.LmCoreRequest
-        );
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Test data already exists at {lmCoreRequestPath}. Skipping creation.");
@@ -128,12 +120,7 @@ public class DataDrivenReasoningTests
         };
 
         // 2) Save LmCore request artefact
-        _testDataManager.SaveLmCoreRequest(
-            testName,
-            ProviderType.OpenAI,
-            [.. messages.OfType<TextMessage>()],
-            options
-        );
+        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, [.. messages.OfType<TextMessage>()], options);
 
         // 3) Configure record/playback handler
         var cassettePath = Path.Combine(
@@ -146,7 +133,7 @@ public class DataDrivenReasoningTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -168,18 +155,14 @@ public class DataDrivenReasoningTests
     }
 
     /// <summary>
-    /// Creates OpenAI o-series (gpt-o4-mini) reasoning test data.
+    ///     Creates OpenAI o-series (gpt-o4-mini) reasoning test data.
     /// </summary>
     [Fact]
     public async Task CreateO4MiniReasoningTestData()
     {
         const string testName = "O4MiniReasoning";
 
-        var lmCoreRequestPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.OpenAI,
-            DataType.LmCoreRequest
-        );
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Test data already exists at {lmCoreRequestPath}. Skipping creation.");
@@ -209,12 +192,7 @@ public class DataDrivenReasoningTests
             }.ToImmutableDictionary(),
         };
 
-        _testDataManager.SaveLmCoreRequest(
-            testName,
-            ProviderType.OpenAI,
-            [.. messages.OfType<TextMessage>()],
-            options
-        );
+        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, [.. messages.OfType<TextMessage>()], options);
 
         var cassettePath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
@@ -226,7 +204,7 @@ public class DataDrivenReasoningTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -250,12 +228,12 @@ public class DataDrivenReasoningTests
 
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
     }
 
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
     }
 
     #endregion

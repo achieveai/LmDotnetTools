@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 
 /// <summary>
-/// Result event containing final execution summary, usage statistics, and costs
+///     Result event containing final execution summary, usage statistics, and costs
 /// </summary>
 public record ResultEvent : JsonlEventBase
 {

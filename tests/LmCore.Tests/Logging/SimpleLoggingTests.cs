@@ -1,14 +1,39 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Logging;
 
 /// <summary>
-/// Simple tests for logging functionality to verify that logging works correctly
-/// and handles null loggers gracefully.
+///     Simple tests for logging functionality to verify that logging works correctly
+///     and handles null loggers gracefully.
 /// </summary>
 public class SimpleLoggingTests
 {
+    #region LogEventIds Tests
+
+    [Fact]
+    public void LogEventIds_ShouldHaveCorrectValues()
+    {
+        // Assert - Verify that LogEventIds are properly defined
+        Assert.Equal(1001, LogEventIds.AgentRequestInitiated.Id);
+        Assert.Equal("AgentRequestInitiated", LogEventIds.AgentRequestInitiated.Name);
+
+        Assert.Equal(1002, LogEventIds.AgentRequestCompleted.Id);
+        Assert.Equal("AgentRequestCompleted", LogEventIds.AgentRequestCompleted.Name);
+
+        Assert.Equal(1003, LogEventIds.AgentRequestFailed.Id);
+        Assert.Equal("AgentRequestFailed", LogEventIds.AgentRequestFailed.Name);
+
+        Assert.Equal(2001, LogEventIds.MiddlewareProcessing.Id);
+        Assert.Equal("MiddlewareProcessing", LogEventIds.MiddlewareProcessing.Name);
+
+        Assert.Equal(3001, LogEventIds.ProviderResolved.Id);
+        Assert.Equal("ProviderResolved", LogEventIds.ProviderResolved.Name);
+    }
+
+    #endregion
+
     #region Null Logger Handling Tests
 
     [Fact]
@@ -40,30 +65,6 @@ public class SimpleLoggingTests
         logger.LogWarning("Warning message");
 
         Assert.NotNull(logger);
-    }
-
-    #endregion
-
-    #region LogEventIds Tests
-
-    [Fact]
-    public void LogEventIds_ShouldHaveCorrectValues()
-    {
-        // Assert - Verify that LogEventIds are properly defined
-        Assert.Equal(1001, LogEventIds.AgentRequestInitiated.Id);
-        Assert.Equal("AgentRequestInitiated", LogEventIds.AgentRequestInitiated.Name);
-
-        Assert.Equal(1002, LogEventIds.AgentRequestCompleted.Id);
-        Assert.Equal("AgentRequestCompleted", LogEventIds.AgentRequestCompleted.Name);
-
-        Assert.Equal(1003, LogEventIds.AgentRequestFailed.Id);
-        Assert.Equal("AgentRequestFailed", LogEventIds.AgentRequestFailed.Name);
-
-        Assert.Equal(2001, LogEventIds.MiddlewareProcessing.Id);
-        Assert.Equal("MiddlewareProcessing", LogEventIds.MiddlewareProcessing.Name);
-
-        Assert.Equal(3001, LogEventIds.ProviderResolved.Id);
-        Assert.Equal("ProviderResolved", LogEventIds.ProviderResolved.Name);
     }
 
     #endregion
@@ -164,11 +165,12 @@ public class SimpleLoggingTests
         const int iterations = 1000;
 
         // Act - Measure performance
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         for (var i = 0; i < iterations; i++)
         {
             logger.LogInformation("Test message {Iteration}", i);
         }
+
         stopwatch.Stop();
 
         // Assert - Should complete quickly
@@ -188,11 +190,12 @@ public class SimpleLoggingTests
         const int iterations = 1000;
 
         // Act - Measure performance
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         for (var i = 0; i < iterations; i++)
         {
             mockLogger.Object.LogInformation("Test message {Iteration}", i);
         }
+
         stopwatch.Stop();
 
         // Assert - Should complete quickly
@@ -258,7 +261,9 @@ public class SimpleLoggingTests
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         var mockLogger = new Mock<ILogger>();
 
-        _ = mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!)).Returns(mockLogger.Object);
+        _ = mockLoggerFactory
+            .Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!))
+            .Returns(mockLogger.Object);
 
         // Act
         var logger = mockLoggerFactory.Object.CreateLogger(typeof(SimpleLoggingTests).FullName!);

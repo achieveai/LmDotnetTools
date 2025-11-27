@@ -7,16 +7,16 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service for managing YAML-based segmentation prompts with hot reload capability.
+///     Service for managing YAML-based segmentation prompts with hot reload capability.
 /// </summary>
 public class SegmentationPromptManager : ISegmentationPromptManager
 {
+    private readonly ConcurrentDictionary<string, string> _domainInstructionsCache;
+    private readonly Lock _loadLock = new();
     private readonly ILogger<SegmentationPromptManager> _logger;
     private readonly DocumentSegmentationOptions _options;
     private readonly ConcurrentDictionary<string, PromptTemplate> _promptCache;
-    private readonly ConcurrentDictionary<string, string> _domainInstructionsCache;
     private DateTime _lastLoadTime;
-    private readonly Lock _loadLock = new();
 
     public SegmentationPromptManager(
         ILogger<SegmentationPromptManager> logger,
@@ -31,7 +31,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets a prompt template for a specific segmentation strategy.
+    ///     Gets a prompt template for a specific segmentation strategy.
     /// </summary>
     public async Task<PromptTemplate> GetPromptAsync(
         SegmentationStrategy strategy,
@@ -71,7 +71,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets a prompt template for quality validation.
+    ///     Gets a prompt template for quality validation.
     /// </summary>
     public async Task<PromptTemplate> GetQualityValidationPromptAsync(
         string language = "en",
@@ -93,7 +93,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets domain-specific instructions for document types.
+    ///     Gets domain-specific instructions for document types.
     /// </summary>
     public async Task<string> GetDomainInstructionsAsync(
         DocumentType documentType,
@@ -123,7 +123,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Reloads all prompts from the YAML configuration file.
+    ///     Reloads all prompts from the YAML configuration file.
     /// </summary>
     public async Task<bool> ReloadPromptsAsync(CancellationToken cancellationToken = default)
     {
@@ -149,7 +149,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Validates that all required prompts are properly configured.
+    ///     Validates that all required prompts are properly configured.
     /// </summary>
     public async Task<bool> ValidatePromptConfigurationAsync(CancellationToken cancellationToken = default)
     {
@@ -338,7 +338,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         // Also try to load any additional prompts found in the config
         foreach (var kvp in config)
         {
-            var strategyName = kvp.Key.ToString();
+            var strategyName = kvp.Key;
             if (!strategies.Contains(strategyName) && kvp.Value is Dictionary<object, object> additionalDict)
             {
                 // Skip domain_instructions as that's handled separately

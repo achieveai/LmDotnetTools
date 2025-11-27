@@ -6,14 +6,35 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that processes ToolsCallUpdateMessage to add structured JSON fragment updates
-/// based on the FunctionArgs using JsonFragmentToStructuredUpdateGenerator.
+///     Middleware that processes ToolsCallUpdateMessage to add structured JSON fragment updates
+///     based on the FunctionArgs using JsonFragmentToStructuredUpdateGenerator.
 /// </summary>
 public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
     private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = [];
 
     public string? Name => "JsonFragmentUpdateMiddleware";
+
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        return ProcessAsync(stream);
+    }
+
+    public Task<IEnumerable<IMessage>> InvokeAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+    }
 
     /// <summary>
     /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage and ToolCallUpdateMessage instances.
@@ -22,6 +43,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     /// <returns>The processed stream of messages with JsonFragmentUpdates added</returns>
     public async IAsyncEnumerable<IMessage> ProcessAsync(IAsyncEnumerable<IMessage> messageStream)
     {
+        ArgumentNullException.ThrowIfNull(messageStream);
         await foreach (var message in messageStream)
         {
             yield return message switch
@@ -34,7 +56,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Processes a ToolsCallUpdateMessage and adds JsonFragmentUpdates to each ToolCallUpdate.
+    ///     Processes a ToolsCallUpdateMessage and adds JsonFragmentUpdates to each ToolCallUpdate.
     /// </summary>
     /// <param name="message">The ToolsCallUpdateMessage to process</param>
     /// <returns>A new ToolsCallUpdateMessage with JsonFragmentUpdates added</returns>
@@ -92,7 +114,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Processes a single ToolCallUpdate and adds JsonFragmentUpdates based on its FunctionArgs.
+    ///     Processes a single ToolCallUpdate and adds JsonFragmentUpdates based on its FunctionArgs.
     /// </summary>
     /// <param name="toolCallUpdate">The ToolCallUpdate to process</param>
     /// <returns>A new ToolCallUpdate with JsonFragmentUpdates added</returns>
@@ -129,7 +151,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Generates a unique key for the generator based on tool call identification.
+    ///     Generates a unique key for the generator based on tool call identification.
     /// </summary>
     /// <param name="toolCallUpdate">The ToolCallUpdate to generate a key for</param>
     /// <returns>A unique key for the generator</returns>
@@ -142,29 +164,10 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Clears all generators. Useful for resetting state between different tool call sequences.
+    ///     Clears all generators. Useful for resetting state between different tool call sequences.
     /// </summary>
     public void ClearGenerators()
     {
         _generators.Clear();
-    }
-
-    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-        MiddlewareContext context,
-        IStreamingAgent agent,
-        CancellationToken cancellationToken = default
-    )
-    {
-        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-        return ProcessAsync(stream);
-    }
-
-    public Task<IEnumerable<IMessage>> InvokeAsync(
-        MiddlewareContext context,
-        IAgent agent,
-        CancellationToken cancellationToken = default
-    )
-    {
-        return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 }

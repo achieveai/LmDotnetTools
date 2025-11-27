@@ -7,25 +7,19 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Tools;
 
 /// <summary>
-/// CLI command for generating JWT tokens
+///     CLI command for generating JWT tokens
 /// </summary>
 public static class TokenGeneratorCommand
 {
     /// <summary>
-    /// Creates the generate-token command
+    ///     Creates the generate-token command
     /// </summary>
     /// <returns>The configured command</returns>
     public static Command CreateCommand()
     {
-        var userIdOption = new Option<string>(name: "--userId", description: "The user identifier for the token")
-        {
-            IsRequired = true,
-        };
+        var userIdOption = new Option<string>("--userId", "The user identifier for the token") { IsRequired = true };
 
-        var agentIdOption = new Option<string>(name: "--agentId", description: "The agent identifier for the token")
-        {
-            IsRequired = true,
-        };
+        var agentIdOption = new Option<string>("--agentId", "The agent identifier for the token") { IsRequired = true };
 
         var command = new Command("generate-token", "Generate a JWT token for authentication")
         {
@@ -33,17 +27,13 @@ public static class TokenGeneratorCommand
             agentIdOption,
         };
 
-        command.SetHandler(
-            GenerateTokenAsync,
-            userIdOption,
-            agentIdOption
-        );
+        command.SetHandler(GenerateTokenAsync, userIdOption, agentIdOption);
 
         return command;
     }
 
     /// <summary>
-    /// Generates a JWT token for the specified user and agent
+    ///     Generates a JWT token for the specified user and agent
     /// </summary>
     /// <param name="userId">The user identifier</param>
     /// <param name="agentId">The agent identifier</param>
@@ -57,10 +47,10 @@ public static class TokenGeneratorCommand
             // Build configuration
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: true)
+                .AddJsonFile("appsettings.json", true)
                 .AddJsonFile(
                     $"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json",
-                    optional: true
+                    true
                 )
                 .AddEnvironmentVariables()
                 .Build();

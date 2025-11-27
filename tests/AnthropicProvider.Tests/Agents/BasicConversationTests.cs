@@ -1,15 +1,9 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
-
-using System.Linq;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class BasicConversationTests
 {
@@ -21,12 +15,12 @@ public class BasicConversationTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent with mock HTTP handler and request capture");
 
@@ -41,9 +35,7 @@ public class BasicConversationTests
         TestLogger.Log($"Created messages array with {messages.Length} messages");
         foreach (var msg in messages)
         {
-            TestLogger.Log(
-                $"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {(msg as TextMessage)?.Text ?? "null"}"
-            );
+            TestLogger.Log($"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {msg?.Text ?? "null"}");
         }
 
         var options = new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" };
@@ -60,6 +52,7 @@ public class BasicConversationTests
         {
             responseText = textMsg.Text;
         }
+
         TestLogger.Log($"Response: Role={response?.Role}, Text={responseText ?? "null"}");
 
         // Log what was captured using new RequestCapture API
@@ -113,14 +106,12 @@ public class BasicConversationTests
             .Create()
             .RespondWithAnthropicMessage(
                 "Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
+                "claude-3-7-sonnet-20250219"
             )
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         var messages = new[]

@@ -5,8 +5,8 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Custom JsonConverter for handling ImmutableDictionary&lt;string, object?&gt; properties
-/// specifically for the ExtraProperties field in Usage and other classes.
+///     Custom JsonConverter for handling ImmutableDictionary&lt;string, object?&gt; properties
+///     specifically for the ExtraProperties field in Usage and other classes.
 /// </summary>
 public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string, object?>>
 {
@@ -69,14 +69,17 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
                 {
                     return intValue;
                 }
+
                 if (reader.TryGetInt64(out var longValue))
                 {
                     return longValue;
                 }
+
                 if (reader.TryGetDouble(out var doubleValue))
                 {
                     return doubleValue;
                 }
+
                 return reader.GetDecimal();
 
             case JsonTokenType.StartObject:
@@ -109,12 +112,16 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
         JsonSerializerOptions options
     )
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
         foreach (var kvp in value)
         {
             writer.WritePropertyName(kvp.Key);
             WriteValue(writer, kvp.Value, options);
         }
+
         writer.WriteEndObject();
     }
 

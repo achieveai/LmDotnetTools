@@ -8,13 +8,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
 
 /// <summary>
-/// Channel-based event publisher implementation
+///     Channel-based event publisher implementation
 /// </summary>
 public class ChannelEventPublisher : IEventPublisher
 {
-    private readonly ConcurrentDictionary<string, SessionChannel> _sessions = new();
-    private readonly ILogger<ChannelEventPublisher> _logger;
     private readonly int _channelCapacity;
+    private readonly ILogger<ChannelEventPublisher> _logger;
+    private readonly ConcurrentDictionary<string, SessionChannel> _sessions = new();
 
     public ChannelEventPublisher(ILogger<ChannelEventPublisher>? logger = null, int channelCapacity = 1000)
     {
@@ -22,9 +22,11 @@ public class ChannelEventPublisher : IEventPublisher
         _channelCapacity = channelCapacity;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task PublishAsync(AgUiEventBase evt, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(evt);
+
         if (string.IsNullOrEmpty(evt.SessionId))
         {
             _logger.LogWarning("Event {EventType} without SessionId cannot be published", evt.Type);
@@ -53,7 +55,7 @@ public class ChannelEventPublisher : IEventPublisher
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async IAsyncEnumerable<AgUiEventBase> SubscribeAsync(
         string sessionId,
         [EnumeratorCancellation] CancellationToken ct = default
@@ -70,7 +72,7 @@ public class ChannelEventPublisher : IEventPublisher
         _logger.LogInformation("Subscriber disconnected from session {SessionId}", sessionId);
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public void Unsubscribe(string sessionId)
     {
         if (_sessions.TryRemove(sessionId, out var channel))

@@ -6,16 +6,16 @@ using MemoryServer.Models;
 namespace MemoryServer.DocumentSegmentation.Utils;
 
 /// <summary>
-/// Integration utility for demonstrating session context integration with document segmentation services.
-/// This shows how all services work together within the Database Session Pattern.
+///     Integration utility for demonstrating session context integration with document segmentation services.
+///     This shows how all services work together within the Database Session Pattern.
 /// </summary>
 public class DocumentSegmentationSessionIntegration
 {
-    private readonly IDocumentSizeAnalyzer _sizeAnalyzer;
+    private readonly ILogger<DocumentSegmentationSessionIntegration> _logger;
     private readonly ISegmentationPromptManager _promptManager;
     private readonly IDocumentSegmentRepository _repository;
     private readonly ISqliteSessionFactory _sessionFactory;
-    private readonly ILogger<DocumentSegmentationSessionIntegration> _logger;
+    private readonly IDocumentSizeAnalyzer _sizeAnalyzer;
 
     public DocumentSegmentationSessionIntegration(
         IDocumentSizeAnalyzer sizeAnalyzer,
@@ -33,7 +33,7 @@ public class DocumentSegmentationSessionIntegration
     }
 
     /// <summary>
-    /// Demonstrates the complete workflow from document analysis to segment storage within a session context.
+    ///     Demonstrates the complete workflow from document analysis to segment storage within a session context.
     /// </summary>
     public async Task<DocumentSegmentationWorkflowResult> ProcessDocumentWorkflowAsync(
         string content,
@@ -43,6 +43,8 @@ public class DocumentSegmentationSessionIntegration
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
+
         _logger.LogInformation(
             "Starting document segmentation workflow for document {DocumentId} in session {UserId}/{AgentId}/{RunId}",
             parentDocumentId,
@@ -121,6 +123,8 @@ public class DocumentSegmentationSessionIntegration
 
             // Step 5: Create sample segments (in a real implementation, this would use LLM)
             _logger.LogDebug("Step 5: Creating sample segments...");
+            ArgumentNullException.ThrowIfNull(content);
+            ArgumentNullException.ThrowIfNull(result.DocumentStatistics);
             result.Segments = CreateSampleSegments(content, result.DocumentStatistics, sessionContext);
 
             // Step 6: Store segments in database using session pattern
@@ -276,7 +280,7 @@ public class DocumentSegmentationSessionIntegration
 }
 
 /// <summary>
-/// Result of the document segmentation workflow demonstration.
+///     Result of the document segmentation workflow demonstration.
 /// </summary>
 public class DocumentSegmentationWorkflowResult
 {

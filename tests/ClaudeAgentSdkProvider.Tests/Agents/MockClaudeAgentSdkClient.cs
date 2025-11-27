@@ -6,18 +6,18 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Tests.Agents;
 
 /// <summary>
-/// Mock implementation of IClaudeAgentSdkClient for testing
-/// Validates launch parameters and replays pre-recorded messages
+///     Mock implementation of IClaudeAgentSdkClient for testing
+///     Validates launch parameters and replays pre-recorded messages
 /// </summary>
 public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
 {
     private readonly List<IMessage> _messagesToReplay;
     private readonly Action<ClaudeAgentSdkRequest>? _validateRequest;
-    private bool _isStarted;
 
     public MockClaudeAgentSdkClient(
         List<IMessage> messagesToReplay,
-        Action<ClaudeAgentSdkRequest>? validateRequest = null)
+        Action<ClaudeAgentSdkRequest>? validateRequest = null
+    )
     {
         _messagesToReplay = messagesToReplay ?? throw new ArgumentNullException(nameof(messagesToReplay));
         _validateRequest = validateRequest;
@@ -41,12 +41,12 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
             throw new ArgumentException("MaxTurns must be greater than 0", nameof(request));
         }
 
-        _isStarted = true;
+        IsRunning = true;
         CurrentSession = new SessionInfo
         {
             SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
             CreatedAt = DateTime.UtcNow,
-            ProjectRoot = "test-project-root"
+            ProjectRoot = "test-project-root",
         };
 
         await Task.CompletedTask;
@@ -54,9 +54,10 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
 
     public async IAsyncEnumerable<IMessage> SendMessagesAsync(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
-        if (!_isStarted)
+        if (!IsRunning)
         {
             throw new InvalidOperationException("Client must be started before sending messages");
         }
@@ -69,18 +70,18 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Replay recorded messages
         foreach (var message in _messagesToReplay)
         {
-            await Task.Delay(5, cancellationToken);  // Simulate streaming delay
+            await Task.Delay(5, cancellationToken); // Simulate streaming delay
             yield return message;
         }
     }
 
-    public bool IsRunning => _isStarted;
+    public bool IsRunning { get; private set; }
 
     public SessionInfo? CurrentSession { get; private set; }
 
     public void Dispose()
     {
-        _isStarted = false;
+        IsRunning = false;
         GC.SuppressFinalize(this);
     }
 }

@@ -5,14 +5,14 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Result enrichment engine that provides minimal enrichment to enhance
-/// user understanding without overwhelming the results (max 2 items per result).
+///     Result enrichment engine that provides minimal enrichment to enhance
+///     user understanding without overwhelming the results (max 2 items per result).
 /// </summary>
 public class ResultEnricher : IResultEnricher
 {
+    private readonly IGraphRepository _graphRepository;
     private readonly ILogger<ResultEnricher> _logger;
     private readonly EnrichmentOptions _options;
-    private readonly IGraphRepository _graphRepository;
 
     public ResultEnricher(
         IOptions<MemoryServerOptions> options,
@@ -191,7 +191,7 @@ public class ResultEnricher : IResultEnricher
                     );
                     break;
                 default:
-                    break;
+                    throw new NotSupportedException($"Unsupported result type: {result.Type}");
             }
 
             if (wasEnriched)
@@ -293,7 +293,7 @@ public class ResultEnricher : IResultEnricher
                             Content = $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
                             RelevanceScore = relationship.Confidence,
                             Confidence = relationship.Confidence,
-                            RelationshipExplanation = $"Direct relationship involving this entity",
+                            RelationshipExplanation = "Direct relationship involving this entity",
                         }
                     );
 
@@ -387,7 +387,7 @@ public class ResultEnricher : IResultEnricher
                         Content = entity.Name,
                         RelevanceScore = entity.Confidence,
                         Confidence = entity.Confidence,
-                        RelationshipExplanation = $"Entity involved in this relationship",
+                        RelationshipExplanation = "Entity involved in this relationship",
                     }
                 );
 

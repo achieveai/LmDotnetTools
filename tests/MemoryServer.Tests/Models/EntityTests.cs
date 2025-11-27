@@ -4,106 +4,11 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Comprehensive tests for Entity model including validation, serialization, and session context.
-/// Uses data-driven testing approach for maximum coverage with minimal test methods.
+///     Comprehensive tests for Entity model including validation, serialization, and session context.
+///     Uses data-driven testing approach for maximum coverage with minimal test methods.
 /// </summary>
 public class EntityTests
 {
-    #region Entity Creation and Validation Tests
-
-    [Theory]
-    [MemberData(nameof(ValidEntityTestCases))]
-    public void CreateEntity_WithValidData_ShouldSucceed(
-        string testName,
-        string name,
-        string? type,
-        List<string>? aliases,
-        string userId,
-        string? agentId,
-        string? runId,
-        float confidence,
-        List<int>? sourceMemoryIds,
-        Dictionary<string, object>? metadata
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing entity creation: {testName}");
-        Debug.WriteLine($"Input - Name: {name}, Type: {type}, UserId: {userId}");
-
-        // Act
-        var entity = new Entity
-        {
-            Name = name,
-            Type = type,
-            Aliases = aliases,
-            UserId = userId,
-            AgentId = agentId,
-            RunId = runId,
-            Confidence = confidence,
-            SourceMemoryIds = sourceMemoryIds,
-            Metadata = metadata,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert
-        Assert.Equal(name, entity.Name);
-        Assert.Equal(type, entity.Type);
-        Assert.Equal(aliases, entity.Aliases);
-        Assert.Equal(userId, entity.UserId);
-        Assert.Equal(agentId, entity.AgentId);
-        Assert.Equal(runId, entity.RunId);
-        Assert.Equal(confidence, entity.Confidence);
-        Assert.Equal(sourceMemoryIds, entity.SourceMemoryIds);
-        Assert.Equal(metadata, entity.Metadata);
-
-        Debug.WriteLine($"✅ Entity created successfully with ID: {entity.Id}");
-        Debug.WriteLine($"   Confidence: {entity.Confidence}, Aliases: {aliases?.Count ?? 0}");
-    }
-
-    [Theory]
-    [MemberData(nameof(InvalidEntityTestCases))]
-    public void CreateEntity_WithInvalidData_ShouldHandleGracefully(
-        string testName,
-        string name,
-        string userId,
-        float confidence,
-        string expectedIssue
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing invalid entity creation: {testName}");
-        Debug.WriteLine($"Expected issue: {expectedIssue}");
-
-        // Act
-        var entity = new Entity
-        {
-            Name = name,
-            UserId = userId,
-            Confidence = confidence,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert - Entity creation doesn't throw, but we can validate the data
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(entity.Name), "Name should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
-        }
-        if (confidence is < 0 or > 1)
-        {
-            Assert.True(entity.Confidence is < 0 or > 1, "Confidence should be out of valid range");
-        }
-
-        Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");
-    }
-
-    #endregion
-
     #region Session Context Tests
 
     [Theory]
@@ -195,7 +100,104 @@ public class EntityTests
             Assert.True(originalEntity.SourceMemoryIds.SequenceEqual(deserializedEntity.SourceMemoryIds));
         }
 
-        Debug.WriteLine($"✅ Serialization successful - all fields preserved");
+        Debug.WriteLine("✅ Serialization successful - all fields preserved");
+    }
+
+    #endregion
+
+    #region Entity Creation and Validation Tests
+
+    [Theory]
+    [MemberData(nameof(ValidEntityTestCases))]
+    public void CreateEntity_WithValidData_ShouldSucceed(
+        string testName,
+        string name,
+        string? type,
+        List<string>? aliases,
+        string userId,
+        string? agentId,
+        string? runId,
+        float confidence,
+        List<int>? sourceMemoryIds,
+        Dictionary<string, object>? metadata
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing entity creation: {testName}");
+        Debug.WriteLine($"Input - Name: {name}, Type: {type}, UserId: {userId}");
+
+        // Act
+        var entity = new Entity
+        {
+            Name = name,
+            Type = type,
+            Aliases = aliases,
+            UserId = userId,
+            AgentId = agentId,
+            RunId = runId,
+            Confidence = confidence,
+            SourceMemoryIds = sourceMemoryIds,
+            Metadata = metadata,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert
+        Assert.Equal(name, entity.Name);
+        Assert.Equal(type, entity.Type);
+        Assert.Equal(aliases, entity.Aliases);
+        Assert.Equal(userId, entity.UserId);
+        Assert.Equal(agentId, entity.AgentId);
+        Assert.Equal(runId, entity.RunId);
+        Assert.Equal(confidence, entity.Confidence);
+        Assert.Equal(sourceMemoryIds, entity.SourceMemoryIds);
+        Assert.Equal(metadata, entity.Metadata);
+
+        Debug.WriteLine($"✅ Entity created successfully with ID: {entity.Id}");
+        Debug.WriteLine($"   Confidence: {entity.Confidence}, Aliases: {aliases?.Count ?? 0}");
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidEntityTestCases))]
+    public void CreateEntity_WithInvalidData_ShouldHandleGracefully(
+        string testName,
+        string name,
+        string userId,
+        float confidence,
+        string expectedIssue
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing invalid entity creation: {testName}");
+        Debug.WriteLine($"Expected issue: {expectedIssue}");
+
+        // Act
+        var entity = new Entity
+        {
+            Name = name,
+            UserId = userId,
+            Confidence = confidence,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert - Entity creation doesn't throw, but we can validate the data
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(entity.Name), "Name should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
+        }
+
+        if (confidence is < 0 or > 1)
+        {
+            Assert.True(entity.Confidence is < 0 or > 1, "Confidence should be out of valid range");
+        }
+
+        Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");
     }
 
     #endregion
@@ -203,24 +205,10 @@ public class EntityTests
     #region Test Data
 
     public static IEnumerable<object?[]> ValidEntityTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, name, type, aliases, userId, agentId, runId, confidence, sourceMemoryIds, metadata
-            new object?[]
-            {
-                "Basic entity with minimal data",
-                "John Doe",
-                "person",
-                null,
-                "user123",
-                null,
-                null,
-                0.8f,
-                null,
-                null,
-            },
-            new object?[]
-            {
+            ["Basic entity with minimal data", "John Doe", "person", null, "user123", null, null, 0.8f, null, null],
+            [
                 "Entity with aliases",
                 "New York City",
                 "place",
@@ -231,9 +219,8 @@ public class EntityTests
                 0.9f,
                 new List<int> { 1, 2, 3 },
                 null,
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Entity with full session context",
                 "Machine Learning",
                 "concept",
@@ -244,9 +231,8 @@ public class EntityTests
                 0.95f,
                 new List<int> { 10, 20 },
                 new Dictionary<string, object> { { "domain", "technology" }, { "complexity", "high" } },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Entity with maximum confidence",
                 "Earth",
                 "planet",
@@ -262,9 +248,8 @@ public class EntityTests
                     { "habitable", true },
                     { "radius_km", 6371 },
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Entity with minimum confidence",
                 "Uncertain Entity",
                 "unknown",
@@ -275,53 +260,35 @@ public class EntityTests
                 0.0f,
                 null,
                 null,
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> InvalidEntityTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: testName, name, userId, confidence, expectedIssue
-            new object[] { "Empty name", "", "user123", 0.8f, "Name is empty" },
-            new object[] { "Whitespace name", "   ", "user123", 0.8f, "Name is whitespace" },
-            new object[] { "Empty userId", "Valid Name", "", 0.8f, "UserId is empty" },
-            new object[] { "Negative confidence", "Valid Name", "user123", -0.1f, "Confidence below 0" },
-            new object[] { "Confidence above 1", "Valid Name", "user123", 1.1f, "Confidence above 1" },
-            new object[]
-            {
-                "Extreme negative confidence",
-                "Valid Name",
-                "user123",
-                -999.0f,
-                "Extreme negative confidence",
-            },
-            new object[]
-            {
-                "Extreme positive confidence",
-                "Valid Name",
-                "user123",
-                999.0f,
-                "Extreme positive confidence",
-            },
-        };
+            ["Empty name", "", "user123", 0.8f, "Name is empty"],
+            ["Whitespace name", "   ", "user123", 0.8f, "Name is whitespace"],
+            ["Empty userId", "Valid Name", "", 0.8f, "UserId is empty"],
+            ["Negative confidence", "Valid Name", "user123", -0.1f, "Confidence below 0"],
+            ["Confidence above 1", "Valid Name", "user123", 1.1f, "Confidence above 1"],
+            ["Extreme negative confidence", "Valid Name", "user123", -999.0f, "Extreme negative confidence"],
+            ["Extreme positive confidence", "Valid Name", "user123", 999.0f, "Extreme positive confidence"],
+        ];
 
     public static IEnumerable<object?[]> SessionContextTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, userId, agentId, runId, expectedToString
-            new object?[] { "User only", "user123", null, null, "user123" },
-            new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-            new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
-            new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
-            new object?[] { "Empty strings treated as null", "user123", "", "", "user123" },
-        };
+            ["User only", "user123", null, null, "user123"],
+            ["User and agent", "user123", "agent456", null, "user123/agent456"],
+            ["Full context", "user123", "agent456", "run789", "user123/agent456/run789"],
+            ["User and run (no agent)", "user123", null, "run789", "user123//run789"],
+            ["Empty strings treated as null", "user123", "", "", "user123"],
+        ];
 
     public static IEnumerable<object?[]> SerializationTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, entity
-            new object?[]
-            {
+            [
                 "Simple entity",
                 new Entity
                 {
@@ -333,9 +300,8 @@ public class EntityTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Entity with aliases and metadata",
                 new Entity
                 {
@@ -352,9 +318,8 @@ public class EntityTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Entity with null collections",
                 new Entity
                 {
@@ -371,8 +336,8 @@ public class EntityTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-        };
+            ],
+        ];
 
     #endregion
 }

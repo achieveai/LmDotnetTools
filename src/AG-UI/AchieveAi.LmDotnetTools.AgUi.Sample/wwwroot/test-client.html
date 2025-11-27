@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AG-UI Test Client</title>
-    <style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AG-UI Test Client</title>
+  <style>
         * {
             margin: 0;
             padding: 0;
@@ -307,70 +307,70 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 AG-UI Test Client</h1>
-            <div class="status">
-                <div class="status-indicator" id="statusIndicator"></div>
-                <span id="statusText">Disconnected</span>
-            </div>
+<div class="container">
+  <div class="header">
+    <h1>🤖 AG-UI Test Client</h1>
+    <div class="status">
+      <div class="status-indicator" id="statusIndicator"></div>
+      <span id="statusText">Disconnected</span>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <div class="left-panel">
+      <div class="panel">
+        <h2>💬 Conversation</h2>
+
+        <div class="session-info" id="sessionInfo">
+          <strong>Session ID:</strong> <span id="sessionId">Not connected</span>
         </div>
 
-        <div class="main-content">
-            <div class="left-panel">
-                <div class="panel">
-                    <h2>💬 Conversation</h2>
-
-                    <div class="session-info" id="sessionInfo">
-                        <strong>Session ID:</strong> <span id="sessionId">Not connected</span>
-                    </div>
-
-                    <div class="agent-selector">
-                        <select id="agentSelect">
-                            <option value="ToolCallingAgent">ToolCallingAgent - Calls tools based on input</option>
-                            <option value="InstructionChainAgent" selected>InstructionChainAgent - Multi-turn instruction chains</option>
-                        </select>
-                    </div>
-
-                    <div class="message-input">
-                        <input type="text" id="messageInput" placeholder="Type your message... (try 'weather in Paris' or '10 + 5')" />
-                        <button id="sendButton" onclick="sendMessage()">Send</button>
-                    </div>
-
-                    <div class="messages" id="messages">
-                        <div class="message system">
-                            <div class="message-header">System</div>
-                            <div class="message-content">Welcome to AG-UI Test Client! Connect to WebSocket to start chatting with agents.</div>
-                        </div>
-                    </div>
-
-                    <div class="controls">
-                        <button class="btn-connect" id="connectBtn" onclick="connect()">Connect</button>
-                        <button class="btn-disconnect" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
-                        <button class="btn-clear" onclick="clearMessages()">Clear Messages</button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="right-panel">
-                <div class="panel">
-                    <h2>🔍 Debug Console</h2>
-                    <div class="debug-console" id="debugConsole">
-                        <div class="debug-event">
-                            <div class="debug-timestamp">[System]</div>
-                            <div class="debug-type">Debug console initialized</div>
-                            <div class="debug-data">All WebSocket events will appear here</div>
-                        </div>
-                    </div>
-                    <div class="controls">
-                        <button class="btn-clear" onclick="clearDebug()">Clear Debug Log</button>
-                    </div>
-                </div>
-            </div>
+        <div class="agent-selector">
+          <select id="agentSelect">
+            <option value="ToolCallingAgent">ToolCallingAgent - Calls tools based on input</option>
+            <option value="InstructionChainAgent" selected>InstructionChainAgent - Multi-turn instruction chains</option>
+          </select>
         </div>
+
+        <div class="message-input">
+          <input type="text" id="messageInput" placeholder="Type your message... (try 'weather in Paris' or '10 + 5')"/>
+          <button id="sendButton" onclick="sendMessage()">Send</button>
+        </div>
+
+        <div class="messages" id="messages">
+          <div class="message system">
+            <div class="message-header">System</div>
+            <div class="message-content">Welcome to AG-UI Test Client! Connect to WebSocket to start chatting with agents.</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn-connect" id="connectBtn" onclick="connect()">Connect</button>
+          <button class="btn-disconnect" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+          <button class="btn-clear" onclick="clearMessages()">Clear Messages</button>
+        </div>
+      </div>
     </div>
 
-    <script>
+    <div class="right-panel">
+      <div class="panel">
+        <h2>🔍 Debug Console</h2>
+        <div class="debug-console" id="debugConsole">
+          <div class="debug-event">
+            <div class="debug-timestamp">[System]</div>
+            <div class="debug-type">Debug console initialized</div>
+            <div class="debug-data">All WebSocket events will appear here</div>
+          </div>
+        </div>
+        <div class="controls">
+          <button class="btn-clear" onclick="clearDebug()">Clear Debug Log</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
         let ws = null;
         let currentSessionId = null;
         let messageHistory = [];

@@ -6,36 +6,38 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Helper class for accumulating usage data across multiple messages.
+///     Helper class for accumulating usage data across multiple messages.
 /// </summary>
 public class UsageAccumulator
 {
+    private ImmutableDictionary<string, object>? _extraMetadata;
     private string? _fromAgent;
     private string? _generationId;
     private string? _threadId;
     private string? _runId;
     private Role _role = Role.Assistant;
-    private ImmutableDictionary<string, object>? _extraMetadata;
-    private bool _hasRawUsage = false;
+    private bool _hasRawUsage;
 
     /// <summary>
-    /// Current accumulated usage data.
+    ///     Current accumulated usage data.
     /// </summary>
     public Usage? CurrentUsage { get; private set; }
 
     /// <summary>
-    /// Indicates if any usage data has been accumulated.
+    ///     Indicates if any usage data has been accumulated.
     /// </summary>
     public bool HasUsage => CurrentUsage != null;
 
     /// <summary>
-    /// Add usage data from a message's metadata.
+    ///     Add usage data from a message's metadata.
     /// </summary>
     /// <param name="message">The message containing usage data in metadata.</param>
     /// <returns>True if usage was extracted and added, false otherwise.</returns>
     /// <exception cref="InvalidOperationException">Thrown if input tokens change between usage updates.</exception>
     public bool AddUsageFromMessageMetadata(IMessage message)
     {
+        ArgumentNullException.ThrowIfNull(message);
+
         if (message.Metadata == null || !message.Metadata.TryGetValue("usage", out var usage))
         {
             return false;
@@ -63,13 +65,15 @@ public class UsageAccumulator
     }
 
     /// <summary>
-    /// Add usage data from a UsageMessage.
+    ///     Add usage data from a UsageMessage.
     /// </summary>
     /// <param name="usageMessage">The UsageMessage to extract usage from.</param>
     /// <returns>True if usage was added, false otherwise.</returns>
     /// <exception cref="InvalidOperationException">Thrown if input tokens change between usage updates.</exception>
     public bool AddUsageFromMessage(UsageMessage usageMessage)
     {
+        ArgumentNullException.ThrowIfNull(usageMessage);
+
         // Store context for the usage message
         _fromAgent = usageMessage.FromAgent;
         _generationId = usageMessage.GenerationId;
@@ -88,7 +92,7 @@ public class UsageAccumulator
     }
 
     /// <summary>
-    /// Create a UsageMessage with the accumulated usage data.
+    ///     Create a UsageMessage with the accumulated usage data.
     /// </summary>
     /// <returns>A new UsageMessage, or null if no usage data has been accumulated.</returns>
     public UsageMessage? CreateUsageMessage()
@@ -155,29 +159,25 @@ public class UsageAccumulator
                 OutputTokenDetails = coreUsage.OutputTokenDetails ?? CurrentUsage.OutputTokenDetails,
                 TotalCost = coreUsage.TotalCost ?? CurrentUsage.TotalCost,
                 // Merge extra properties
-                ExtraProperties = MergeExtraProperties(
-                    CurrentUsage.ExtraProperties,
-                    coreUsage.ExtraProperties
-                ),
+                ExtraProperties = MergeExtraProperties(CurrentUsage.ExtraProperties, coreUsage.ExtraProperties),
             };
             return true;
         }
-        else
-        {
-            // Raw usage that's not a Usage object
-            if (CurrentUsage == null)
-            {
-                CurrentUsage = new Usage();
-            }
 
-            // Only add raw_usage if we haven't added it before
-            if (!_hasRawUsage)
-            {
-                CurrentUsage = CurrentUsage.SetExtraProperty("raw_usage", usageData);
-                _hasRawUsage = true;
-            }
-            return true;
+        // Raw usage that's not a Usage object
+        if (CurrentUsage == null)
+        {
+            CurrentUsage = new Usage();
         }
+
+        // Only add raw_usage if we haven't added it before
+        if (!_hasRawUsage)
+        {
+            CurrentUsage = CurrentUsage.SetExtraProperty("raw_usage", usageData);
+            _hasRawUsage = true;
+        }
+
+        return true;
     }
 
     private static ImmutableDictionary<string, object?> MergeExtraProperties(

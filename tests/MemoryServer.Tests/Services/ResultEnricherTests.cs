@@ -8,9 +8,9 @@ namespace MemoryServer.Tests.Services;
 
 public class ResultEnricherTests
 {
-    private readonly ResultEnricher _resultEnricher;
     private readonly Mock<IGraphRepository> _mockGraphRepository;
     private readonly EnrichmentOptions _options;
+    private readonly ResultEnricher _resultEnricher;
     private readonly SessionContext _sessionContext;
 
     public ResultEnricherTests()
@@ -364,7 +364,7 @@ public class ResultEnricherTests
 
         _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         // Act
         var enrichmentResults = await _resultEnricher.EnrichResultsAsync(results, _sessionContext);

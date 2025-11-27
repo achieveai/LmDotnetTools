@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -8,16 +9,16 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Function provider that extracts functions from a type using reflection and attributes
+///     Function provider that extracts functions from a type using reflection and attributes
 /// </summary>
 public class TypeFunctionProvider : IFunctionProvider
 {
-    private readonly Type _type;
-    private readonly object? _instance;
     private readonly List<FunctionDescriptor> _functions;
+    private readonly object? _instance;
+    private readonly Type _type;
 
     /// <summary>
-    /// Creates a provider from a type, using static methods only
+    ///     Creates a provider from a type, using static methods only
     /// </summary>
     public TypeFunctionProvider(Type type, string? providerName = null, int priority = 100)
     {
@@ -29,7 +30,7 @@ public class TypeFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Creates a provider from an instance, using instance methods only
+    ///     Creates a provider from an instance, using instance methods only
     /// </summary>
     public TypeFunctionProvider(object instance, string? providerName = null, int priority = 100)
     {
@@ -99,7 +100,7 @@ public class TypeFunctionProvider : IFunctionProvider
         }
 
         // Skip compiler-generated methods
-        if (method.GetCustomAttribute<System.Runtime.CompilerServices.CompilerGeneratedAttribute>() != null)
+        if (method.GetCustomAttribute<CompilerGeneratedAttribute>() != null)
         {
             return false;
         }
@@ -176,7 +177,7 @@ public class TypeFunctionProvider : IFunctionProvider
         if (!paramType.IsValueType)
         {
             // Check for nullable reference type annotations
-            var nullableAttribute = parameter.GetCustomAttribute<System.Runtime.CompilerServices.NullableAttribute>();
+            var nullableAttribute = parameter.GetCustomAttribute<NullableAttribute>();
             if (nullableAttribute != null && nullableAttribute.NullableFlags.Length > 0)
             {
                 // Flag 2 means nullable, 1 means not nullable
@@ -187,15 +188,13 @@ public class TypeFunctionProvider : IFunctionProvider
             var method = parameter.Member as MethodInfo;
             if (method != null)
             {
-                var methodNullable =
-                    method.GetCustomAttribute<System.Runtime.CompilerServices.NullableContextAttribute>();
+                var methodNullable = method.GetCustomAttribute<NullableContextAttribute>();
                 if (methodNullable != null)
                 {
                     return methodNullable.Flag == 2;
                 }
 
-                var typeNullable =
-                    method.DeclaringType?.GetCustomAttribute<System.Runtime.CompilerServices.NullableContextAttribute>();
+                var typeNullable = method.DeclaringType?.GetCustomAttribute<NullableContextAttribute>();
                 if (typeNullable != null)
                 {
                     return typeNullable.Flag == 2;
@@ -211,7 +210,7 @@ public class TypeFunctionProvider : IFunctionProvider
 
     private Func<string, Task<string>> CreateHandler(MethodInfo method)
     {
-        return async (argsJson) =>
+        return async argsJson =>
         {
             try
             {
@@ -246,15 +245,13 @@ public class TypeFunctionProvider : IFunctionProvider
                                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
                             );
                         }
-                        else if (param.HasDefaultValue)
-                        {
-                            paramValues[i] = param.DefaultValue;
-                        }
                         else
                         {
-                            paramValues[i] = !param.ParameterType.IsValueType
-                            || Nullable.GetUnderlyingType(param.ParameterType) != null
-                                ? null
+                            paramValues[i] =
+                                param.HasDefaultValue ? param.DefaultValue
+                                : !param.ParameterType.IsValueType
+                                || Nullable.GetUnderlyingType(param.ParameterType) != null
+                                    ? null
                                 : Activator.CreateInstance(param.ParameterType);
                         }
                     }
@@ -329,12 +326,12 @@ public class TypeFunctionProvider : IFunctionProvider
 }
 
 /// <summary>
-/// Extension methods for FunctionRegistry to easily register types and objects
+///     Extension methods for FunctionRegistry to easily register types and objects
 /// </summary>
 public static class FunctionRegistryTypeExtensions
 {
     /// <summary>
-    /// Registers all eligible methods from a type as functions (static methods only)
+    ///     Registers all eligible methods from a type as functions (static methods only)
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="type">The type to register functions from</param>
@@ -348,12 +345,13 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
         var provider = new TypeFunctionProvider(type, providerName, priority);
         return registry.AddProvider(provider);
     }
 
     /// <summary>
-    /// Registers all eligible instance methods from an object as functions (instance methods only, not static)
+    ///     Registers all eligible instance methods from an object as functions (instance methods only, not static)
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="instance">The object instance to register functions from</param>
@@ -367,12 +365,13 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
         var provider = new TypeFunctionProvider(instance, providerName, priority);
         return registry.AddProvider(provider);
     }
 
     /// <summary>
-    /// Registers all eligible methods from multiple types
+    ///     Registers all eligible methods from multiple types
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="types">The types to register functions from</param>
@@ -384,15 +383,19 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(types);
+
         foreach (var type in types)
         {
             _ = registry.AddFunctionsFromType(type, type.Name, priority);
         }
+
         return registry;
     }
 
     /// <summary>
-    /// Registers all types in an assembly that have at least one method with FunctionAttribute
+    ///     Registers all types in an assembly that have at least one method with FunctionAttribute
     /// </summary>
     /// <param name="registry">The function registry</param>
     /// <param name="assembly">The assembly to scan (null for calling assembly)</param>

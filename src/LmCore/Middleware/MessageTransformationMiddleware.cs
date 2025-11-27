@@ -7,26 +7,22 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Bidirectional middleware that transforms messages based on direction:
-/// - Downstream (Provider → Application): Assigns messageOrderIdx to messages
-/// - Upstream (Application → Provider): Reconstructs CompositeMessage and ToolsCallAggregateMessage
-///
-/// This enables the new simplified message flow while maintaining backward compatibility
-/// with provider transformations that expect aggregated messages.
+///     Bidirectional middleware that transforms messages based on direction:
+///     - Downstream (Provider → Application): Assigns messageOrderIdx to messages
+///     - Upstream (Application → Provider): Reconstructs CompositeMessage and ToolsCallAggregateMessage
+///     This enables the new simplified message flow while maintaining backward compatibility
+///     with provider transformations that expect aggregated messages.
 /// </summary>
 public class MessageTransformationMiddleware : IStreamingMiddleware
 {
     private readonly ILogger<MessageTransformationMiddleware> _logger;
 
     /// <summary>
-    /// Creates a new instance of MessageTransformationMiddleware
+    ///     Creates a new instance of MessageTransformationMiddleware
     /// </summary>
     /// <param name="name">Optional name for this middleware instance</param>
     /// <param name="logger">Optional logger</param>
-    public MessageTransformationMiddleware(
-        string? name = null,
-        ILogger<MessageTransformationMiddleware>? logger = null
-    )
+    public MessageTransformationMiddleware(string? name = null, ILogger<MessageTransformationMiddleware>? logger = null)
     {
         _logger = logger ?? NullLogger<MessageTransformationMiddleware>.Instance;
         Name = name ?? nameof(MessageTransformationMiddleware);
@@ -55,10 +51,18 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         }
 
         // Create modified context with aggregated messages
-        var modifiedContext = context with { Messages = aggregatedMessages };
+        var modifiedContext = context with
+        {
+            Messages = aggregatedMessages,
+        };
 
         // Call agent with aggregated messages
-        var replies = await agent.GenerateReplyAsync(modifiedContext.Messages, modifiedContext.Options, cancellationToken);
+        ArgumentNullException.ThrowIfNull(agent);
+        var replies = await agent.GenerateReplyAsync(
+            modifiedContext.Messages,
+            modifiedContext.Options,
+            cancellationToken
+        );
 
         // DOWNSTREAM: Assign message ordering to replies
         var orderedReplies = AssignMessageOrdering(replies);
@@ -95,9 +99,13 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         }
 
         // Create modified context with aggregated messages
-        var modifiedContext = context with { Messages = aggregatedMessages };
+        var modifiedContext = context with
+        {
+            Messages = aggregatedMessages,
+        };
 
         // Call agent with aggregated messages
+        ArgumentNullException.ThrowIfNull(agent);
         var streamingResponse = await agent.GenerateReplyStreamingAsync(
             modifiedContext.Messages,
             modifiedContext.Options,
@@ -387,7 +395,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     #region Upstream: Reconstruct Aggregates
 
     /// <summary>
-    /// Reconstructs CompositeMessage and ToolsCallAggregateMessage from ordered message stream
+    ///     Reconstructs CompositeMessage and ToolsCallAggregateMessage from ordered message stream
     /// </summary>
     private static IEnumerable<IMessage> ReconstructAggregates(IEnumerable<IMessage> messages)
     {
@@ -429,7 +437,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Groups consecutive messages by GenerationId, keeping messages without GenerationId separate
+    ///     Groups consecutive messages by GenerationId, keeping messages without GenerationId separate
     /// </summary>
     private static List<List<IMessage>> GroupByGeneration(List<IMessage> messages)
     {
@@ -451,7 +459,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 }
 
                 // Start new group
-                currentGroup = new List<IMessage> { message };
+                currentGroup = [message];
                 currentGenerationId = messageGenerationId;
             }
             else
@@ -577,9 +585,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     private static ToolsCallAggregateMessage? TryCreateToolCallAggregate(List<IMessage> group)
     {
         // Sort by MessageOrderIdx if available
-        var sortedGroup = group
-            .OrderBy(m => m.MessageOrderIdx ?? int.MaxValue)
-            .ToList();
+        var sortedGroup = group.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue).ToList();
 
         // Look for ToolsCallMessage followed by ToolsCallResultMessage
         ToolsCallMessage? toolCallMessage = null;
@@ -598,27 +604,18 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         }
 
         // If we found both, create aggregate
-        if (toolCallMessage != null && toolCallResult != null)
-        {
-            return new ToolsCallAggregateMessage(
-                toolCallMessage,
-                toolCallResult,
-                toolCallMessage.FromAgent
-            );
-        }
-
-        return null;
+        return toolCallMessage != null && toolCallResult != null
+            ? new ToolsCallAggregateMessage(toolCallMessage, toolCallResult, toolCallMessage.FromAgent)
+            : null;
     }
 
     /// <summary>
-    /// Creates a CompositeMessage from a group of messages
+    ///     Creates a CompositeMessage from a group of messages
     /// </summary>
     private static CompositeMessage CreateCompositeMessage(List<IMessage> group)
     {
         // Sort by MessageOrderIdx
-        var sortedMessages = group
-            .OrderBy(m => m.MessageOrderIdx ?? int.MaxValue)
-            .ToImmutableList();
+        var sortedMessages = group.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue).ToImmutableList();
 
         // Use properties from the first message
         var firstMessage = group[0];

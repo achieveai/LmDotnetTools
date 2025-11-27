@@ -7,13 +7,15 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
 /// <summary>
-/// Mock tool for getting weather information by city
-/// Demonstrates simple function call with validation
+///     Mock tool for getting weather information by city
+///     Demonstrates simple function call with validation
 /// </summary>
 public class GetWeatherTool : IFunctionProvider
 {
-    private readonly ILogger<GetWeatherTool> _logger;
     private static readonly string[] Conditions = ["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy", "Windy", "Stormy"];
+
+    private static readonly string[] sourceArray = ["celsius", "fahrenheit"];
+    private readonly ILogger<GetWeatherTool> _logger;
 
     public GetWeatherTool(ILogger<GetWeatherTool> logger)
     {
@@ -23,8 +25,6 @@ public class GetWeatherTool : IFunctionProvider
 
     public string ProviderName => "WeatherProvider";
     public int Priority => 100;
-
-    private static readonly string[] sourceArray = ["celsius", "fahrenheit"];
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
@@ -60,7 +60,7 @@ public class GetWeatherTool : IFunctionProvider
     }
 
     /// <summary>
-    /// Executes the weather lookup with mock data
+    ///     Executes the weather lookup with mock data
     /// </summary>
     private async Task<string> ExecuteAsync(string arguments)
     {
@@ -86,7 +86,7 @@ public class GetWeatherTool : IFunctionProvider
             var result = new
             {
                 city = args.City,
-                temperature = temperature,
+                temperature,
                 units = args.Units ?? "celsius",
                 condition = Conditions[Random.Shared.Next(Conditions.Length)],
                 humidity = Random.Shared.Next(30, 90),

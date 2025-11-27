@@ -1,8 +1,8 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Interface for tracking performance metrics across all providers.
-/// Enables consistent performance monitoring for OpenAI, Anthropic, and other providers.
+///     Interface for tracking performance metrics across all providers.
+///     Enables consistent performance monitoring for OpenAI, Anthropic, and other providers.
 /// </summary>
 public interface IPerformanceTracker
 {
@@ -53,7 +53,7 @@ public interface IPerformanceTracker
 }
 
 /// <summary>
-/// Overall statistics across all providers and models.
+///     Overall statistics across all providers and models.
 /// </summary>
 public record OverallStatistics
 {
@@ -96,7 +96,7 @@ public record OverallStatistics
 }
 
 /// <summary>
-/// Summary statistics for a single provider.
+///     Summary statistics for a single provider.
 /// </summary>
 public record ProviderSummary
 {

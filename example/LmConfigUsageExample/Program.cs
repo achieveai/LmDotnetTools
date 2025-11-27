@@ -1,4 +1,5 @@
 using System.Text;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -266,7 +267,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 1: Traditional file-based configuration loading
+    ///     Example 1: Traditional file-based configuration loading
     /// </summary>
     private static void RunFileBasedExample()
     {
@@ -279,9 +280,7 @@ internal class Program
             _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration from models.json file
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile("models.json", optional: false, reloadOnChange: false)
-                .Build();
+            var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
             // Add LmConfig with file-based configuration
             _ = services.AddLmConfig(configuration);
@@ -299,7 +298,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 2: Embedded resource configuration loading
+    ///     Example 2: Embedded resource configuration loading
     /// </summary>
     private static void RunEmbeddedResourceExample()
     {
@@ -322,9 +321,7 @@ internal class Program
                 // Fallback to file-based loading if embedded resource not found
                 Console.WriteLine("! Embedded resource not found, falling back to file-based loading");
 
-                var configuration = new ConfigurationBuilder()
-                    .AddJsonFile("models.json", optional: false, reloadOnChange: false)
-                    .Build();
+                var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
                 _ = services.AddLmConfig(configuration);
                 Console.WriteLine("✓ Successfully loaded configuration from file as fallback");
@@ -342,7 +339,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 3: Stream factory configuration loading
+    ///     Example 3: Stream factory configuration loading
     /// </summary>
     private static void RunStreamFactoryExample()
     {
@@ -376,7 +373,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 4: IOptions pattern configuration loading
+    ///     Example 4: IOptions pattern configuration loading
     /// </summary>
     private static void RunIOptionsExample()
     {
@@ -389,9 +386,7 @@ internal class Program
             _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration using .NET's configuration system
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile("models.json", optional: false, reloadOnChange: true)
-                .Build();
+            var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, true).Build();
 
             // Use IOptions pattern with configuration section
             _ = services.AddLmConfig(configuration);
@@ -409,7 +404,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 5: Provider availability checking
+    ///     Example 5: Provider availability checking
     /// </summary>
     private static async Task RunProviderAvailabilityExample()
     {
@@ -421,9 +416,7 @@ internal class Program
             var services = new ServiceCollection();
             _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile("models.json", optional: false, reloadOnChange: false)
-                .Build();
+            var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
             _ = services.AddLmConfig(configuration);
 
@@ -475,7 +468,7 @@ internal class Program
     }
 
     /// <summary>
-    /// Example 6: ModelId Resolution and Translation
+    ///     Example 6: ModelId Resolution and Translation
     /// </summary>
     private static async Task RunModelIdResolutionExample()
     {
@@ -487,9 +480,7 @@ internal class Program
             var services = new ServiceCollection();
             _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile("models.json", optional: false, reloadOnChange: false)
-                .Build();
+            var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
             _ = services.AddLmConfig(configuration);
 
@@ -581,8 +572,8 @@ internal class Program
     }
 
     /// <summary>
-    /// ClaudeAgentSDK Provider in One-Shot Mode
-    /// Sends a prompt, runs to completion, and exits
+    ///     ClaudeAgentSDK Provider in One-Shot Mode
+    ///     Sends a prompt, runs to completion, and exits
     /// </summary>
     private static async Task RunClaudeAgentSdkOneShotExample(string prompt, float temperature)
     {
@@ -593,11 +584,11 @@ internal class Program
 
             // Configure ClaudeAgentSdkOptions with OneShot mode
             _ = services.AddSingleton(
-                new AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkOptions
+                new ClaudeAgentSdkOptions
                 {
                     ProjectRoot = Directory.GetCurrentDirectory(),
                     McpConfigPath = ".mcp.json",
-                    Mode = AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkMode.OneShot,
+                    Mode = ClaudeAgentSdkMode.OneShot,
                 }
             );
 
@@ -682,7 +673,7 @@ internal class Program
                         case ToolsCallResultMessage toolResultMsg:
                             if (!toolResultMsg.ToolCallResults.IsEmpty)
                             {
-                                var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
+                                var result = toolResultMsg.ToolCallResults[0].Result ?? "null";
                                 Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
                             }
 
@@ -691,6 +682,18 @@ internal class Program
                             Console.WriteLine(
                                 $"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]"
                             );
+                            Console.WriteLine(
+                                $"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]"
+                            );
+                            break;
+                        case TextUpdateMessage:
+                        case ToolsCallUpdateMessage:
+                        case ReasoningUpdateMessage:
+                        case ToolsCallAggregateMessage:
+                        case ImageMessage:
+                        case CompositeMessage:
+                        default:
+                            // Ignore these message types in this example
                             break;
                     }
 
@@ -702,10 +705,8 @@ internal class Program
                 {
                     break;
                 }
-                else
-                {
-                    messages = [.. messages, new TextMessage { Text = userInput ?? string.Empty, Role = Role.User }];
-                }
+
+                messages = [.. messages, new TextMessage { Text = userInput ?? string.Empty, Role = Role.User }];
             }
 
             Console.WriteLine("\n\n----------------------------");

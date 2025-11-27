@@ -9,18 +9,18 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.Misc.Http;
 
 /// <summary>
-/// HttpMessageHandler that provides caching for HTTP requests and responses.
-/// Caches based on URL + POST body content using SHA256 hashing.
+///     HttpMessageHandler that provides caching for HTTP requests and responses.
+///     Caches based on URL + POST body content using SHA256 hashing.
 /// </summary>
 public class CachingHttpMessageHandler : DelegatingHandler
 {
     private readonly IKvStore _cache;
-    private readonly LlmCacheOptions _options;
     private readonly ILogger _logger;
+    private readonly LlmCacheOptions _options;
     private readonly SemaphoreSlim _semaphore;
 
     /// <summary>
-    /// Initializes a new instance of the CachingHttpMessageHandler.
+    ///     Initializes a new instance of the CachingHttpMessageHandler.
     /// </summary>
     /// <param name="cache">The cache store to use</param>
     /// <param name="options">Cache configuration options</param>
@@ -45,7 +45,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Processes HTTP requests with caching logic.
+    ///     Processes HTTP requests with caching logic.
     /// </summary>
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -97,7 +97,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Generates a cache key from the HTTP request URL and POST body.
+    ///     Generates a cache key from the HTTP request URL and POST body.
     /// </summary>
     private static async Task<string> GenerateCacheKeyAsync(
         HttpRequestMessage request,
@@ -131,7 +131,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Retrieves a cached response if it exists and is not expired.
+    ///     Retrieves a cached response if it exists and is not expired.
     /// </summary>
     private async Task<HttpResponseMessage?> GetFromCacheAsync(string cacheKey, CancellationToken cancellationToken)
     {
@@ -153,7 +153,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
             }
 
             // Reconstruct HttpResponseMessage
-            var response = new HttpResponseMessage((System.Net.HttpStatusCode)cachedItem.StatusCode)
+            var response = new HttpResponseMessage((HttpStatusCode)cachedItem.StatusCode)
             {
                 Content = new StringContent(cachedItem.Content, Encoding.UTF8, cachedItem.ContentType),
                 ReasonPhrase = cachedItem.ReasonPhrase,
@@ -175,7 +175,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Wraps the HTTP response content with streaming caching capability.
+    ///     Wraps the HTTP response content with streaming caching capability.
     /// </summary>
     private void CacheResponseAsync(string cacheKey, HttpResponseMessage response)
     {
@@ -201,7 +201,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Disposes the handler and its resources.
+    ///     Disposes the handler and its resources.
     /// </summary>
     protected override void Dispose(bool disposing)
     {
@@ -209,61 +209,62 @@ public class CachingHttpMessageHandler : DelegatingHandler
         {
             _semaphore?.Dispose();
         }
+
         base.Dispose(disposing);
     }
 }
 
 /// <summary>
-/// Represents a cached HTTP response.
+///     Represents a cached HTTP response.
 /// </summary>
 public class CachedHttpResponse
 {
     /// <summary>
-    /// HTTP status code of the response.
+    ///     HTTP status code of the response.
     /// </summary>
     public int StatusCode { get; set; }
 
     /// <summary>
-    /// HTTP reason phrase of the response.
+    ///     HTTP reason phrase of the response.
     /// </summary>
     public string? ReasonPhrase { get; set; }
 
     /// <summary>
-    /// Content of the response as a string.
+    ///     Content of the response as a string.
     /// </summary>
     public string Content { get; set; } = string.Empty;
 
     /// <summary>
-    /// Content type of the response.
+    ///     Content type of the response.
     /// </summary>
     public string ContentType { get; set; } = "application/json";
 
     /// <summary>
-    /// HTTP headers of the response.
+    ///     HTTP headers of the response.
     /// </summary>
     public Dictionary<string, string[]> Headers { get; set; } = [];
 
     /// <summary>
-    /// When the response was cached.
+    ///     When the response was cached.
     /// </summary>
     public DateTime CachedAt { get; set; }
 
     /// <summary>
-    /// When the cached response expires.
+    ///     When the cached response expires.
     /// </summary>
     public DateTime ExpiresAt { get; set; }
 }
 
 /// <summary>
-/// HttpContent wrapper that enables streaming with concurrent caching.
+///     HttpContent wrapper that enables streaming with concurrent caching.
 /// </summary>
 public class CachingHttpContent : HttpContent
 {
-    private readonly HttpContent _originalContent;
-    private readonly string _cacheKey;
     private readonly IKvStore _cache;
-    private readonly LlmCacheOptions _options;
+    private readonly string _cacheKey;
     private readonly ILogger _logger;
+    private readonly LlmCacheOptions _options;
+    private readonly HttpContent _originalContent;
     private readonly SemaphoreSlim _semaphore;
 
     public CachingHttpContent(
@@ -319,26 +320,27 @@ public class CachingHttpContent : HttpContent
         {
             _originalContent?.Dispose();
         }
+
         base.Dispose(disposing);
     }
 }
 
 /// <summary>
-/// Stream wrapper that captures data as it's read for caching purposes.
+///     Stream wrapper that captures data as it's read for caching purposes.
 /// </summary>
 public class CachingStream : Stream
 {
-    private readonly Stream _originalStream;
-    private readonly string _cacheKey;
-    private readonly IKvStore _cache;
-    private readonly LlmCacheOptions _options;
-    private readonly ILogger _logger;
-    private readonly SemaphoreSlim _semaphore;
     private readonly MemoryStream _buffer;
+    private readonly IKvStore _cache;
+    private readonly string _cacheKey;
     private readonly object _lock = new();
-    private bool _disposed;
+    private readonly ILogger _logger;
+    private readonly LlmCacheOptions _options;
+    private readonly Stream _originalStream;
+    private readonly SemaphoreSlim _semaphore;
     private bool _cacheAttempted;
     private Task? _cachingTask;
+    private bool _disposed;
 
     public CachingStream(
         Stream originalStream,
@@ -362,6 +364,7 @@ public class CachingStream : Stream
     public override bool CanSeek => false; // Don't allow seeking to keep it simple
     public override bool CanWrite => false;
     public override long Length => _originalStream.Length;
+
     public override long Position
     {
         get => _originalStream.Position;
@@ -523,7 +526,7 @@ public class CachingStream : Stream
             // Wait for the caching task to complete (but don't block indefinitely)
             try
             {
-                _ = (taskToWait?.Wait(TimeSpan.FromSeconds(5)));
+                _ = taskToWait?.Wait(TimeSpan.FromSeconds(5));
             }
             catch (Exception ex)
             {
@@ -533,6 +536,7 @@ public class CachingStream : Stream
             _buffer?.Dispose();
             _originalStream?.Dispose();
         }
+
         base.Dispose(disposing);
     }
 }

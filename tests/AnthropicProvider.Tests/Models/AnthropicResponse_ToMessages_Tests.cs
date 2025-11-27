@@ -5,6 +5,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
 public class AnthropicResponse_ToMessages_Tests
 {
+    private static readonly string[] separator = ["\r\n", "\n"];
+
     // Gets the path to the repository root directory
     private static string GetRepositoryRootPath()
     {
@@ -44,10 +46,7 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for first response - text and tool_use
         var response1 = responses[0];
-        var messages1 = AnthropicProvider.Models.AnthropicExtensions.ToMessages(
-            response1,
-            "test-agent"
-        );
+        var messages1 = response1.ToMessages("test-agent");
 
         // Assert basic properties - we now have 3 messages because of the additional UsageMessage
         Assert.Equal(3, messages1.Count);
@@ -80,10 +79,7 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
-        var messages2 = AnthropicProvider.Models.AnthropicExtensions.ToMessages(
-            response2,
-            "test-agent"
-        );
+        var messages2 = response2.ToMessages("test-agent");
 
         // Assert basic properties - we now have 4 messages because of the additional UsageMessage
         Assert.Equal(4, messages2.Count);
@@ -217,8 +213,6 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal("tool_use", messageDeltas[0]?["delta"]?["stop_reason"]?.GetValue<string>());
     }
 
-    private static readonly string[] separator = ["\r\n", "\n"];
-
     // Helper method to parse SSE events
     private static List<SseEvent> ParseSseEvents(string input)
     {
@@ -237,21 +231,19 @@ public class AnthropicResponse_ToMessages_Tests
                     events.Add(currentEvent);
                     currentEvent = null;
                 }
+
                 continue;
             }
 
-            if (currentEvent == null)
-            {
-                currentEvent = new SseEvent();
-            }
+            currentEvent ??= new SseEvent();
 
             if (line.StartsWith("event:"))
             {
-                currentEvent.Event = line.Substring(6).Trim();
+                currentEvent.Event = line[6..].Trim();
             }
             else if (line.StartsWith("data:"))
             {
-                currentEvent.Data = line.Substring(5).Trim();
+                currentEvent.Data = line[5..].Trim();
             }
         }
 

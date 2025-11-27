@@ -10,16 +10,95 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core;
 
 /// <summary>
-/// Comprehensive tests for RerankingService class using HTTP mocking
+///     Comprehensive tests for RerankingService class using HTTP mocking
 /// </summary>
 public class RerankingServiceTests
 {
+    private static readonly string[] documents = ["doc1", "doc2", "doc3"];
+    private static readonly string[] documentsArray = ["doc1", "doc2"];
+    private static readonly string[] documentsArray0 = ["doc1"];
+
+    private static readonly string[] item =
+    [
+        "Paris is the capital of France",
+        "London is in England",
+        "Berlin is German",
+    ];
+
+    private static readonly string[] itemArray =
+    [
+        "AI and ML concepts",
+        "Weather forecast",
+        "Cooking recipes",
+        "Deep learning basics",
+        "Sports news",
+    ];
+
+    private static readonly string[] itemArray0 = ["Code quality guidelines", "Testing methodologies"];
+    private static readonly string[] itemArray1 = ["doc1"];
+    private static readonly string[] itemArray2 = ["doc1"];
     private readonly ILogger<RerankingService> _logger;
 
     public RerankingServiceTests()
     {
         _logger = new TestLogger<RerankingService>();
     }
+
+    // Test Data
+    public static IEnumerable<object[]> ConstructorTestCases =>
+        [
+            ["https://api.cohere.com", "rerank-v3.5", "test-key", "Cohere configuration"],
+            ["https://custom.api.com", "custom-rerank-model", "custom-key", "Custom configuration"],
+            ["https://api.example.com/rerank", "rerank-english-v3.0", "example-key", "Example configuration"],
+        ];
+
+    public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
+        [
+            [null!, "model", "key", typeof(ArgumentNullException), "Null endpoint"],
+            ["https://api.test.com", null!, "key", typeof(ArgumentNullException), "Null model"],
+            ["https://api.test.com", "model", null!, typeof(ArgumentException), "Null API key"],
+            ["https://api.test.com", "model", "", typeof(ArgumentException), "Empty API key"],
+            ["https://api.test.com", "model", "   ", typeof(ArgumentException), "Whitespace API key"],
+        ];
+
+    public static IEnumerable<object[]> BasicRerankingTestCases =>
+        [
+            ["What is the capital?", item, "Simple query with 3 documents"],
+            ["Machine learning", itemArray, "Technical query with 5 documents"],
+            ["Best practices", itemArray0, "Professional query with 2 documents"],
+        ];
+
+    public static IEnumerable<object[]> RetryScenarioTestCases =>
+        [
+            [new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK }, true, "500 then success"],
+            [new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.OK }, true, "429 then success"],
+            [
+                new[] { HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway, HttpStatusCode.OK },
+                true,
+                "500, 502, then success",
+            ],
+            [
+                new[]
+                {
+                    HttpStatusCode.InternalServerError,
+                    HttpStatusCode.BadGateway,
+                    HttpStatusCode.ServiceUnavailable,
+                },
+                false,
+                "All 5xx errors",
+            ],
+            [new[] { HttpStatusCode.BadRequest }, false, "Non-retryable 400 error"],
+            [new[] { HttpStatusCode.Unauthorized }, false, "Non-retryable 401 error"],
+        ];
+
+    public static IEnumerable<object[]> InvalidInputTestCases =>
+        [
+            [null!, itemArray1, typeof(ArgumentException), "Null query"],
+            ["", itemArray1, typeof(ArgumentException), "Empty query"],
+            ["   ", itemArray2, typeof(ArgumentException), "Whitespace query"],
+            ["query", null!, typeof(ArgumentNullException), "Null documents"],
+            ["query", Array.Empty<string>(), typeof(ArgumentException), "Empty documents array"],
+        ];
 
     [Theory]
     [MemberData(nameof(ConstructorTestCases))]
@@ -261,96 +340,6 @@ public class RerankingServiceTests
         Debug.WriteLine($"Non-retryable error failed immediately in {stopwatch.ElapsedMilliseconds}ms");
     }
 
-    // Test Data
-    public static IEnumerable<object[]> ConstructorTestCases =>
-        new List<object[]>
-        {
-            new object[] { "https://api.cohere.com", "rerank-v3.5", "test-key", "Cohere configuration" },
-            new object[] { "https://custom.api.com", "custom-rerank-model", "custom-key", "Custom configuration" },
-            new object[]
-            {
-                "https://api.example.com/rerank",
-                "rerank-english-v3.0",
-                "example-key",
-                "Example configuration",
-            },
-        };
-
-    public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
-        new List<object[]>
-        {
-            new object[] { null!, "model", "key", typeof(ArgumentNullException), "Null endpoint" },
-            new object[] { "https://api.test.com", null!, "key", typeof(ArgumentNullException), "Null model" },
-            new object[] { "https://api.test.com", "model", null!, typeof(ArgumentException), "Null API key" },
-            new object[] { "https://api.test.com", "model", "", typeof(ArgumentException), "Empty API key" },
-            new object[] { "https://api.test.com", "model", "   ", typeof(ArgumentException), "Whitespace API key" },
-        };
-
-    public static IEnumerable<object[]> BasicRerankingTestCases =>
-        new List<object[]>
-        {
-            new object[] { "What is the capital?", item, "Simple query with 3 documents" },
-            new object[] { "Machine learning", itemArray, "Technical query with 5 documents" },
-            new object[] { "Best practices", itemArray0, "Professional query with 2 documents" },
-        };
-
-    public static IEnumerable<object[]> RetryScenarioTestCases =>
-        new List<object[]>
-        {
-            new object[] { new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK }, true, "500 then success" },
-            new object[] { new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.OK }, true, "429 then success" },
-            new object[]
-            {
-                new[] { HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway, HttpStatusCode.OK },
-                true,
-                "500, 502, then success",
-            },
-            new object[]
-            {
-                new[]
-                {
-                    HttpStatusCode.InternalServerError,
-                    HttpStatusCode.BadGateway,
-                    HttpStatusCode.ServiceUnavailable,
-                },
-                false,
-                "All 5xx errors",
-            },
-            new object[] { new[] { HttpStatusCode.BadRequest }, false, "Non-retryable 400 error" },
-            new object[] { new[] { HttpStatusCode.Unauthorized }, false, "Non-retryable 401 error" },
-        };
-
-    public static IEnumerable<object[]> InvalidInputTestCases =>
-        new List<object[]>
-        {
-            new object[] { null!, itemArray1, typeof(ArgumentException), "Null query" },
-            new object[] { "", itemArray1, typeof(ArgumentException), "Empty query" },
-            new object[] { "   ", itemArray2, typeof(ArgumentException), "Whitespace query" },
-            new object[] { "query", null!, typeof(ArgumentNullException), "Null documents" },
-            new object[] { "query", Array.Empty<string>(), typeof(ArgumentException), "Empty documents array" },
-        };
-
-    private static readonly string[] documents = ["doc1", "doc2", "doc3"];
-    private static readonly string[] documentsArray = ["doc1", "doc2"];
-    private static readonly string[] documentsArray0 = ["doc1"];
-    private static readonly string[] item =
-    [
-        "Paris is the capital of France",
-        "London is in England",
-        "Berlin is German",
-    ];
-    private static readonly string[] itemArray =
-    [
-        "AI and ML concepts",
-        "Weather forecast",
-        "Cooking recipes",
-        "Deep learning basics",
-        "Sports news",
-    ];
-    private static readonly string[] itemArray0 = ["Code quality guidelines", "Testing methodologies"];
-    private static readonly string[] itemArray1 = ["doc1"];
-    private static readonly string[] itemArray2 = ["doc1"];
-
     // Helper Methods
     private RerankingService CreateRerankingService(
         FakeHttpMessageHandler httpHandler,
@@ -392,7 +381,7 @@ public class RerankingServiceTests
         var response = new
         {
             id = Guid.NewGuid().ToString(),
-            results = results,
+            results,
             meta = new { api_version = new { version = "2" }, billed_units = new { search_units = 1 } },
         };
 
@@ -400,7 +389,7 @@ public class RerankingServiceTests
     }
 
     /// <summary>
-    /// Simple test logger implementation
+    ///     Simple test logger implementation
     /// </summary>
     private class TestLogger<T> : ILogger<T>
     {

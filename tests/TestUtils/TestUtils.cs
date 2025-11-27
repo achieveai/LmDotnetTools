@@ -5,13 +5,13 @@ namespace AchieveAi.LmDotnetTools.TestUtils;
 public static class TestUtils
 {
     /// <summary>
-    /// Finds the workspace root directory by looking for the .git directory, .env.test file, or solution file.
+    ///     Finds the workspace root directory by looking for the .git directory, .env.test file, or solution file.
     /// </summary>
     /// <param name="startingPath">The directory to start searching from.</param>
     /// <returns>The path to the workspace root directory.</returns>
     public static string FindWorkspaceRoot(string startingPath)
     {
-        DirectoryInfo? directory = new DirectoryInfo(startingPath);
+        var directory = new DirectoryInfo(startingPath);
 
         while (directory != null)
         {
@@ -41,7 +41,7 @@ public static class TestUtils
     }
 
     /// <summary>
-    /// Extracts text content from various message types
+    ///     Extracts text content from various message types
     /// </summary>
     /// <param name="message">The message to extract text from</param>
     /// <returns>The extracted text or null if the message is null</returns>
@@ -50,17 +50,17 @@ public static class TestUtils
         return message == null
             ? null
             : message switch
-        {
-            TextMessage textMessage => textMessage.Text,
-            ToolsCallResultMessage toolCallResult => string.Join(
-                Environment.NewLine,
-                toolCallResult.ToolCallResults.Select(tcr => tcr.Result)
-            ),
-            ToolsCallAggregateMessage toolCallAggregate => string.Join(
-                Environment.NewLine,
-                toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)
-            ),
-            _ => message.ToString(),
-        };
+            {
+                TextMessage textMessage => textMessage.Text,
+                ToolsCallResultMessage toolCallResult => string.Join(
+                    Environment.NewLine,
+                    toolCallResult.ToolCallResults.Select(tcr => tcr.Result)
+                ),
+                ToolsCallAggregateMessage toolCallAggregate => string.Join(
+                    Environment.NewLine,
+                    toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)
+                ),
+                _ => message.ToString(),
+            };
     }
 }

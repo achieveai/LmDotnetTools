@@ -6,13 +6,13 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of session manager with transport-aware context and database persistence.
+///     Implementation of session manager with transport-aware context and database persistence.
 /// </summary>
 public class SessionManager : ISessionManager
 {
-    private readonly ISqliteSessionFactory _sessionFactory;
     private readonly ILogger<SessionManager> _logger;
     private readonly MemoryServerOptions _options;
+    private readonly ISqliteSessionFactory _sessionFactory;
 
     public SessionManager(
         ISqliteSessionFactory sessionFactory,
@@ -26,7 +26,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Processes environment variables for STDIO transport session context.
+    ///     Processes environment variables for STDIO transport session context.
     /// </summary>
     public async Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(CancellationToken cancellationToken = default)
     {
@@ -54,7 +54,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Processes URL parameters for SSE transport session context.
+    ///     Processes URL parameters for SSE transport session context.
     /// </summary>
     public async Task<SessionDefaults?> ProcessUrlParametersAsync(
         IDictionary<string, string> queryParameters,
@@ -94,7 +94,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Processes HTTP headers for SSE transport session context.
+    ///     Processes HTTP headers for SSE transport session context.
     /// </summary>
     public async Task<SessionDefaults?> ProcessHttpHeadersAsync(
         IDictionary<string, string> headers,
@@ -134,8 +134,8 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Processes transport-specific context with proper precedence handling.
-    /// Precedence: HTTP Headers > URL Parameters > Environment Variables
+    ///     Processes transport-specific context with proper precedence handling.
+    ///     Precedence: HTTP Headers > URL Parameters > Environment Variables
     /// </summary>
     public async Task<SessionDefaults?> ProcessTransportContextAsync(
         IDictionary<string, string>? queryParameters = null,
@@ -173,6 +173,7 @@ public class SessionManager : ISessionManager
                     result.RunId = urlDefaults.RunId ?? result.RunId;
                     result.Source = SessionDefaultsSource.UrlParameters; // Update source to highest precedence
                 }
+
                 _logger.LogDebug("Applied URL parameter defaults");
             }
         }
@@ -195,6 +196,7 @@ public class SessionManager : ISessionManager
                     result.RunId = headerDefaults.RunId ?? result.RunId;
                     result.Source = SessionDefaultsSource.HttpHeaders; // Update source to highest precedence
                 }
+
                 _logger.LogDebug("Applied HTTP header defaults");
             }
         }
@@ -212,7 +214,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Stores session defaults in the database.
+    ///     Stores session defaults in the database.
     /// </summary>
     public async Task<bool> StoreSessionDefaultsAsync(
         SessionDefaults sessionDefaults,
@@ -244,7 +246,10 @@ public class SessionManager : ISessionManager
                     _ = command.Parameters.AddWithValue("@userId", sessionDefaults.UserId ?? (object)DBNull.Value);
                     _ = command.Parameters.AddWithValue("@agentId", sessionDefaults.AgentId ?? (object)DBNull.Value);
                     _ = command.Parameters.AddWithValue("@runId", sessionDefaults.RunId ?? (object)DBNull.Value);
-                    _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(sessionDefaults.Metadata));
+                    _ = command.Parameters.AddWithValue(
+                        "@metadata",
+                        JsonSerializer.Serialize(sessionDefaults.Metadata)
+                    );
                     _ = command.Parameters.AddWithValue("@source", (int)sessionDefaults.Source);
                     _ = command.Parameters.AddWithValue("@createdAt", sessionDefaults.CreatedAt.ToString("O"));
 
@@ -273,7 +278,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Retrieves session defaults by connection ID.
+    ///     Retrieves session defaults by connection ID.
     /// </summary>
     public async Task<SessionDefaults?> GetSessionDefaultsAsync(
         string connectionId,
@@ -313,8 +318,7 @@ public class SessionManager : ISessionManager
                             : reader.GetString(metadataOrdinal);
                         var metadata = string.IsNullOrEmpty(metadataJson)
                             ? []
-                            : JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson)
-                                ?? [];
+                            : JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? [];
 
                         // Handle source column gracefully - it might not exist in older schemas
                         var source = SessionDefaultsSource.SystemDefaults;
@@ -401,7 +405,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Removes session defaults for a connection.
+    ///     Removes session defaults for a connection.
     /// </summary>
     public async Task<bool> RemoveSessionDefaultsAsync(
         string connectionId,
@@ -448,7 +452,7 @@ public class SessionManager : ISessionManager
     }
 
     /// <summary>
-    /// Cleans up expired session defaults.
+    ///     Cleans up expired session defaults.
     /// </summary>
     public async Task<int> CleanupExpiredSessionsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default)
     {

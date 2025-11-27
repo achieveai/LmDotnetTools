@@ -1,15 +1,15 @@
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Generates unique integer IDs for memories using a secure auto-incrementing sequence.
-/// Provides better LLM integration compared to UUIDs while maintaining uniqueness.
-/// Uses Database Session Pattern for reliable connection management.
+///     Generates unique integer IDs for memories using a secure auto-incrementing sequence.
+///     Provides better LLM integration compared to UUIDs while maintaining uniqueness.
+///     Uses Database Session Pattern for reliable connection management.
 /// </summary>
 public class MemoryIdGenerator
 {
-    private readonly ISqliteSessionFactory _sessionFactory;
-    private readonly ILogger<MemoryIdGenerator> _logger;
     private readonly SemaphoreSlim _generationSemaphore;
+    private readonly ILogger<MemoryIdGenerator> _logger;
+    private readonly ISqliteSessionFactory _sessionFactory;
 
     public MemoryIdGenerator(ISqliteSessionFactory sessionFactory, ILogger<MemoryIdGenerator> logger)
     {
@@ -19,8 +19,8 @@ public class MemoryIdGenerator
     }
 
     /// <summary>
-    /// Generates the next unique integer ID for a memory.
-    /// Uses database sequence to ensure uniqueness across all instances.
+    ///     Generates the next unique integer ID for a memory.
+    ///     Uses database sequence to ensure uniqueness across all instances.
     /// </summary>
     public async Task<int> GenerateNextIdAsync(CancellationToken cancellationToken = default)
     {
@@ -74,7 +74,7 @@ public class MemoryIdGenerator
     }
 
     /// <summary>
-    /// Generates multiple IDs in a single transaction for batch operations.
+    ///     Generates multiple IDs in a single transaction for batch operations.
     /// </summary>
     public async Task<List<int>> GenerateMultipleIdsAsync(int count, CancellationToken cancellationToken = default)
     {
@@ -137,7 +137,7 @@ public class MemoryIdGenerator
     }
 
     /// <summary>
-    /// Validates that an ID exists in the sequence (for security checks).
+    ///     Validates that an ID exists in the sequence (for security checks).
     /// </summary>
     public async Task<bool> ValidateIdExistsAsync(int id, CancellationToken cancellationToken = default)
     {
@@ -168,7 +168,7 @@ public class MemoryIdGenerator
     }
 
     /// <summary>
-    /// Gets the current maximum ID in the sequence.
+    ///     Gets the current maximum ID in the sequence.
     /// </summary>
     public async Task<int> GetMaxIdAsync(CancellationToken cancellationToken = default)
     {
@@ -196,7 +196,7 @@ public class MemoryIdGenerator
     }
 
     /// <summary>
-    /// Gets statistics about ID generation.
+    ///     Gets statistics about ID generation.
     /// </summary>
     public async Task<IdGenerationStats> GetStatsAsync(CancellationToken cancellationToken = default)
     {
@@ -250,32 +250,32 @@ public class MemoryIdGenerator
 }
 
 /// <summary>
-/// Statistics about ID generation.
+///     Statistics about ID generation.
 /// </summary>
 public class IdGenerationStats
 {
     /// <summary>
-    /// Total number of IDs generated.
+    ///     Total number of IDs generated.
     /// </summary>
     public int TotalGenerated { get; set; }
 
     /// <summary>
-    /// Minimum ID generated.
+    ///     Minimum ID generated.
     /// </summary>
     public int MinId { get; set; }
 
     /// <summary>
-    /// Maximum ID generated.
+    ///     Maximum ID generated.
     /// </summary>
     public int MaxId { get; set; }
 
     /// <summary>
-    /// Remaining capacity before reaching int.MaxValue.
+    ///     Remaining capacity before reaching int.MaxValue.
     /// </summary>
     public long RemainingCapacity { get; set; }
 
     /// <summary>
-    /// Percentage of integer range used.
+    ///     Percentage of integer range used.
     /// </summary>
     public double UsagePercentage => TotalGenerated > 0 ? (double)TotalGenerated / int.MaxValue * 100 : 0;
 }

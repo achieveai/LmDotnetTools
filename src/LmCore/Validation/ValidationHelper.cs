@@ -3,13 +3,13 @@ using System.Runtime.CompilerServices;
 namespace AchieveAi.LmDotnetTools.LmCore.Validation;
 
 /// <summary>
-/// Provides standardized validation methods for consistent error handling across all LmDotnetTools libraries
-/// Extracted from LmEmbeddings and enhanced for OpenAI, Anthropic, and other provider implementations
+///     Provides standardized validation methods for consistent error handling across all LmDotnetTools libraries
+///     Extracted from LmEmbeddings and enhanced for OpenAI, Anthropic, and other provider implementations
 /// </summary>
 public static class ValidationHelper
 {
     /// <summary>
-    /// Validates that a string parameter is not null, empty, or whitespace
+    ///     Validates that a string parameter is not null, empty, or whitespace
     /// </summary>
     /// <param name="value">The string value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
@@ -26,7 +26,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that an object parameter is not null
+    ///     Validates that an object parameter is not null
     /// </summary>
     /// <typeparam name="T">The type of the object</typeparam>
     /// <param name="value">The object to validate</param>
@@ -45,7 +45,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a collection is not null or empty
+    ///     Validates that a collection is not null or empty
     /// </summary>
     /// <typeparam name="T">The type of elements in the collection</typeparam>
     /// <param name="collection">The collection to validate</param>
@@ -69,7 +69,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a collection contains no null or empty string elements
+    ///     Validates that a collection contains no null or empty string elements
     /// </summary>
     /// <param name="collection">The collection of strings to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
@@ -88,7 +88,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a numeric value is positive (greater than zero)
+    ///     Validates that a numeric value is positive (greater than zero)
     /// </summary>
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
@@ -105,7 +105,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a numeric value is positive (greater than zero)
+    ///     Validates that a numeric value is positive (greater than zero)
     /// </summary>
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
@@ -122,7 +122,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a numeric value is non-negative (greater than or equal to zero)
+    ///     Validates that a numeric value is non-negative (greater than or equal to zero)
     /// </summary>
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
@@ -139,7 +139,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a value is within a specified range (inclusive)
+    ///     Validates that a value is within a specified range (inclusive)
     /// </summary>
     /// <param name="value">The value to validate</param>
     /// <param name="min">The minimum allowed value (inclusive)</param>
@@ -164,7 +164,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a value is within a specified range (inclusive)
+    ///     Validates that a value is within a specified range (inclusive)
     /// </summary>
     /// <param name="value">The value to validate</param>
     /// <param name="min">The minimum allowed value (inclusive)</param>
@@ -189,7 +189,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that an enum value is defined
+    ///     Validates that an enum value is defined
     /// </summary>
     /// <typeparam name="TEnum">The enum type</typeparam>
     /// <param name="value">The enum value to validate</param>
@@ -208,7 +208,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that a string matches one of the allowed values (case-insensitive)
+    ///     Validates that a string matches one of the allowed values (case-insensitive)
     /// </summary>
     /// <param name="value">The string value to validate</param>
     /// <param name="allowedValues">The collection of allowed values</param>
@@ -234,7 +234,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates that an object is not disposed by checking a disposed flag
+    ///     Validates that an object is not disposed by checking a disposed flag
     /// </summary>
     /// <param name="disposed">The disposed flag to check</param>
     /// <param name="objectName">The name of the object being checked</param>
@@ -248,8 +248,8 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates API key format and throws ArgumentException if invalid.
-    /// Added for provider-specific validation needs.
+    ///     Validates API key format and throws ArgumentException if invalid.
+    ///     Added for provider-specific validation needs.
     /// </summary>
     /// <param name="apiKey">The API key to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
@@ -267,8 +267,8 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates base URL format for provider requests.
-    /// Added for provider-specific validation needs.
+    ///     Validates base URL format for provider requests.
+    ///     Added for provider-specific validation needs.
     /// </summary>
     /// <param name="baseUrl">The base URL to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
@@ -286,8 +286,8 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates chat messages array for provider requests.
-    /// Added for provider-specific validation needs.
+    ///     Validates chat messages array for provider requests.
+    ///     Added for provider-specific validation needs.
     /// </summary>
     /// <param name="messages">The messages to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
@@ -306,7 +306,7 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Creates a standardized validation exception for API-specific parameters
+    ///     Creates a standardized validation exception for API-specific parameters
     /// </summary>
     /// <param name="apiType">The API type being validated</param>
     /// <param name="parameterName">The name of the invalid parameter</param>
@@ -328,8 +328,8 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates an embedding request object using reflection for common requirements.
-    /// This method works with any object that has Model, Inputs, and optionally Dimensions properties.
+    ///     Validates an embedding request object using reflection for common requirements.
+    ///     This method works with any object that has Model, Inputs, and optionally Dimensions properties.
     /// </summary>
     /// <param name="request">The embedding request to validate</param>
     /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
@@ -382,8 +382,8 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates a rerank request object using reflection for common requirements.
-    /// This method works with any object that has Query, Model, Documents, and optionally TopN properties.
+    ///     Validates a rerank request object using reflection for common requirements.
+    ///     This method works with any object that has Query, Model, Documents, and optionally TopN properties.
     /// </summary>
     /// <param name="request">The rerank request to validate</param>
     /// <exception cref="ArgumentNullException">Thrown when request is null</exception>

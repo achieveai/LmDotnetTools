@@ -3,13 +3,13 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for comprehensive quality assessment of document segmentation results.
-/// Provides detailed analysis of semantic coherence, independence, topic consistency, and completeness.
+///     Interface for comprehensive quality assessment of document segmentation results.
+///     Provides detailed analysis of semantic coherence, independence, topic consistency, and completeness.
 /// </summary>
 public interface ISegmentationQualityAssessmentService
 {
     /// <summary>
-    /// Performs comprehensive quality assessment of segmentation results.
+    ///     Performs comprehensive quality assessment of segmentation results.
     /// </summary>
     /// <param name="segments">List of document segments to assess</param>
     /// <param name="originalContent">Original document content for reference</param>
@@ -26,7 +26,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Validates semantic coherence within individual segments.
+    ///     Validates semantic coherence within individual segments.
     /// </summary>
     /// <param name="segment">Segment to validate</param>
     /// <param name="options">Assessment options</param>
@@ -39,7 +39,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Calculates independence score for a segment.
+    ///     Calculates independence score for a segment.
     /// </summary>
     /// <param name="segment">Segment to analyze</param>
     /// <param name="allSegments">All segments for context analysis</param>
@@ -54,7 +54,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Validates topic consistency within and across segments.
+    ///     Validates topic consistency within and across segments.
     /// </summary>
     /// <param name="segments">List of segments to analyze</param>
     /// <param name="originalContent">Original document content</param>
@@ -67,7 +67,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Verifies completeness of segmentation coverage.
+    ///     Verifies completeness of segmentation coverage.
     /// </summary>
     /// <param name="segments">List of segments</param>
     /// <param name="originalContent">Original document content</param>
@@ -80,7 +80,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Identifies and analyzes quality issues across segments.
+    ///     Identifies and analyzes quality issues across segments.
     /// </summary>
     /// <param name="segments">List of segments to analyze</param>
     /// <param name="originalContent">Original document content</param>
@@ -95,7 +95,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Generates improvement recommendations based on quality assessment.
+    ///     Generates improvement recommendations based on quality assessment.
     /// </summary>
     /// <param name="assessment">Quality assessment results</param>
     /// <param name="documentType">Type of document</param>
@@ -110,7 +110,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Compares quality across different segmentation approaches.
+    ///     Compares quality across different segmentation approaches.
     /// </summary>
     /// <param name="segmentationResults">Multiple segmentation results to compare</param>
     /// <param name="originalContent">Original document content</param>
@@ -123,7 +123,7 @@ public interface ISegmentationQualityAssessmentService
     );
 
     /// <summary>
-    /// Validates quality against custom criteria.
+    ///     Validates quality against custom criteria.
     /// </summary>
     /// <param name="segments">Segments to validate</param>
     /// <param name="customCriteria">Custom validation criteria</param>

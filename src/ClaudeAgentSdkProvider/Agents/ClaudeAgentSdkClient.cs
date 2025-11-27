@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
@@ -12,31 +13,29 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 
 /// <summary>
-/// Real implementation of IClaudeAgentSdkClient using Node.js process
-/// Manages long-lived claude-agent-sdk CLI process
+///     Real implementation of IClaudeAgentSdkClient using Node.js process
+///     Manages long-lived claude-agent-sdk CLI process
 /// </summary>
 public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 {
-    private readonly ClaudeAgentSdkOptions _options;
-    private readonly JsonlStreamParser _parser;
-    private readonly ILogger<ClaudeAgentSdkClient>? _logger;
-
-    private Process? _process;
-    private StreamWriter? _stdinWriter;
-    private StreamReader? _stdoutReader;
-    private StreamReader? _stderrReader;
-    private string? _systemPromptTempFile;
-    private bool _disposed;
-
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public ClaudeAgentSdkClient(
-        ClaudeAgentSdkOptions options,
-        ILogger<ClaudeAgentSdkClient>? logger = null)
+    private readonly ILogger<ClaudeAgentSdkClient>? _logger;
+    private readonly ClaudeAgentSdkOptions _options;
+    private readonly JsonlStreamParser _parser;
+    private bool _disposed;
+
+    private Process? _process;
+    private StreamReader? _stderrReader;
+    private StreamWriter? _stdinWriter;
+    private StreamReader? _stdoutReader;
+    private string? _systemPromptTempFile;
+
+    public ClaudeAgentSdkClient(ClaudeAgentSdkOptions options, ILogger<ClaudeAgentSdkClient>? logger = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger;
@@ -87,7 +86,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory()
+            WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory(),
         };
 
         // 6. Start process
@@ -109,7 +108,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
             CreatedAt = DateTime.UtcNow,
-            ProjectRoot = _options.ProjectRoot
+            ProjectRoot = _options.ProjectRoot,
         };
 
         _logger?.LogInformation(
@@ -121,7 +120,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
     public async IAsyncEnumerable<IMessage> SendMessagesAsync(
         IEnumerable<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -132,8 +132,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         // Extract the last user message (claude-agent-sdk maintains its own conversation history)
         // We only send the latest user input, ignoring previous messages
-        var lastUserMessage = messages
-            .LastOrDefault(m => m.Role == Role.User);
+        var lastUserMessage = messages.LastOrDefault(m => m.Role == Role.User);
 
         if (lastUserMessage == null)
         {
@@ -147,8 +146,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             var inputWrapper = ConvertToInputMessage(lastUserMessage);
             var jsonLine = JsonSerializer.Serialize(inputWrapper, _jsonOptions);
 
-            _logger?.LogDebug("Sending JSONL message to claude-agent-sdk: {Message}",
-                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
+            _logger?.LogDebug(
+                "Sending JSONL message to claude-agent-sdk: {Message}",
+                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine
+            );
 
             await _stdinWriter.WriteLineAsync(jsonLine);
             await _stdinWriter.FlushAsync(cancellationToken);
@@ -211,10 +212,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 // Update current session with info from init event
                 if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
                 {
-                    CurrentSession = CurrentSession with
-                    {
-                        SessionId = systemInitEvent.SessionId
-                    };
+                    CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
                 }
             }
             // Result events contain final execution summary with usage and cost info
@@ -230,7 +228,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 if (resultEvent.PermissionDenials?.Count > 0)
                 {
-                    _logger?.LogWarning("Permission denials: {Denials}", string.Join(", ", resultEvent.PermissionDenials));
+                    _logger?.LogWarning(
+                        "Permission denials: {Denials}",
+                        string.Join(", ", resultEvent.PermissionDenials)
+                    );
                 }
 
                 // In OneShot mode, ResultEvent signals the end of execution
@@ -250,6 +251,60 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
     }
 
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _logger?.LogInformation("Disposing claude-agent-sdk client");
+
+            // Close stdin to signal process to exit gracefully
+            _stdinWriter?.Close();
+
+            // Give process time to exit gracefully
+            var exited = _process?.WaitForExit(5000) ?? true;
+
+            // Force kill if still running
+            if (_process != null && !_process.HasExited)
+            {
+                _logger?.LogWarning("Force killing claude-agent-sdk process (PID: {ProcessId})", _process.Id);
+                _process.Kill(true);
+            }
+
+            // Clean up temp file
+            if (_systemPromptTempFile != null && File.Exists(_systemPromptTempFile))
+            {
+                try
+                {
+                    File.Delete(_systemPromptTempFile);
+                    _logger?.LogDebug("Deleted system prompt temp file: {File}", _systemPromptTempFile);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Failed to delete temp file: {File}", _systemPromptTempFile);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error during disposal");
+        }
+        finally
+        {
+            _process?.Dispose();
+            _stdinWriter?.Dispose();
+            _stdoutReader?.Dispose();
+            _stderrReader?.Dispose();
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private string BuildCliArguments(ClaudeAgentSdkRequest request)
     {
         var args = new List<string>
@@ -260,7 +315,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             $"--max-turns {request.MaxTurns}",
             $"--max-thinking-tokens {request.MaxThinkingTokens}",
             $"--permission-mode {request.PermissionMode}",
-            $"--setting-sources \"{request.SettingSources}\""
+            $"--setting-sources \"{request.SettingSources}\"",
         };
 
         if (request.Verbose)
@@ -317,7 +372,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             var possiblePaths = new[]
             {
                 Path.Combine(programFiles, "nodejs", "node.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", "node.exe")
+                Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                    "nodejs",
+                    "node.exe"
+                ),
             };
 
             foreach (var path in possiblePaths)
@@ -341,7 +400,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             // Windows: AppData\Roaming\npm\node_modules
             var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var npmGlobalPath = Path.Combine(appData, "npm", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js");
+            var npmGlobalPath = Path.Combine(
+                appData,
+                "npm",
+                "node_modules",
+                "@anthropic-ai",
+                "claude-agent-sdk",
+                "cli.js"
+            );
             if (File.Exists(npmGlobalPath))
             {
                 return npmGlobalPath;
@@ -349,7 +415,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             // Also check ProgramFiles for system-wide installations
             var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var systemPath = Path.Combine(programFiles, "nodejs", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js");
+            var systemPath = Path.Combine(
+                programFiles,
+                "nodejs",
+                "node_modules",
+                "@anthropic-ai",
+                "claude-agent-sdk",
+                "cli.js"
+            );
             if (File.Exists(systemPath))
             {
                 return systemPath;
@@ -371,7 +444,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     }
 
     private async IAsyncEnumerable<string> ReadStdoutLinesAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
     {
         if (_stdoutReader == null)
         {
@@ -429,8 +503,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     }
 
     /// <summary>
-    /// Convert IMessage to InputMessageWrapper for JSONL stdin format
-    /// Supports both TextMessage and ImageMessage with base64 encoding
+    ///     Convert IMessage to InputMessageWrapper for JSONL stdin format
+    ///     Supports both TextMessage and ImageMessage with base64 encoding
     /// </summary>
     private static InputMessageWrapper ConvertToInputMessage(IMessage message)
     {
@@ -439,10 +513,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         switch (message)
         {
             case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
-                contentBlocks.Add(new InputTextContentBlock
-                {
-                    Text = textMsg.Text
-                });
+                contentBlocks.Add(new InputTextContentBlock { Text = textMsg.Text });
                 break;
 
             case ImageMessage imageMsg:
@@ -451,15 +522,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 var base64Data = Convert.ToBase64String(imageBytes);
                 var mediaType = imageMsg.ImageData.MediaType ?? "image/jpeg";
 
-                contentBlocks.Add(new InputImageContentBlock
-                {
-                    Source = new ImageSource
+                contentBlocks.Add(
+                    new InputImageContentBlock
                     {
-                        Type = "base64",
-                        MediaType = mediaType,
-                        Data = base64Data
+                        Source = new ImageSource
+                        {
+                            Type = "base64",
+                            MediaType = mediaType,
+                            Data = base64Data,
+                        },
                     }
-                });
+                );
                 break;
 
             case ICanGetText textProvider:
@@ -467,79 +540,21 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 var text = textProvider.GetText();
                 if (!string.IsNullOrEmpty(text))
                 {
-                    contentBlocks.Add(new InputTextContentBlock
-                    {
-                        Text = text
-                    });
+                    contentBlocks.Add(new InputTextContentBlock { Text = text });
                 }
+
                 break;
 
             default:
-                throw new NotSupportedException($"Message type {message.GetType().Name} is not supported for claude-agent-sdk input");
+                throw new NotSupportedException(
+                    $"Message type {message.GetType().Name} is not supported for claude-agent-sdk input"
+                );
         }
 
         return new InputMessageWrapper
         {
             Type = "user",
-            Message = new InputMessage
-            {
-                Role = "user",
-                Content = contentBlocks
-            }
+            Message = new InputMessage { Role = "user", Content = contentBlocks },
         };
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        try
-        {
-            _logger?.LogInformation("Disposing claude-agent-sdk client");
-
-            // Close stdin to signal process to exit gracefully
-            _stdinWriter?.Close();
-
-            // Give process time to exit gracefully
-            var exited = _process?.WaitForExit(5000) ?? true;
-
-            // Force kill if still running
-            if (_process != null && !_process.HasExited)
-            {
-                _logger?.LogWarning("Force killing claude-agent-sdk process (PID: {ProcessId})", _process.Id);
-                _process.Kill(entireProcessTree: true);
-            }
-
-            // Clean up temp file
-            if (_systemPromptTempFile != null && File.Exists(_systemPromptTempFile))
-            {
-                try
-                {
-                    File.Delete(_systemPromptTempFile);
-                    _logger?.LogDebug("Deleted system prompt temp file: {File}", _systemPromptTempFile);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning(ex, "Failed to delete temp file: {File}", _systemPromptTempFile);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Error during disposal");
-        }
-        finally
-        {
-            _process?.Dispose();
-            _stdinWriter?.Dispose();
-            _stdoutReader?.Dispose();
-            _stderrReader?.Dispose();
-            _disposed = true;
-        }
-
-        GC.SuppressFinalize(this);
     }
 }

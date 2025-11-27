@@ -93,7 +93,7 @@ public class JsonToolFormatterTests
     }
 
     /// <summary>
-    /// Helper method to create JsonFragmentUpdates from raw JSON for testing
+    ///     Helper method to create JsonFragmentUpdates from raw JSON for testing
     /// </summary>
     private static IEnumerable<JsonFragmentUpdate> CreateFragmentUpdates(string toolName, string json)
     {

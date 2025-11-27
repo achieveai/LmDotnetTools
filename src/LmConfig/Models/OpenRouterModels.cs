@@ -4,36 +4,36 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmConfig.Models;
 
 /// <summary>
-/// Cache structure for OpenRouter model data.
+///     Cache structure for OpenRouter model data.
 /// </summary>
 public record OpenRouterCache
 {
     /// <summary>
-    /// When the cache was created.
+    ///     When the cache was created.
     /// </summary>
     [JsonPropertyName("cached_at")]
     public DateTime CachedAt { get; init; }
 
     /// <summary>
-    /// Raw models data from OpenRouter API.
+    ///     Raw models data from OpenRouter API.
     /// </summary>
     [JsonPropertyName("models_data")]
     public JsonNode? ModelsData { get; init; }
 
     /// <summary>
-    /// Model details data keyed by model slug.
+    ///     Model details data keyed by model slug.
     /// </summary>
     [JsonPropertyName("model_details")]
     public Dictionary<string, JsonNode> ModelDetails { get; init; } = [];
 
     /// <summary>
-    /// Checks if the cache is still valid (less than 24 hours old).
+    ///     Checks if the cache is still valid (less than 24 hours old).
     /// </summary>
     public bool IsValid => DateTime.UtcNow - CachedAt < TimeSpan.FromHours(24);
 }
 
 /// <summary>
-/// OpenRouter model information from the API.
+///     OpenRouter model information from the API.
 /// </summary>
 public record OpenRouterModel
 {
@@ -66,7 +66,7 @@ public record OpenRouterModel
 }
 
 /// <summary>
-/// OpenRouter endpoint/provider information.
+///     OpenRouter endpoint/provider information.
 /// </summary>
 public record OpenRouterEndpoint
 {
@@ -90,7 +90,7 @@ public record OpenRouterEndpoint
 }
 
 /// <summary>
-/// OpenRouter provider information.
+///     OpenRouter provider information.
 /// </summary>
 public record OpenRouterProviderInfo
 {

@@ -8,16 +8,14 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
-    private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
+    private readonly ProviderTestDataManager _testDataManager = new();
+
     private static string EnvTestPath =>
-        Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            ".env.test"
-        );
+        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
-    [Xunit.InlineData("ToolCallResultTool")]
+    [InlineData("ToolCallResultTool")]
     public async Task FunctionTool_RequestAndResponseTransformation(string testName)
     {
         Debug.WriteLine($"Starting test for {testName}");
@@ -40,12 +38,12 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath, false)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
         Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
 
@@ -57,7 +55,7 @@ public class DataDrivenFunctionToolTests
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
         if (expectedResponses == null)
         {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? new List<IMessage>());
+            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? []);
             return; // Skip comparison if no expected data exists yet
         }
 
@@ -106,7 +104,7 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Gets all test cases from the TestData directory.
+    ///     Gets all test cases from the TestData directory.
     /// </summary>
     public static IEnumerable<object[]> GetFunctionToolTestCases()
     {
@@ -118,18 +116,14 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Creates a test case data file. Run this method to generate test data.
+    ///     Creates a test case data file. Run this method to generate test data.
     /// </summary>
     [Fact]
     public async Task CreateWeatherFunctionToolTestData()
     {
         // Skip if the test data already exists
         var testName = "WeatherFunctionTool";
-        var testDataPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.Anthropic,
-            DataType.LmCoreRequest
-        );
+        var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -147,8 +141,8 @@ public class DataDrivenFunctionToolTests
         {
             Name = "getWeather",
             Description = "Get current weather for a location",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "location",
@@ -156,7 +150,7 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions
@@ -179,12 +173,12 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .WithRecordPlayback(testDataFilePath, true)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -195,18 +189,14 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Creates a multi-function test case data file. Run this method to generate test data.
+    ///     Creates a multi-function test case data file. Run this method to generate test data.
     /// </summary>
     [Fact]
     public async Task CreateMultiFunctionToolTestData()
     {
         // Skip if the test data already exists
         var testName = "MultiFunctionTool";
-        var testDataPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.Anthropic,
-            DataType.LmCoreRequest
-        );
+        var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -230,8 +220,8 @@ public class DataDrivenFunctionToolTests
         {
             Name = "python_mcp-list_directory",
             Description = "List the contents of a directory within the code directory",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "relative_path",
@@ -239,15 +229,15 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var getDirTreeFunction = new FunctionContract
         {
             Name = "python_mcp-get_directory_tree",
             Description = "Get an ASCII tree representation of a directory structure",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "relative_path",
@@ -255,7 +245,7 @@ public class DataDrivenFunctionToolTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions
@@ -280,12 +270,12 @@ public class DataDrivenFunctionToolTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .WithRecordPlayback(testDataFilePath, true)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -296,7 +286,7 @@ public class DataDrivenFunctionToolTests
     }
 
     /// <summary>
-    /// Helper method to get API key from environment
+    ///     Helper method to get API key from environment
     /// </summary>
     private static string GetApiKeyFromEnv()
     {

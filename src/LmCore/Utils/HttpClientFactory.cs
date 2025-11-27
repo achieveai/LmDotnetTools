@@ -4,17 +4,17 @@ using AchieveAi.LmDotnetTools.LmCore.Validation;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Shared utility for creating HTTP clients with consistent configuration across providers.
+///     Shared utility for creating HTTP clients with consistent configuration across providers.
 /// </summary>
 public static class HttpClientFactory
 {
     /// <summary>
-    /// Default timeout for HTTP clients (5 minutes, matching existing provider behavior).
+    ///     Default timeout for HTTP clients (5 minutes, matching existing provider behavior).
     /// </summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// Creates an HTTP client with API key authentication and consistent configuration.
+    ///     Creates an HTTP client with API key authentication and consistent configuration.
     /// </summary>
     /// <param name="apiKey">The API key for authentication</param>
     /// <param name="baseUrl">The base URL for the API</param>
@@ -32,6 +32,8 @@ public static class HttpClientFactory
         string apiKeyPrefix = "Bearer "
     )
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
+
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
@@ -57,7 +59,7 @@ public static class HttpClientFactory
     }
 
     /// <summary>
-    /// Creates an HTTP client for OpenAI-compatible APIs.
+    ///     Creates an HTTP client for OpenAI-compatible APIs.
     /// </summary>
     /// <param name="apiKey">The API key for authentication</param>
     /// <param name="baseUrl">The base URL for the API</param>
@@ -71,11 +73,11 @@ public static class HttpClientFactory
         IReadOnlyDictionary<string, string>? headers = null
     )
     {
-        return CreateWithApiKey(apiKey, baseUrl, timeout, headers, "Authorization", "Bearer ");
+        return CreateWithApiKey(apiKey, baseUrl, timeout, headers);
     }
 
     /// <summary>
-    /// Creates an HTTP client for Anthropic APIs.
+    ///     Creates an HTTP client for Anthropic APIs.
     /// </summary>
     /// <param name="apiKey">The API key for authentication</param>
     /// <param name="baseUrl">The base URL for the API (defaults to Anthropic API)</param>
@@ -94,7 +96,7 @@ public static class HttpClientFactory
     }
 
     /// <summary>
-    /// Creates an HTTP client using HttpConfiguration settings.
+    ///     Creates an HTTP client using HttpConfiguration settings.
     /// </summary>
     /// <param name="apiKey">The API key for authentication</param>
     /// <param name="baseUrl">The base URL for the API</param>
@@ -112,13 +114,15 @@ public static class HttpClientFactory
         string apiKeyPrefix = "Bearer "
     )
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+
         configuration.Validate();
 
         return CreateWithApiKey(apiKey, baseUrl, configuration.Timeout, headers, apiKeyHeaderName, apiKeyPrefix);
     }
 
     /// <summary>
-    /// Creates an HTTP client from provider connection information.
+    ///     Creates an HTTP client from provider connection information.
     /// </summary>
     /// <param name="apiKey">The API key for authentication</param>
     /// <param name="endpointUrl">The endpoint URL</param>
@@ -134,6 +138,8 @@ public static class HttpClientFactory
         string compatibility = "OpenAI"
     )
     {
+        ArgumentNullException.ThrowIfNull(compatibility);
+
         return compatibility.ToUpperInvariant() switch
         {
             "ANTHROPIC" => CreateForAnthropic(apiKey, endpointUrl, timeout, connectionHeaders),

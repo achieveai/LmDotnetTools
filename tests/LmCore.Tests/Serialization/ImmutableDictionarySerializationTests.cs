@@ -6,7 +6,7 @@ using System.Text.Json.Serialization;
 using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;
 /// <summary>
-/// Tests for serialization and deserialization of ImmutableDictionary.
+///     Tests for serialization and deserialization of ImmutableDictionary.
 /// </summary>
 public class ImmutableDictionarySerializationTests
 {
@@ -44,9 +44,9 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
                 : (this with
-            {
-                ExtraProperties = ExtraProperties.Add(key, value),
-            });
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                });
         }
         public T? GetExtraProperty<T>(string key)
         {
@@ -73,9 +73,9 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
                 : (this with
-            {
-                ExtraProperties = ExtraProperties.Add(key, value),
-            });
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                });
         }
         public T? GetExtraProperty<T>(string key)
         {
@@ -354,6 +354,7 @@ public class ImmutableDictionarySerializationTests
                     output.WriteLine($"{indentStr}  \"{property.Name}\": ");
                     PrintJsonElement(output, property.Value, indent + 1);
                 }
+
                 output.WriteLine($"{indentStr}}}");
                 break;
             case JsonValueKind.Array:
@@ -363,6 +364,7 @@ public class ImmutableDictionarySerializationTests
                     PrintJsonElement(output, item, indent + 1);
                     output.WriteLine("");
                 }
+
                 output.WriteLine($"{indentStr}]");
                 break;
             case JsonValueKind.String:
@@ -378,10 +380,13 @@ public class ImmutableDictionarySerializationTests
             case JsonValueKind.Null:
                 output.WriteLine($"{indentStr}null");
                 break;
+
             case JsonValueKind.Undefined:
+                output.WriteLine($"{indentStr}undefined");
                 break;
+
             default:
-                break;
+                throw new NotSupportedException($"Unknown JsonValueKind: {element.ValueKind}");
         }
     }
 }

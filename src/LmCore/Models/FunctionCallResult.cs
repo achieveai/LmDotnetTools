@@ -28,6 +28,6 @@ public record FunctionCallResult<T> : FunctionCallResult
 
     public override JsonNode ToStructuredJson()
     {
-        return JsonSerializer.SerializeToNode(this.Result)!;
+        return JsonSerializer.SerializeToNode(Result)!;
     }
 }

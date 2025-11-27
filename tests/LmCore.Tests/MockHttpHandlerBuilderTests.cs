@@ -6,8 +6,8 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests;
 
 /// <summary>
-/// Tests for MockHttpHandlerBuilder - validates core mock infrastructure
-/// This represents the foundation of WI-MM001: Core MockHttpHandlerBuilder Infrastructure
+///     Tests for MockHttpHandlerBuilder - validates core mock infrastructure
+///     This represents the foundation of WI-MM001: Core MockHttpHandlerBuilder Infrastructure
 /// </summary>
 public class MockHttpHandlerBuilderTests
 {
@@ -134,7 +134,7 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_RetryScenario_FailsThenSucceeds()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create().RetryScenario(2, HttpStatusCode.InternalServerError).Build();
+        var handler = MockHttpHandlerBuilder.Create().RetryScenario(2).Build();
 
         var httpClient = new HttpClient(handler);
 
@@ -187,7 +187,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test basic tool use response generation - validates WI-MM003: Tool Use Response Support
+    ///     Test basic tool use response generation - validates WI-MM003: Tool Use Response Support
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_ToolUseResponse_GeneratesValidAnthropicToolResponse()
@@ -236,7 +236,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test multiple tool use in a single response - validates WI-MM003: Tool Use Response Support
+    ///     Test multiple tool use in a single response - validates WI-MM003: Tool Use Response Support
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_MultipleToolUse_GeneratesValidResponse()
@@ -278,7 +278,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test conditional tool responses - validates WI-MM003: Tool Use Response Support
+    ///     Test conditional tool responses - validates WI-MM003: Tool Use Response Support
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_ConditionalToolResponse_WorksCorrectly()
@@ -329,7 +329,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test Python MCP tool pattern - validates WI-MM003: Tool Use Response Support
+    ///     Test Python MCP tool pattern - validates WI-MM003: Tool Use Response Support
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_PythonMcpTool_GeneratesCorrectFormat()
@@ -373,7 +373,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test enhanced conditional logic with multiple conditions - validates WI-MM005: Conditional Response Logic
+    ///     Test enhanced conditional logic with multiple conditions - validates WI-MM005: Conditional Response Logic
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_MultiConditionalResponse_WorksCorrectly()
@@ -448,7 +448,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test predefined condition helpers - validates WI-MM005: Predefined Condition Helpers
+    ///     Test predefined condition helpers - validates WI-MM005: Predefined Condition Helpers
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_PredefinedConditions_WorkCorrectly()
@@ -523,7 +523,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test conversation state management - validates WI-MM005: State Management
+    ///     Test conversation state management - validates WI-MM005: State Management
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_ConversationState_TracksCorrectly()
@@ -571,7 +571,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test request extension methods - validates WI-MM005: Request Matching Logic
+    ///     Test request extension methods - validates WI-MM005: Request Matching Logic
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_RequestExtensions_WorkCorrectly()
@@ -613,7 +613,7 @@ public class MockHttpHandlerBuilderTests
     }
 
     /// <summary>
-    /// Test complex multi-request conversation flow - validates WI-MM005: Multi-Request Conversation Support
+    ///     Test complex multi-request conversation flow - validates WI-MM005: Multi-Request Conversation Support
     /// </summary>
     [Fact]
     public async Task MockHttpHandlerBuilder_ComplexConversationFlow_WorksCorrectly()

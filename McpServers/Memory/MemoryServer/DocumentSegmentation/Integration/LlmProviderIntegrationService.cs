@@ -10,17 +10,17 @@ using MemoryServer.DocumentSegmentation.Services;
 namespace MemoryServer.DocumentSegmentation.Integration;
 
 /// <summary>
-/// Service that integrates with LmConfig to provide LLM-powered document segmentation.
-/// Supports multiple providers (OpenAI, Anthropic) with automatic failover.
+///     Service that integrates with LmConfig to provide LLM-powered document segmentation.
+///     Supports multiple providers (OpenAI, Anthropic) with automatic failover.
 /// </summary>
 public class LlmProviderIntegrationService : ILlmProviderIntegrationService
 {
     private readonly IProviderAgentFactory _agentFactory;
-    private readonly IModelResolver _modelResolver;
-    private readonly ISegmentationPromptManager _promptManager;
+    private readonly LlmProviderConfiguration _configuration;
     private readonly IDocumentAnalysisService _documentAnalysisService;
     private readonly ILogger<LlmProviderIntegrationService> _logger;
-    private readonly LlmProviderConfiguration _configuration;
+    private readonly IModelResolver _modelResolver;
+    private readonly ISegmentationPromptManager _promptManager;
 
     public LlmProviderIntegrationService(
         IProviderAgentFactory agentFactory,
@@ -41,7 +41,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
     }
 
     /// <summary>
-    /// Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
+    ///     Analyzes document to determine optimal segmentation strategy using intelligent analysis and LLM enhancement.
     /// </summary>
     public async Task<StrategyRecommendation> AnalyzeOptimalStrategyAsync(
         string content,
@@ -49,6 +49,8 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
+
         _logger.LogDebug(
             "Starting strategy analysis for document type {DocumentType}, content length: {Length}",
             documentType,
@@ -98,7 +100,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
     }
 
     /// <summary>
-    /// Tests connectivity to LLM providers.
+    ///     Tests connectivity to LLM providers.
     /// </summary>
     public async Task<bool> TestConnectivityAsync(CancellationToken cancellationToken = default)
     {
@@ -298,7 +300,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
                 Strategy = fallback.Strategy,
                 Confidence = Math.Min(fallback.Confidence + 0.1, 1.0),
                 Reasoning =
-                    $"{fallback.Reasoning} Enhanced with LLM analysis: {content.Substring(0, Math.Min(200, content.Length))}...",
+                    $"{fallback.Reasoning} Enhanced with LLM analysis: {content[..Math.Min(200, content.Length)]}...",
                 Alternatives = fallback.Alternatives,
             };
 

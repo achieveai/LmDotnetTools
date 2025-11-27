@@ -5,8 +5,8 @@ using Microsoft.Data.Sqlite;
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Production implementation of ISqliteSession with proper resource management.
-/// Maintains a single connection per session with guaranteed cleanup and WAL checkpoint handling.
+///     Production implementation of ISqliteSession with proper resource management.
+///     Maintains a single connection per session with guaranteed cleanup and WAL checkpoint handling.
 /// </summary>
 public class SqliteSession : ISqliteSession
 {
@@ -14,12 +14,8 @@ public class SqliteSession : ISqliteSession
     private readonly ILogger<SqliteSession> _logger;
     private readonly Stopwatch _sessionStopwatch;
     private SqliteConnection? _connection;
-    private bool _disposed;
-    private int _operationCount;
     private DateTime _lastActivity;
-
-    public string SessionId { get; }
-    public bool IsDisposed => _disposed;
+    private int _operationCount;
 
     public SqliteSession(string connectionString, ILogger<SqliteSession> logger)
     {
@@ -32,6 +28,9 @@ public class SqliteSession : ISqliteSession
 
         _logger.LogDebug("SQLite session {SessionId} created", SessionId);
     }
+
+    public string SessionId { get; }
+    public bool IsDisposed { get; private set; }
 
     public async Task<T> ExecuteAsync<T>(
         Func<SqliteConnection, Task<T>> operation,
@@ -151,14 +150,14 @@ public class SqliteSession : ISqliteSession
     {
         var health = new SessionHealthStatus
         {
-            IsHealthy = !_disposed && _connection?.State == ConnectionState.Open,
+            IsHealthy = !IsDisposed && _connection?.State == ConnectionState.Open,
             ConnectionState = _connection?.State.ToString() ?? "NotCreated",
             CreatedAt = DateTime.UtcNow - _sessionStopwatch.Elapsed,
             LastActivity = _lastActivity,
             OperationCount = _operationCount,
         };
 
-        if (_disposed)
+        if (IsDisposed)
         {
             health.ErrorMessage = "Session is disposed";
         }
@@ -172,7 +171,7 @@ public class SqliteSession : ISqliteSession
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             return;
         }
@@ -220,7 +219,7 @@ public class SqliteSession : ISqliteSession
         finally
         {
             _connection = null;
-            _disposed = true;
+            IsDisposed = true;
             _sessionStopwatch.Stop();
 
             _logger.LogDebug(
@@ -233,7 +232,7 @@ public class SqliteSession : ISqliteSession
 
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             throw new ObjectDisposedException(nameof(SqliteSession), $"Session {SessionId} is disposed");
         }
@@ -270,7 +269,7 @@ public class SqliteSession : ISqliteSession
         // Load sqlite-vec extension (required for vector functionality)
         try
         {
-            connection.EnableExtensions(true);
+            connection.EnableExtensions();
 
             // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");

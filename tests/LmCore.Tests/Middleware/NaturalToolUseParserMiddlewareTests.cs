@@ -5,12 +5,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class NaturalToolUseParserMiddlewareTests
 {
-    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
-    private readonly Mock<IAgent> _mockFallbackParser;
-    private readonly List<FunctionContract> _functionContracts;
-
     // Common test context
     private readonly MiddlewareContext _defaultContext;
+    private readonly List<FunctionContract> _functionContracts;
+    private readonly Mock<IAgent> _mockFallbackParser;
+    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
 
     public NaturalToolUseParserMiddlewareTests()
     {
@@ -22,8 +21,8 @@ public class NaturalToolUseParserMiddlewareTests
             {
                 Name = "GetWeather",
                 Description = "A test tool",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -38,18 +37,12 @@ public class NaturalToolUseParserMiddlewareTests
                         Description = "Second parameter",
                         IsRequired = true,
                     },
-                },
+                ],
             },
         ];
 
         // Initialize default context
-        _defaultContext = new MiddlewareContext(
-            new List<IMessage>
-            {
-                new TextMessage { Text = "Hello", Role = Role.User },
-            },
-            null
-        );
+        _defaultContext = new MiddlewareContext([new TextMessage { Text = "Hello", Role = Role.User }]);
     }
 
     // Helper method to create middleware with default configuration
@@ -74,12 +67,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = responseText, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = responseText, Role = Role.Assistant }]);
         return mockAgent;
     }
 
@@ -143,6 +131,7 @@ public class NaturalToolUseParserMiddlewareTests
         {
             messages.Add(new TextUpdateMessage { Text = chunk, Role = Role.Assistant });
         }
+
         return messages;
     }
 
@@ -229,12 +218,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -348,6 +332,17 @@ public class NaturalToolUseParserMiddlewareTests
         }
     }
 
+    private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> source)
+    {
+        var list = new List<T>();
+        await foreach (var item in source)
+        {
+            list.Add(item);
+        }
+
+        return list;
+    }
+
     private class MiddlewareWrappingStreamingAgent : IStreamingAgent
     {
         private readonly IStreamingAgent _agent;
@@ -418,16 +413,6 @@ public class NaturalToolUseParserMiddlewareTests
         {
             return ValueTask.FromResult(_source.MoveNext());
         }
-    }
-
-    private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> source)
-    {
-        var list = new List<T>();
-        await foreach (var item in source)
-        {
-            list.Add(item);
-        }
-        return list;
     }
 
     #region JSON Extraction Enhancement Tests
@@ -605,12 +590,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -670,12 +650,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -732,12 +707,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -795,12 +765,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -856,12 +821,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -917,12 +877,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -1030,12 +985,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -1091,12 +1041,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
@@ -1144,13 +1089,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                (messages, options, token) => capturedOptions = options)
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+                (messages, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         try
@@ -1270,7 +1211,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<IMessage>());
+            .ReturnsAsync([]);
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
@@ -1478,12 +1419,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         if (debug)
         {
@@ -1504,9 +1440,7 @@ public class NaturalToolUseParserMiddlewareTests
             for (var i = 0; i < result.Count; i++)
             {
                 var message = result.ElementAt(i);
-                var content = message is LmCore.Messages.ICanGetText textMessage
-                    ? textMessage.GetText()!
-                    : "[No text content]";
+                var content = message is ICanGetText textMessage ? textMessage.GetText()! : "[No text content]";
                 Console.WriteLine($"[DEBUG] Message {i}: Type={message.GetType().Name}, Content={content}");
             }
         }
@@ -1549,8 +1483,7 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
             _functionContracts,
-            _mockSchemaValidator.Object,
-            null
+            _mockSchemaValidator.Object
         );
         var fullText =
             "Weather check: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Austin, TX\"\n  \"missing_comma\": true\n}\n```\n</tool_call> End!";
@@ -1724,12 +1657,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Setup non-streaming agent
         var mockAgent = SetupMockAgent(toolCallText);
@@ -1884,12 +1812,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -1945,12 +1868,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -2007,12 +1925,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -2070,12 +1983,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
         // Should still throw exception for unknown tool even with fallback agent
@@ -2104,8 +2012,7 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
             _functionContracts,
-            _mockSchemaValidator.Object,
-            null
+            _mockSchemaValidator.Object
         );
         var invalidJsonToolCall =
             "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
@@ -2145,12 +2052,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
@@ -2257,12 +2159,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);

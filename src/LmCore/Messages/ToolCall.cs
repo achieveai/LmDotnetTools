@@ -22,8 +22,8 @@ public record ToolCall
     public string? ToolCallId { get; init; }
 
     /// <summary>
-    /// Order index of this tool call within its containing ToolCallMessage.
-    /// Enables deterministic reconstruction of tool call order for KV cache optimization.
+    ///     Order index of this tool call within its containing ToolCallMessage.
+    ///     Enables deterministic reconstruction of tool call order for KV cache optimization.
     /// </summary>
     [JsonPropertyName("toolCallIdx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -149,7 +149,7 @@ public record ToolCallUpdate
     public string? FunctionArgs { get; init; }
 
     /// <summary>
-    /// Structured JSON fragment updates generated from the function arguments
+    ///     Structured JSON fragment updates generated from the function arguments
     /// </summary>
     [JsonPropertyName("json_update_fragments")]
     public IList<JsonFragmentUpdate>? JsonFragmentUpdates { get; init; }

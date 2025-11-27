@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 
 /// <summary>
-/// Configuration for an MCP (Model Context Protocol) server
+///     Configuration for an MCP (Model Context Protocol) server
 /// </summary>
 public record McpServerConfig
 {
@@ -21,7 +21,7 @@ public record McpServerConfig
 }
 
 /// <summary>
-/// Root configuration object for MCP servers
+///     Root configuration object for MCP servers
 /// </summary>
 public record McpConfiguration
 {

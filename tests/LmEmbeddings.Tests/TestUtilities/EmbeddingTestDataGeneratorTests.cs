@@ -5,7 +5,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.TestUtilities;
 
 /// <summary>
-/// Tests for EmbeddingTestDataGenerator shared utility
+///     Tests for EmbeddingTestDataGenerator shared utility
 /// </summary>
 public class EmbeddingTestDataGeneratorTests
 {
@@ -297,68 +297,61 @@ public class EmbeddingTestDataGeneratorTests
     #region Test Data
 
     public static IEnumerable<object[]> EmbeddingResponseTestCases =>
-        new List<object[]>
-        {
-            new object[] { 1, 1536, "test-model", "Single embedding with standard size" },
-            new object[] { 3, 1536, "test-model-large", "Multiple embeddings with standard size" },
-            new object[] { 1, 512, "small-model", "Single embedding with small size" },
-            new object[] { 5, 768, "custom-model", "Multiple embeddings with custom size" },
-            new object[] { 10, 1024, "batch-model", "Large batch with medium size" },
-        };
+        [
+            [1, 1536, "test-model", "Single embedding with standard size"],
+            [3, 1536, "test-model-large", "Multiple embeddings with standard size"],
+            [1, 512, "small-model", "Single embedding with small size"],
+            [5, 768, "custom-model", "Multiple embeddings with custom size"],
+            [10, 1024, "batch-model", "Large batch with medium size"],
+        ];
 
     public static IEnumerable<object[]> RerankResponseTestCases =>
-        new List<object[]>
-        {
-            new object[] { 1, "rerank-model", "Single document rerank" },
-            new object[] { 5, "rerank-v2", "Multiple document rerank" },
-            new object[] { 10, "custom-rerank", "Large document set rerank" },
-        };
+        [
+            [1, "rerank-model", "Single document rerank"],
+            [5, "rerank-v2", "Multiple document rerank"],
+            [10, "custom-rerank", "Large document set rerank"],
+        ];
 
     public static IEnumerable<object[]> EmbeddingArrayTestCases =>
-        new List<object[]>
-        {
-            new object[] { 1536, 42, "Standard OpenAI embedding size" },
-            new object[] { 768, 123, "BERT-style embedding size" },
-            new object[] { 512, 456, "Smaller embedding size" },
-            new object[] { 1024, 789, "Medium embedding size" },
-            new object[] { 100, 999, "Tiny embedding for testing" },
-        };
+        [
+            [1536, 42, "Standard OpenAI embedding size"],
+            [768, 123, "BERT-style embedding size"],
+            [512, 456, "Smaller embedding size"],
+            [1024, 789, "Medium embedding size"],
+            [100, 999, "Tiny embedding for testing"],
+        ];
 
     public static IEnumerable<object[]> MultipleEmbeddingArrayTestCases =>
-        new List<object[]>
-        {
-            new object[] { 3, 1536, 42, "Three standard embeddings" },
-            new object[] { 5, 768, 123, "Five medium embeddings" },
-            new object[] { 10, 512, 456, "Ten small embeddings" },
-            new object[] { 1, 1024, 789, "Single medium embedding" },
-        };
+        [
+            [3, 1536, 42, "Three standard embeddings"],
+            [5, 768, 123, "Five medium embeddings"],
+            [10, 512, 456, "Ten small embeddings"],
+            [1, 1024, 789, "Single medium embedding"],
+        ];
 
     public static IEnumerable<object[]> InputTextTestCases =>
-        new List<object[]>
-        {
-            new object[] { 1, "test_input", "Single test input" },
-            new object[] { 5, "sample", "Multiple sample inputs" },
-            new object[] { 10, "data", "Batch of data inputs" },
-            new object[] { 3, "embedding_text", "Custom prefix inputs" },
-        };
+        [
+            [1, "test_input", "Single test input"],
+            [5, "sample", "Multiple sample inputs"],
+            [10, "data", "Batch of data inputs"],
+            [3, "embedding_text", "Custom prefix inputs"],
+        ];
 
     public static IEnumerable<object[]> DocumentTextTestCases =>
-        new List<object[]>
-        {
-            new object[] { 1, "test_document", "Single test document" },
-            new object[] { 5, "sample_doc", "Multiple sample documents" },
-            new object[] { 10, "content", "Batch of content documents" },
-            new object[] { 3, "rerank_item", "Custom prefix documents" },
-        };
+        [
+            [1, "test_document", "Single test document"],
+            [5, "sample_doc", "Multiple sample documents"],
+            [10, "content", "Batch of content documents"],
+            [3, "rerank_item", "Custom prefix documents"],
+        ];
 
     public static IEnumerable<object[]> ErrorResponseTestCases =>
-        new List<object[]>
-        {
-            new object[] { "invalid_request", "The request is invalid", "client_error", "Client error response" },
-            new object[] { "server_error", "Internal server error", "server_error", "Server error response" },
-            new object[] { "rate_limit", "Too many requests", "rate_limit_error", "Rate limit error response" },
-            new object[] { "auth_failed", "Authentication failed", "auth_error", "Authentication error response" },
-        };
+        [
+            ["invalid_request", "The request is invalid", "client_error", "Client error response"],
+            ["server_error", "Internal server error", "server_error", "Server error response"],
+            ["rate_limit", "Too many requests", "rate_limit_error", "Rate limit error response"],
+            ["auth_failed", "Authentication failed", "auth_error", "Authentication error response"],
+        ];
 
     #endregion
 }

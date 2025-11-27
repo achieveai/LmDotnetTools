@@ -33,10 +33,10 @@ if (commandLineArgs.Contains("--stdio"))
 // Load configuration
 var configuration = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile("appsettings.json", true)
     .AddJsonFile(
         $"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json",
-        optional: true
+        true
     )
     .AddEnvironmentVariables()
     .Build();
@@ -85,17 +85,19 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
     {
         _ = builder
             .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
-                ValidateIssuer = true,
-                ValidIssuer = jwtOptions.Issuer,
-                ValidateAudience = true,
-                ValidAudience = jwtOptions.Audience,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero,
-            });
+            .AddJwtBearer(options =>
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
+                    ValidateIssuer = true,
+                    ValidIssuer = jwtOptions.Issuer,
+                    ValidateAudience = true,
+                    ValidAudience = jwtOptions.Audience,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.Zero,
+                }
+            );
 
         _ = builder.Services.AddAuthorization();
     }
@@ -104,7 +106,9 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
     _ = builder.Services.AddMcpServices(TransportMode.SSE);
 
     // Configure CORS for testing
-    _ = builder.Services.AddCors(corsOptions => corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+    _ = builder.Services.AddCors(corsOptions =>
+        corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader())
+    );
 
     var app = builder.Build();
     await ConfigureSseApplication(app);
@@ -179,7 +183,8 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
     // Configure logging for production use
     _ = builder.Logging.AddConsole(consoleLogOptions =>
         // Configure all logs to go to stderr for STDIO transport
-        consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace);
+        consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace
+    );
 
     // Add core memory server services
     _ = builder.Services.AddMemoryServerCore(configuration, builder.Environment);
@@ -267,11 +272,15 @@ public class Startup
         _ = services.AddMcpServices(TransportMode.SSE);
 
         // Configure CORS for testing
-        _ = services.AddCors(corsOptions => corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+        _ = services.AddCors(corsOptions =>
+            corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader())
+        );
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
     {
+        ArgumentNullException.ThrowIfNull(app);
+
         // Initialize database using our extension method to avoid deadlock
         app.ApplicationServices.InitializeDatabaseSync();
 

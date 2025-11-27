@@ -10,21 +10,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
 /// <summary>
-/// Agent that interacts with the Anthropic Claude API.
+///     Agent that interacts with the Anthropic Claude API.
 /// </summary>
 public class AnthropicAgent : IStreamingAgent, IDisposable
 {
     private readonly IAnthropicClient _client;
     private readonly ILogger<AnthropicAgent> _logger;
-    private bool _disposed = false;
+    private bool _disposed;
 
     /// <summary>
-    /// Gets the name of the agent.
-    /// </summary>
-    public string Name { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="AnthropicAgent"/> class.
+    ///     Initializes a new instance of the <see cref="AnthropicAgent" /> class.
     /// </summary>
     /// <param name="name">The name of the agent.</param>
     /// <param name="client">The client to use for API calls.</param>
@@ -36,7 +31,21 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         _logger = logger ?? NullLogger<AnthropicAgent>.Instance;
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    ///     Gets the name of the agent.
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    ///     Disposes the client.
+    /// </summary>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    /// <inheritdoc />
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
@@ -86,10 +95,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Convert to messages using the Models namespace extension
-            var resultMessages =
-                AnthropicExtensions.ToMessages(response, Name)
-                .Select(m => m.WithIds(options))
-                .ToList();
+            var resultMessages = response.ToMessages(Name).Select(m => m.WithIds(options)).ToList();
 
             _logger.LogDebug(
                 LogEventIds.MessageTransformation,
@@ -116,7 +122,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         }
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
@@ -271,16 +277,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Disposes the client.
-    /// </summary>
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Disposes the client.
+    ///     Disposes the client.
     /// </summary>
     /// <param name="disposing">Whether to dispose managed resources.</param>
     protected virtual void Dispose(bool disposing)

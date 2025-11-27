@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Configuration;
+using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 using AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
@@ -9,7 +10,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Options;
+using Microsoft.OpenApi.Models;
 using Serilog;
+using Serilog.Events;
 using Serilog.Formatting.Compact;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,7 +43,7 @@ logConfig.WriteTo.File(
     logFileName,
     shared: true,
     buffered: false,
-    restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug
+    restrictedToMinimumLevel: LogEventLevel.Debug
 );
 
 // Add Seq logging if configured
@@ -48,11 +51,7 @@ var seqUrl = builder.Configuration["Seq:ServerUrl"];
 if (!string.IsNullOrWhiteSpace(seqUrl))
 {
     var seqApiKey = builder.Configuration["Seq:ApiKey"];
-    _ = logConfig.WriteTo.Seq(
-        serverUrl: seqUrl,
-        apiKey: seqApiKey,
-        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug
-    );
+    _ = logConfig.WriteTo.Seq(seqUrl, apiKey: seqApiKey, restrictedToMinimumLevel: LogEventLevel.Debug);
 }
 
 Log.Logger = logConfig.CreateLogger();
@@ -73,19 +72,19 @@ if (!string.IsNullOrWhiteSpace(seqUrl))
 
 // Add controllers and API support
 // Include controllers from AgUi.AspNetCore assembly
-builder
-    .Services.AddControllers()
-    .AddApplicationPart(typeof(AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers.AgUiController).Assembly);
+builder.Services.AddControllers().AddApplicationPart(typeof(AgUiController).Assembly);
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c => c.SwaggerDoc(
+builder.Services.AddSwaggerGen(c =>
+    c.SwaggerDoc(
         "v1",
-        new()
+        new OpenApiInfo
         {
             Title = "AG-UI Sample API",
             Version = "v1",
             Description = "Sample application demonstrating AG-UI protocol with agents and tools",
         }
-    ));
+    )
+);
 
 startupLogger.Information("Configuring AG-UI services...");
 
@@ -147,10 +146,8 @@ startupLogger.Information("  Registered: CopilotKitSessionMapper");
 
 // Add CORS for development
 builder.Services.AddCors(options =>
-    options.AddDefaultPolicy(policy =>
-        policy.AllowAnyOrigin()
-            .AllowAnyMethod()
-            .AllowAnyHeader()));
+    options.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader())
+);
 
 // Add health checks
 builder.Services.AddHealthChecks();

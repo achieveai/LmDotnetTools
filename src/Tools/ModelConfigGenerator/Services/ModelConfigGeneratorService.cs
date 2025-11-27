@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -9,13 +10,10 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 
 /// <summary>
-/// Service for generating Models.config files from OpenRouter data with filtering capabilities.
+///     Service for generating Models.config files from OpenRouter data with filtering capabilities.
 /// </summary>
 public partial class ModelConfigGeneratorService
 {
-    private readonly OpenRouterModelService _openRouterService;
-    private readonly ILogger<ModelConfigGeneratorService> _logger;
-
     // Model family patterns for filtering
     private static readonly Dictionary<string, Regex> ModelFamilyPatterns = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -55,6 +53,9 @@ public partial class ModelConfigGeneratorService
         "mistralai/mistral-small-3.2-24b-instruct",
     };
 
+    private readonly ILogger<ModelConfigGeneratorService> _logger;
+    private readonly OpenRouterModelService _openRouterService;
+
     public ModelConfigGeneratorService(
         OpenRouterModelService openRouterService,
         ILogger<ModelConfigGeneratorService> logger
@@ -65,7 +66,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Generates a Models.config file based on the provided options.
+    ///     Generates a Models.config file based on the provided options.
     /// </summary>
     public async Task<bool> GenerateConfigAsync(GeneratorOptions options, CancellationToken cancellationToken = default)
     {
@@ -116,7 +117,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Applies all configured filters to the model list.
+    ///     Applies all configured filters to the model list.
     /// </summary>
     private IReadOnlyList<ModelConfig> ApplyFilters(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
     {
@@ -200,7 +201,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Checks if a model matches any of the specified families.
+    ///     Checks if a model matches any of the specified families.
     /// </summary>
     private static bool MatchesAnyFamily(ModelConfig model, IReadOnlyList<string> families)
     {
@@ -208,7 +209,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Checks if a model matches a specific family pattern.
+    ///     Checks if a model matches a specific family pattern.
     /// </summary>
     private static bool MatchesFamily(ModelConfig model, string family)
     {
@@ -222,7 +223,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Creates an AppConfig with the filtered models and standard provider registry.
+    ///     Creates an AppConfig with the filtered models and standard provider registry.
     /// </summary>
     private static AppConfig CreateAppConfig(IReadOnlyList<ModelConfig> models)
     {
@@ -289,7 +290,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Serializes and saves the AppConfig to the specified file.
+    ///     Serializes and saves the AppConfig to the specified file.
     /// </summary>
     private async Task SaveConfigAsync(
         AppConfig appConfig,
@@ -302,7 +303,7 @@ public partial class ModelConfigGeneratorService
             WriteIndented = options.FormatJson,
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
 
         // Ensure output directory exists
@@ -323,7 +324,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Logs detailed statistics about the generated configuration.
+    ///     Logs detailed statistics about the generated configuration.
     /// </summary>
     private void LogGenerationStatistics(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
     {
@@ -412,7 +413,7 @@ public partial class ModelConfigGeneratorService
                 {
                     m.Id,
                     Family = GetModelFamily(m.Id),
-                    IsReasoning = m.IsReasoning,
+                    m.IsReasoning,
                     HasMultimodal = m.HasCapability("multimodal"),
                     ContextLength = m.Capabilities?.TokenLimits?.MaxContextTokens,
                     ProviderCount = m.Providers.Count,
@@ -423,7 +424,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Gets all supported model families.
+    ///     Gets all supported model families.
     /// </summary>
     public static IReadOnlyList<string> GetSupportedFamilies()
     {
@@ -431,7 +432,7 @@ public partial class ModelConfigGeneratorService
     }
 
     /// <summary>
-    /// Gets the family name for a model ID.
+    ///     Gets the family name for a model ID.
     /// </summary>
     private static string GetModelFamily(string modelId)
     {
@@ -442,6 +443,7 @@ public partial class ModelConfigGeneratorService
                 return family;
             }
         }
+
         return "unknown";
     }
 

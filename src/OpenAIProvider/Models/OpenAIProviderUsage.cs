@@ -6,7 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 /// <summary>
-/// Provider-specific usage model that supports both OpenAI and OpenRouter formats
+///     Provider-specific usage model that supports both OpenAI and OpenRouter formats
 /// </summary>
 public record OpenAIProviderUsage
 {
@@ -68,7 +68,7 @@ public record OpenAIProviderUsage
             InputTokenDetails?.CachedTokens ?? 0;
 
     /// <summary>
-    /// Convert to core Usage model
+    ///     Convert to core Usage model
     /// </summary>
     public Usage ToCoreUsage()
     {
@@ -102,10 +102,12 @@ public record OpenAIProviderUsage
     }
 
     /// <summary>
-    /// Create from core Usage model
+    ///     Create from core Usage model
     /// </summary>
     public static OpenAIProviderUsage FromCoreUsage(Usage coreUsage)
     {
+        ArgumentNullException.ThrowIfNull(coreUsage);
+
         return new OpenAIProviderUsage
         {
             PromptTokens = coreUsage.PromptTokens,
@@ -125,7 +127,7 @@ public record OpenAIProviderUsage
 }
 
 /// <summary>
-/// OpenAI-style input token details for provider-specific model
+///     OpenAI-style input token details for provider-specific model
 /// </summary>
 public record OpenAIInputTokenDetails
 {
@@ -135,7 +137,7 @@ public record OpenAIInputTokenDetails
 }
 
 /// <summary>
-/// OpenAI-style output token details for provider-specific model
+///     OpenAI-style output token details for provider-specific model
 /// </summary>
 public record OpenAIOutputTokenDetails
 {

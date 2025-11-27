@@ -1,12 +1,12 @@
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;
 
 /// <summary>
-/// Simple retry handler that retries on transient failures (HTTP 5xx or network errors).
+///     Simple retry handler that retries on transient failures (HTTP 5xx or network errors).
 /// </summary>
 public sealed class RetryHandler : DelegatingHandler
 {
-    private readonly int _maxAttempts;
     private readonly TimeSpan _delay;
+    private readonly int _maxAttempts;
 
     public RetryHandler(int maxAttempts = 3, TimeSpan? delay = null)
     {

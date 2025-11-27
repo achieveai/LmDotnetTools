@@ -10,12 +10,12 @@ using LmCoreToolCall = AchieveAi.LmDotnetTools.LmCore.Messages.ToolCall;
 namespace AchieveAi.LmDotnetTools.AgUi.Tests.Converters;
 
 /// <summary>
-/// Tests to verify that converting LmCore -> AG-UI -> LmCore preserves data integrity
+///     Tests to verify that converting LmCore -> AG-UI -> LmCore preserves data integrity
 /// </summary>
 public class RoundTripConverterTests
 {
-    private readonly LmCoreToAgUiConverter _lmToAgUi;
     private readonly AgUiToLmCoreConverter _agUiToLm;
+    private readonly LmCoreToAgUiConverter _lmToAgUi;
 
     public RoundTripConverterTests()
     {
@@ -108,7 +108,7 @@ public class RoundTripConverterTests
     public void RoundTrip_ToolsCallResultMessage_PreservesData()
     {
         // Arrange - Note: AG-UI tool result messages go back to LmCore as single-result messages
-        var result = new ToolCallResult(ToolCallId: "call-result-1", Result: "Temperature in Paris: 18°C");
+        var result = new ToolCallResult("call-result-1", "Temperature in Paris: 18°C");
 
         var original = new ToolsCallResultMessage
         {
@@ -222,7 +222,12 @@ public class RoundTripConverterTests
             }
             """;
 
-        var toolCall = new LmCoreToolCall { FunctionName = "complex_function", FunctionArgs = complexArgs, ToolCallId = "call-complex" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "complex_function",
+            FunctionArgs = complexArgs,
+            ToolCallId = "call-complex",
+        };
 
         var original = new ToolsCallMessage
         {
@@ -263,9 +268,24 @@ public class RoundTripConverterTests
     {
         // Arrange
         var toolCalls = ImmutableList.Create(
-            new LmCoreToolCall { FunctionName = "func1", FunctionArgs = """{"a": 1}""", ToolCallId = "call-1" },
-            new LmCoreToolCall { FunctionName = "func2", FunctionArgs = """{"b": 2}""", ToolCallId = "call-2" },
-            new LmCoreToolCall { FunctionName = "func3", FunctionArgs = """{"c": 3}""", ToolCallId = "call-3" }
+            new LmCoreToolCall
+            {
+                FunctionName = "func1",
+                FunctionArgs = """{"a": 1}""",
+                ToolCallId = "call-1",
+            },
+            new LmCoreToolCall
+            {
+                FunctionName = "func2",
+                FunctionArgs = """{"b": 2}""",
+                ToolCallId = "call-2",
+            },
+            new LmCoreToolCall
+            {
+                FunctionName = "func3",
+                FunctionArgs = """{"c": 3}""",
+                ToolCallId = "call-3",
+            }
         );
 
         var original = new ToolsCallMessage
@@ -320,7 +340,12 @@ public class RoundTripConverterTests
     public void RoundTrip_EmptyToolCallArguments_PreservesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall { FunctionName = "no_args_function", FunctionArgs = "{}", ToolCallId = "call-empty" };
+        var toolCall = new LmCoreToolCall
+        {
+            FunctionName = "no_args_function",
+            FunctionArgs = "{}",
+            ToolCallId = "call-empty",
+        };
 
         var original = new ToolsCallMessage
         {

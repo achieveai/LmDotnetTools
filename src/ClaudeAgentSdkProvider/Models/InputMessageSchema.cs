@@ -3,8 +3,8 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 
 /// <summary>
-/// JSONL input message wrapper for claude-agent-sdk CLI stdin
-/// Format: {"type":"user","message":{"role":"user","content":[...]}}
+///     JSONL input message wrapper for claude-agent-sdk CLI stdin
+///     Format: {"type":"user","message":{"role":"user","content":[...]}}
 /// </summary>
 public class InputMessageWrapper
 {
@@ -16,7 +16,7 @@ public class InputMessageWrapper
 }
 
 /// <summary>
-/// Input message following Claude Messages API format
+///     Input message following Claude Messages API format
 /// </summary>
 public class InputMessage
 {
@@ -28,11 +28,11 @@ public class InputMessage
 }
 
 /// <summary>
-/// Base class for input content blocks in message
+///     Base class for input content blocks in message
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
-[JsonDerivedType(typeof(InputTextContentBlock), typeDiscriminator: "text")]
-[JsonDerivedType(typeof(InputImageContentBlock), typeDiscriminator: "image")]
+[JsonDerivedType(typeof(InputTextContentBlock), "text")]
+[JsonDerivedType(typeof(InputImageContentBlock), "image")]
 public abstract class InputContentBlock
 {
     [JsonPropertyName("type")]
@@ -40,7 +40,7 @@ public abstract class InputContentBlock
 }
 
 /// <summary>
-/// Text content block for input messages
+///     Text content block for input messages
 /// </summary>
 public class InputTextContentBlock : InputContentBlock
 {
@@ -51,7 +51,7 @@ public class InputTextContentBlock : InputContentBlock
 }
 
 /// <summary>
-/// Image content block with base64 source for input messages
+///     Image content block with base64 source for input messages
 /// </summary>
 public class InputImageContentBlock : InputContentBlock
 {
@@ -62,8 +62,8 @@ public class InputImageContentBlock : InputContentBlock
 }
 
 /// <summary>
-/// Image source with base64 data
-/// Supported media types: image/jpeg, image/png, image/gif, image/webp
+///     Image source with base64 data
+///     Supported media types: image/jpeg, image/png, image/gif, image/webp
 /// </summary>
 public class ImageSource
 {

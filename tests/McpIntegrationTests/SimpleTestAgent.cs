@@ -6,12 +6,12 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 
 /// <summary>
-/// Simple agent implementation for testing
+///     Simple agent implementation for testing
 /// </summary>
 public class SimpleTestAgent : IAgent
 {
-    private IMessage? _injectedMessage = null;
-    private List<IMessage> _receivedMessages = [];
+    private readonly List<IMessage> _receivedMessages = [];
+    private IMessage? _injectedMessage;
 
     public static string Id => "test-agent";
     public static string? Name => "Test Agent";
@@ -21,30 +21,9 @@ public class SimpleTestAgent : IAgent
     public static IList<IMessage> History => [];
 
     /// <summary>
-    /// Gets the messages that were received by this agent
+    ///     Gets the messages that were received by this agent
     /// </summary>
     public IReadOnlyList<IMessage> ReceivedMessages => _receivedMessages.AsReadOnly();
-
-    /// <summary>
-    /// Inject a message to be returned by this agent
-    /// </summary>
-    /// <param name="message">The message to return</param>
-    public void InjectMessage(IMessage message)
-    {
-        _injectedMessage = message;
-    }
-
-    /// <summary>
-    /// Inject a tool call message to be returned by this agent
-    /// </summary>
-    /// <param name="functionName">The function name to call</param>
-    /// <param name="args">The arguments to pass to the function</param>
-    public void InjectToolCall(string functionName, object args)
-    {
-        var serializedArgs = JsonSerializer.Serialize(args);
-        var toolCall = new ToolCall { FunctionName = functionName, FunctionArgs = serializedArgs };
-        _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
-    }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
@@ -57,12 +36,30 @@ public class SimpleTestAgent : IAgent
 
         // Return the injected message, or a default if none was provided
         return _injectedMessage != null
-            ? Task.FromResult<IEnumerable<IMessage>>(new[] { _injectedMessage })
+            ? Task.FromResult<IEnumerable<IMessage>>([_injectedMessage])
             : Task.FromResult<IEnumerable<IMessage>>(
-                new[]
-                {
-                    new TextMessage { Text = "Default response", Role = Role.Assistant },
-                }
+                [new TextMessage { Text = "Default response", Role = Role.Assistant }]
             );
+    }
+
+    /// <summary>
+    ///     Inject a message to be returned by this agent
+    /// </summary>
+    /// <param name="message">The message to return</param>
+    public void InjectMessage(IMessage message)
+    {
+        _injectedMessage = message;
+    }
+
+    /// <summary>
+    ///     Inject a tool call message to be returned by this agent
+    /// </summary>
+    /// <param name="functionName">The function name to call</param>
+    /// <param name="args">The arguments to pass to the function</param>
+    public void InjectToolCall(string functionName, object args)
+    {
+        var serializedArgs = JsonSerializer.Serialize(args);
+        var toolCall = new ToolCall { FunctionName = functionName, FunctionArgs = serializedArgs };
+        _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
     }
 }

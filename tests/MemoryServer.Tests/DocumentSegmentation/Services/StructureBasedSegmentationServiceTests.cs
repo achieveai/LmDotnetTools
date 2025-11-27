@@ -8,13 +8,13 @@ using Moq;
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Tests for StructureBasedSegmentationService functionality.
+///     Tests for StructureBasedSegmentationService functionality.
 /// </summary>
 public class StructureBasedSegmentationServiceTests
 {
+    private readonly ILogger<StructureBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<StructureBasedSegmentationService> _logger;
     private readonly StructureBasedSegmentationService _service;
 
     public StructureBasedSegmentationServiceTests()
@@ -70,6 +70,129 @@ public class StructureBasedSegmentationServiceTests
                 }
             );
     }
+
+    #region AnalyzeHierarchicalStructureAsync Tests
+
+    [Fact]
+    public async Task AnalyzeHierarchicalStructureAsync_WithWellStructuredDocument_ReturnsAccurateAnalysis()
+    {
+        // Arrange
+        var content =
+            @"
+# Introduction
+This document is well structured.
+
+## Background
+Some background information.
+
+## Methodology
+Description of methods.
+
+### Data Collection
+How data was collected.
+
+### Analysis
+How analysis was performed.
+
+## Results
+The results section.
+
+# Conclusion
+Final thoughts.
+";
+
+        // Act
+        var result = await _service.AnalyzeHierarchicalStructureAsync(content);
+
+        // Assert
+        _ = result.Should().NotBeNull();
+        _ = result.MaxHeadingDepth.Should().Be(3);
+        _ = result.TotalHeadings.Should().BeGreaterThan(5);
+        _ = result.HasClearHierarchy.Should().BeTrue();
+        _ = result.DocumentOutline.Should().NotBeEmpty();
+        _ = result.StructuralPatterns.Should().Contain("markdown_headings");
+    }
+
+    #endregion
+
+    #region ValidateStructureSegmentsAsync Tests
+
+    [Fact]
+    public async Task ValidateStructureSegmentsAsync_WithGoodSegments_ReturnsHighQuality()
+    {
+        // Arrange
+        var segments = new List<DocumentSegment>
+        {
+            new()
+            {
+                Id = "seg1",
+                Content =
+                    "# Introduction\nThis is a well-structured introduction section with clear heading and substantial content.",
+                SequenceNumber = 0,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["structural_element_type"] = StructuralElementType.Heading.ToString(),
+                    ["heading_level"] = 1,
+                },
+            },
+            new()
+            {
+                Id = "seg2",
+                Content =
+                    "## Methodology\nThis section describes the methodology used in detail with proper structure and formatting.",
+                SequenceNumber = 1,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["structural_element_type"] = StructuralElementType.Heading.ToString(),
+                    ["heading_level"] = 2,
+                },
+            },
+        };
+
+        // Act
+        var result = await _service.ValidateStructureSegmentsAsync(segments, "Original content");
+
+        // Assert
+        _ = result.Should().NotBeNull();
+        _ = result.OverallQuality.Should().BeGreaterThan(0.5);
+        _ = result.StructuralClarity.Should().BeGreaterThan(0.5);
+        _ = result.SegmentResults.Should().HaveCount(2);
+    }
+
+    #endregion
+
+    #region Helper Methods
+
+    private static string CreateStructuredDocument()
+    {
+        return @"
+# Document Title
+This is a well-structured document with clear hierarchical organization.
+
+## Section 1: Introduction
+This section introduces the main topic and provides necessary background information for understanding the content that follows.
+
+### Subsection 1.1: Background
+Here we provide detailed background information about the topic, including historical context and relevant prior work.
+
+### Subsection 1.2: Objectives
+This subsection outlines the main objectives and goals of this document.
+
+## Section 2: Main Content
+This is the main content section where we present the core information and analysis.
+
+### Subsection 2.1: Analysis
+Detailed analysis and discussion of the main points.
+
+### Subsection 2.2: Examples
+Concrete examples and case studies to illustrate the concepts.
+
+## Section 3: Conclusion
+This section summarizes the key points and provides final thoughts on the topic.
+";
+    }
+
+    #endregion
 
     #region SegmentByStructureAsync Tests
 
@@ -205,7 +328,7 @@ Even more content.
 ";
 
         // Act
-        var result = await _service.DetectStructuralBoundariesAsync(content, DocumentType.Generic);
+        var result = await _service.DetectStructuralBoundariesAsync(content);
 
         // Assert
         _ = result.Should().NotBeEmpty();
@@ -233,134 +356,11 @@ Third section content here.
 ";
 
         // Act
-        var result = await _service.DetectStructuralBoundariesAsync(content, DocumentType.Generic);
+        var result = await _service.DetectStructuralBoundariesAsync(content);
 
         // Assert
         _ = result.Should().NotBeEmpty();
         _ = result.Should().Contain(b => b.ElementType == StructuralElementType.SectionBreak);
-    }
-
-    #endregion
-
-    #region AnalyzeHierarchicalStructureAsync Tests
-
-    [Fact]
-    public async Task AnalyzeHierarchicalStructureAsync_WithWellStructuredDocument_ReturnsAccurateAnalysis()
-    {
-        // Arrange
-        var content =
-            @"
-# Introduction
-This document is well structured.
-
-## Background
-Some background information.
-
-## Methodology
-Description of methods.
-
-### Data Collection
-How data was collected.
-
-### Analysis
-How analysis was performed.
-
-## Results
-The results section.
-
-# Conclusion
-Final thoughts.
-";
-
-        // Act
-        var result = await _service.AnalyzeHierarchicalStructureAsync(content);
-
-        // Assert
-        _ = result.Should().NotBeNull();
-        _ = result.MaxHeadingDepth.Should().Be(3);
-        _ = result.TotalHeadings.Should().BeGreaterThan(5);
-        _ = result.HasClearHierarchy.Should().BeTrue();
-        _ = result.DocumentOutline.Should().NotBeEmpty();
-        _ = result.StructuralPatterns.Should().Contain("markdown_headings");
-    }
-
-    #endregion
-
-    #region ValidateStructureSegmentsAsync Tests
-
-    [Fact]
-    public async Task ValidateStructureSegmentsAsync_WithGoodSegments_ReturnsHighQuality()
-    {
-        // Arrange
-        var segments = new List<DocumentSegment>
-        {
-            new DocumentSegment
-            {
-                Id = "seg1",
-                Content =
-                    "# Introduction\nThis is a well-structured introduction section with clear heading and substantial content.",
-                SequenceNumber = 0,
-                Metadata = new Dictionary<string, object>
-                {
-                    ["structural_element_type"] = StructuralElementType.Heading.ToString(),
-                    ["heading_level"] = 1,
-                },
-            },
-            new DocumentSegment
-            {
-                Id = "seg2",
-                Content =
-                    "## Methodology\nThis section describes the methodology used in detail with proper structure and formatting.",
-                SequenceNumber = 1,
-                Metadata = new Dictionary<string, object>
-                {
-                    ["structural_element_type"] = StructuralElementType.Heading.ToString(),
-                    ["heading_level"] = 2,
-                },
-            },
-        };
-
-        // Act
-        var result = await _service.ValidateStructureSegmentsAsync(segments, "Original content");
-
-        // Assert
-        _ = result.Should().NotBeNull();
-        _ = result.OverallQuality.Should().BeGreaterThan(0.5);
-        _ = result.StructuralClarity.Should().BeGreaterThan(0.5);
-        _ = result.SegmentResults.Should().HaveCount(2);
-    }
-
-    #endregion
-
-    #region Helper Methods
-
-    private static string CreateStructuredDocument()
-    {
-        return @"
-# Document Title
-This is a well-structured document with clear hierarchical organization.
-
-## Section 1: Introduction
-This section introduces the main topic and provides necessary background information for understanding the content that follows.
-
-### Subsection 1.1: Background
-Here we provide detailed background information about the topic, including historical context and relevant prior work.
-
-### Subsection 1.2: Objectives
-This subsection outlines the main objectives and goals of this document.
-
-## Section 2: Main Content
-This is the main content section where we present the core information and analysis.
-
-### Subsection 2.1: Analysis
-Detailed analysis and discussion of the main points.
-
-### Subsection 2.2: Examples
-Concrete examples and case studies to illustrate the concepts.
-
-## Section 3: Conclusion
-This section summarizes the key points and provides final thoughts on the topic.
-";
     }
 
     #endregion

@@ -8,15 +8,13 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 
 /// <summary>
-/// Agent that demonstrates multi-turn instruction chain testing using TestSseMessageHandler.
-/// Example instruction chain format uses special tags with JSON.
+///     Agent that demonstrates multi-turn instruction chain testing using TestSseMessageHandler.
+///     Example instruction chain format uses special tags with JSON.
 /// </summary>
 public sealed class InstructionChainAgent : IStreamingAgent
 {
-    private readonly ILogger<InstructionChainAgent> _logger;
     private readonly OpenClientAgent _agent;
-
-    public string Name => "InstructionChainAgent";
+    private readonly ILogger<InstructionChainAgent> _logger;
 
     public InstructionChainAgent(ILogger<InstructionChainAgent> logger)
     {
@@ -36,21 +34,23 @@ public sealed class InstructionChainAgent : IStreamingAgent
 
         // Create OpenClient with custom HTTP client
         var openClient = new OpenClient(
-            httpClient: httpClient,
-            baseUrl: "https://api.test.local/v1",
-            performanceTracker: null,
-            logger: LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<OpenClient>()
+            httpClient,
+            "https://api.test.local/v1",
+            null,
+            LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<OpenClient>()
         );
 
         // Wrap OpenClient with OpenClientAgent
         _agent = new OpenClientAgent(
-            name: "InstructionChainAgent",
-            client: openClient,
-            logger: LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<OpenClientAgent>()
+            "InstructionChainAgent",
+            openClient,
+            LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<OpenClientAgent>()
         );
 
         _logger.LogInformation("InstructionChainAgent initialized with TestSseMessageHandler");
     }
+
+    public string Name => "InstructionChainAgent";
 
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,

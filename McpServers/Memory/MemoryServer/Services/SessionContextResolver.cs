@@ -5,13 +5,13 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Resolves session context using precedence rules and transport context.
+///     Resolves session context using precedence rules and transport context.
 /// </summary>
 public class SessionContextResolver : ISessionContextResolver
 {
+    private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<SessionContextResolver> _logger;
     private readonly SessionDefaultsOptions _options;
-    private readonly IHttpContextAccessor _httpContextAccessor;
 
     public SessionContextResolver(
         ILogger<SessionContextResolver> logger,
@@ -19,14 +19,15 @@ public class SessionContextResolver : ISessionContextResolver
         IHttpContextAccessor httpContextAccessor
     )
     {
+        ArgumentNullException.ThrowIfNull(options);
         _logger = logger;
         _options = options.Value.SessionDefaults;
         _httpContextAccessor = httpContextAccessor;
     }
 
     /// <summary>
-    /// Resolves session context using precedence hierarchy.
-    /// Precedence: Explicit Parameters > JWT Token Claims > Transport Context > System Defaults
+    ///     Resolves session context using precedence hierarchy.
+    ///     Precedence: Explicit Parameters > JWT Token Claims > Transport Context > System Defaults
     /// </summary>
     public Task<SessionContext> ResolveSessionContextAsync(
         string? explicitUserId = null,
@@ -59,13 +60,14 @@ public class SessionContextResolver : ISessionContextResolver
     }
 
     /// <summary>
-    /// Validates that a session context is valid and accessible.
+    ///     Validates that a session context is valid and accessible.
     /// </summary>
     public Task<bool> ValidateSessionContextAsync(
         SessionContext sessionContext,
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
         // Basic validation rules
         if (string.IsNullOrWhiteSpace(sessionContext.UserId))
         {
@@ -105,7 +107,7 @@ public class SessionContextResolver : ISessionContextResolver
     }
 
     /// <summary>
-    /// Gets the default session context based on transport context and system defaults.
+    ///     Gets the default session context based on transport context and system defaults.
     /// </summary>
     public Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default)
     {
@@ -113,7 +115,7 @@ public class SessionContextResolver : ISessionContextResolver
     }
 
     /// <summary>
-    /// Gets session context from JWT token claims.
+    ///     Gets session context from JWT token claims.
     /// </summary>
     private string? GetFromJwtClaims(string claimName)
     {
@@ -139,7 +141,7 @@ public class SessionContextResolver : ISessionContextResolver
     }
 
     /// <summary>
-    /// Gets session context from transport-specific sources.
+    ///     Gets session context from transport-specific sources.
     /// </summary>
     private string? GetFromTransportContext(string parameterName)
     {
@@ -165,7 +167,7 @@ public class SessionContextResolver : ISessionContextResolver
     }
 
     /// <summary>
-    /// Generates a default runId based on current date.
+    ///     Generates a default runId based on current date.
     /// </summary>
     private string GenerateDefaultRunId()
     {

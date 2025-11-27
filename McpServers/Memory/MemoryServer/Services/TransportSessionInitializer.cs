@@ -5,13 +5,13 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for initializing transport-specific session context at startup.
+///     Service for initializing transport-specific session context at startup.
 /// </summary>
 public class TransportSessionInitializer
 {
-    private readonly ISessionManager _sessionManager;
     private readonly ILogger<TransportSessionInitializer> _logger;
     private readonly MemoryServerOptions _options;
+    private readonly ISessionManager _sessionManager;
 
     public TransportSessionInitializer(
         ISessionManager sessionManager,
@@ -25,7 +25,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Initializes session context for STDIO transport by reading environment variables.
+    ///     Initializes session context for STDIO transport by reading environment variables.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults if found, null otherwise</returns>
@@ -59,7 +59,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Initializes session context for SSE transport by processing URL parameters and headers.
+    ///     Initializes session context for SSE transport by processing URL parameters and headers.
     /// </summary>
     /// <param name="queryParameters">URL query parameters</param>
     /// <param name="headers">HTTP headers</param>
@@ -103,7 +103,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Performs cleanup of expired session defaults.
+    ///     Performs cleanup of expired session defaults.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
@@ -135,7 +135,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Validates that the transport session context is properly configured.
+    ///     Validates that the transport session context is properly configured.
     /// </summary>
     /// <param name="sessionDefaults">Session defaults to validate</param>
     /// <returns>True if valid, false otherwise</returns>
@@ -187,7 +187,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Logs environment variables for debugging purposes.
+    ///     Logs environment variables for debugging purposes.
     /// </summary>
     private void LogEnvironmentVariables()
     {
@@ -211,7 +211,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Logs SSE context for debugging purposes.
+    ///     Logs SSE context for debugging purposes.
     /// </summary>
     private void LogSseContext(IDictionary<string, string>? queryParameters, IDictionary<string, string>? headers)
     {

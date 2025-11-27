@@ -1,17 +1,16 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Helper utilities for working with JSON schema objects
+///     Helper utilities for working with JSON schema objects
 /// </summary>
 public static class SchemaHelper
 {
     /// <summary>
-    /// JsonSerializerOptions configured with Union converters for schema deserialization
+    ///     JsonSerializerOptions configured with Union converters for schema deserialization
     /// </summary>
     private static readonly JsonSerializerOptions SchemaDeserializationOptions = new()
     {
@@ -19,14 +18,15 @@ public static class SchemaHelper
     };
 
     /// <summary>
-    /// Cache to store already generated schema objects keyed by .NET type.
-    /// Creation can be expensive, so we compute once and reuse.
+    ///     Cache to store already generated schema objects keyed by .NET type.
+    ///     Creation can be expensive, so we compute once and reuse.
     /// </summary>
     private static readonly Dictionary<Type, JsonSchemaObject> _schemaCache = [];
+
     private static readonly object _lock = new();
 
     /// <summary>
-    /// Creates a JsonSchemaObject from a .NET Type
+    ///     Creates a JsonSchemaObject from a .NET Type
     /// </summary>
     /// <param name="type">The .NET type to convert</param>
     /// <returns>A JsonSchemaObject representing the type</returns>
@@ -46,10 +46,7 @@ public static class SchemaHelper
             }
 
             var dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
-            var originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(
-                dotnetSchema,
-                SchemaDeserializationOptions
-            )!;
+            var originalSchema = dotnetSchema.Deserialize<JsonSchemaObject>(SchemaDeserializationOptions)!;
             var transformedSchema = TransformSchemaUnions(originalSchema);
 
             _schemaCache[type] = transformedSchema;
@@ -59,9 +56,9 @@ public static class SchemaHelper
     }
 
     /// <summary>
-    /// Transforms Union types in the schema to convert single-element arrays to simple string values
-    /// for compatibility with OpenAI's API requirements.
-    /// Also ensures all properties are marked as required for OpenAI structured outputs.
+    ///     Transforms Union types in the schema to convert single-element arrays to simple string values
+    ///     for compatibility with OpenAI's API requirements.
+    ///     Also ensures all properties are marked as required for OpenAI structured outputs.
     /// </summary>
     /// <param name="schema">The schema to transform</param>
     /// <returns>The transformed schema with cleaned up Union types and proper required fields</returns>
@@ -105,7 +102,8 @@ public static class SchemaHelper
     }
 
     /// <summary>
-    /// Transforms the properties dictionary to apply Union type cleaning and ensure all nested objects have additionalProperties = false
+    ///     Transforms the properties dictionary to apply Union type cleaning and ensure all nested objects have
+    ///     additionalProperties = false
     /// </summary>
     /// <param name="properties">The properties dictionary to transform</param>
     /// <returns>The transformed properties dictionary</returns>
@@ -139,8 +137,8 @@ public static class SchemaHelper
     }
 
     /// <summary>
-    /// Transforms a Union type, converting nullable types to non-nullable for OpenAI structured outputs
-    /// OpenAI structured outputs don't support nullable/optional fields - everything must be required
+    ///     Transforms a Union type, converting nullable types to non-nullable for OpenAI structured outputs
+    ///     OpenAI structured outputs don't support nullable/optional fields - everything must be required
     /// </summary>
     private static Union<string, IReadOnlyList<string>> TransformUnionType(
         Union<string, IReadOnlyList<string>> unionType

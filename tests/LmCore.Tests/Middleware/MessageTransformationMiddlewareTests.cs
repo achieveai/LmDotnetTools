@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Xunit;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
+
 public class MessageTransformationMiddlewareTests
 {
     #region Downstream Tests (Ordering Assignment)
@@ -93,7 +94,7 @@ public class MessageTransformationMiddlewareTests
                 ToolCalls = [new ToolCall { FunctionName = "test", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 }],
                 GenerationId = "gen1"
             },
-            new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
+            new UsageMessage { Usage = new(), GenerationId = "gen1" }
         );
         var context = new MiddlewareContext(
             Messages: [],
@@ -236,14 +237,14 @@ public class MessageTransformationMiddlewareTests
             {
                 ToolCalls = [toolCall],
                 GenerationId = "gen0",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call_1", "result")],
                 GenerationId = "gen0",
-                MessageOrderIdx = 1
-            }
+                MessageOrderIdx = 1,
+            },
         };
         var context = new MiddlewareContext(
             Messages: inputMessages,
@@ -764,7 +765,7 @@ public class MessageTransformationMiddlewareTests
         var streamingMessages = new List<IMessage>
         {
             new TextUpdateMessage { Text = "Hello ", GenerationId = "gen1" },
-            new TextUpdateMessage { Text = "World", GenerationId = "gen1" }
+            new TextUpdateMessage { Text = "World", GenerationId = "gen1" },
         }.ToAsyncEnumerable();
         var agent = new MockStreamingAgent(streamingMessages);
         var context = new MiddlewareContext(
@@ -1163,7 +1164,8 @@ public class MessageTransformationMiddlewareTests
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             ReceivedMessages.AddRange(messages);
             return Task.FromResult<IEnumerable<IMessage>>(_responsesToReturn);
@@ -1180,14 +1182,16 @@ public class MessageTransformationMiddlewareTests
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             return Task.FromResult(_streamToReturn);
         }
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             throw new NotImplementedException();
         }
@@ -1203,6 +1207,7 @@ internal static class AsyncEnumerableExtensions
         {
             list.Add(item);
         }
+
         return list;
     }
     public static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(this IEnumerable<T> source)

@@ -7,14 +7,15 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
 /// <summary>
-/// Stateful counter tool demonstrating state management across calls
-/// Maintains separate counters for different named counters
+///     Stateful counter tool demonstrating state management across calls
+///     Maintains separate counters for different named counters
 /// </summary>
 public class CounterTool : IFunctionProvider
 {
-    private readonly ILogger<CounterTool> _logger;
+    private static readonly string[] sourceArray = ["increment", "decrement", "get", "reset"];
     private readonly Dictionary<string, int> _counters = [];
     private readonly object _lock = new();
+    private readonly ILogger<CounterTool> _logger;
 
     public CounterTool(ILogger<CounterTool> logger)
     {
@@ -24,8 +25,6 @@ public class CounterTool : IFunctionProvider
 
     public string ProviderName => "CounterProvider";
     public int Priority => 100;
-
-    private static readonly string[] sourceArray = ["increment", "decrement", "get", "reset"];
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
@@ -68,7 +67,7 @@ public class CounterTool : IFunctionProvider
     }
 
     /// <summary>
-    /// Executes the counter operation
+    ///     Executes the counter operation
     /// </summary>
     private async Task<string> ExecuteAsync(string arguments)
     {
@@ -120,7 +119,7 @@ public class CounterTool : IFunctionProvider
             var result = new
             {
                 operation = args.Operation,
-                name = name,
+                name,
                 value = newValue,
                 allCounters = new Dictionary<string, int>(_counters),
                 timestamp = DateTime.UtcNow.ToString("o"),

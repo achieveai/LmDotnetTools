@@ -3,12 +3,12 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service interface for managing YAML-based segmentation prompts with hot reload capability.
+///     Service interface for managing YAML-based segmentation prompts with hot reload capability.
 /// </summary>
 public interface ISegmentationPromptManager
 {
     /// <summary>
-    /// Gets a prompt template for a specific segmentation strategy.
+    ///     Gets a prompt template for a specific segmentation strategy.
     /// </summary>
     /// <param name="strategy">The segmentation strategy</param>
     /// <param name="language">Language code (default: "en")</param>
@@ -21,7 +21,7 @@ public interface ISegmentationPromptManager
     );
 
     /// <summary>
-    /// Gets a prompt template for quality validation.
+    ///     Gets a prompt template for quality validation.
     /// </summary>
     /// <param name="language">Language code (default: "en")</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -32,7 +32,7 @@ public interface ISegmentationPromptManager
     );
 
     /// <summary>
-    /// Gets domain-specific instructions for document types.
+    ///     Gets domain-specific instructions for document types.
     /// </summary>
     /// <param name="documentType">Type of document</param>
     /// <param name="language">Language code (default: "en")</param>
@@ -45,14 +45,14 @@ public interface ISegmentationPromptManager
     );
 
     /// <summary>
-    /// Reloads all prompts from the YAML configuration file.
+    ///     Reloads all prompts from the YAML configuration file.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if reload was successful</returns>
     Task<bool> ReloadPromptsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Validates that all required prompts are properly configured.
+    ///     Validates that all required prompts are properly configured.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if configuration is valid</returns>

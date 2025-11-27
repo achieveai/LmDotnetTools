@@ -4,7 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// MCP-specific function provider that implements core interface
+///     MCP-specific function provider that implements core interface
 /// </summary>
 public class McpFunctionProvider : IFunctionProvider
 {
@@ -19,7 +19,7 @@ public class McpFunctionProvider : IFunctionProvider
     public string ProviderName { get; }
 
     /// <summary>
-    /// MCP functions have medium priority (100)
+    ///     MCP functions have medium priority (100)
     /// </summary>
     public int Priority => 100;
 

@@ -4,12 +4,12 @@ using MemoryServer.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service interface for document segmentation operations with LLM-powered intelligent segmentation.
+///     Service interface for document segmentation operations with LLM-powered intelligent segmentation.
 /// </summary>
 public interface IDocumentSegmentationService
 {
     /// <summary>
-    /// Segments a document into logical chunks using the optimal strategy.
+    ///     Segments a document into logical chunks using the optimal strategy.
     /// </summary>
     /// <param name="content">The document content to segment</param>
     /// <param name="request">Segmentation request parameters</param>
@@ -24,7 +24,7 @@ public interface IDocumentSegmentationService
     );
 
     /// <summary>
-    /// Determines if a document should be segmented based on size and complexity.
+    ///     Determines if a document should be segmented based on size and complexity.
     /// </summary>
     /// <param name="content">The document content to analyze</param>
     /// <param name="documentType">Type of document for optimization</param>
@@ -37,7 +37,7 @@ public interface IDocumentSegmentationService
     );
 
     /// <summary>
-    /// Determines the optimal segmentation strategy for a document.
+    ///     Determines the optimal segmentation strategy for a document.
     /// </summary>
     /// <param name="content">The document content to analyze</param>
     /// <param name="documentType">Type of document for optimization</param>
@@ -50,7 +50,7 @@ public interface IDocumentSegmentationService
     );
 
     /// <summary>
-    /// Validates the quality of segmentation results.
+    ///     Validates the quality of segmentation results.
     /// </summary>
     /// <param name="result">Segmentation result to validate</param>
     /// <param name="cancellationToken">Cancellation token</param>

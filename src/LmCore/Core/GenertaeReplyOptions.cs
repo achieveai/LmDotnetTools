@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -9,7 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
 /// <summary>
-/// Options for generating a reply.
+///     Options for generating a reply.
 /// </summary>
 [JsonConverter(typeof(GenerateReplyOptionsJsonConverter))]
 public record GenerateReplyOptions
@@ -46,21 +44,21 @@ public record GenerateReplyOptions
     public ResponseFormat? ResponseFormat { get; init; }
 
     /// <summary>
-    /// Run ID for tracking individual agent execution runs within a conversation.
-    /// Maps to the AG-UI runId concept.
+    ///     Run ID for tracking individual agent execution runs within a conversation.
+    ///     Maps to the AG-UI runId concept.
     /// </summary>
     [JsonIgnore]
     public string? RunId { get; init; }
 
     /// <summary>
-    /// Parent Run ID for branching/time travel (creates git-like lineage).
+    ///     Parent Run ID for branching/time travel (creates git-like lineage).
     /// </summary>
     [JsonIgnore]
     public string? ParentRunId { get; init; }
 
     /// <summary>
-    /// Thread ID for conversation continuity.
-    /// Maps to the AG-UI threadId concept.
+    ///     Thread ID for conversation continuity.
+    ///     Maps to the AG-UI threadId concept.
     /// </summary>
     [JsonIgnore]
     public string? ThreadId { get; init; }
@@ -134,6 +132,7 @@ public record GenerateReplyOptions
                     kv.Value
                 );
             }
+
             return result;
         }
 
@@ -162,6 +161,7 @@ public record GenerateReplyOptions
             {
                 clonedDict[kv.Key] = CloneExtraPropertyValue(kv.Value);
             }
+
             return clonedDict;
         }
 
@@ -187,6 +187,7 @@ public record GenerateReplyOptions
                 var element = array.GetValue(i);
                 clonedArray.SetValue(CloneExtraPropertyValue(element), i);
             }
+
             return clonedArray;
         }
 

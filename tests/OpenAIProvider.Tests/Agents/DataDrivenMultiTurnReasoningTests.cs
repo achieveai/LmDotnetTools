@@ -10,23 +10,23 @@ using AchieveAi.LmDotnetTools.TestUtils;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 /// <summary>
-/// Verifies that we can send reasoning obtained in the previous turn back to the provider in the next turn.
-/// Two providers covered: DeepSeek R-series (via OpenRouter) and OpenAI o-series (o4-mini).
+///     Verifies that we can send reasoning obtained in the previous turn back to the provider in the next turn.
+///     Two providers covered: DeepSeek R-series (via OpenRouter) and OpenAI o-series (o4-mini).
 /// </summary>
 public class DataDrivenMultiTurnReasoningTests
 {
-    private readonly ProviderTestDataManager _dm = new();
     private static readonly string[] fallbackKeys = ["LLM_API_BASE_URL"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray0 = ["LLM_API_BASE_URL"];
+    private readonly ProviderTestDataManager _dm = new();
 
     public static IEnumerable<object[]> GetProviders()
     {
-        return new[]
-        {
-            new object[] { "DeepSeekMultiTurn", "deepseek/deepseek-r1-0528:free" },
+        return
+        [
+            ["DeepSeekMultiTurn", "deepseek/deepseek-r1-0528:free"],
             ["O4MiniMultiTurn", "o4-mini"],
-        };
+        ];
     }
 
     [Theory]
@@ -55,18 +55,15 @@ public class DataDrivenMultiTurnReasoningTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: false)
+            .WithRecordPlayback(cassettePath)
             .ForwardToApi(
-                EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1"),
+                EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys),
                 EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeysArray, "test")
             )
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new OpenClient(
-            httpClient,
-            EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1")
-        );
+        var client = new OpenClient(httpClient, EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys));
         var agent = new OpenClientAgent("TestAgent", client);
 
         // execute turn-1 (playback only to verify cassette integrity)
@@ -106,12 +103,7 @@ public class DataDrivenMultiTurnReasoningTests
             }.ToImmutableDictionary(),
         };
 
-        _dm.SaveLmCoreRequest(
-            testName + "_Turn1",
-            ProviderType.OpenAI,
-            [.. turn1Msgs.OfType<TextMessage>()],
-            opts
-        );
+        _dm.SaveLmCoreRequest(testName + "_Turn1", ProviderType.OpenAI, [.. turn1Msgs.OfType<TextMessage>()], opts);
 
         var cassettePath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
@@ -123,13 +115,9 @@ public class DataDrivenMultiTurnReasoningTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(
-                EnvironmentHelper.GetApiBaseUrlFromEnv(
-                    "OPENAI_API_URL",
-                    fallbackKeysArray0,
-                    "https://api.openai.com/v1"
-                ),
+                EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray0),
                 EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeysArray, "test")
             )
             .Build();
@@ -137,7 +125,7 @@ public class DataDrivenMultiTurnReasoningTests
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(
             httpClient,
-            EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray0, "https://api.openai.com/v1")
+            EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray0)
         );
         var agent = new OpenClientAgent("Recorder", client);
 
@@ -155,12 +143,7 @@ public class DataDrivenMultiTurnReasoningTests
         turn2Prompt.AddRange(turn1Resp.Where(m => m is TextMessage or ReasoningMessage));
         turn2Prompt.Add(new TextMessage { Role = Role.User, Text = "Thanks!" });
 
-        _dm.SaveLmCoreRequest(
-            testName + "_Turn2",
-            ProviderType.OpenAI,
-            [.. turn2Prompt.OfType<TextMessage>()],
-            opts
-        );
+        _dm.SaveLmCoreRequest(testName + "_Turn2", ProviderType.OpenAI, [.. turn2Prompt.OfType<TextMessage>()], opts);
 
         var turn2Resp = await agent.GenerateReplyAsync(turn2Prompt, opts);
         _dm.SaveFinalResponse(testName + "_Turn2", ProviderType.OpenAI, turn2Resp);

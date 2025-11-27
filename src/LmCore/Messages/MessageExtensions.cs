@@ -6,15 +6,16 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 /// <summary>
-/// Extension methods for working with message capabilities
+///     Extension methods for working with message capabilities
 /// </summary>
 public static class MessageExtensions
 {
     /// <summary>
-    /// Gets all text content from a collection of messages that support text content
+    ///     Gets all text content from a collection of messages that support text content
     /// </summary>
     public static IEnumerable<string> GetAllTextContent(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetText textMessage)
@@ -29,10 +30,11 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Gets all binary content from a collection of messages that support binary content
+    ///     Gets all binary content from a collection of messages that support binary content
     /// </summary>
     public static IEnumerable<BinaryData> GetAllBinaryContent(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetBinary binaryMessage)
@@ -47,10 +49,11 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Gets all tool calls from a collection of messages that support tool calls
+    ///     Gets all tool calls from a collection of messages that support tool calls
     /// </summary>
     public static IEnumerable<ToolCall> GetAllToolCalls(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetToolCalls toolCallMessage)
@@ -68,7 +71,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a message can provide text content
+    ///     Checks if a message can provide text content
     /// </summary>
     public static bool CanGetText(this IMessage message)
     {
@@ -76,7 +79,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a message can provide binary content
+    ///     Checks if a message can provide binary content
     /// </summary>
     public static bool CanGetBinary(this IMessage message)
     {
@@ -84,7 +87,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a message can provide tool calls
+    ///     Checks if a message can provide tool calls
     /// </summary>
     public static bool CanGetToolCalls(this IMessage message)
     {
@@ -92,10 +95,11 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Gets all usage data from a collection of messages that support usage data
+    ///     Gets all usage data from a collection of messages that support usage data
     /// </summary>
     public static IEnumerable<Usage> GetAllUsage(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetUsage usageMessage)
@@ -110,7 +114,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a message can provide usage information
+    ///     Checks if a message can provide usage information
     /// </summary>
     public static bool CanGetUsage(this IMessage message)
     {
@@ -118,8 +122,8 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
-    /// Returns the message unchanged if it's not a ToolsCallAggregateMessage or if transformation fails.
+    ///     Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
+    ///     Returns the message unchanged if it's not a ToolsCallAggregateMessage or if transformation fails.
     /// </summary>
     /// <param name="message">The message to transform</param>
     /// <returns>A TextMessage with natural tool use format, or the original message if transformation is not applicable</returns>
@@ -143,8 +147,8 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Transforms all ToolsCallAggregateMessage instances in a collection to natural language format.
-    /// Messages that are not ToolsCallAggregateMessage or fail transformation are left unchanged.
+    ///     Transforms all ToolsCallAggregateMessage instances in a collection to natural language format.
+    ///     Messages that are not ToolsCallAggregateMessage or fail transformation are left unchanged.
     /// </summary>
     /// <param name="messages">The collection of messages to transform</param>
     /// <returns>A collection with ToolsCallAggregateMessage instances transformed to natural format</returns>
@@ -162,8 +166,8 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Combines a sequence of messages into a single TextMessage with natural tool use format.
-    /// ToolsCallAggregateMessage instances are transformed to XML format and combined with surrounding text.
+    ///     Combines a sequence of messages into a single TextMessage with natural tool use format.
+    ///     ToolsCallAggregateMessage instances are transformed to XML format and combined with surrounding text.
     /// </summary>
     /// <param name="messages">The sequence of messages to combine</param>
     /// <returns>A single TextMessage containing all content in natural format</returns>
@@ -183,11 +187,7 @@ public static class MessageExtensions
             // Graceful fallback - combine text content from messages that support it
             var textContent = string.Join(
                 Environment.NewLine,
-                messages
-                    .Where(m => m is ICanGetText)
-                    .Cast<ICanGetText>()
-                    .Select(m => m.GetText())
-                    .Where(text => !string.IsNullOrEmpty(text))
+                messages.OfType<ICanGetText>().Select(m => m.GetText()).Where(text => !string.IsNullOrEmpty(text))
             );
 
             return new TextMessage { Text = textContent, Role = messages.FirstOrDefault()?.Role ?? Role.Assistant };
@@ -195,7 +195,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a message sequence contains any ToolsCallAggregateMessage instances that can be transformed.
+    ///     Checks if a message sequence contains any ToolsCallAggregateMessage instances that can be transformed.
     /// </summary>
     /// <param name="messages">The sequence of messages to check</param>
     /// <returns>True if the sequence contains transformable ToolsCallAggregateMessage instances</returns>
@@ -205,7 +205,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Checks if a single message is a ToolsCallAggregateMessage that can be transformed.
+    ///     Checks if a single message is a ToolsCallAggregateMessage that can be transformed.
     /// </summary>
     /// <param name="message">The message to check</param>
     /// <returns>True if the message is a transformable ToolsCallAggregateMessage</returns>
@@ -215,7 +215,7 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Updates the message with run, parent run, and thread IDs from the options.
+    ///     Updates the message with run, parent run, and thread IDs from the options.
     /// </summary>
     public static IMessage WithIds(this IMessage message, GenerateReplyOptions? options)
     {
@@ -223,35 +223,22 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    /// Updates the message with run, parent run, and thread IDs.
+    ///     Updates the message with run, parent run, and thread IDs.
     /// </summary>
     public static IMessage WithIds(this IMessage message, string? runId, string? parentRunId, string? threadId)
     {
-        if (message is TextMessage textMessage)
-        {
-            return textMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-        else if (message is ToolsCallMessage toolsCallMessage)
-        {
-            return toolsCallMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-        else if (message is ReasoningMessage reasoningMessage)
-        {
-            return reasoningMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-        else if (message is TextUpdateMessage textUpdateMessage)
-        {
-            return textUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-        else if (message is ToolsCallUpdateMessage toolsCallUpdateMessage)
-        {
-            return toolsCallUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-        else if (message is ReasoningUpdateMessage reasoningUpdateMessage)
-        {
-            return reasoningUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
-        }
-
-        return message;
+        return message is TextMessage textMessage
+            ? textMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+            : message is ToolsCallMessage toolsCallMessage
+                ? toolsCallMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+                : message is ReasoningMessage reasoningMessage
+                    ? reasoningMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+                    : message is TextUpdateMessage textUpdateMessage
+                        ? textUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+                        : message is ToolsCallUpdateMessage toolsCallUpdateMessage
+                            ? toolsCallUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+                            : message is ReasoningUpdateMessage reasoningUpdateMessage
+                                ? reasoningUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
+                                : message;
     }
 }

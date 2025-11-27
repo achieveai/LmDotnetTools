@@ -11,7 +11,12 @@ public class UsageCacheTests : IDisposable
 
     public UsageCacheTests()
     {
-        _cache = new UsageCache(ttlSeconds: 1); // 1 second TTL for fast testing
+        _cache = new UsageCache(1); // 1 second TTL for fast testing
+    }
+
+    public void Dispose()
+    {
+        _cache?.Dispose();
     }
 
     [Fact]
@@ -157,15 +162,10 @@ public class UsageCacheTests : IDisposable
     public void Constructor_WithCustomTtl_UsesCorrectTtl()
     {
         // Arrange & Act
-        using var customCache = new UsageCache(ttlSeconds: 600);
+        using var customCache = new UsageCache(600);
         var stats = customCache.GetStatistics();
 
         // Assert
         Assert.Equal(600, stats.TtlSeconds);
-    }
-
-    public void Dispose()
-    {
-        _cache?.Dispose();
     }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
@@ -24,9 +25,7 @@ public class FunctionCallMiddlewareTests
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentNullException>(() =>
-            new FunctionCallMiddleware(functions: null!, functionMap: functionMap)
-        );
+        var exception = Assert.Throws<ArgumentNullException>(() => new FunctionCallMiddleware(null!, functionMap));
 
         Assert.Equal("functions", exception.ParamName);
     }
@@ -37,7 +36,7 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
+            new()
             {
                 Name = "getWeather",
                 Description = "Get the weather in a location",
@@ -72,7 +71,7 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract { Name = "getWeather", Description = "Get the weather in a location" },
+            new() { Name = "getWeather", Description = "Get the weather in a location" },
         };
 
         // Act & Assert
@@ -100,8 +99,8 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract { Name = "function1", Description = "Test function 1" },
-            new FunctionContract { Name = "function2", Description = "Test function 2" },
+            new() { Name = "function1", Description = "Test function 1" },
+            new() { Name = "function2", Description = "Test function 2" },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -127,7 +126,8 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("getWeather", new { location = "San Francisco", unit = "celsius" });
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -162,7 +162,8 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("getNonExistentFunction", new { param = "value" });
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -198,7 +199,8 @@ public class FunctionCallMiddlewareTests
         var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
 
         // Create the context with our message
-        var context = new MiddlewareContext(new[] { message }, new GenerateReplyOptions());
+        ArgumentNullException.ThrowIfNull(message);
+        var context = new MiddlewareContext([message], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -213,14 +215,13 @@ public class FunctionCallMiddlewareTests
                 )
             )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (msgs, options, token) => capturedOptions = options
-            )
-            .ReturnsAsync(
-                new[]
+                (msgs, options, token) =>
                 {
-                    new TextMessage { Text = "Mock response", Role = Role.Assistant },
+                    ArgumentNullException.ThrowIfNull(options);
+                    capturedOptions = options;
                 }
-            );
+            )
+            .ReturnsAsync([new TextMessage { Text = "Mock response", Role = Role.Assistant }]);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -248,7 +249,8 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("add", new { a = 5, b = 7 });
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -284,10 +286,12 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Create a simple streaming agent that returns no messages
-        var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
+        var nextAgent = new MockStreamingAgent([]);
+        ArgumentNullException.ThrowIfNull(nextAgent);
 
         // Act - invoke the streaming middleware
         var resultStreamTask = middleware.InvokeStreamingAsync(context, nextAgent);
@@ -320,25 +324,49 @@ public class FunctionCallMiddlewareTests
     {
         return new Dictionary<string, Func<string, Task<string>>>
         {
-            ["getWeather"] = argsJson => Task.FromResult(GetWeatherAsync(argsJson)),
-            ["getWeatherHistory"] = argsJson => Task.FromResult(GetWeatherHistoryAsync(argsJson)),
-            ["add"] = argsJson => Task.FromResult(AddAsync(argsJson)),
-            ["subtract"] = argsJson => Task.FromResult(SubtractAsync(argsJson)),
-            ["multiply"] = argsJson => Task.FromResult(MultiplyAsync(argsJson)),
-            ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson)),
+            ["getWeather"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(GetWeatherAsync(argsJson));
+            },
+            ["getWeatherHistory"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(GetWeatherHistoryAsync(argsJson));
+            },
+            ["add"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(AddAsync(argsJson));
+            },
+            ["subtract"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(SubtractAsync(argsJson));
+            },
+            ["multiply"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(MultiplyAsync(argsJson));
+            },
+            ["divide"] = argsJson =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Task.FromResult(DivideAsync(argsJson));
+            },
         };
     }
 
     private static IEnumerable<FunctionContract> CreateMockFunctionContracts()
     {
-        return new[]
-        {
+        return
+        [
             new FunctionContract
             {
                 Name = "getWeather",
                 Description = "Get current weather for a location",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -353,14 +381,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Temperature unit (celsius or fahrenheit)",
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "getWeatherHistory",
                 Description = "Get historical weather data for a location",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -375,14 +403,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Number of days of history",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "add",
                 Description = "Add two numbers",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -397,14 +425,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "subtract",
                 Description = "Subtract second number from first number",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -419,14 +447,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "multiply",
                 Description = "Multiply two numbers",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -441,14 +469,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "divide",
                 Description = "Divide first number by second number",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -463,9 +491,9 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
-        };
+        ];
     }
 
     private static ToolsCallMessage CreateToolCallMessage(string functionName, object args)
@@ -475,7 +503,15 @@ public class FunctionCallMiddlewareTests
 
         return new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = jsonArgs, ToolCallId = Guid.NewGuid().ToString() }],
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = functionName,
+                    FunctionArgs = jsonArgs,
+                    ToolCallId = Guid.NewGuid().ToString(),
+                },
+            ],
             Role = Role.Assistant,
         };
     }
@@ -501,7 +537,7 @@ public class FunctionCallMiddlewareTests
             var temperature = unit == "celsius" ? 23 : 73;
             var condition = "Sunny";
 
-            return $"Weather in {location}: {temperature}°{unit.Substring(0, 1).ToUpper()}, {condition}. Unit: {unit}";
+            return $"Weather in {location}: {temperature}°{unit[..1].ToUpper()}, {condition}. Unit: {unit}";
         }
         catch (Exception ex)
         {
@@ -674,7 +710,7 @@ public class FunctionCallMiddlewareTests
     public async Task FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin()
     {
         EnvironmentHelper.LoadEnvIfNeeded();
-        System.Diagnostics.Debug.WriteLine("=== TEST START ===");
+        Debug.WriteLine("=== TEST START ===");
 
         // Arrange
         var functionContracts = new[]
@@ -683,8 +719,8 @@ public class FunctionCallMiddlewareTests
             {
                 Name = "getWeather",
                 Description = "Get current weather for a location",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -699,11 +735,11 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
         };
 
-        System.Diagnostics.Debug.WriteLine("Function contracts created");
+        Debug.WriteLine("Function contracts created");
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -714,11 +750,11 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        System.Diagnostics.Debug.WriteLine("Function map created");
+        Debug.WriteLine("Function map created");
 
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
-        System.Diagnostics.Debug.WriteLine("Middleware created");
+        Debug.WriteLine("Middleware created");
 
         var messages = new List<IMessage>
         {
@@ -726,65 +762,67 @@ public class FunctionCallMiddlewareTests
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
-        System.Diagnostics.Debug.WriteLine("Messages created");
+        Debug.WriteLine("Messages created");
 
         var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = functionContracts };
 
-        System.Diagnostics.Debug.WriteLine("Options created");
+        Debug.WriteLine("Options created");
 
         var context = new MiddlewareContext(messages, options);
 
-        System.Diagnostics.Debug.WriteLine("Context created");
+        Debug.WriteLine("Context created");
 
         // Create HTTP client with streaming response that includes tool calls (replaces record/playback)
         var toolCallStreamingResponse = CreateToolCallStreamingResponse();
         var handler = CreateRetryHandler(
-            failureCount: 0, // No failures, just success
-            successResponse: toolCallStreamingResponse
+            0, // No failures, just success
+            toolCallStreamingResponse
         );
 
-        System.Diagnostics.Debug.WriteLine("Handler created");
+        Debug.WriteLine("Handler created");
 
         var httpClient = new HttpClient(handler);
 
-        System.Diagnostics.Debug.WriteLine("HttpClient created");
+        Debug.WriteLine("HttpClient created");
 
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
 
-        System.Diagnostics.Debug.WriteLine("OpenClient created");
+        Debug.WriteLine("OpenClient created");
 
         var agent = new OpenClientAgent("TestAgent", client);
 
-        System.Diagnostics.Debug.WriteLine("Agent created");
+        Debug.WriteLine("Agent created");
 
-        System.Diagnostics.Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
-        System.Diagnostics.Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
-        System.Diagnostics.Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
-        System.Diagnostics.Debug.WriteLine($"Agent type: {agent.GetType().Name}");
+        Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
+        Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
+        Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
+        Debug.WriteLine($"Agent type: {agent.GetType().Name}");
 
         // Act
-        System.Diagnostics.Debug.WriteLine("Calling middleware.InvokeStreamingAsync...");
+        Debug.WriteLine("Calling middleware.InvokeStreamingAsync...");
         var responseStream = await middleware.InvokeStreamingAsync(context, agent);
-        System.Diagnostics.Debug.WriteLine("Got response stream, iterating...");
+        Debug.WriteLine("Got response stream, iterating...");
 
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
+            Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
             if (response is ToolsCallMessage toolsCall)
             {
-                System.Diagnostics.Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
+                Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
             }
+
             responses.Add(response);
         }
 
         // Assert
-        System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
+        Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
         }
-        System.Diagnostics.Debug.WriteLine("=== END DEBUG ===");
+
+        Debug.WriteLine("=== END DEBUG ===");
         Assert.NotEmpty(responses);
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
@@ -809,8 +847,8 @@ public class FunctionCallMiddlewareTests
                 Name = "python-mcp.execute_python_in_container",
                 Description =
                     "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "code",
@@ -818,15 +856,15 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.list_directory",
                 Description =
                     "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "relative_path",
@@ -834,15 +872,15 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.read_file",
                 Description =
                     "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "relative_path",
@@ -850,15 +888,15 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.write_file",
                 Description =
                     "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "relative_path",
@@ -873,15 +911,15 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.delete_file",
                 Description =
                     "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "relative_path",
@@ -889,15 +927,15 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.get_directory_tree",
                 Description =
                     "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "relative_path",
@@ -905,14 +943,14 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.cleanup_code_directory",
                 Description =
                     "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>(),
+                Parameters = [],
             },
         };
 
@@ -980,8 +1018,8 @@ public class FunctionCallMiddlewareTests
         // Create HTTP client with streaming response that includes multiple tool calls (replaces record/playback)
         var streamingResponse = CreateMultipleToolCallStreamingResponse();
         var handler = CreateRetryHandler(
-            failureCount: 0, // No failures, just success
-            successResponse: streamingResponse
+            0, // No failures, just success
+            streamingResponse
         );
 
         var httpClient = new HttpClient(handler);
@@ -995,16 +1033,17 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}");
+            Debug.WriteLine($"Response received: {response.GetType().Name}");
             responses.Add(response);
         }
 
         // Assert
-        System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
+        Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
         }
+
         Assert.NotEmpty(responses);
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
@@ -1045,7 +1084,15 @@ public class FunctionCallMiddlewareTests
         // Create a tool call message with the calculator add function and our large numbers
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall { FunctionName = "CalculatorTool-Add", FunctionArgs = JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }), ToolCallId = toolCallId }],
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "CalculatorTool-Add",
+                    FunctionArgs = JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }),
+                    ToolCallId = toolCallId,
+                },
+            ],
             Role = Role.Assistant,
         };
 
@@ -1082,38 +1129,38 @@ public class FunctionCallMiddlewareTests
     {
         try
         {
-            System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST START ===");
+            Debug.WriteLine("=== DIAGNOSTIC TEST START ===");
 
             // Test environment loading
             EnvironmentHelper.LoadEnvIfNeeded();
             var apiKey = GetApiKeyFromEnv();
             var baseUrl = GetApiBaseUrlFromEnv();
-            System.Diagnostics.Debug.WriteLine($"API Key: {apiKey}");
-            System.Diagnostics.Debug.WriteLine($"Base URL: {baseUrl}");
+            Debug.WriteLine($"API Key: {apiKey}");
+            Debug.WriteLine($"Base URL: {baseUrl}");
 
             // Test MockHttpHandlerBuilder
             var handler = MockHttpHandlerBuilder.Create().RespondWithJson("{\"test\": \"value\"}").Build();
-            System.Diagnostics.Debug.WriteLine("Handler created successfully");
+            Debug.WriteLine("Handler created successfully");
 
             // Test HttpClient
             var httpClient = new HttpClient(handler);
-            System.Diagnostics.Debug.WriteLine("HttpClient created successfully");
+            Debug.WriteLine("HttpClient created successfully");
 
             // Test OpenClient
             var client = new OpenClient(httpClient, baseUrl);
-            System.Diagnostics.Debug.WriteLine("OpenClient created successfully");
+            Debug.WriteLine("OpenClient created successfully");
 
             // Test OpenClientAgent
             var agent = new OpenClientAgent("TestAgent", client);
-            System.Diagnostics.Debug.WriteLine("OpenClientAgent created successfully");
+            Debug.WriteLine("OpenClientAgent created successfully");
 
-            System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST COMPLETE ===");
+            Debug.WriteLine("=== DIAGNOSTIC TEST COMPLETE ===");
 
             Assert.True(true); // If we get here, basic setup works
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Exception in diagnostic test: {ex}");
+            Debug.WriteLine($"Exception in diagnostic test: {ex}");
             throw;
         }
     }
@@ -1123,13 +1170,13 @@ public class FunctionCallMiddlewareTests
     {
         try
         {
-            System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST START ===");
+            Debug.WriteLine("=== AGENT STREAMING TEST START ===");
 
             // Use the exact same pattern as the working OpenAI streaming test
             var streamingResponse = CreateStreamingResponse();
             var fakeHandler = CreateRetryHandler(
-                failureCount: 0, // No failures, just success
-                successResponse: streamingResponse
+                0, // No failures, just success
+                streamingResponse
             );
 
             var httpClient = new HttpClient(fakeHandler);
@@ -1151,8 +1198,8 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "getWeather",
                         Description = "Get current weather for a location",
-                        Parameters = new List<FunctionParameterContract>
-                        {
+                        Parameters =
+                        [
                             new FunctionParameterContract
                             {
                                 Name = "location",
@@ -1160,58 +1207,58 @@ public class FunctionCallMiddlewareTests
                                 ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                                 IsRequired = true,
                             },
-                        },
+                        ],
                     },
                 ],
             };
 
-            System.Diagnostics.Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
+            Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
 
             // Test the agent directly
             var streamingResponse2 = await agent.GenerateReplyStreamingAsync(messages, options);
 
-            System.Diagnostics.Debug.WriteLine("Got streaming response, iterating...");
+            Debug.WriteLine("Got streaming response, iterating...");
 
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
-                System.Diagnostics.Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
+                Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
                 responses.Add(response);
             }
 
-            System.Diagnostics.Debug.WriteLine($"Total agent responses: {responses.Count}");
+            Debug.WriteLine($"Total agent responses: {responses.Count}");
 
             Assert.True(responses.Count > 0, "Agent should return at least one response");
 
-            System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST COMPLETE ===");
+            Debug.WriteLine("=== AGENT STREAMING TEST COMPLETE ===");
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Exception in agent streaming test: {ex}");
+            Debug.WriteLine($"Exception in agent streaming test: {ex}");
             throw;
         }
     }
 
     /// <summary>
-    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
         string[] fallbackKeys = ["LLM_API_KEY"];
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
     }
 
     /// <summary>
-    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
         string[] fallbackKeys = ["LLM_API_BASE_URL"];
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1");
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys);
     }
 
     /// <summary>
-    /// Creates a streaming response that contains tool calls for testing middleware
+    ///     Creates a streaming response that contains tool calls for testing middleware
     /// </summary>
     private static string CreateToolCallStreamingResponse()
     {
@@ -1322,7 +1369,7 @@ public class FunctionCallMiddlewareTests
     }
 
     /// <summary>
-    /// Creates a streaming response that contains multiple tool calls for testing middleware
+    ///     Creates a streaming response that contains multiple tool calls for testing middleware
     /// </summary>
     private static string CreateMultipleToolCallStreamingResponse()
     {

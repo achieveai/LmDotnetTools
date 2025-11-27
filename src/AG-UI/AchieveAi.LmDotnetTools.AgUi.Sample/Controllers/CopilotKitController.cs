@@ -12,19 +12,19 @@ using Microsoft.AspNetCore.Mvc;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Controllers;
 
 /// <summary>
-/// Controller providing CopilotKit-compatible API endpoint
-/// Bridges CopilotKit React frontend to AG-UI backend infrastructure
+///     Controller providing CopilotKit-compatible API endpoint
+///     Bridges CopilotKit React frontend to AG-UI backend infrastructure
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 public class CopilotKitController : ControllerBase
 {
+    private static readonly string[] value = ["ToolCallingAgent", "InstructionChainAgent"];
+    private readonly InstructionChainAgent _instructionChainAgent;
     private readonly ILogger<CopilotKitController> _logger;
+    private readonly IFunctionCallMiddlewareFactory _middlewareFactory;
     private readonly ICopilotKitSessionMapper _sessionMapper;
     private readonly ToolCallingAgent _toolCallingAgent;
-    private readonly InstructionChainAgent _instructionChainAgent;
-    private readonly IFunctionCallMiddlewareFactory _middlewareFactory;
-    private static readonly string[] value = ["ToolCallingAgent", "InstructionChainAgent"];
 
     public CopilotKitController(
         ILogger<CopilotKitController> logger,
@@ -44,8 +44,8 @@ public class CopilotKitController : ControllerBase
     }
 
     /// <summary>
-    /// CopilotKit-compatible endpoint for running agents
-    /// Accepts CopilotKit request format and returns WebSocket connection info
+    ///     CopilotKit-compatible endpoint for running agents
+    ///     Accepts CopilotKit request format and returns WebSocket connection info
     /// </summary>
     /// <param name="request">CopilotKit request with messages and thread context</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -59,6 +59,8 @@ public class CopilotKitController : ControllerBase
         CancellationToken cancellationToken
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         _logger.LogInformation(
             "CopilotKit request received - ThreadId: {ThreadId}, RunId: {RunId}, AgentName: {AgentName}",
             request.ThreadId ?? "NULL",
@@ -162,7 +164,7 @@ public class CopilotKitController : ControllerBase
     }
 
     /// <summary>
-    /// Health check endpoint for CopilotKit integration
+    ///     Health check endpoint for CopilotKit integration
     /// </summary>
     [HttpGet("health")]
     [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
@@ -194,23 +196,27 @@ public class CopilotKitController : ControllerBase
     {
         return messages == null || messages.Count == 0
             ? []
-            : [.. messages
-            .Select(msg => new TextMessage
-            {
-                Text = msg.Content,
-                Role = msg.Role.ToLowerInvariant() switch
+            :
+            [
+                .. messages.Select(msg => new TextMessage
                 {
-                    "user" => Role.User,
-                    "assistant" => Role.Assistant,
-                    "system" => Role.System,
-                    _ => Role.User,
-                },
-                FromAgent =
-                    msg.Name
-                    ?? (msg.Role.Equals("user", StringComparison.InvariantCultureIgnoreCase) ? "User" : "Assistant"),
-                GenerationId = Guid.NewGuid().ToString(),
-                Metadata = ImmutableDictionary<string, object>.Empty,
-            })];
+                    Text = msg.Content,
+                    Role = msg.Role.ToLowerInvariant() switch
+                    {
+                        "user" => Role.User,
+                        "assistant" => Role.Assistant,
+                        "system" => Role.System,
+                        _ => Role.User,
+                    },
+                    FromAgent =
+                        msg.Name
+                        ?? (
+                            msg.Role.Equals("user", StringComparison.InvariantCultureIgnoreCase) ? "User" : "Assistant"
+                        ),
+                    GenerationId = Guid.NewGuid().ToString(),
+                    Metadata = ImmutableDictionary<string, object>.Empty,
+                }),
+            ];
     }
 
     private async Task ExecuteAgentAsync(

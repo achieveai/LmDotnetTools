@@ -7,18 +7,19 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
-/// Extension methods for converting Anthropic API responses to IMessage format.
+///     Extension methods for converting Anthropic API responses to IMessage format.
 /// </summary>
 public static class AnthropicExtensions
 {
     /// <summary>
-    /// Converts an Anthropic API response to LmCore messages.
+    ///     Converts an Anthropic API response to LmCore messages.
     /// </summary>
     /// <param name="response">The Anthropic API response.</param>
     /// <param name="agentName">The name of the agent.</param>
     /// <returns>A list of IMessage objects representing the response content.</returns>
     public static List<IMessage> ToMessages(this AnthropicResponse response, string agentName)
     {
+        ArgumentNullException.ThrowIfNull(response);
         var messages = new List<IMessage>();
 
         // Process content blocks
@@ -54,7 +55,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Converts an Anthropic streaming event to an update message.
+    ///     Converts an Anthropic streaming event to an update message.
     /// </summary>
     /// <param name="streamEvent">The streaming event from Anthropic API.</param>
     /// <returns>An IMessage representing the streaming update.</returns>
@@ -73,8 +74,8 @@ public static class AnthropicExtensions
                         "usage",
                         new
                         {
-                            InputTokens = messageDeltaEvent.Usage.InputTokens,
-                            OutputTokens = messageDeltaEvent.Usage.OutputTokens,
+                            messageDeltaEvent.Usage.InputTokens,
+                            messageDeltaEvent.Usage.OutputTokens,
                             TotalTokens = messageDeltaEvent.Usage.InputTokens + messageDeltaEvent.Usage.OutputTokens,
                         }
                     ),
@@ -104,13 +105,16 @@ public static class AnthropicExtensions
                     && toolCallsDelta.ToolCalls.Count > 0 => new ToolsCallUpdateMessage
                     {
                         Role = Role.Assistant,
-                        ToolCallUpdates = [new ToolCallUpdate
+                        ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         ToolCallId = toolCallsDelta.ToolCalls[0].Id,
                         FunctionName = toolCallsDelta.ToolCalls[0].Name,
                         FunctionArgs = toolCallsDelta.ToolCalls[0].Input.ToString(),
                         Index = toolCallsDelta.ToolCalls[0].Index,
-                    }],
+                    },
+                ],
                     },
 
             // Default empty update message for unhandled event types
@@ -119,12 +123,13 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Maps an Anthropic role string to LmCore Role enum.
+    ///     Maps an Anthropic role string to LmCore Role enum.
     /// </summary>
     /// <param name="role">The Anthropic role string.</param>
     /// <returns>The corresponding LmCore Role.</returns>
     public static Role ParseRole(string role)
     {
+        ArgumentNullException.ThrowIfNull(role);
         return role.ToLower() switch
         {
             "assistant" => Role.Assistant,
@@ -136,7 +141,7 @@ public static class AnthropicExtensions
     }
 
     /// <summary>
-    /// Converts an AnthropicResponseContent to an appropriate IMessage.
+    ///     Converts an AnthropicResponseContent to an appropriate IMessage.
     /// </summary>
     /// <param name="content">The content to convert.</param>
     /// <param name="messageId">The message ID.</param>
@@ -159,7 +164,15 @@ public static class AnthropicExtensions
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
-                ToolCalls = [new ToolCall { FunctionName = toolContent.Name, FunctionArgs = toolContent.Input.ToString(), ToolCallId = toolContent.Id }],
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = toolContent.Name,
+                        FunctionArgs = toolContent.Input.ToString(),
+                        ToolCallId = toolContent.Id,
+                    },
+                ],
             },
 
             AnthropicResponseThinkingContent thinkingContent => new TextMessage

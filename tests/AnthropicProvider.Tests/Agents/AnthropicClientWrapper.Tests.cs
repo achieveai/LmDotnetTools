@@ -1,23 +1,22 @@
 using System.Reflection;
-// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 using AchieveAi.LmDotnetTools.LmTestUtils;
+
+// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class MockHttpHandlerBuilderRecordPlaybackTests
 {
     /// <summary>
-    /// Gets the path to test files
+    ///     Gets the path to test files
     /// </summary>
     private static string GetTestFilesPath()
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation);
-        if (currentDir == null)
-        {
-            throw new InvalidOperationException("Could not determine current directory");
-        }
+        var currentDir =
+            Path.GetDirectoryName(assemblyLocation)
+            ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
         while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
@@ -49,12 +48,12 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataPath, allowAdditional: true)
-            .RespondWithAnthropicMessage("Hello from record/playback test!", "claude-3-sonnet-20240229", 10, 20)
+            .WithRecordPlayback(testDataPath, true)
+            .RespondWithAnthropicMessage("Hello from record/playback test!")
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var client = new AnthropicClient("test-api-key", httpClient);
 
         try
         {
@@ -66,10 +65,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     new AnthropicMessage
                     {
                         Role = "user",
-                        Content =
-                        [
-                            new AnthropicContent { Type = "text", Text = "Hello, world!" },
-                        ],
+                        Content = [new AnthropicContent { Type = "text", Text = "Hello, world!" }],
                     },
                 ],
             };
@@ -114,16 +110,16 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             throw new FileNotFoundException($"Streaming response file not found: {streamingFilePath}");
         }
 
-        var testDataPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".json");
+        var testDataPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataPath, allowAdditional: false)
+            .WithRecordPlayback(testDataPath)
             .RespondWithStreamingFile(streamingFilePath)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var client = new AnthropicClient("test-api-key", httpClient);
 
         try
         {

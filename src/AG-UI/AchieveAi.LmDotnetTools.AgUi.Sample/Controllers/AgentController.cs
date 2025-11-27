@@ -13,19 +13,19 @@ using Microsoft.AspNetCore.Mvc;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Controllers;
 
 /// <summary>
-/// Controller for triggering agent executions
-/// Provides REST API for running agents and streaming results
+///     Controller for triggering agent executions
+///     Provides REST API for running agents and streaming results
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 public class AgentController : ControllerBase
 {
-    private readonly ILogger<AgentController> _logger;
-    private readonly IEventPublisher _eventPublisher;
-    private readonly IMessageConverter _converter;
-    private readonly ToolCallingAgent _toolCallingAgent;
-    private readonly InstructionChainAgent _instructionChainAgent;
     private static readonly string[] value = ["ToolCallingAgent", "InstructionChainAgent"];
+    private readonly IMessageConverter _converter;
+    private readonly IEventPublisher _eventPublisher;
+    private readonly InstructionChainAgent _instructionChainAgent;
+    private readonly ILogger<AgentController> _logger;
+    private readonly ToolCallingAgent _toolCallingAgent;
 
     public AgentController(
         ILogger<AgentController> logger,
@@ -45,7 +45,7 @@ public class AgentController : ControllerBase
     }
 
     /// <summary>
-    /// Run an agent with a user message
+    ///     Run an agent with a user message
     /// </summary>
     /// <param name="request">Agent run request</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -59,6 +59,8 @@ public class AgentController : ControllerBase
         CancellationToken cancellationToken
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         _logger.LogInformation(
             "RunAgent called with agent: {AgentName}, message: {Message}, stream: {Stream}",
             request.AgentName,
@@ -197,7 +199,7 @@ public class AgentController : ControllerBase
     }
 
     /// <summary>
-    /// Get available agents
+    ///     Get available agents
     /// </summary>
     [HttpGet("list")]
     [ProducesResponseType(typeof(string[]), StatusCodes.Status200OK)]
@@ -209,7 +211,7 @@ public class AgentController : ControllerBase
     }
 
     /// <summary>
-    /// Health check endpoint
+    ///     Health check endpoint
     /// </summary>
     [HttpGet("health")]
     [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]

@@ -3,13 +3,15 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.TestUtilities;
 
 /// <summary>
-/// Factory for generating test data for memory-related tests.
-/// Supports data-driven testing with varied scenarios.
+///     Factory for generating test data for memory-related tests.
+///     Supports data-driven testing with varied scenarios.
 /// </summary>
 public static class MemoryTestDataFactory
 {
+    private static readonly string[] value = ["important", "user-generated"];
+
     /// <summary>
-    /// Generates test data for memory content validation scenarios.
+    ///     Generates test data for memory content validation scenarios.
     /// </summary>
     public static IEnumerable<object[]> GetMemoryContentTestCases()
     {
@@ -30,7 +32,7 @@ public static class MemoryTestDataFactory
     }
 
     /// <summary>
-    /// Generates test data for session context scenarios.
+    ///     Generates test data for session context scenarios.
     /// </summary>
     public static IEnumerable<object?[]> GetSessionContextTestCases()
     {
@@ -42,7 +44,7 @@ public static class MemoryTestDataFactory
     }
 
     /// <summary>
-    /// Generates test data for session context matching scenarios.
+    ///     Generates test data for session context matching scenarios.
     /// </summary>
     public static IEnumerable<object[]> GetSessionMatchingTestCases()
     {
@@ -105,7 +107,7 @@ public static class MemoryTestDataFactory
     }
 
     /// <summary>
-    /// Generates test data for search query scenarios.
+    ///     Generates test data for search query scenarios.
     /// </summary>
     public static IEnumerable<object[]> GetSearchQueryTestCases()
     {
@@ -118,10 +120,8 @@ public static class MemoryTestDataFactory
         yield return new object[] { "test", 100, 0.1f, "High limit, low threshold" };
     }
 
-    private static readonly string[] value = ["important", "user-generated"];
-
     /// <summary>
-    /// Generates test data for memory metadata scenarios.
+    ///     Generates test data for memory metadata scenarios.
     /// </summary>
     public static IEnumerable<object?[]> GetMetadataTestCases()
     {
@@ -159,7 +159,7 @@ public static class MemoryTestDataFactory
     }
 
     /// <summary>
-    /// Creates a test memory with specified parameters.
+    ///     Creates a test memory with specified parameters.
     /// </summary>
     public static Memory CreateTestMemory(
         int id = 1,
@@ -185,7 +185,7 @@ public static class MemoryTestDataFactory
     }
 
     /// <summary>
-    /// Creates a list of test memories for bulk operations.
+    ///     Creates a list of test memories for bulk operations.
     /// </summary>
     public static List<Memory> CreateTestMemories(int count, SessionContext sessionContext)
     {
@@ -194,14 +194,15 @@ public static class MemoryTestDataFactory
         {
             memories.Add(
                 CreateTestMemory(
-                    id: i,
-                    content: $"Test memory content {i}",
-                    userId: sessionContext.UserId,
-                    agentId: sessionContext.AgentId,
-                    runId: sessionContext.RunId
+                    i,
+                    $"Test memory content {i}",
+                    sessionContext.UserId,
+                    sessionContext.AgentId,
+                    sessionContext.RunId
                 )
             );
         }
+
         return memories;
     }
 }

@@ -8,7 +8,7 @@ using Microsoft.IdentityModel.Tokens;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for generating and validating JWT tokens
+///     Service for generating and validating JWT tokens
 /// </summary>
 public class TokenService : ITokenService
 {
@@ -18,6 +18,7 @@ public class TokenService : ITokenService
 
     public TokenService(IOptions<JwtOptions> jwtOptions, ILogger<TokenService> logger)
     {
+        ArgumentNullException.ThrowIfNull(jwtOptions);
         _jwtOptions = jwtOptions.Value;
         _logger = logger;
 
@@ -30,7 +31,7 @@ public class TokenService : ITokenService
     }
 
     /// <summary>
-    /// Generates a JWT token for the specified user and agent
+    ///     Generates a JWT token for the specified user and agent
     /// </summary>
     /// <param name="userId">The user identifier</param>
     /// <param name="agentId">The agent identifier</param>
@@ -81,7 +82,7 @@ public class TokenService : ITokenService
     }
 
     /// <summary>
-    /// Validates a JWT token and extracts claims
+    ///     Validates a JWT token and extracts claims
     /// </summary>
     /// <param name="token">The JWT token to validate</param>
     /// <returns>True if the token is valid, false otherwise</returns>

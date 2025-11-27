@@ -8,26 +8,22 @@ using LmModels = AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 
 /// <summary>
-/// Parser for JSONL stream events from claude-agent-sdk CLI
-/// Converts JSONL events to IMessage types for the LmDotnetTools framework
+///     Parser for JSONL stream events from claude-agent-sdk CLI
+///     Converts JSONL events to IMessage types for the LmDotnetTools framework
 /// </summary>
 public class JsonlStreamParser
 {
-    private readonly ILogger<JsonlStreamParser>? _logger;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILogger<JsonlStreamParser>? _logger;
 
     public JsonlStreamParser(ILogger<JsonlStreamParser>? logger = null)
     {
         _logger = logger;
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            AllowTrailingCommas = true,
-        };
+        _jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, AllowTrailingCommas = true };
     }
 
     /// <summary>
-    /// Parse a single JSONL line into a JsonlEventBase
+    ///     Parse a single JSONL line into a JsonlEventBase
     /// </summary>
     public JsonlEventBase? ParseLine(string jsonLine)
     {
@@ -49,8 +45,8 @@ public class JsonlStreamParser
     }
 
     /// <summary>
-    /// Convert an AssistantMessageEvent to IMessage instances
-    /// Returns multiple messages: content messages + usage message
+    ///     Convert an AssistantMessageEvent to IMessage instances
+    ///     Returns multiple messages: content messages + usage message
     /// </summary>
     public static IEnumerable<IMessage> ConvertToMessages(AssistantMessageEvent assistantEvent)
     {
@@ -93,8 +89,8 @@ public class JsonlStreamParser
     }
 
     /// <summary>
-    /// Convert a UserMessageEvent to IMessage instances
-    /// Returns messages for tool results or other user content
+    ///     Convert a UserMessageEvent to IMessage instances
+    ///     Returns messages for tool results or other user content
     /// </summary>
     public IEnumerable<IMessage> ConvertToMessages(UserMessageEvent userEvent)
     {
@@ -137,15 +133,17 @@ public class JsonlStreamParser
             var text = userEvent.Message.Content.GetString();
             if (!string.IsNullOrEmpty(text))
             {
-                messages.Add(new TextMessage
-                {
-                    Text = text,
-                    Role = role,
-                    GenerationId = generationId,
-                    RunId = runId,
-                    ThreadId = threadId,
-                    IsThinking = false
-                });
+                messages.Add(
+                    new TextMessage
+                    {
+                        Text = text,
+                        Role = role,
+                        GenerationId = generationId,
+                        RunId = runId,
+                        ThreadId = threadId,
+                        IsThinking = false,
+                    }
+                );
             }
         }
 
@@ -153,7 +151,7 @@ public class JsonlStreamParser
     }
 
     /// <summary>
-    /// Convert a single content block to an IMessage
+    ///     Convert a single content block to an IMessage
     /// </summary>
     private static IMessage? ConvertContentBlock(
         ContentBlock contentBlock,
@@ -174,7 +172,7 @@ public class JsonlStreamParser
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                IsThinking = false
+                IsThinking = false,
             },
 
             "thinking" when contentBlock.Thinking != null => new ReasoningMessage
@@ -185,7 +183,7 @@ public class JsonlStreamParser
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                Visibility = ReasoningVisibility.Plain
+                Visibility = ReasoningVisibility.Plain,
             },
 
             "tool_use" when contentBlock.Id != null && contentBlock.Name != null => new ToolsCallMessage
@@ -195,32 +193,35 @@ public class JsonlStreamParser
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                ToolCalls = [new ToolCall
-                {
-                    FunctionName = contentBlock.Name,
-                    FunctionArgs = contentBlock.Input?.GetRawText() ?? "{}",
-                    ToolCallId = contentBlock.Id
-                }]
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = contentBlock.Name,
+                        FunctionArgs = contentBlock.Input?.GetRawText() ?? "{}",
+                        ToolCallId = contentBlock.Id,
+                    },
+                ],
             },
 
             "tool_result" when contentBlock.ToolUseId != null => new ToolsCallResultMessage
             {
-                Role = Role.User,  // Tool results are from user/system
+                Role = Role.User, // Tool results are from user/system
                 GenerationId = generationId,
                 RunId = runId,
                 ThreadId = threadId,
-                ToolCallResults = [new ToolCallResult(
-                    ToolCallId: contentBlock.ToolUseId,
-                    Result: contentBlock.Content?.GetRawText() ?? ""
-                )]
+                ToolCallResults =
+                [
+                    new ToolCallResult(contentBlock.ToolUseId, contentBlock.Content?.GetRawText() ?? ""),
+                ],
             },
 
-            _ => null
+            _ => null,
         };
     }
 
     /// <summary>
-    /// Convert usage information to UsageMessage
+    ///     Convert usage information to UsageMessage
     /// </summary>
     private static UsageMessage ConvertUsage(
         UsageInfo usageInfo,
@@ -236,12 +237,10 @@ public class JsonlStreamParser
             PromptTokens = usageInfo.InputTokens,
             CompletionTokens = usageInfo.OutputTokens,
             TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens,
-            InputTokenDetails = usageInfo.CacheReadInputTokens > 0 || usageInfo.CacheCreationInputTokens > 0
-                ? new LmModels.InputTokenDetails
-                {
-                    CachedTokens = usageInfo.CacheReadInputTokens ?? 0
-                }
-                : null
+            InputTokenDetails =
+                usageInfo.CacheReadInputTokens > 0 || usageInfo.CacheCreationInputTokens > 0
+                    ? new LmModels.InputTokenDetails { CachedTokens = usageInfo.CacheReadInputTokens ?? 0 }
+                    : null,
         };
 
         return new UsageMessage
@@ -250,12 +249,12 @@ public class JsonlStreamParser
             Role = role,
             GenerationId = generationId,
             RunId = runId,
-            ThreadId = threadId
+            ThreadId = threadId,
         };
     }
 
     /// <summary>
-    /// Parse role string to Role enum
+    ///     Parse role string to Role enum
     /// </summary>
     private static Role ParseRole(string roleString)
     {
@@ -265,7 +264,7 @@ public class JsonlStreamParser
             "assistant" => Role.Assistant,
             "system" => Role.System,
             "tool" => Role.Tool,
-            _ => Role.None
+            _ => Role.None,
         };
     }
 }

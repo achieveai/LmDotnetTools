@@ -38,7 +38,7 @@ public class ErrorResponseTests
     public async Task RespondWithAnthropicRateLimit_ShouldGenerateRateLimitError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicRateLimit("Rate limit exceeded").Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicRateLimit().Build();
 
         using var client = new HttpClient(handler);
 
@@ -60,7 +60,7 @@ public class ErrorResponseTests
     public async Task RespondWithAnthropicAuthError_ShouldGenerateAuthenticationError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicAuthError("Invalid API key").Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithAnthropicAuthError().Build();
 
         using var client = new HttpClient(handler);
 
@@ -117,7 +117,7 @@ public class ErrorResponseTests
     public async Task RespondWithOpenAIRateLimit_ShouldGenerateRateLimitError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create().RespondWithOpenAIRateLimit("Rate limit exceeded").Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithOpenAIRateLimit().Build();
 
         using var client = new HttpClient(handler);
 
@@ -138,7 +138,7 @@ public class ErrorResponseTests
     public async Task RespondWithOpenAIAuthError_ShouldGenerateAuthenticationError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create().RespondWithOpenAIAuthError("Invalid API key").Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithOpenAIAuthError().Build();
 
         using var client = new HttpClient(handler);
 
@@ -302,7 +302,9 @@ public class ErrorResponseTests
         };
 
         // Act & Assert
-        _ = await Assert.ThrowsAsync<TaskCanceledException>(async () => await client.GetAsync("https://api.anthropic.com/v1/messages"));
+        _ = await Assert.ThrowsAsync<TaskCanceledException>(async () =>
+            await client.GetAsync("https://api.anthropic.com/v1/messages")
+        );
     }
 
     [Fact]

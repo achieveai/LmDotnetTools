@@ -12,16 +12,16 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for extracting entities and relationships from conversation content using LLM providers.
-/// Implements the Strategy pattern for different extraction approaches with JSON schema support.
+///     Service for extracting entities and relationships from conversation content using LLM providers.
+///     Implements the Strategy pattern for different extraction approaches with JSON schema support.
 /// </summary>
 public class GraphExtractionService : IGraphExtractionService
 {
-    private readonly IPromptReader _promptReader;
+    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILmConfigService _lmConfigService;
     private readonly ILogger<GraphExtractionService> _logger;
     private readonly MemoryServerOptions _options;
-    private readonly ILmConfigService _lmConfigService;
-    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly IPromptReader _promptReader;
 
     public GraphExtractionService(
         IPromptReader promptReader,
@@ -128,7 +128,7 @@ public class GraphExtractionService : IGraphExtractionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to extract entities from memory {MemoryId}", memoryId);
-            return Enumerable.Empty<Entity>();
+            return [];
         }
     }
 
@@ -580,7 +580,7 @@ public class GraphExtractionService : IGraphExtractionService
     #region Private Helper Methods
 
     /// <summary>
-    /// Creates GenerateReplyOptions with LmConfig integration and JSON schema support.
+    ///     Creates GenerateReplyOptions with LmConfig integration and JSON schema support.
     /// </summary>
     private async Task<GenerateReplyOptions> CreateGenerateReplyOptionsAsync(
         string capability,
@@ -619,7 +619,7 @@ public class GraphExtractionService : IGraphExtractionService
     }
 
     /// <summary>
-    /// Creates GenerateReplyOptions for a specific model ID, bypassing automatic model selection.
+    ///     Creates GenerateReplyOptions for a specific model ID, bypassing automatic model selection.
     /// </summary>
     private Task<GenerateReplyOptions> CreateGenerateReplyOptionsWithModelAsync(
         string modelId,
@@ -675,7 +675,7 @@ public class GraphExtractionService : IGraphExtractionService
     }
 
     /// <summary>
-    /// Creates basic GenerateReplyOptions from configuration.
+    ///     Creates basic GenerateReplyOptions from configuration.
     /// </summary>
     private GenerateReplyOptions CreateBasicGenerateReplyOptions(string capability)
     {
@@ -716,7 +716,7 @@ public class GraphExtractionService : IGraphExtractionService
     }
 
     /// <summary>
-    /// Creates JSON schema for specific graph extraction capabilities.
+    ///     Creates JSON schema for specific graph extraction capabilities.
     /// </summary>
     private static ResponseFormat CreateJsonSchemaForCapability(string capability)
     {
@@ -733,44 +733,40 @@ public class GraphExtractionService : IGraphExtractionService
     }
 
     /// <summary>
-    /// Creates JSON schema for entity extraction.
+    ///     Creates JSON schema for entity extraction.
     /// </summary>
     private static ResponseFormat CreateEntityExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(EntityExtractionWrapper));
-        return ResponseFormat.CreateWithSchema("entity_extraction", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema("entity_extraction", schema);
     }
 
     /// <summary>
-    /// Creates JSON schema for relationship extraction.
+    ///     Creates JSON schema for relationship extraction.
     /// </summary>
     private static ResponseFormat CreateRelationshipExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(RelationshipExtractionWrapper));
-        return ResponseFormat.CreateWithSchema("relationship_extraction", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema("relationship_extraction", schema);
     }
 
     /// <summary>
-    /// Creates JSON schema for combined entity and relationship extraction.
+    ///     Creates JSON schema for combined entity and relationship extraction.
     /// </summary>
     private static ResponseFormat CreateCombinedExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(CombinedExtractionResult));
-        return ResponseFormat.CreateWithSchema("combined_extraction", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema("combined_extraction", schema);
     }
 
     /// <summary>
-    /// Creates JSON schema for graph update analysis.
+    ///     Creates JSON schema for graph update analysis.
     /// </summary>
     private static ResponseFormat CreateGraphUpdateSchema()
     {
         var updateSchema = JsonSchemaObject
-            .Create("object")
-            .WithProperty(
-                "operation",
-                JsonSchemaObject.String("Type of operation: CREATE, UPDATE, DELETE"),
-                required: true
-            )
+            .Create()
+            .WithProperty("operation", JsonSchemaObject.String("Type of operation: CREATE, UPDATE, DELETE"), true)
             .WithProperty("entity_type", JsonSchemaObject.String("Type of entity being updated"))
             .WithProperty("entity_name", JsonSchemaObject.String("Name of entity being updated"))
             .WithProperty("reasoning", JsonSchemaObject.String("Explanation for the update"))
@@ -778,13 +774,13 @@ public class GraphExtractionService : IGraphExtractionService
             .Build();
 
         var schema = JsonSchemaObject
-            .Create("object")
-            .WithProperty("updates", JsonSchemaObject.Array(updateSchema, "List of graph updates"), required: true)
+            .Create()
+            .WithProperty("updates", JsonSchemaObject.Array(updateSchema, "List of graph updates"), true)
             .WithProperty("summary", JsonSchemaObject.String("Summary of all updates"))
             .WithDescription("Analysis of required graph updates")
             .Build();
 
-        return ResponseFormat.CreateWithSchema("graph_update_analysis", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema("graph_update_analysis", schema);
     }
 
     private static string ExtractTextFromResponse(IEnumerable<IMessage> response)
@@ -803,8 +799,7 @@ public class GraphExtractionService : IGraphExtractionService
             // First try to parse as direct array (legacy format)
             try
             {
-                return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions)
-                    ?? [];
+                return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions) ?? [];
             }
             catch
             {
@@ -829,8 +824,7 @@ public class GraphExtractionService : IGraphExtractionService
             // First try to parse as direct array (legacy format)
             try
             {
-                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions)
-                    ?? [];
+                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions) ?? [];
             }
             catch
             {
@@ -951,7 +945,8 @@ public class GraphExtractionService : IGraphExtractionService
                 isObject = true;
                 break;
             }
-            else if (response[i] == '[')
+
+            if (response[i] == '[')
             {
                 startIndex = i;
                 isObject = false;
@@ -1012,7 +1007,8 @@ public class GraphExtractionService : IGraphExtractionService
                     {
                         return response.Substring(startIndex, i - startIndex + 1);
                     }
-                    else if (!isObject && bracketCount == 0 && i > startIndex)
+
+                    if (!isObject && bracketCount == 0 && i > startIndex)
                     {
                         return response.Substring(startIndex, i - startIndex + 1);
                     }
@@ -1030,7 +1026,7 @@ public class GraphExtractionService : IGraphExtractionService
     private class ExtractedEntity
     {
         [JsonPropertyName("name")]
-        public string Name { get; set; } = string.Empty;
+        public string Name { get; } = string.Empty;
 
         [JsonPropertyName("type")]
         public string? Type { get; set; }
@@ -1039,7 +1035,7 @@ public class GraphExtractionService : IGraphExtractionService
         public List<string>? Aliases { get; set; }
 
         [JsonPropertyName("confidence")]
-        public float Confidence { get; set; } = 1.0f;
+        public float Confidence { get; } = 1.0f;
 
         [JsonPropertyName("reasoning")]
         public string? Reasoning { get; set; }
@@ -1048,20 +1044,20 @@ public class GraphExtractionService : IGraphExtractionService
     private class ExtractedRelationship
     {
         [JsonPropertyName("source")]
-        public string Source { get; set; } = string.Empty;
+        public string Source { get; } = string.Empty;
 
         [JsonPropertyName("relationship_type")]
-        public string RelationshipType { get; set; } = string.Empty;
+        public string RelationshipType { get; } = string.Empty;
 
         // Fallback property in case LLM uses "type" instead of "relationship_type"
         [JsonPropertyName("type")]
         public string? Type { get; set; }
 
         [JsonPropertyName("target")]
-        public string Target { get; set; } = string.Empty;
+        public string Target { get; } = string.Empty;
 
         [JsonPropertyName("confidence")]
-        public float Confidence { get; set; } = 1.0f;
+        public float Confidence { get; } = 1.0f;
 
         [JsonPropertyName("temporal_context")]
         public string? TemporalContext { get; set; }

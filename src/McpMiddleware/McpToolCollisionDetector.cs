@@ -17,8 +17,8 @@ using ModelContextProtocol.Client;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// Handles collision detection and name resolution for MCP tools across multiple servers
-/// Legacy wrapper around FunctionCollisionDetector for backward compatibility
+///     Handles collision detection and name resolution for MCP tools across multiple servers
+///     Legacy wrapper around FunctionCollisionDetector for backward compatibility
 /// </summary>
 [Obsolete("Use AchieveAi.LmDotnetTools.LmCore.Middleware.FunctionCollisionDetector instead")]
 public class McpToolCollisionDetector
@@ -27,7 +27,7 @@ public class McpToolCollisionDetector
     private readonly ILogger _logger;
 
     /// <summary>
-    /// Initializes a new instance of the McpToolCollisionDetector class
+    ///     Initializes a new instance of the McpToolCollisionDetector class
     /// </summary>
     /// <param name="logger">Optional logger for debugging</param>
     public McpToolCollisionDetector(ILogger? logger = null)
@@ -37,16 +37,21 @@ public class McpToolCollisionDetector
     }
 
     /// <summary>
-    /// Detects name collisions among tools from different servers and resolves them
+    ///     Detects name collisions among tools from different servers and resolves them
     /// </summary>
     /// <param name="toolsByServer">Dictionary mapping server IDs to their list of tools</param>
-    /// <param name="usePrefixOnlyForCollisions">When true, only apply prefixes to colliding tools; when false, prefix all tools</param>
+    /// <param name="usePrefixOnlyForCollisions">
+    ///     When true, only apply prefixes to colliding tools; when false, prefix all
+    ///     tools
+    /// </param>
     /// <returns>Dictionary mapping (serverId, toolName) tuples to their registered names</returns>
     public Dictionary<(string serverId, string toolName), string> DetectAndResolveCollisions(
         Dictionary<string, List<McpClientTool>> toolsByServer,
         bool usePrefixOnlyForCollisions
     )
     {
+        ArgumentNullException.ThrowIfNull(toolsByServer);
+
         // Convert MCP tools to function descriptors
         var descriptors = new List<FunctionDescriptor>();
         var toolToDescriptorMap = new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
@@ -90,8 +95,8 @@ public class McpToolCollisionDetector
     }
 
     /// <summary>
-    /// Sanitizes a tool or server name to comply with OpenAI's function name requirements
-    /// Delegates to the generalized FunctionCollisionDetector
+    ///     Sanitizes a tool or server name to comply with OpenAI's function name requirements
+    ///     Delegates to the generalized FunctionCollisionDetector
     /// </summary>
     /// <param name="name">The name to sanitize</param>
     /// <returns>Sanitized name that complies with OpenAI requirements</returns>

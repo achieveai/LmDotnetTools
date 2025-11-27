@@ -7,13 +7,13 @@ using Microsoft.Extensions.Options;
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.Middleware;
 
 /// <summary>
-/// ASP.NET Core middleware that handles AG-UI WebSocket connections
+///     ASP.NET Core middleware that handles AG-UI WebSocket connections
 /// </summary>
 public sealed class AgUiMiddleware
 {
+    private readonly ILogger<AgUiMiddleware> _logger;
     private readonly RequestDelegate _next;
     private readonly AgUiOptions _options;
-    private readonly ILogger<AgUiMiddleware> _logger;
 
     public AgUiMiddleware(RequestDelegate next, IOptions<AgUiOptions> options, ILogger<AgUiMiddleware> logger)
     {
@@ -27,7 +27,7 @@ public sealed class AgUiMiddleware
     }
 
     /// <summary>
-    /// Processes the HTTP request and handles WebSocket upgrade if path matches
+    ///     Processes the HTTP request and handles WebSocket upgrade if path matches
     /// </summary>
     public async Task InvokeAsync(HttpContext context, AgUiWebSocketHandler webSocketHandler)
     {
@@ -68,7 +68,7 @@ public sealed class AgUiMiddleware
     }
 
     /// <summary>
-    /// Checks if the request origin is allowed based on CORS configuration
+    ///     Checks if the request origin is allowed based on CORS configuration
     /// </summary>
     private bool IsOriginAllowed(HttpContext context)
     {

@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
 /// <summary>
-/// Integration tests demonstrating the full Natural Tool Use Transformation pipeline
+///     Integration tests demonstrating the full Natural Tool Use Transformation pipeline
 /// </summary>
 public class NaturalToolUseTransformationIntegrationTests
 {
@@ -14,7 +14,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var weatherToolCall = new ToolCall
         {
             FunctionName = "GetWeather",
-            FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}"
+            FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}",
         };
         var weatherResult = new ToolCallResult(
             "weather-call-1",
@@ -51,7 +51,7 @@ public class NaturalToolUseTransformationIntegrationTests
         // Assert - Verify the transformation
         _ = Assert.IsType<TextMessage>(transformed);
 
-        var textMessage = (TextMessage)transformed;
+        var textMessage = transformed;
 
         // Check basic properties are preserved
         Assert.Equal(Role.Assistant, textMessage.Role);
@@ -85,11 +85,15 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_MultipleToolCalls_WithSeparators()
     {
         // Arrange - Create a scenario with multiple tool calls
-        var searchCall = new ToolCall { FunctionName = "SearchDatabase", FunctionArgs = "{\"query\":\"customers in California\",\"limit\":5}" };
+        var searchCall = new ToolCall
+        {
+            FunctionName = "SearchDatabase",
+            FunctionArgs = "{\"query\":\"customers in California\",\"limit\":5}",
+        };
         var analysisCall = new ToolCall
         {
             FunctionName = "AnalyzeResults",
-            FunctionArgs = "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}"
+            FunctionArgs = "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}",
         };
 
         var searchResult = new ToolCallResult(
@@ -155,7 +159,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var toolCall = new ToolCall
         {
             FunctionName = "GetCustomersByRegion",
-            FunctionArgs = "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}"
+            FunctionArgs = "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}",
         };
         var toolResult = new ToolCallResult(
             "customer-search-1",
@@ -213,7 +217,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var toolCall = new ToolCall
         {
             FunctionName = "ProcessPayment",
-            FunctionArgs = "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}"
+            FunctionArgs = "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}",
         };
         var toolResult = new ToolCallResult(
             "payment-123",
@@ -282,10 +286,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var problematicToolResult = new ToolCallResult(null, "simple text result");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [problematicToolCall] };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = [problematicToolResult],
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [problematicToolResult] };
         var problematicAggregate = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act & Assert - Test graceful handling
@@ -336,7 +337,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var salesCall = new ToolCall
         {
             FunctionName = "GetSalesData",
-            FunctionArgs = "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}"
+            FunctionArgs = "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}",
         };
         var salesResult = new ToolCallResult(
             "sales-001",
@@ -358,7 +359,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var reportCall = new ToolCall
         {
             FunctionName = "CreateSummaryReport",
-            FunctionArgs = "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}"
+            FunctionArgs = "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}",
         };
         var reportResult = new ToolCallResult(
             "report-001",

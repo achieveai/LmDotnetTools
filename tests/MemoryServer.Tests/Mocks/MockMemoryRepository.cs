@@ -4,8 +4,8 @@ using MemoryServer.Services;
 namespace MemoryServer.Tests.Mocks;
 
 /// <summary>
-/// Mock implementation of IMemoryRepository for unit testing.
-/// Provides in-memory storage and configurable behavior for testing scenarios.
+///     Mock implementation of IMemoryRepository for unit testing.
+///     Provides in-memory storage and configurable behavior for testing scenarios.
 /// </summary>
 public class MockMemoryRepository : IMemoryRepository
 {
@@ -13,10 +13,10 @@ public class MockMemoryRepository : IMemoryRepository
     private int _nextId = 1;
 
     // Configuration for testing scenarios
-    public bool ShouldThrowOnAdd { get; set; } = false;
-    public bool ShouldThrowOnUpdate { get; set; } = false;
-    public bool ShouldThrowOnDelete { get; set; } = false;
-    public bool ShouldThrowOnSearch { get; set; } = false;
+    public bool ShouldThrowOnAdd { get; set; }
+    public bool ShouldThrowOnUpdate { get; set; }
+    public bool ShouldThrowOnDelete { get; set; }
+    public bool ShouldThrowOnSearch { get; set; }
     public Exception? ExceptionToThrow { get; set; }
 
     // Tracking for verification
@@ -73,7 +73,9 @@ public class MockMemoryRepository : IMemoryRepository
         }
 
         // Check session context access
-        return !memory.GetSessionContext().Matches(sessionContext) ? Task.FromResult<Memory?>(null) : Task.FromResult<Memory?>(memory);
+        return !memory.GetSessionContext().Matches(sessionContext)
+            ? Task.FromResult<Memory?>(null)
+            : Task.FromResult<Memory?>(memory);
     }
 
     public Task<Memory?> UpdateAsync(
@@ -251,44 +253,6 @@ public class MockMemoryRepository : IMemoryRepository
         return Task.FromResult(new List<MemoryHistoryEntry>());
     }
 
-    // Helper methods for testing
-    public void Reset()
-    {
-        _memories.Clear();
-        _nextId = 1;
-        MethodCalls.Clear();
-        LastCallParameters.Clear();
-        ShouldThrowOnAdd = false;
-        ShouldThrowOnUpdate = false;
-        ShouldThrowOnDelete = false;
-        ShouldThrowOnSearch = false;
-        ExceptionToThrow = null;
-    }
-
-    public void AddTestMemory(Memory memory)
-    {
-        _memories[memory.Id] = memory;
-        if (memory.Id >= _nextId)
-        {
-            _nextId = memory.Id + 1;
-        }
-    }
-
-    public int GetMemoryCount()
-    {
-        return _memories.Count;
-    }
-
-    public bool HasMemory(int id)
-    {
-        return _memories.ContainsKey(id);
-    }
-
-    public Memory? GetMemoryById(int id)
-    {
-        return _memories.TryGetValue(id, out var memory) ? memory : null;
-    }
-
     // Vector storage and search methods (mock implementations)
 
     public Task StoreEmbeddingAsync(
@@ -383,5 +347,43 @@ public class MockMemoryRepository : IMemoryRepository
             .ToList();
 
         return Task.FromResult(runs);
+    }
+
+    // Helper methods for testing
+    public void Reset()
+    {
+        _memories.Clear();
+        _nextId = 1;
+        MethodCalls.Clear();
+        LastCallParameters.Clear();
+        ShouldThrowOnAdd = false;
+        ShouldThrowOnUpdate = false;
+        ShouldThrowOnDelete = false;
+        ShouldThrowOnSearch = false;
+        ExceptionToThrow = null;
+    }
+
+    public void AddTestMemory(Memory memory)
+    {
+        _memories[memory.Id] = memory;
+        if (memory.Id >= _nextId)
+        {
+            _nextId = memory.Id + 1;
+        }
+    }
+
+    public int GetMemoryCount()
+    {
+        return _memories.Count;
+    }
+
+    public bool HasMemory(int id)
+    {
+        return _memories.ContainsKey(id);
+    }
+
+    public Memory? GetMemoryById(int id)
+    {
+        return _memories.TryGetValue(id, out var memory) ? memory : null;
     }
 }

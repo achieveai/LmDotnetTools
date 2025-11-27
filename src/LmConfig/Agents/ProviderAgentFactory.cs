@@ -12,20 +12,16 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using ProviderConfig = AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
 /// <summary>
-/// Factory implementation that creates appropriate agents for resolved providers.
-/// Supports Anthropic, OpenAI, and OpenAI-compatible providers.
+///     Factory implementation that creates appropriate agents for resolved providers.
+///     Supports Anthropic, OpenAI, and OpenAI-compatible providers.
 /// </summary>
 public class ProviderAgentFactory : IProviderAgentFactory
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ILogger<ProviderAgentFactory> _logger;
-    private readonly IHttpHandlerBuilder _handlerBuilder;
-    private readonly ILoggerFactory? _loggerFactory;
-
     // Mapping of provider names to their compatibility types
     private static readonly Dictionary<string, string> ProviderCompatibility = new()
     {
@@ -46,6 +42,11 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "Chutes", "OpenAI" },
         { "Replicate", "Replicate" },
     };
+
+    private readonly IHttpHandlerBuilder _handlerBuilder;
+    private readonly ILogger<ProviderAgentFactory> _logger;
+    private readonly ILoggerFactory? _loggerFactory;
+    private readonly IServiceProvider _serviceProvider;
 
     public ProviderAgentFactory(
         IServiceProvider serviceProvider,
@@ -234,11 +235,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     private IAnthropicClient CreateAnthropicClient(ProviderResolution resolution)
     {
         var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new Http.ProviderConfig(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            ProviderType.Anthropic
-        );
+        var providerCfg = new ProviderConfig(apiKey, resolution.Connection.EndpointUrl, ProviderType.Anthropic);
         var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
@@ -252,7 +249,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
         var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, ProviderType.OpenAI);
+        var providerCfg = new ProviderConfig(apiKey, resolution.Connection.EndpointUrl);
         var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
@@ -268,17 +265,15 @@ public class ProviderAgentFactory : IProviderAgentFactory
         try
         {
             // Try to get ClaudeAgentSdkOptions from DI, otherwise use defaults
-            var options = _serviceProvider.GetService<ClaudeAgentSdkOptions>()
+            var options =
+                _serviceProvider.GetService<ClaudeAgentSdkOptions>()
                 ?? new ClaudeAgentSdkOptions
                 {
                     ProjectRoot = Directory.GetCurrentDirectory(),
-                    McpConfigPath = ".mcp.json"
+                    McpConfigPath = ".mcp.json",
                 };
 
-            _logger.LogDebug(
-                "Creating ClaudeAgentSDK agent with mode: {Mode}",
-                options.Mode
-            );
+            _logger.LogDebug("Creating ClaudeAgentSDK agent with mode: {Mode}", options.Mode);
 
             // Create client and agent
             var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
@@ -298,7 +293,11 @@ public class ProviderAgentFactory : IProviderAgentFactory
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create ClaudeAgentSDK agent for {Provider}", resolution.EffectiveProviderName);
+            _logger.LogError(
+                ex,
+                "Failed to create ClaudeAgentSDK agent for {Provider}",
+                resolution.EffectiveProviderName
+            );
             throw new InvalidOperationException(
                 $"Failed to create ClaudeAgentSDK agent for provider '{resolution.EffectiveProviderName}': {ex.Message}",
                 ex
@@ -307,7 +306,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     }
 
     /// <summary>
-    /// Injects OpenRouter usage middleware if enabled via configuration (Requirement 12.1-12.2).
+    ///     Injects OpenRouter usage middleware if enabled via configuration (Requirement 12.1-12.2).
     /// </summary>
     /// <param name="agent">The base agent to wrap with middleware</param>
     /// <returns>The agent, optionally wrapped with OpenRouter usage middleware</returns>
@@ -355,10 +354,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
                 _serviceProvider.GetService<ILogger<OpenRouterUsageMiddleware>>()
                 ?? throw new InvalidOperationException("Logger<OpenRouterUsageMiddleware> not found in DI container");
 
-            var usageMiddleware = new OpenRouterUsageMiddleware(
-                openRouterApiKey: openRouterApiKey,
-                logger: middlewareLogger
-            );
+            var usageMiddleware = new OpenRouterUsageMiddleware(openRouterApiKey, middlewareLogger);
 
             _logger.LogDebug("Injecting OpenRouter usage middleware for agent");
 

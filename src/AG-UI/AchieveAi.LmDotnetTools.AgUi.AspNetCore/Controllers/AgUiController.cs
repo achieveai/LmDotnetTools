@@ -32,15 +32,15 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers;
 
 /// <summary>
-/// Controller providing standard AG-UI protocol endpoint
-/// Streams events via Server-Sent Events (SSE) over HTTP
+///     Controller providing standard AG-UI protocol endpoint
+///     Streams events via Server-Sent Events (SSE) over HTTP
 /// </summary>
 [ApiController]
 [Route("api/ag-ui")]
 public class AgUiController : ControllerBase
 {
-    private readonly ILogger<AgUiController> _logger;
     private readonly IEventPublisher _eventPublisher;
+    private readonly ILogger<AgUiController> _logger;
     private readonly IServiceProvider _serviceProvider;
 
     public AgUiController(
@@ -55,7 +55,7 @@ public class AgUiController : ControllerBase
     }
 
     /// <summary>
-    /// AG-UI protocol endpoint that streams events via SSE
+    ///     AG-UI protocol endpoint that streams events via SSE
     /// </summary>
     /// <param name="request">AG-UI request with messages and thread context</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -221,22 +221,24 @@ public class AgUiController : ControllerBase
     private static ImmutableList<IMessage> ConvertMessages(List<AgUiMessage>? messages)
     {
         return messages == null || messages.Count == 0
-            ? ImmutableList<IMessage>.Empty
-            : [.. messages
-            .Select(m =>
-                new TextMessage
-                {
-                    Role = m.Role.ToLowerInvariant() switch
+            ? []
+            :
+            [
+                .. messages.Select(m =>
+                    new TextMessage
                     {
-                        "user" => Role.User,
-                        "assistant" => Role.Assistant,
-                        "system" => Role.System,
-                        "tool" => Role.Tool,
-                        _ => Role.User,
-                    },
-                    Text = m.Content,
-                    FromAgent = m.Name,
-                } as IMessage
-            )];
+                        Role = m.Role.ToLowerInvariant() switch
+                        {
+                            "user" => Role.User,
+                            "assistant" => Role.Assistant,
+                            "system" => Role.System,
+                            "tool" => Role.Tool,
+                            _ => Role.User,
+                        },
+                        Text = m.Content,
+                        FromAgent = m.Name,
+                    } as IMessage
+                ),
+            ];
     }
 }

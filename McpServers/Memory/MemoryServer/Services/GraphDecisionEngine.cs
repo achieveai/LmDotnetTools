@@ -3,19 +3,18 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of graph decision engine that handles conflict resolution and update logic.
-/// Uses business rules and heuristics to make intelligent decisions about graph updates.
+///     Implementation of graph decision engine that handles conflict resolution and update logic.
+///     Uses business rules and heuristics to make intelligent decisions about graph updates.
 /// </summary>
 public class GraphDecisionEngine : IGraphDecisionEngine
 {
-    private readonly IGraphRepository _graphRepository;
-    private readonly ILogger<GraphDecisionEngine> _logger;
-
     // Configuration constants for decision making
     private const float MinimumConfidenceThreshold = 0.1f;
     private const float HighConfidenceThreshold = 0.8f;
     private const int MaxAliasesPerEntity = 10;
     private const float SimilarityThreshold = 0.7f;
+    private readonly IGraphRepository _graphRepository;
+    private readonly ILogger<GraphDecisionEngine> _logger;
 
     public GraphDecisionEngine(IGraphRepository graphRepository, ILogger<GraphDecisionEngine> logger)
     {
@@ -30,6 +29,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(extractedEntities);
+        ArgumentNullException.ThrowIfNull(extractedRelationships);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Analyzing graph updates for {EntityCount} entities and {RelationshipCount} relationships",
             extractedEntities.Count,
@@ -77,6 +79,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(existingEntity);
+        ArgumentNullException.ThrowIfNull(newEntity);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Resolving entity conflict between existing '{ExistingName}' and new '{NewName}'",
             existingEntity.Name,
@@ -118,7 +123,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                         }
                     );
                 }
-                else if (newEntity.Confidence < existingEntity.Confidence)
+
+                if (newEntity.Confidence < existingEntity.Confidence)
                 {
                     // Lower confidence - keep existing
                     return Task.FromResult(
@@ -132,76 +138,68 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                         }
                     );
                 }
-                else
-                {
-                    // Same confidence - check for type refinement or other improvements
-                    if (IsTypeRefinement(existingEntity, newEntity) || HasBetterData(existingEntity, newEntity))
-                    {
-                        var mergedEntity = MergeEntities(existingEntity, newEntity);
-                        return Task.FromResult(
-                            new GraphDecisionInstruction
-                            {
-                                Operation = GraphDecisionOperation.UPDATE,
-                                EntityData = mergedEntity,
-                                Reasoning = "Same confidence but new entity provides type refinement or better data.",
-                                Confidence = newEntity.Confidence,
-                                SessionContext = sessionContext,
-                            }
-                        );
-                    }
-                    else
-                    {
-                        return Task.FromResult(
-                            new GraphDecisionInstruction
-                            {
-                                Operation = GraphDecisionOperation.NONE,
-                                EntityData = existingEntity,
-                                Reasoning = "Same confidence and no significant improvements.",
-                                Confidence = existingEntity.Confidence,
-                                SessionContext = sessionContext,
-                            }
-                        );
-                    }
-                }
-            }
-            else
-            {
-                // Different entities - calculate similarity
-                var similarity = CalculateEntitySimilarity(existingEntity, newEntity);
 
-                if (similarity >= SimilarityThreshold)
+                // Same confidence - check for type refinement or other improvements
+                if (IsTypeRefinement(existingEntity, newEntity) || HasBetterData(existingEntity, newEntity))
                 {
-                    // Merge entities - update existing with new information
                     var mergedEntity = MergeEntities(existingEntity, newEntity);
-                    var confidence = CalculateMergeConfidence(existingEntity, newEntity, similarity);
-
                     return Task.FromResult(
                         new GraphDecisionInstruction
                         {
                             Operation = GraphDecisionOperation.UPDATE,
                             EntityData = mergedEntity,
-                            Reasoning =
-                                $"Merged entities based on {similarity:P1} similarity. Combined aliases and metadata.",
-                            Confidence = confidence,
-                            SessionContext = sessionContext,
-                        }
-                    );
-                }
-                else
-                {
-                    // Keep as separate entities
-                    return Task.FromResult(
-                        new GraphDecisionInstruction
-                        {
-                            Operation = GraphDecisionOperation.ADD,
-                            EntityData = newEntity,
-                            Reasoning = $"Entities are distinct ({similarity:P1} similarity). Adding as new entity.",
+                            Reasoning = "Same confidence but new entity provides type refinement or better data.",
                             Confidence = newEntity.Confidence,
                             SessionContext = sessionContext,
                         }
                     );
                 }
+
+                return Task.FromResult(
+                    new GraphDecisionInstruction
+                    {
+                        Operation = GraphDecisionOperation.NONE,
+                        EntityData = existingEntity,
+                        Reasoning = "Same confidence and no significant improvements.",
+                        Confidence = existingEntity.Confidence,
+                        SessionContext = sessionContext,
+                    }
+                );
             }
+
+            // Different entities - calculate similarity
+            var similarity = CalculateEntitySimilarity(existingEntity, newEntity);
+
+            if (similarity >= SimilarityThreshold)
+            {
+                // Merge entities - update existing with new information
+                var mergedEntity = MergeEntities(existingEntity, newEntity);
+                var confidence = CalculateMergeConfidence(existingEntity, newEntity, similarity);
+
+                return Task.FromResult(
+                    new GraphDecisionInstruction
+                    {
+                        Operation = GraphDecisionOperation.UPDATE,
+                        EntityData = mergedEntity,
+                        Reasoning =
+                            $"Merged entities based on {similarity:P1} similarity. Combined aliases and metadata.",
+                        Confidence = confidence,
+                        SessionContext = sessionContext,
+                    }
+                );
+            }
+
+            // Keep as separate entities
+            return Task.FromResult(
+                new GraphDecisionInstruction
+                {
+                    Operation = GraphDecisionOperation.ADD,
+                    EntityData = newEntity,
+                    Reasoning = $"Entities are distinct ({similarity:P1} similarity). Adding as new entity.",
+                    Confidence = newEntity.Confidence,
+                    SessionContext = sessionContext,
+                }
+            );
         }
         catch (Exception ex)
         {
@@ -217,6 +215,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(existingRelationship);
+        ArgumentNullException.ThrowIfNull(newRelationship);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Resolving relationship conflict between existing '{ExistingType}' and new '{NewType}'",
             existingRelationship.RelationshipType,
@@ -258,7 +259,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                         }
                     );
                 }
-                else if (newRelationship.Confidence < existingRelationship.Confidence)
+
+                if (newRelationship.Confidence < existingRelationship.Confidence)
                 {
                     // Lower confidence - keep existing
                     return Task.FromResult(
@@ -272,53 +274,46 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                         }
                     );
                 }
-                else
+
+                // Same confidence - check for temporal context or other improvements
+                if (HasBetterRelationshipData(existingRelationship, newRelationship))
                 {
-                    // Same confidence - check for temporal context or other improvements
-                    if (HasBetterRelationshipData(existingRelationship, newRelationship))
-                    {
-                        var mergedRelationship = MergeRelationships(existingRelationship, newRelationship);
-                        return Task.FromResult(
-                            new GraphDecisionInstruction
-                            {
-                                Operation = GraphDecisionOperation.UPDATE,
-                                RelationshipData = mergedRelationship,
-                                Reasoning =
-                                    "Merged equivalent relationships with updated temporal context and metadata.",
-                                Confidence = newRelationship.Confidence,
-                                SessionContext = sessionContext,
-                            }
-                        );
-                    }
-                    else
-                    {
-                        return Task.FromResult(
-                            new GraphDecisionInstruction
-                            {
-                                Operation = GraphDecisionOperation.NONE,
-                                RelationshipData = existingRelationship,
-                                Reasoning = "Same confidence and no significant improvements.",
-                                Confidence = existingRelationship.Confidence,
-                                SessionContext = sessionContext,
-                            }
-                        );
-                    }
+                    var mergedRelationship = MergeRelationships(existingRelationship, newRelationship);
+                    return Task.FromResult(
+                        new GraphDecisionInstruction
+                        {
+                            Operation = GraphDecisionOperation.UPDATE,
+                            RelationshipData = mergedRelationship,
+                            Reasoning = "Merged equivalent relationships with updated temporal context and metadata.",
+                            Confidence = newRelationship.Confidence,
+                            SessionContext = sessionContext,
+                        }
+                    );
                 }
-            }
-            else
-            {
-                // Different relationships - add as new
+
                 return Task.FromResult(
                     new GraphDecisionInstruction
                     {
-                        Operation = GraphDecisionOperation.ADD,
-                        RelationshipData = newRelationship,
-                        Reasoning = "Relationships are distinct. Adding as new relationship.",
-                        Confidence = newRelationship.Confidence,
+                        Operation = GraphDecisionOperation.NONE,
+                        RelationshipData = existingRelationship,
+                        Reasoning = "Same confidence and no significant improvements.",
+                        Confidence = existingRelationship.Confidence,
                         SessionContext = sessionContext,
                     }
                 );
             }
+
+            // Different relationships - add as new
+            return Task.FromResult(
+                new GraphDecisionInstruction
+                {
+                    Operation = GraphDecisionOperation.ADD,
+                    RelationshipData = newRelationship,
+                    Reasoning = "Relationships are distinct. Adding as new relationship.",
+                    Confidence = newRelationship.Confidence,
+                    SessionContext = sessionContext,
+                }
+            );
         }
         catch (Exception ex)
         {
@@ -333,6 +328,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(instruction);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         try
         {
             _logger.LogDebug(
@@ -441,6 +438,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(instruction);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         try
         {
             var baseConfidence = instruction.Confidence;
@@ -462,8 +461,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                 case GraphDecisionOperation.NONE:
                     break;
                 default:
-                    break;
+                    throw new NotSupportedException($"Unsupported operation: {instruction.Operation}");
             }
+
             adjustmentCount++;
 
             // Adjust based on data quality
@@ -533,18 +533,16 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         {
             return await ResolveEntityConflictAsync(existingEntity, entity, sessionContext, cancellationToken);
         }
-        else
+
+        // New entity
+        return new GraphDecisionInstruction
         {
-            // New entity
-            return new GraphDecisionInstruction
-            {
-                Operation = GraphDecisionOperation.ADD,
-                EntityData = entity,
-                Reasoning = "New entity not found in graph.",
-                Confidence = entity.Confidence,
-                SessionContext = sessionContext,
-            };
-        }
+            Operation = GraphDecisionOperation.ADD,
+            EntityData = entity,
+            Reasoning = "New entity not found in graph.",
+            Confidence = entity.Confidence,
+            SessionContext = sessionContext,
+        };
     }
 
     private async Task<GraphDecisionInstruction?> AnalyzeRelationshipUpdateAsync(
@@ -556,7 +554,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Check if similar relationship already exists
         var existingRelationships = await _graphRepository.GetRelationshipsAsync(
             sessionContext,
-            limit: 1000,
+            1000,
             cancellationToken: cancellationToken
         );
 
@@ -576,18 +574,16 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                 cancellationToken
             );
         }
-        else
+
+        // New relationship
+        return new GraphDecisionInstruction
         {
-            // New relationship
-            return new GraphDecisionInstruction
-            {
-                Operation = GraphDecisionOperation.ADD,
-                RelationshipData = relationship,
-                Reasoning = "New relationship not found in graph.",
-                Confidence = relationship.Confidence,
-                SessionContext = sessionContext,
-            };
-        }
+            Operation = GraphDecisionOperation.ADD,
+            RelationshipData = relationship,
+            Reasoning = "New relationship not found in graph.",
+            Confidence = relationship.Confidence,
+            SessionContext = sessionContext,
+        };
     }
 
     private static float CalculateEntitySimilarity(Entity entity1, Entity entity2)
@@ -604,6 +600,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         {
             score += CalculateStringSimilarity(entity1.Name, entity2.Name) * 0.5f;
         }
+
         factors++;
 
         // Type similarity
@@ -613,6 +610,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             {
                 score += 0.3f;
             }
+
             factors++;
         }
 
@@ -673,12 +671,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     private static bool IsTypeRefinement(Entity existing, Entity newEntity)
     {
         // Check if new entity provides a more specific type
-        if (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type))
-        {
-            return true;
-        }
-
-        return existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown";
+        return (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type))
+            || (existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown");
     }
 
     private static bool HasBetterData(Entity existing, Entity newEntity)

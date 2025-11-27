@@ -5,13 +5,12 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class NaturalToolUseMiddlewareTests
 {
-    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
-    private readonly Mock<IAgent> _mockFallbackParser;
-    private readonly List<FunctionContract> _functionContracts;
-    private readonly Dictionary<string, Func<string, Task<string>>> _functionMap;
-
     // Common test context
     private readonly MiddlewareContext _defaultContext;
+    private readonly List<FunctionContract> _functionContracts;
+    private readonly Dictionary<string, Func<string, Task<string>>> _functionMap;
+    private readonly Mock<IAgent> _mockFallbackParser;
+    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
 
     public NaturalToolUseMiddlewareTests()
     {
@@ -23,8 +22,8 @@ public class NaturalToolUseMiddlewareTests
             {
                 Name = "GetWeather",
                 Description = "A test tool",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -39,23 +38,17 @@ public class NaturalToolUseMiddlewareTests
                         Description = "Second parameter",
                         IsRequired = true,
                     },
-                },
+                ],
             },
         ];
 
         _functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            { "GetWeather", async (args) => await Task.FromResult("{\"temperature\": 72, \"conditions\": \"sunny\"}") },
+            { "GetWeather", async args => await Task.FromResult("{\"temperature\": 72, \"conditions\": \"sunny\"}") },
         };
 
         // Initialize default context
-        _defaultContext = new MiddlewareContext(
-            new List<IMessage>
-            {
-                new TextMessage { Text = "Hello", Role = Role.User },
-            },
-            null
-        );
+        _defaultContext = new MiddlewareContext([new TextMessage { Text = "Hello", Role = Role.User }]);
     }
 
     // Helper method to create middleware with default configuration
@@ -82,12 +75,7 @@ public class NaturalToolUseMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = responseText, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = responseText, Role = Role.Assistant }]);
         return mockAgent;
     }
 
@@ -143,6 +131,7 @@ public class NaturalToolUseMiddlewareTests
         {
             result.Add(item);
         }
+
         return result;
     }
 
@@ -220,12 +209,7 @@ public class NaturalToolUseMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Make schema validator accept the fixed JSON from the fallback parser
         _ = _mockSchemaValidator

@@ -9,17 +9,17 @@ using Moq;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Unit tests for the MemoryService class.
-/// Tests business logic with mocked dependencies.
+///     Unit tests for the MemoryService class.
+///     Tests business logic with mocked dependencies.
 /// </summary>
 public class MemoryServiceTests
 {
-    private readonly MockMemoryRepository _mockRepository;
-    private readonly Mock<ILogger<MemoryService>> _mockLogger;
-    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
-    private readonly MemoryService _memoryService;
-    private readonly MemoryServerOptions _options;
     private static readonly float[] value = [0.1f, 0.2f, 0.3f];
+    private readonly MemoryService _memoryService;
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private readonly Mock<ILogger<MemoryService>> _mockLogger;
+    private readonly MockMemoryRepository _mockRepository;
+    private readonly MemoryServerOptions _options;
 
     public MemoryServiceTests()
     {
@@ -192,7 +192,7 @@ public class MemoryServiceTests
         _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(2, "User2 memory", "user2"));
 
         // Act
-        var results = await _memoryService.GetAllMemoriesAsync(sessionContext, 100, 0);
+        var results = await _memoryService.GetAllMemoriesAsync(sessionContext);
         Debug.WriteLine($"Retrieved {results.Count} memories for session");
 
         // Assert
@@ -225,7 +225,7 @@ public class MemoryServiceTests
         _mockRepository.Reset();
 
         // Add a test memory
-        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content", "test-user");
+        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content");
         _mockRepository.AddTestMemory(originalMemory);
 
         // Act & Assert
@@ -259,7 +259,7 @@ public class MemoryServiceTests
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
-        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content", "test-user");
+        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         _mockRepository.AddTestMemory(testMemory);
         Debug.WriteLine($"Added test memory with ID: {testMemory.Id}");
 
@@ -287,9 +287,10 @@ public class MemoryServiceTests
         // Add multiple test memories
         for (var i = 1; i <= 3; i++)
         {
-            var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}", "test-user");
+            var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}");
             _mockRepository.AddTestMemory(memory);
         }
+
         Debug.WriteLine("Added 3 test memories");
 
         // Act
@@ -315,15 +316,16 @@ public class MemoryServiceTests
         // Add test memories with known content lengths
         var memories = new[]
         {
-            MemoryTestDataFactory.CreateTestMemory(1, "Short", "test-user"), // 5 chars
-            MemoryTestDataFactory.CreateTestMemory(2, "Medium length content", "test-user"), // 21 chars
-            MemoryTestDataFactory.CreateTestMemory(3, "This is a longer piece of content for testing", "test-user"), // 45 chars
+            MemoryTestDataFactory.CreateTestMemory(1, "Short"), // 5 chars
+            MemoryTestDataFactory.CreateTestMemory(2, "Medium length content"), // 21 chars
+            MemoryTestDataFactory.CreateTestMemory(3, "This is a longer piece of content for testing"), // 45 chars
         };
 
         foreach (var memory in memories)
         {
             _mockRepository.AddTestMemory(memory);
         }
+
         Debug.WriteLine($"Added {memories.Length} test memories");
 
         // Act
@@ -350,7 +352,7 @@ public class MemoryServiceTests
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
-        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content", "test-user");
+        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         _mockRepository.AddTestMemory(testMemory);
 
         // Act

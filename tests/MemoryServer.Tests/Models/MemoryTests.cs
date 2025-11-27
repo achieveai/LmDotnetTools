@@ -3,8 +3,8 @@ using MemoryServer.Tests.TestUtilities;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Unit tests for the Memory model.
-/// Tests core business logic methods without external dependencies.
+///     Unit tests for the Memory model.
+///     Tests core business logic methods without external dependencies.
 /// </summary>
 public class MemoryTests
 {
@@ -43,7 +43,7 @@ public class MemoryTests
         Debug.WriteLine($"Testing WithScore: {description}");
         Debug.WriteLine($"Input score: {score}");
 
-        var originalMemory = MemoryTestDataFactory.CreateTestMemory(id: 1, content: "Test content");
+        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         Debug.WriteLine($"Original memory ID: {originalMemory.Id}, Score: {originalMemory.Score}");
 
         // Act
@@ -72,7 +72,7 @@ public class MemoryTests
     {
         // Arrange
         Debug.WriteLine("Testing WithUpdatedTimestamp");
-        var originalMemory = MemoryTestDataFactory.CreateTestMemory(id: 1, content: "Test content");
+        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         var originalUpdatedAt = originalMemory.UpdatedAt;
         var originalVersion = originalMemory.Version;
 
@@ -144,6 +144,7 @@ public class MemoryTests
                 Assert.True(updatedMemory.Metadata.ContainsKey(kvp.Key));
                 Assert.Equal(kvp.Value, updatedMemory.Metadata[kvp.Key]);
             }
+
             Debug.WriteLine($"Metadata correctly deep copied with {metadata.Count} entries");
         }
 
@@ -200,8 +201,8 @@ public class MemoryTests
     {
         yield return new object?[] { null, "Null embedding" };
         yield return new object?[] { Array.Empty<float>(), "Empty embedding array" };
-        yield return new object?[] { new float[] { 0.1f }, "Single element embedding" };
-        yield return new object?[] { new float[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
+        yield return new object?[] { new[] { 0.1f }, "Single element embedding" };
+        yield return new object?[] { new[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
         yield return new object?[]
         {
             Enumerable.Range(0, 100).Select(i => (float)i / 100).ToArray(),

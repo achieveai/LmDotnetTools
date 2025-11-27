@@ -1,3 +1,4 @@
+using System.Reflection;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -10,7 +11,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests;
 
 /// <summary>
-/// Tests for ModelConfigGeneratorService with focus on family detection and filtering logic.
+///     Tests for ModelConfigGeneratorService with focus on family detection and filtering logic.
 /// </summary>
 public class ModelConfigGeneratorServiceTests
 {
@@ -78,10 +79,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var matchesFamilyMethod = reflection.GetMethod(
-            "MatchesFamily",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
+        var matchesFamilyMethod = reflection.GetMethod("MatchesFamily", BindingFlags.NonPublic | BindingFlags.Static);
         var result = (bool)matchesFamilyMethod!.Invoke(null, [model, family])!;
 
         // Assert
@@ -97,10 +95,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -119,10 +114,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -141,10 +133,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -163,10 +152,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -185,10 +171,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -215,10 +198,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -246,10 +226,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -269,10 +246,7 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod(
-            "ApplyFilters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
-        );
+        var applyFiltersMethod = reflection.GetMethod("ApplyFilters", BindingFlags.NonPublic | BindingFlags.Instance);
 
         var service = CreateTestService();
 
@@ -284,9 +258,9 @@ public class ModelConfigGeneratorServiceTests
 
     private static IReadOnlyList<ModelConfig> CreateTestModels()
     {
-        return new List<ModelConfig>
-        {
-            new()
+        return
+        [
+            new ModelConfig
             {
                 Id = "meta-llama/llama-3.1-70b",
                 IsReasoning = false,
@@ -307,7 +281,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "anthropic/claude-3-sonnet",
                 IsReasoning = true,
@@ -340,7 +314,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "openai/gpt-4-turbo",
                 IsReasoning = false,
@@ -372,7 +346,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "qwen/qwen-2.5-72b",
                 IsReasoning = false,
@@ -393,14 +367,14 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithDates()
     {
-        return new List<ModelConfig>
-        {
-            new()
+        return
+        [
+            new ModelConfig
             {
                 Id = "meta-llama/llama-3.1-70b",
                 IsReasoning = false,
@@ -422,7 +396,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "anthropic/claude-3-sonnet",
                 IsReasoning = true,
@@ -451,7 +425,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "openai/gpt-4-turbo",
                 IsReasoning = false,
@@ -472,7 +446,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "qwen/qwen-2.5-72b",
                 IsReasoning = false,
@@ -493,14 +467,14 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithMixedDates()
     {
-        return new List<ModelConfig>
-        {
-            new()
+        return
+        [
+            new ModelConfig
             {
                 Id = "model-with-date",
                 IsReasoning = false,
@@ -520,7 +494,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "model-without-date",
                 IsReasoning = false,
@@ -540,7 +514,7 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-            new()
+            new ModelConfig
             {
                 Id = "old-model-with-date",
                 IsReasoning = false,
@@ -560,6 +534,6 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 }

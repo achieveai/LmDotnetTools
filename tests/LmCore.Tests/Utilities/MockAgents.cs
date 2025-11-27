@@ -1,10 +1,11 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 
 /// <summary>
-/// A mock implementation of IAgent that returns predefined responses for testing.
+///     A mock implementation of IAgent that returns predefined responses for testing.
 /// </summary>
 public class MockAgent : IAgent
 {
@@ -21,12 +22,12 @@ public class MockAgent : IAgent
         CancellationToken cancellationToken = default
     )
     {
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { _response });
+        return Task.FromResult<IEnumerable<IMessage>>([_response]);
     }
 }
 
 /// <summary>
-/// A mock implementation of IStreamingAgent that returns predefined streaming responses for testing.
+///     A mock implementation of IStreamingAgent that returns predefined streaming responses for testing.
 /// </summary>
 public class MockStreamingAgent : IStreamingAgent
 {
@@ -44,9 +45,7 @@ public class MockStreamingAgent : IStreamingAgent
     )
     {
         // For non-streaming, just return the stream as a collection
-        return Task.FromResult(
-            _responseStream.Any() ? _responseStream : new[] { new TextMessage { Text = string.Empty } }
-        );
+        return Task.FromResult(_responseStream.Any() ? _responseStream : [new TextMessage { Text = string.Empty }]);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -74,7 +73,7 @@ public class MockStreamingAgent : IStreamingAgent
 }
 
 /// <summary>
-/// A specialized mock streaming agent that simulates tool call updates.
+///     A specialized mock streaming agent that simulates tool call updates.
 /// </summary>
 public class ToolCallStreamingAgent : IStreamingAgent
 {
@@ -86,7 +85,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
     {
         // For non-streaming just return a complete tool call
         var finalToolCall = CreateFinalToolCall();
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { finalToolCall });
+        return Task.FromResult<IEnumerable<IMessage>>([finalToolCall]);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -117,11 +116,19 @@ public class ToolCallStreamingAgent : IStreamingAgent
     private static ToolsCallMessage CreateFinalToolCall()
     {
         // Create a fully formed tool call
-        var jsonArgs = System.Text.Json.JsonSerializer.Serialize(new { location = "San Francisco", unit = "celsius" });
+        var jsonArgs = JsonSerializer.Serialize(new { location = "San Francisco", unit = "celsius" });
 
         return new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall { FunctionName = "get_weather", FunctionArgs = jsonArgs, ToolCallId = "tool-123" }],
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "get_weather",
+                    FunctionArgs = jsonArgs,
+                    ToolCallId = "tool-123",
+                },
+            ],
         };
     }
 
@@ -130,39 +137,45 @@ public class ToolCallStreamingAgent : IStreamingAgent
         return
         [
             // First update: Just the function name
-            new ToolsCallUpdateMessage
-            {
-                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "get_weather" }],
-            },
+            new ToolsCallUpdateMessage { ToolCallUpdates = [new ToolCallUpdate { FunctionName = "get_weather" }] },
             // Second update: With partial args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San" }],
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San" },
+                ],
             },
             // Third update: More complete args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [new ToolCallUpdate
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         FunctionName = "get_weather",
                         FunctionArgs = "{\"location\":\"San Francisco\"",
-                    }],
+                    },
+                ],
             },
             // Final update: Complete args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = [new ToolCallUpdate
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
                     {
                         FunctionName = "get_weather",
                         FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}",
-                    }],
+                    },
+                ],
             },
         ];
     }
 }
 
 /// <summary>
-/// A specialized mock streaming agent that simulates text updates.
+///     A specialized mock streaming agent that simulates text updates.
 /// </summary>
 public class TextStreamingAgent : IStreamingAgent
 {
@@ -180,7 +193,7 @@ public class TextStreamingAgent : IStreamingAgent
     )
     {
         // For non-streaming just return the full text
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = _fullText } });
+        return Task.FromResult<IEnumerable<IMessage>>([new TextMessage { Text = _fullText }]);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -216,7 +229,7 @@ public class TextStreamingAgent : IStreamingAgent
             accumulated += part;
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(5, cancellationToken);
-            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.TextUpdateMessage { Text = accumulated };
+            yield return new TextUpdateMessage { Text = accumulated };
         }
     }
 }

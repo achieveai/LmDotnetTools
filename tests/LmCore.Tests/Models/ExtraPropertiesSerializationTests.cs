@@ -1,6 +1,3 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
-
-using System;
 using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -8,8 +5,10 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
+
 /// <summary>
-/// Tests for validating that extra properties are serialized inline in production models.
+///     Tests for validating that extra properties are serialized inline in production models.
 /// </summary>
 public class ExtraPropertiesSerializationTests
 {

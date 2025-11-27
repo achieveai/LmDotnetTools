@@ -5,10 +5,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Handles function filtering based on configuration rules for all function providers.
-///
-/// Thread Safety: This class is immutable after construction and is thread-safe for read operations.
-/// The configuration passed to the constructor should not be modified after the FunctionFilter is created.
+///     Handles function filtering based on configuration rules for all function providers.
+///     Thread Safety: This class is immutable after construction and is thread-safe for read operations.
+///     The configuration passed to the constructor should not be modified after the FunctionFilter is created.
 /// </summary>
 public class FunctionFilter
 {
@@ -16,7 +15,7 @@ public class FunctionFilter
     private readonly ILogger _logger;
 
     /// <summary>
-    /// Initializes a new instance of the FunctionFilter class
+    ///     Initializes a new instance of the FunctionFilter class
     /// </summary>
     /// <param name="globalConfig">Global function filtering configuration</param>
     /// <param name="logger">Optional logger for debugging</param>
@@ -27,7 +26,7 @@ public class FunctionFilter
     }
 
     /// <summary>
-    /// Determines whether a function should be filtered out based on configuration
+    ///     Determines whether a function should be filtered out based on configuration
     /// </summary>
     /// <param name="descriptor">The function descriptor to evaluate</param>
     /// <param name="registeredName">The registered name (possibly with prefix)</param>
@@ -40,14 +39,15 @@ public class FunctionFilter
     }
 
     /// <summary>
-    /// Determines whether a function should be filtered out based on configuration,
-    /// providing detailed information about why the decision was made.
+    ///     Determines whether a function should be filtered out based on configuration,
+    ///     providing detailed information about why the decision was made.
     /// </summary>
     /// <param name="descriptor">The function descriptor to evaluate</param>
     /// <param name="registeredName">The registered name (possibly with prefix)</param>
     /// <returns>A FilterResult containing the filtering decision and reasoning</returns>
     public FilterResult ShouldFilterFunctionWithReason(FunctionDescriptor descriptor, string registeredName)
     {
+        ArgumentNullException.ThrowIfNull(descriptor);
         // If filtering is not enabled, include all functions
         if (_globalConfig == null || !_globalConfig.EnableFiltering)
         {
@@ -170,7 +170,7 @@ public class FunctionFilter
     }
 
     /// <summary>
-    /// Filters a collection of function descriptors based on configuration
+    ///     Filters a collection of function descriptors based on configuration
     /// </summary>
     /// <param name="descriptors">The functions to filter</param>
     /// <param name="namingMap">Optional naming map for registered names</param>
@@ -186,6 +186,7 @@ public class FunctionFilter
             return descriptors;
         }
 
+        ArgumentNullException.ThrowIfNull(descriptors);
         var filtered = new List<FunctionDescriptor>();
         var totalCount = 0;
         var filteredCount = 0;
@@ -219,7 +220,7 @@ public class FunctionFilter
     }
 
     /// <summary>
-    /// Checks if a text matches a pattern with wildcard support
+    ///     Checks if a text matches a pattern with wildcard support
     /// </summary>
     /// <param name="text">The text to match</param>
     /// <param name="pattern">The pattern to match against (supports * wildcard)</param>
@@ -240,7 +241,7 @@ public class FunctionFilter
         // Handle prefix wildcard (e.g., "github__*")
         if (pattern.EndsWith("*") && !pattern.StartsWith("*"))
         {
-            var prefix = pattern.Substring(0, pattern.Length - 1);
+            var prefix = pattern[..^1];
             var matches = text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
@@ -254,7 +255,7 @@ public class FunctionFilter
         // Handle suffix wildcard (e.g., "*_search")
         if (pattern.StartsWith("*") && !pattern.EndsWith("*"))
         {
-            var suffix = pattern.Substring(1);
+            var suffix = pattern[1..];
             var matches = text.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
@@ -268,7 +269,7 @@ public class FunctionFilter
         // Handle contains wildcard (e.g., "*search*")
         if (pattern.StartsWith("*") && pattern.EndsWith("*") && pattern.Length > 2)
         {
-            var middle = pattern.Substring(1, pattern.Length - 2);
+            var middle = pattern[1..^1];
             var matches = text.Contains(middle, StringComparison.OrdinalIgnoreCase);
 
             if (matches)

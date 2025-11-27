@@ -3,12 +3,12 @@ using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 namespace LmEmbeddings.Tests.TestUtilities;
 
 /// <summary>
-/// Helper class for creating OpenAI-specific test configurations
+///     Helper class for creating OpenAI-specific test configurations
 /// </summary>
 public static class OpenAITestHelper
 {
     /// <summary>
-    /// Creates EmbeddingOptions configured for OpenAI with the standard OpenAI models
+    ///     Creates EmbeddingOptions configured for OpenAI with the standard OpenAI models
     /// </summary>
     public static EmbeddingOptions CreateOpenAIOptions(
         string apiKey = "test-api-key",
@@ -28,7 +28,7 @@ public static class OpenAITestHelper
     }
 
     /// <summary>
-    /// Gets the standard OpenAI embedding models with their dimensions
+    ///     Gets the standard OpenAI embedding models with their dimensions
     /// </summary>
     public static Dictionary<string, EmbeddingModelConfig> GetOpenAIModels()
     {

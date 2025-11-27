@@ -6,8 +6,8 @@ using Moq;
 namespace MemoryServer.Tests.Infrastructure;
 
 /// <summary>
-/// Integration tests for MemoryIdGenerator using direct SQLite connections.
-/// Tests ID generation logic with minimal setup to avoid deadlocks.
+///     Integration tests for MemoryIdGenerator using direct SQLite connections.
+///     Tests ID generation logic with minimal setup to avoid deadlocks.
 /// </summary>
 public class MemoryIdGeneratorTests : IDisposable
 {
@@ -26,6 +26,11 @@ public class MemoryIdGeneratorTests : IDisposable
 
         _mockLogger = new Mock<ILogger<MemoryIdGenerator>>();
         _idGenerator = new TestMemoryIdGenerator(_connection, _mockLogger.Object);
+    }
+
+    public void Dispose()
+    {
+        _connection?.Dispose();
     }
 
     private void InitializeSchemaDirectly()
@@ -130,21 +135,16 @@ public class MemoryIdGeneratorTests : IDisposable
 
         Debug.WriteLine("✅ Concurrent ID generation test passed");
     }
-
-    public void Dispose()
-    {
-        _connection?.Dispose();
-    }
 }
 
 /// <summary>
-/// Test-specific MemoryIdGenerator that uses a direct connection to avoid SqliteManager deadlocks.
+///     Test-specific MemoryIdGenerator that uses a direct connection to avoid SqliteManager deadlocks.
 /// </summary>
 internal class TestMemoryIdGenerator
 {
     private readonly SqliteConnection _connection;
-    private readonly ILogger<MemoryIdGenerator> _logger;
     private readonly SemaphoreSlim _generationSemaphore;
+    private readonly ILogger<MemoryIdGenerator> _logger;
 
     public TestMemoryIdGenerator(SqliteConnection connection, ILogger<MemoryIdGenerator> logger)
     {

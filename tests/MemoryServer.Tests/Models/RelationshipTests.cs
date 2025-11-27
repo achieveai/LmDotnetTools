@@ -4,127 +4,11 @@ using MemoryServer.Models;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Comprehensive tests for Relationship model including validation, serialization, and session context.
-/// Uses data-driven testing approach for maximum coverage with minimal test methods.
+///     Comprehensive tests for Relationship model including validation, serialization, and session context.
+///     Uses data-driven testing approach for maximum coverage with minimal test methods.
 /// </summary>
 public class RelationshipTests
 {
-    #region Relationship Creation and Validation Tests
-
-    [Theory]
-    [MemberData(nameof(ValidRelationshipTestCases))]
-    public void CreateRelationship_WithValidData_ShouldSucceed(
-        string testName,
-        string source,
-        string relationshipType,
-        string target,
-        string userId,
-        string? agentId,
-        string? runId,
-        float confidence,
-        int? sourceMemoryId,
-        string? temporalContext,
-        Dictionary<string, object>? metadata
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing relationship creation: {testName}");
-        Debug.WriteLine($"Input - {source} --[{relationshipType}]--> {target}");
-
-        // Act
-        var relationship = new Relationship
-        {
-            Source = source,
-            RelationshipType = relationshipType,
-            Target = target,
-            UserId = userId,
-            AgentId = agentId,
-            RunId = runId,
-            Confidence = confidence,
-            SourceMemoryId = sourceMemoryId,
-            TemporalContext = temporalContext,
-            Metadata = metadata,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert
-        Assert.Equal(source, relationship.Source);
-        Assert.Equal(relationshipType, relationship.RelationshipType);
-        Assert.Equal(target, relationship.Target);
-        Assert.Equal(userId, relationship.UserId);
-        Assert.Equal(agentId, relationship.AgentId);
-        Assert.Equal(runId, relationship.RunId);
-        Assert.Equal(confidence, relationship.Confidence);
-        Assert.Equal(sourceMemoryId, relationship.SourceMemoryId);
-        Assert.Equal(temporalContext, relationship.TemporalContext);
-        Assert.Equal(metadata, relationship.Metadata);
-
-        Debug.WriteLine($"✅ Relationship created successfully with ID: {relationship.Id}");
-        Debug.WriteLine($"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}");
-    }
-
-    [Theory]
-    [MemberData(nameof(InvalidRelationshipTestCases))]
-    public void CreateRelationship_WithInvalidData_ShouldHandleGracefully(
-        string testName,
-        string source,
-        string relationshipType,
-        string target,
-        string userId,
-        float confidence,
-        string expectedIssue
-    )
-    {
-        // Arrange
-        Debug.WriteLine($"Testing invalid relationship creation: {testName}");
-        Debug.WriteLine($"Expected issue: {expectedIssue}");
-
-        // Act
-        var relationship = new Relationship
-        {
-            Source = source,
-            RelationshipType = relationshipType,
-            Target = target,
-            UserId = userId,
-            Confidence = confidence,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
-        };
-
-        // Assert - Relationship creation doesn't throw, but we can validate the data
-        if (string.IsNullOrWhiteSpace(source))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.Source), "Source should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(relationshipType))
-        {
-            Assert.True(
-                string.IsNullOrWhiteSpace(relationship.RelationshipType),
-                "RelationshipType should be empty or whitespace"
-            );
-        }
-        if (string.IsNullOrWhiteSpace(target))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.Target), "Target should be empty or whitespace");
-        }
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
-        }
-        if (confidence is < 0 or > 1)
-        {
-            Assert.True(
-                relationship.Confidence is < 0 or > 1,
-                "Confidence should be out of valid range"
-            );
-        }
-
-        Debug.WriteLine($"⚠️ Invalid relationship handled: {expectedIssue}");
-    }
-
-    #endregion
-
     #region Session Context Tests
 
     [Theory]
@@ -216,7 +100,7 @@ public class RelationshipTests
             }
         }
 
-        Debug.WriteLine($"✅ Serialization successful - all fields preserved");
+        Debug.WriteLine("✅ Serialization successful - all fields preserved");
     }
 
     #endregion
@@ -255,14 +139,129 @@ public class RelationshipTests
 
     #endregion
 
+    #region Relationship Creation and Validation Tests
+
+    [Theory]
+    [MemberData(nameof(ValidRelationshipTestCases))]
+    public void CreateRelationship_WithValidData_ShouldSucceed(
+        string testName,
+        string source,
+        string relationshipType,
+        string target,
+        string userId,
+        string? agentId,
+        string? runId,
+        float confidence,
+        int? sourceMemoryId,
+        string? temporalContext,
+        Dictionary<string, object>? metadata
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing relationship creation: {testName}");
+        Debug.WriteLine($"Input - {source} --[{relationshipType}]--> {target}");
+
+        // Act
+        var relationship = new Relationship
+        {
+            Source = source,
+            RelationshipType = relationshipType,
+            Target = target,
+            UserId = userId,
+            AgentId = agentId,
+            RunId = runId,
+            Confidence = confidence,
+            SourceMemoryId = sourceMemoryId,
+            TemporalContext = temporalContext,
+            Metadata = metadata,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert
+        Assert.Equal(source, relationship.Source);
+        Assert.Equal(relationshipType, relationship.RelationshipType);
+        Assert.Equal(target, relationship.Target);
+        Assert.Equal(userId, relationship.UserId);
+        Assert.Equal(agentId, relationship.AgentId);
+        Assert.Equal(runId, relationship.RunId);
+        Assert.Equal(confidence, relationship.Confidence);
+        Assert.Equal(sourceMemoryId, relationship.SourceMemoryId);
+        Assert.Equal(temporalContext, relationship.TemporalContext);
+        Assert.Equal(metadata, relationship.Metadata);
+
+        Debug.WriteLine($"✅ Relationship created successfully with ID: {relationship.Id}");
+        Debug.WriteLine($"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}");
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidRelationshipTestCases))]
+    public void CreateRelationship_WithInvalidData_ShouldHandleGracefully(
+        string testName,
+        string source,
+        string relationshipType,
+        string target,
+        string userId,
+        float confidence,
+        string expectedIssue
+    )
+    {
+        // Arrange
+        Debug.WriteLine($"Testing invalid relationship creation: {testName}");
+        Debug.WriteLine($"Expected issue: {expectedIssue}");
+
+        // Act
+        var relationship = new Relationship
+        {
+            Source = source,
+            RelationshipType = relationshipType,
+            Target = target,
+            UserId = userId,
+            Confidence = confidence,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        // Assert - Relationship creation doesn't throw, but we can validate the data
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Source), "Source should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(relationshipType))
+        {
+            Assert.True(
+                string.IsNullOrWhiteSpace(relationship.RelationshipType),
+                "RelationshipType should be empty or whitespace"
+            );
+        }
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Target), "Target should be empty or whitespace");
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
+        }
+
+        if (confidence is < 0 or > 1)
+        {
+            Assert.True(relationship.Confidence is < 0 or > 1, "Confidence should be out of valid range");
+        }
+
+        Debug.WriteLine($"⚠️ Invalid relationship handled: {expectedIssue}");
+    }
+
+    #endregion
+
     #region Test Data
 
     public static IEnumerable<object?[]> ValidRelationshipTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, source, relationshipType, target, userId, agentId, runId, confidence, sourceMemoryId, temporalContext, metadata
-            new object?[]
-            {
+            [
                 "Basic relationship with minimal data",
                 "John",
                 "likes",
@@ -274,9 +273,8 @@ public class RelationshipTests
                 null,
                 null,
                 null,
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Relationship with full context",
                 "Alice",
                 "works_at",
@@ -288,9 +286,8 @@ public class RelationshipTests
                 42,
                 "2024-01-15",
                 new Dictionary<string, object> { { "department", "engineering" }, { "start_date", "2023-06-01" } },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Relationship with temporal context",
                 "Bob",
                 "visited",
@@ -302,9 +299,8 @@ public class RelationshipTests
                 100,
                 "last summer",
                 null,
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Complex relationship with metadata",
                 "Company A",
                 "acquired",
@@ -322,9 +318,8 @@ public class RelationshipTests
                     { "regulatory_approval", true },
                     { "completion_date", "2023-09-15" },
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Relationship with minimum confidence",
                 "Uncertain Entity",
                 "might_be_related_to",
@@ -336,59 +331,37 @@ public class RelationshipTests
                 null,
                 null,
                 null,
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> InvalidRelationshipTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: testName, source, relationshipType, target, userId, confidence, expectedIssue
-            new object[] { "Empty source", "", "likes", "Pizza", "user123", 0.8f, "Source is empty" },
-            new object[] { "Whitespace source", "   ", "likes", "Pizza", "user123", 0.8f, "Source is whitespace" },
-            new object[]
-            {
-                "Empty relationship type",
-                "John",
-                "",
-                "Pizza",
-                "user123",
-                0.8f,
-                "RelationshipType is empty",
-            },
-            new object[]
-            {
-                "Whitespace relationship type",
-                "John",
-                "   ",
-                "Pizza",
-                "user123",
-                0.8f,
-                "RelationshipType is whitespace",
-            },
-            new object[] { "Empty target", "John", "likes", "", "user123", 0.8f, "Target is empty" },
-            new object[] { "Whitespace target", "John", "likes", "   ", "user123", 0.8f, "Target is whitespace" },
-            new object[] { "Empty userId", "John", "likes", "Pizza", "", 0.8f, "UserId is empty" },
-            new object[] { "Negative confidence", "John", "likes", "Pizza", "user123", -0.1f, "Confidence below 0" },
-            new object[] { "Confidence above 1", "John", "likes", "Pizza", "user123", 1.1f, "Confidence above 1" },
-        };
+            ["Empty source", "", "likes", "Pizza", "user123", 0.8f, "Source is empty"],
+            ["Whitespace source", "   ", "likes", "Pizza", "user123", 0.8f, "Source is whitespace"],
+            ["Empty relationship type", "John", "", "Pizza", "user123", 0.8f, "RelationshipType is empty"],
+            ["Whitespace relationship type", "John", "   ", "Pizza", "user123", 0.8f, "RelationshipType is whitespace"],
+            ["Empty target", "John", "likes", "", "user123", 0.8f, "Target is empty"],
+            ["Whitespace target", "John", "likes", "   ", "user123", 0.8f, "Target is whitespace"],
+            ["Empty userId", "John", "likes", "Pizza", "", 0.8f, "UserId is empty"],
+            ["Negative confidence", "John", "likes", "Pizza", "user123", -0.1f, "Confidence below 0"],
+            ["Confidence above 1", "John", "likes", "Pizza", "user123", 1.1f, "Confidence above 1"],
+        ];
 
     public static IEnumerable<object?[]> SessionContextTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, userId, agentId, runId, expectedToString
-            new object?[] { "User only", "user123", null, null, "user123" },
-            new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-            new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
-            new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
-            new object?[] { "Empty strings treated as null", "user123", "", "", "user123" },
-        };
+            ["User only", "user123", null, null, "user123"],
+            ["User and agent", "user123", "agent456", null, "user123/agent456"],
+            ["Full context", "user123", "agent456", "run789", "user123/agent456/run789"],
+            ["User and run (no agent)", "user123", null, "run789", "user123//run789"],
+            ["Empty strings treated as null", "user123", "", "", "user123"],
+        ];
 
     public static IEnumerable<object?[]> SerializationTestCases =>
-        new List<object?[]>
-        {
+        [
             // Format: testName, relationship
-            new object?[]
-            {
+            [
                 "Simple relationship",
                 new Relationship
                 {
@@ -401,9 +374,8 @@ public class RelationshipTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Relationship with all fields",
                 new Relationship
                 {
@@ -421,9 +393,8 @@ public class RelationshipTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-            new object?[]
-            {
+            ],
+            [
                 "Relationship with null optional fields",
                 new Relationship
                 {
@@ -441,20 +412,19 @@ public class RelationshipTests
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> SelfReferentialTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: testName, source, target, expectedResult
-            new object[] { "Exact match", "John", "John", true },
-            new object[] { "Case insensitive match", "john", "JOHN", true },
-            new object[] { "Different entities", "John", "Jane", false },
-            new object[] { "Empty strings", "", "", true },
-            new object[] { "Whitespace variations", "  John  ", "John", false }, // Exact string comparison
-            new object[] { "Similar but different", "John Doe", "John", false },
-        };
+            ["Exact match", "John", "John", true],
+            ["Case insensitive match", "john", "JOHN", true],
+            ["Different entities", "John", "Jane", false],
+            ["Empty strings", "", "", true],
+            ["Whitespace variations", "  John  ", "John", false], // Exact string comparison
+            ["Similar but different", "John Doe", "John", false],
+        ];
 
     #endregion
 }

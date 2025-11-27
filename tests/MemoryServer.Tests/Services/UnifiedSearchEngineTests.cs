@@ -7,20 +7,20 @@ using Xunit.Abstractions;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Unit tests for UnifiedSearchEngine to verify Phase 6 implementation.
-/// Tests the unified search functionality with mocked dependencies.
+///     Unit tests for UnifiedSearchEngine to verify Phase 6 implementation.
+///     Tests the unified search functionality with mocked dependencies.
 /// </summary>
 public class UnifiedSearchEngineTests
 {
-    private readonly Mock<IMemoryRepository> _mockMemoryRepository;
-    private readonly Mock<IGraphRepository> _mockGraphRepository;
-    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
-    private readonly Mock<IRerankingEngine> _mockRerankingEngine;
     private readonly Mock<IDeduplicationEngine> _mockDeduplicationEngine;
-    private readonly Mock<IResultEnricher> _mockResultEnricher;
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private readonly Mock<IGraphRepository> _mockGraphRepository;
     private readonly Mock<ILogger<UnifiedSearchEngine>> _mockLogger;
-    private readonly UnifiedSearchEngine _unifiedSearchEngine;
+    private readonly Mock<IMemoryRepository> _mockMemoryRepository;
+    private readonly Mock<IRerankingEngine> _mockRerankingEngine;
+    private readonly Mock<IResultEnricher> _mockResultEnricher;
     private readonly ITestOutputHelper _output;
+    private readonly UnifiedSearchEngine _unifiedSearchEngine;
 
     public UnifiedSearchEngineTests(ITestOutputHelper output)
     {
@@ -98,8 +98,9 @@ public class UnifiedSearchEngineTests
                 ) =>
                     new EnrichmentResults
                     {
-                        Results = [.. results
-                            .Select(r => new EnrichedSearchResult
+                        Results =
+                        [
+                            .. results.Select(r => new EnrichedSearchResult
                             {
                                 Type = r.Type,
                                 Id = r.Id,
@@ -115,7 +116,8 @@ public class UnifiedSearchEngineTests
                                 OriginalRelationship = r.OriginalRelationship,
                                 RelatedEntities = [],
                                 RelatedRelationships = [],
-                            })],
+                            }),
+                        ],
                         Metrics = new EnrichmentMetrics(),
                     }
             );
@@ -179,7 +181,7 @@ public class UnifiedSearchEngineTests
         // Setup mock responses
         var mockMemories = new List<Memory>
         {
-            new Memory
+            new()
             {
                 Id = 1,
                 Content = "Test memory content",
@@ -190,7 +192,7 @@ public class UnifiedSearchEngineTests
 
         var mockEntities = new List<Entity>
         {
-            new Entity
+            new()
             {
                 Id = 1,
                 Name = "Test Entity",
@@ -202,7 +204,7 @@ public class UnifiedSearchEngineTests
 
         var mockRelationships = new List<Relationship>
         {
-            new Relationship
+            new()
             {
                 Id = 1,
                 Source = "Entity1",
@@ -289,7 +291,7 @@ public class UnifiedSearchEngineTests
         // Arrange
         var sessionContext = CreateTestSessionContext();
         var query = "test query";
-        var mockEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
+        var mockEmbedding = new[] { 0.1f, 0.2f, 0.3f };
 
         // Setup mock responses for FTS searches
         _ = _mockMemoryRepository
@@ -313,7 +315,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Entity>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>
@@ -324,7 +326,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         // Setup mock responses for vector searches
         _ = _mockMemoryRepository
@@ -419,7 +421,7 @@ public class UnifiedSearchEngineTests
         // Arrange
         var sessionContext = CreateTestSessionContext();
         var query = "test query";
-        var preGeneratedEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
+        var preGeneratedEmbedding = new[] { 0.1f, 0.2f, 0.3f };
 
         // Setup mock responses
         _ = _mockMemoryRepository
@@ -455,7 +457,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Entity>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>
@@ -478,7 +480,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>
@@ -614,7 +616,7 @@ public class UnifiedSearchEngineTests
         // Setup mock responses with different scores
         var mockMemories = new List<Memory>
         {
-            new Memory
+            new()
             {
                 Id = 1,
                 Content = "Test memory",
@@ -625,7 +627,7 @@ public class UnifiedSearchEngineTests
 
         var mockEntities = new List<Entity>
         {
-            new Entity
+            new()
             {
                 Id = 1,
                 Name = "Test Entity",
@@ -637,7 +639,7 @@ public class UnifiedSearchEngineTests
 
         var mockRelationships = new List<Relationship>
         {
-            new Relationship
+            new()
             {
                 Id = 1,
                 Source = "Entity1",

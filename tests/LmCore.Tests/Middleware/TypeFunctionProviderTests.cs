@@ -7,99 +7,6 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class TypeFunctionProviderTests
 {
-    #region Test Classes
-
-    public class TestHandlerWithFunctionAttribute
-    {
-        [Function("add", "Adds two numbers")]
-        public static int Add(int a, int b)
-        {
-            return a + b;
-        }
-
-        [Function("multiply")]
-        [Description("Multiplies two numbers")]
-        public static int Multiply([Description("First number")] int x, [Description("Second number")] int y)
-        {
-            return x * y;
-        }
-
-        [Function]
-        public static async Task<string> AsyncMethod(string input)
-        {
-            await Task.Delay(1);
-            return $"Processed: {input}";
-        }
-
-        // Should not be included (no attribute)
-        public static int Subtract(int a, int b)
-        {
-            return a - b;
-        }
-    }
-
-    public class TestHandlerWithDescriptionAttribute
-    {
-        [Description("Concatenates two strings")]
-        public static string Concat(string a, string b)
-        {
-            return a + b;
-        }
-
-        [Description("Gets the length of a string")]
-        public static int GetLength(string text)
-        {
-            return text?.Length ?? 0;
-        }
-
-        // Should not be included
-        public static string NoAttribute(string input)
-        {
-            return input;
-        }
-    }
-
-    public class TestHandlerMixed
-    {
-        [Function("calculate", "Performs calculation")]
-        public static double Calculate(double value, double factor = 2.0)
-        {
-            return value * factor;
-        }
-
-        [Description("Converts to uppercase")]
-        public static string ToUpper(string? text)
-        {
-            return text?.ToUpper() ?? string.Empty;
-        }
-
-        private int _counter = 0;
-
-        [Function("increment", "Increments and returns counter")]
-        public int IncrementCounter()
-        {
-            return ++_counter;
-        }
-    }
-
-    public class TestHandlerWithExceptions
-    {
-        [Function("divide", "Divides two numbers")]
-        public static double Divide(double a, double b)
-        {
-            return b == 0 ? throw new ArgumentException("Cannot divide by zero") : a / b;
-        }
-
-        [Function("asyncError")]
-        public static async Task<string> AsyncError()
-        {
-            await Task.Delay(1);
-            throw new InvalidOperationException("Async error occurred");
-        }
-    }
-
-    #endregion
-
     [Fact]
     public void TypeProvider_WithStaticType_ExtractsStaticMethodsOnly()
     {
@@ -428,4 +335,97 @@ public class TypeFunctionProviderTests
         Assert.NotNull(textParam);
         Assert.False(textParam.IsRequired);
     }
+
+    #region Test Classes
+
+    public class TestHandlerWithFunctionAttribute
+    {
+        [Function("add", "Adds two numbers")]
+        public static int Add(int a, int b)
+        {
+            return a + b;
+        }
+
+        [Function("multiply")]
+        [Description("Multiplies two numbers")]
+        public static int Multiply([Description("First number")] int x, [Description("Second number")] int y)
+        {
+            return x * y;
+        }
+
+        [Function]
+        public static async Task<string> AsyncMethod(string input)
+        {
+            await Task.Delay(1);
+            return $"Processed: {input}";
+        }
+
+        // Should not be included (no attribute)
+        public static int Subtract(int a, int b)
+        {
+            return a - b;
+        }
+    }
+
+    public class TestHandlerWithDescriptionAttribute
+    {
+        [Description("Concatenates two strings")]
+        public static string Concat(string a, string b)
+        {
+            return a + b;
+        }
+
+        [Description("Gets the length of a string")]
+        public static int GetLength(string text)
+        {
+            return text?.Length ?? 0;
+        }
+
+        // Should not be included
+        public static string NoAttribute(string input)
+        {
+            return input;
+        }
+    }
+
+    public class TestHandlerMixed
+    {
+        private int _counter;
+
+        [Function("calculate", "Performs calculation")]
+        public static double Calculate(double value, double factor = 2.0)
+        {
+            return value * factor;
+        }
+
+        [Description("Converts to uppercase")]
+        public static string ToUpper(string? text)
+        {
+            return text?.ToUpper() ?? string.Empty;
+        }
+
+        [Function("increment", "Increments and returns counter")]
+        public int IncrementCounter()
+        {
+            return ++_counter;
+        }
+    }
+
+    public class TestHandlerWithExceptions
+    {
+        [Function("divide", "Divides two numbers")]
+        public static double Divide(double a, double b)
+        {
+            return b == 0 ? throw new ArgumentException("Cannot divide by zero") : a / b;
+        }
+
+        [Function("asyncError")]
+        public static async Task<string> AsyncError()
+        {
+            await Task.Delay(1);
+            throw new InvalidOperationException("Async error occurred");
+        }
+    }
+
+    #endregion
 }

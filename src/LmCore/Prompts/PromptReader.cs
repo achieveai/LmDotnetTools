@@ -11,7 +11,7 @@ public class PromptReader : IPromptReader
     private readonly Dictionary<string, Dictionary<string, object>> _prompts;
 
     /// <summary>
-    /// Initializes a new instance of the PromptReader class using a file path.
+    ///     Initializes a new instance of the PromptReader class using a file path.
     /// </summary>
     /// <param name="filePath">The path to the YAML file containing prompts.</param>
     public PromptReader(string filePath)
@@ -26,7 +26,7 @@ public class PromptReader : IPromptReader
     }
 
     /// <summary>
-    /// Initializes a new instance of the PromptReader class using a stream.
+    ///     Initializes a new instance of the PromptReader class using a stream.
     /// </summary>
     /// <param name="stream">The stream containing the YAML data.</param>
     public PromptReader(Stream stream)
@@ -36,12 +36,14 @@ public class PromptReader : IPromptReader
     }
 
     /// <summary>
-    /// Initializes a new instance of the PromptReader class using an embedded resource.
+    ///     Initializes a new instance of the PromptReader class using an embedded resource.
     /// </summary>
     /// <param name="assembly">The assembly containing the embedded resource.</param>
     /// <param name="resourceName">The name of the embedded resource.</param>
     public PromptReader(Assembly assembly, string resourceName)
     {
+        ArgumentNullException.ThrowIfNull(assembly);
+
         using var stream =
             assembly.GetManifestResourceStream(resourceName)
             ?? throw new FileNotFoundException(
@@ -52,86 +54,7 @@ public class PromptReader : IPromptReader
     }
 
     /// <summary>
-    /// Parses the YAML content and returns a dictionary of prompts.
-    /// </summary>
-    /// <param name="yamlContent">The YAML content to parse.</param>
-    /// <returns>A dictionary of prompts with their versions.</returns>
-    private static Dictionary<string, Dictionary<string, object>> ParseYamlFile(string yamlContent)
-    {
-        var deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-
-        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(yamlContent);
-
-        foreach (var promptName in result.Keys)
-        {
-            var versions = result[promptName];
-            var latestVersion = FindLatestVersion(versions.Keys);
-            versions["latest"] = versions[latestVersion];
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Finds the latest version from a collection of version strings.
-    /// </summary>
-    /// <param name="versions">The collection of version strings.</param>
-    /// <returns>The latest version string.</returns>
-    private static string FindLatestVersion(IEnumerable<string> versions)
-    {
-        Version latest = new Version(0, 0);
-        var latestString = "";
-
-        foreach (var version in versions)
-        {
-            if (Version.TryParse(version.TrimStart('v'), out var current) && current != null)
-            {
-                if (current > latest)
-                {
-                    latest = current;
-                    latestString = version;
-                }
-            }
-        }
-
-        return latestString;
-    }
-
-    /// <summary>
-    /// Parses a prompt chain from the given chain data.
-    /// </summary>
-    /// <param name="chainData">The list of dictionaries representing the chain data.</param>
-    /// <returns>A list of Message objects.</returns>
-    private static List<IMessage> ParsePromptChain(List<Dictionary<string, string>> chainData)
-    {
-        var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
-
-        return [.. chainData
-            .Select(m =>
-            {
-                var role = m.Keys.First().ToLower();
-                var content = m.Values.First();
-
-                return !allowedRoles.Contains(role)
-                    ? throw new ArgumentException(
-                        $"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}"
-                    )
-                    : new TextMessage
-                    {
-                        Role = role! switch
-                        {
-                            "system" => Role.System,
-                            "user" => Role.User,
-                            "assistant" => Role.Assistant,
-                            _ => throw new NotImplementedException(),
-                        },
-                        Text = content,
-                    } as IMessage;
-            })];
-    }
-
-    /// <summary>
-    /// Retrieves a prompt by name and version.
+    ///     Retrieves a prompt by name and version.
     /// </summary>
     /// <param name="promptName">The name of the prompt.</param>
     /// <param name="version">The version of the prompt (default is "latest").</param>
@@ -152,11 +75,11 @@ public class PromptReader : IPromptReader
         {
             return new Prompt(promptName, version, (string)promptContent);
         }
-        else if (promptContent is List<object> chainData)
+
+        if (promptContent is List<object> chainData)
         {
             var rv = chainData
-                .Where(val => val is Dictionary<object, object>)
-                .Select(val => (Dictionary<object, object>)val)
+                .OfType<Dictionary<object, object>>()
                 .Where(d => d.Count == 1 && d.Keys.First() is string && d.Values.First() is string)
                 .Select(d => new Dictionary<string, string>
                 {
@@ -175,14 +98,12 @@ public class PromptReader : IPromptReader
                 );
             }
         }
-        else
-        {
-            throw new InvalidOperationException($"Invalid prompt content for '{promptName}' version '{version}'.");
-        }
+
+        throw new InvalidOperationException($"Invalid prompt content for '{promptName}' version '{version}'.");
     }
 
     /// <summary>
-    /// Retrieves a prompt chain by name and version.
+    ///     Retrieves a prompt chain by name and version.
     /// </summary>
     /// <param name="promptName">The name of the prompt chain.</param>
     /// <param name="version">The version of the prompt chain (default is "latest").</param>
@@ -194,15 +115,96 @@ public class PromptReader : IPromptReader
             ? promptChain
             : throw new InvalidOperationException($"Prompt '{promptName}' version '{version}' is not a PromptChain.");
     }
+
+    /// <summary>
+    ///     Parses the YAML content and returns a dictionary of prompts.
+    /// </summary>
+    /// <param name="yamlContent">The YAML content to parse.</param>
+    /// <returns>A dictionary of prompts with their versions.</returns>
+    private static Dictionary<string, Dictionary<string, object>> ParseYamlFile(string yamlContent)
+    {
+        var deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+
+        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(yamlContent);
+
+        foreach (var promptName in result.Keys)
+        {
+            var versions = result[promptName];
+            var latestVersion = FindLatestVersion(versions.Keys);
+            versions["latest"] = versions[latestVersion];
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    ///     Finds the latest version from a collection of version strings.
+    /// </summary>
+    /// <param name="versions">The collection of version strings.</param>
+    /// <returns>The latest version string.</returns>
+    private static string FindLatestVersion(IEnumerable<string> versions)
+    {
+        var latest = new Version(0, 0);
+        var latestString = "";
+
+        foreach (var version in versions)
+        {
+            if (Version.TryParse(version.TrimStart('v'), out var current) && current != null)
+            {
+                if (current > latest)
+                {
+                    latest = current;
+                    latestString = version;
+                }
+            }
+        }
+
+        return latestString;
+    }
+
+    /// <summary>
+    ///     Parses a prompt chain from the given chain data.
+    /// </summary>
+    /// <param name="chainData">The list of dictionaries representing the chain data.</param>
+    /// <returns>A list of Message objects.</returns>
+    private static List<IMessage> ParsePromptChain(List<Dictionary<string, string>> chainData)
+    {
+        var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
+
+        return
+        [
+            .. chainData.Select(m =>
+            {
+                var role = m.Keys.First().ToLower();
+                var content = m.Values.First();
+
+                return !allowedRoles.Contains(role)
+                    ? throw new ArgumentException(
+                        $"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}"
+                    )
+                    : new TextMessage
+                    {
+                        Role = role! switch
+                        {
+                            "system" => Role.System,
+                            "user" => Role.User,
+                            "assistant" => Role.Assistant,
+                            _ => throw new NotImplementedException(),
+                        },
+                        Text = content,
+                    } as IMessage;
+            }),
+        ];
+    }
 }
 
 /// <summary>
-/// Represents a single prompt with a name, version, and value.
+///     Represents a single prompt with a name, version, and value.
 /// </summary>
 public record Prompt(string Name, string Version, string Value)
 {
     /// <summary>
-    /// Applies variables to the prompt text if provided.
+    ///     Applies variables to the prompt text if provided.
     /// </summary>
     /// <param name="variables">Optional dictionary of variables to apply to the prompt.</param>
     /// <returns>The prompt text with variables applied if provided, otherwise the original text.</returns>
@@ -219,12 +221,12 @@ public record Prompt(string Name, string Version, string Value)
 }
 
 /// <summary>
-/// Represents a chain of prompts with a name, version, and a list of messages.
+///     Represents a chain of prompts with a name, version, and a list of messages.
 /// </summary>
 public record PromptChain(string Name, string Version, List<IMessage> Messages) : Prompt(Name, Version, string.Empty)
 {
     /// <summary>
-    /// Overrides the PromptText method to throw an exception, as it's not applicable for PromptChain.
+    ///     Overrides the PromptText method to throw an exception, as it's not applicable for PromptChain.
     /// </summary>
     public override string PromptText(Dictionary<string, object>? variables = null)
     {
@@ -234,7 +236,7 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
     }
 
     /// <summary>
-    /// Returns the list of messages with variables applied if provided.
+    ///     Returns the list of messages with variables applied if provided.
     /// </summary>
     /// <param name="variables">Optional dictionary of variables to apply to the message content.</param>
     /// <returns>A list of messages with variables applied if provided, otherwise the original messages.</returns>
@@ -242,16 +244,18 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
     {
         return variables == null
             ? Messages
-            : [.. Messages
-                .Select<IMessage, IMessage>(m => new TextMessage
+            :
+            [
+                .. Messages.Select<IMessage, IMessage>(m => new TextMessage
                 {
                     Role = m.Role,
                     Text = ApplyVariables(((ICanGetText)m).GetText()!, variables),
-                })];
+                }),
+            ];
     }
 
     /// <summary>
-    /// Applies variables to the given content using Scriban templating.
+    ///     Applies variables to the given content using Scriban templating.
     /// </summary>
     /// <param name="content">The content to apply variables to.</param>
     /// <param name="variables">The dictionary of variables to apply.</param>
@@ -264,12 +268,12 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
 }
 
 /// <summary>
-/// Defines the interface for a prompt reader.
+///     Defines the interface for a prompt reader.
 /// </summary>
 public interface IPromptReader
 {
     /// <summary>
-    /// Retrieves a prompt by name and version.
+    ///     Retrieves a prompt by name and version.
     /// </summary>
     /// <param name="promptName">The name of the prompt.</param>
     /// <param name="version">The version of the prompt (default is "latest").</param>
@@ -277,7 +281,7 @@ public interface IPromptReader
     Prompt GetPrompt(string promptName, string version = "latest");
 
     /// <summary>
-    /// Retrieves a prompt chain by name and version.
+    ///     Retrieves a prompt chain by name and version.
     /// </summary>
     /// <param name="promptName">The name of the prompt chain.</param>
     /// <param name="version">The version of the prompt chain (default is "latest").</param>

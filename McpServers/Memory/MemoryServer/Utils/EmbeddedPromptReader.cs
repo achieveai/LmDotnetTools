@@ -1,9 +1,10 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 
 namespace MemoryServer.Utils;
 
 /// <summary>
-/// PromptReader implementation that loads prompts from embedded resources.
+///     PromptReader implementation that loads prompts from embedded resources.
 /// </summary>
 public class EmbeddedPromptReader : IPromptReader
 {
@@ -16,6 +17,16 @@ public class EmbeddedPromptReader : IPromptReader
         _promptReader = CreatePromptReader();
     }
 
+    public Prompt GetPrompt(string promptName, string version = "latest")
+    {
+        return _promptReader.GetPrompt(promptName, version);
+    }
+
+    public PromptChain GetPromptChain(string promptName, string version = "latest")
+    {
+        return _promptReader.GetPromptChain(promptName, version);
+    }
+
     private PromptReader CreatePromptReader()
     {
         try
@@ -24,7 +35,7 @@ public class EmbeddedPromptReader : IPromptReader
             if (EmbeddedResourceHelper.TryLoadEmbeddedResource("Prompts.graph-extraction.yaml", out var content))
             {
                 _logger.LogDebug("Loading prompts from embedded resource");
-                using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
+                using var stream = new MemoryStream(Encoding.UTF8.GetBytes(content));
                 return new PromptReader(stream);
             }
 
@@ -45,15 +56,5 @@ public class EmbeddedPromptReader : IPromptReader
             _logger.LogError(ex, "Failed to initialize prompt reader");
             throw;
         }
-    }
-
-    public Prompt GetPrompt(string promptName, string version = "latest")
-    {
-        return _promptReader.GetPrompt(promptName, version);
-    }
-
-    public PromptChain GetPromptChain(string promptName, string version = "latest")
-    {
-        return _promptReader.GetPromptChain(promptName, version);
     }
 }

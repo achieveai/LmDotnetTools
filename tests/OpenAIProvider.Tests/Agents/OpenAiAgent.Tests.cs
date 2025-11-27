@@ -13,14 +13,11 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class OpenAiAgentTests
 {
-    private static string EnvTestPath =>
-        Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            ".env.test"
-        );
-
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
+
+    private static string EnvTestPath =>
+        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
@@ -38,7 +35,7 @@ public class OpenAiAgentTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -55,14 +52,14 @@ public class OpenAiAgentTests
         // Act
         var response = await agent.GenerateReplyAsync(
             [systemMessage, userMessage],
-            new() { ModelId = "microsoft/phi-4-multimodal-instruct" }
+            new GenerateReplyOptions { ModelId = "microsoft/phi-4-multimodal-instruct" }
         );
 
         // Assert
         Assert.NotNull(response);
 
         // Verify it's a text message with content
-        _ = Assert.IsType<ICanGetText>(response.First(), exactMatch: false);
+        _ = Assert.IsType<ICanGetText>(response.First(), false);
         var textMessage = (ICanGetText)response!.First();
         Assert.True(textMessage.CanGetText());
         Assert.NotNull(textMessage.GetText());
@@ -103,7 +100,7 @@ public class OpenAiAgentTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -138,8 +135,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new FunctionParameterContract
                         {
                             Name = "location",
@@ -154,7 +151,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };
@@ -171,7 +168,7 @@ public class OpenAiAgentTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -224,8 +221,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new FunctionParameterContract
                         {
                             Name = "location",
@@ -240,7 +237,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };
@@ -255,7 +252,7 @@ public class OpenAiAgentTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -321,8 +318,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new FunctionParameterContract
                         {
                             Name = "location",
@@ -337,7 +334,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };
@@ -354,7 +351,7 @@ public class OpenAiAgentTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .WithRecordPlayback(testDataFilePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -392,18 +389,18 @@ public class OpenAiAgentTests
     }
 
     /// <summary>
-    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
     }
 
     /// <summary>
-    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
     }
 }

@@ -1,3 +1,5 @@
+using System.Data;
+using System.Diagnostics;
 using System.Text;
 using MemoryServer.Models;
 using Microsoft.Data.Sqlite;
@@ -6,21 +8,22 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Manages SQLite database connections, initialization, and extension loading.
-/// Handles connection pooling and ensures proper database setup.
+///     Manages SQLite database connections, initialization, and extension loading.
+///     Handles connection pooling and ensures proper database setup.
 /// </summary>
 public class SqliteManager : IDisposable
 {
-    private readonly string _connectionString;
-    private readonly ILogger<SqliteManager> _logger;
     private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly string _connectionString;
+    private readonly object _initLock = new();
     private readonly SemaphoreSlim _initSemaphore;
+    private readonly ILogger<SqliteManager> _logger;
     private readonly DatabaseOptions _options;
-    private bool _isInitialized = false;
-    private readonly object _initLock = new object();
+    private bool _isInitialized;
 
     public SqliteManager(IOptions<DatabaseOptions> options, ILogger<SqliteManager> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _connectionString = _options.ConnectionString;
         _logger = logger;
@@ -28,12 +31,18 @@ public class SqliteManager : IDisposable
         _initSemaphore = new SemaphoreSlim(1, 1);
     }
 
+    public void Dispose()
+    {
+        _connectionSemaphore?.Dispose();
+        _initSemaphore?.Dispose();
+    }
+
     /// <summary>
-    /// Gets a database connection with proper configuration.
+    ///     Gets a database connection with proper configuration.
     /// </summary>
     public async Task<ManagedSqliteConnection> GetConnectionAsync(CancellationToken cancellationToken = default)
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         var threadId = Environment.CurrentManagedThreadId;
         var taskId = Task.CurrentId ?? -1;
 
@@ -95,8 +104,8 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Releases a database connection back to the pool.
-    /// This is called automatically by ManagedSqliteConnection.Dispose().
+    ///     Releases a database connection back to the pool.
+    ///     This is called automatically by ManagedSqliteConnection.Dispose().
     /// </summary>
     internal void ReleaseConnection(SqliteConnection connection)
     {
@@ -152,7 +161,7 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Initializes the database schema and extensions.
+    ///     Initializes the database schema and extensions.
     /// </summary>
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
@@ -267,7 +276,7 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Configures connection-specific settings.
+    ///     Configures connection-specific settings.
     /// </summary>
     private async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -308,14 +317,14 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Loads SQLite extensions including sqlite-vec.
+    ///     Loads SQLite extensions including sqlite-vec.
     /// </summary>
     private void LoadExtensions(SqliteConnection connection)
     {
         try
         {
             // Enable extension loading
-            connection.EnableExtensions(true);
+            connection.EnableExtensions();
 
             // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");
@@ -332,7 +341,7 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Executes database schema creation scripts.
+    ///     Executes database schema creation scripts.
     /// </summary>
     private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -348,7 +357,7 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Gets the complete database schema SQL.
+    ///     Gets the complete database schema SQL.
     /// </summary>
     private static string GetDatabaseSchema()
     {
@@ -641,7 +650,7 @@ public class SqliteManager : IDisposable
     }
 
     /// <summary>
-    /// Executes a health check on the database.
+    ///     Executes a health check on the database.
     /// </summary>
     public async Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
     {
@@ -659,40 +668,56 @@ public class SqliteManager : IDisposable
             return false;
         }
     }
-
-    public void Dispose()
-    {
-        _connectionSemaphore?.Dispose();
-        _initSemaphore?.Dispose();
-    }
 }
 
 /// <summary>
-/// Wrapper for SqliteConnection that automatically releases semaphore on disposal.
+///     Wrapper for SqliteConnection that automatically releases semaphore on disposal.
 /// </summary>
 public class ManagedSqliteConnection : IDisposable
 {
-    private readonly SqliteConnection _connection;
-    private readonly SqliteManager _manager;
-    private bool _disposed = false;
-    private readonly int _connectionId;
     private static int _nextConnectionId = 1;
+    private readonly SqliteConnection _connection;
+    private readonly int _connectionId;
+    private readonly SqliteManager _manager;
+    private bool _disposed;
 
     public ManagedSqliteConnection(SqliteConnection connection, SqliteManager manager)
     {
+        ArgumentNullException.ThrowIfNull(connection);
         _connection = connection;
         _manager = manager;
         _connectionId = Interlocked.Increment(ref _nextConnectionId);
 
         var threadId = Environment.CurrentManagedThreadId;
-        System.Diagnostics.Debug.WriteLine(
+        Debug.WriteLine(
             $"🔌 ManagedConnection-{_connectionId} CREATED - Thread: {threadId}, State: {connection.State}"
         );
     }
 
     // Delegate all SqliteConnection members
     public string ConnectionString => _connection.ConnectionString;
-    public System.Data.ConnectionState State => _connection.State;
+    public ConnectionState State => _connection.State;
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            var threadId = Environment.CurrentManagedThreadId;
+            Debug.WriteLine(
+                $"🗑️ ManagedConnection-{_connectionId} DISPOSE START - Thread: {threadId}, State: {State}"
+            );
+
+            _connection?.Dispose();
+            if (_connection != null)
+            {
+                _manager.ReleaseConnection(_connection);
+            }
+
+            _disposed = true;
+
+            Debug.WriteLine($"✅ ManagedConnection-{_connectionId} DISPOSE COMPLETE - Thread: {threadId}");
+        }
+    }
 
     public SqliteCommand CreateCommand()
     {
@@ -702,54 +727,34 @@ public class ManagedSqliteConnection : IDisposable
     public SqliteTransaction BeginTransaction()
     {
         var threadId = Environment.CurrentManagedThreadId;
-        System.Diagnostics.Debug.WriteLine(
+        Debug.WriteLine(
             $"🔄 ManagedConnection-{_connectionId} BeginTransaction START - Thread: {threadId}, State: {State}"
         );
 
         try
         {
             var transaction = _connection.BeginTransaction();
-            System.Diagnostics.Debug.WriteLine(
-                $"✅ ManagedConnection-{_connectionId} BeginTransaction SUCCESS - Thread: {threadId}"
-            );
+            Debug.WriteLine($"✅ ManagedConnection-{_connectionId} BeginTransaction SUCCESS - Thread: {threadId}");
             return transaction;
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine(
+            Debug.WriteLine(
                 $"❌ ManagedConnection-{_connectionId} BeginTransaction FAILED - Thread: {threadId}, Error: {ex.Message}"
             );
             throw;
         }
     }
 
-    public SqliteTransaction BeginTransaction(System.Data.IsolationLevel isolationLevel)
+    public SqliteTransaction BeginTransaction(IsolationLevel isolationLevel)
     {
         return _connection.BeginTransaction(isolationLevel);
     }
 
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            var threadId = Environment.CurrentManagedThreadId;
-            System.Diagnostics.Debug.WriteLine(
-                $"🗑️ ManagedConnection-{_connectionId} DISPOSE START - Thread: {threadId}, State: {State}"
-            );
-
-            _connection?.Dispose();
-            if (_connection != null)
-            {
-                _manager.ReleaseConnection(_connection);
-            }
-            _disposed = true;
-
-            System.Diagnostics.Debug.WriteLine(
-                $"✅ ManagedConnection-{_connectionId} DISPOSE COMPLETE - Thread: {threadId}"
-            );
-        }
-    }
-
     // Implicit conversion to SqliteConnection for compatibility
-    public static implicit operator SqliteConnection(ManagedSqliteConnection managed) => managed._connection;
+    public static implicit operator SqliteConnection(ManagedSqliteConnection managed)
+    {
+        ArgumentNullException.ThrowIfNull(managed);
+        return managed._connection;
+    }
 }

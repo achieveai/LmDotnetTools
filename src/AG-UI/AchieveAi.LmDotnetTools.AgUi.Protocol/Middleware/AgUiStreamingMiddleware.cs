@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Enums;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
@@ -19,28 +20,28 @@ using Microsoft.Extensions.Options;
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
 
 /// <summary>
-/// AG-UI streaming middleware that intercepts messages and publishes AG-UI events.
-/// Implements IToolResultCallback to capture tool execution results from FunctionCallMiddleware.
+///     AG-UI streaming middleware that intercepts messages and publishes AG-UI events.
+///     Implements IToolResultCallback to capture tool execution results from FunctionCallMiddleware.
 /// </summary>
 /// <remarks>
-/// This middleware follows the interceptor pattern - it processes messages flowing through
-/// the pipeline without creating its own stream. Session and run IDs are managed through
-/// the MiddlewareContext to ensure they persist across multiple invocations.
-/// Optionally persists sessions and messages to SQLite when persistence is enabled.
+///     This middleware follows the interceptor pattern - it processes messages flowing through
+///     the pipeline without creating its own stream. Session and run IDs are managed through
+///     the MiddlewareContext to ensure they persist across multiple invocations.
+///     Optionally persists sessions and messages to SQLite when persistence is enabled.
 /// </remarks>
 public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 {
-    private readonly IEventPublisher _eventPublisher;
     private readonly IMessageConverter _converter;
+    private readonly IEventPublisher _eventPublisher;
+    private readonly IEventRepository? _eventRepository;
     private readonly ILogger<AgUiStreamingMiddleware> _logger;
+    private readonly IMessageRepository? _messageRepository;
     private readonly AgUiMiddlewareOptions _options;
     private readonly ISessionRepository? _sessionRepository;
-    private readonly IMessageRepository? _messageRepository;
-    private readonly IEventRepository? _eventRepository;
     private MiddlewareContext? _currentContext;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="AgUiStreamingMiddleware"/> class.
+    ///     Initializes a new instance of the <see cref="AgUiStreamingMiddleware" /> class.
     /// </summary>
     /// <param name="eventPublisher">The event publisher for AG-UI events.</param>
     /// <param name="converter">The message converter for LmCore to AG-UI conversion.</param>
@@ -71,7 +72,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     public string? Name => "AgUiStreamingMiddleware";
 
     /// <summary>
-    /// Invokes the middleware for synchronous scenarios
+    ///     Invokes the middleware for synchronous scenarios
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -79,14 +80,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // For non-streaming responses, just pass through
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios.
-    /// Follows the interceptor pattern: gets the stream from the next middleware,
-    /// then processes and yields messages through without modification.
+    ///     Invokes the middleware for streaming scenarios.
+    ///     Follows the interceptor pattern: gets the stream from the next middleware,
+    ///     then processes and yields messages through without modification.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
@@ -94,6 +96,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // Get stream from next middleware in the chain
         var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
 
@@ -102,16 +105,16 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Processes the message stream, converting LmCore messages to AG-UI events.
-    /// This method implements the interceptor pattern: it receives messages from upstream,
-    /// publishes AG-UI events as side effects, and yields all messages through unchanged.
+    ///     Processes the message stream, converting LmCore messages to AG-UI events.
+    ///     This method implements the interceptor pattern: it receives messages from upstream,
+    ///     publishes AG-UI events as side effects, and yields all messages through unchanged.
     /// </summary>
     /// <remarks>
-    /// CRITICAL: This method follows these principles:
-    /// 1. Never creates its own stream - receives it as a parameter
-    /// 2. Always yields messages through, even if event publishing fails
-    /// 3. Publishes AG-UI events as side effects (not the main flow)
-    /// 4. Never breaks the stream with exceptions
+    ///     CRITICAL: This method follows these principles:
+    ///     1. Never creates its own stream - receives it as a parameter
+    ///     2. Always yields messages through, even if event publishing fails
+    ///     3. Publishes AG-UI events as side effects (not the main flow)
+    ///     4. Never breaks the stream with exceptions
     /// </remarks>
     private async IAsyncEnumerable<IMessage> ProcessStreamWithEvents(
         IAsyncEnumerable<IMessage> messages,
@@ -181,8 +184,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Processes a single message by converting it to AG-UI events and publishing them.
-    /// Errors in conversion or publishing are logged but don't break the stream.
+    ///     Processes a single message by converting it to AG-UI events and publishing them.
+    ///     Errors in conversion or publishing are logged but don't break the stream.
     /// </summary>
     private async Task ProcessMessageAsync(
         IMessage message,
@@ -196,8 +199,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Safely publishes AG-UI events for a message without breaking the stream.
-    /// This wrapper ensures that errors in conversion or publishing don't propagate.
+    ///     Safely publishes AG-UI events for a message without breaking the stream.
+    ///     This wrapper ensures that errors in conversion or publishing don't propagate.
     /// </summary>
     private async Task PublishMessageEventsSafely(
         IMessage message,
@@ -235,8 +238,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Safely publishes a single AG-UI event without breaking the stream.
-    /// Only OperationCanceledException is re-thrown; all other exceptions are logged and swallowed.
+    ///     Safely publishes a single AG-UI event without breaking the stream.
+    ///     Only OperationCanceledException is re-thrown; all other exceptions are logged and swallowed.
     /// </summary>
     private async Task PublishEventSafely(AgUiEventBase evt, CancellationToken ct)
     {
@@ -272,7 +275,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     #region IToolResultCallback Implementation
 
     /// <summary>
-    /// Called when a tool call starts execution
+    ///     Called when a tool call starts execution
     /// </summary>
     public async Task OnToolCallStartedAsync(
         string toolCallId,
@@ -318,7 +321,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Called when a tool call result becomes available
+    ///     Called when a tool call result becomes available
     /// </summary>
     public async Task OnToolResultAvailableAsync(
         string toolCallId,
@@ -352,7 +355,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Called when a tool call encounters an error
+    ///     Called when a tool call encounters an error
     /// </summary>
     public async Task OnToolCallErrorAsync(
         string toolCallId,
@@ -403,11 +406,11 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     #region Persistence Methods
 
     /// <summary>
-    /// Persists session start information to the database (fire-and-forget pattern).
+    ///     Persists session start information to the database (fire-and-forget pattern).
     /// </summary>
     /// <remarks>
-    /// This method runs asynchronously without blocking the message stream.
-    /// Errors are logged but do not affect stream processing.
+    ///     This method runs asynchronously without blocking the message stream.
+    ///     Errors are logged but do not affect stream processing.
     /// </remarks>
     private async Task PersistSessionStartAsync(string sessionId, MiddlewareContext context, CancellationToken ct)
     {
@@ -443,11 +446,11 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Persists a message to the database (fire-and-forget pattern).
+    ///     Persists a message to the database (fire-and-forget pattern).
     /// </summary>
     /// <remarks>
-    /// This method runs asynchronously without blocking the message stream.
-    /// Errors are logged but do not affect stream processing.
+    ///     This method runs asynchronously without blocking the message stream.
+    ///     Errors are logged but do not affect stream processing.
     /// </remarks>
     private async Task PersistMessageAsync(IMessage message, string sessionId, CancellationToken ct)
     {
@@ -470,7 +473,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
                     new JsonSerializerOptions
                     {
                         WriteIndented = false,
-                        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
                     }
                 ),
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -493,11 +496,11 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     }
 
     /// <summary>
-    /// Persists session end information to the database (fire-and-forget pattern).
+    ///     Persists session end information to the database (fire-and-forget pattern).
     /// </summary>
     /// <remarks>
-    /// This method runs asynchronously without blocking the message stream.
-    /// Errors are logged but do not affect stream processing.
+    ///     This method runs asynchronously without blocking the message stream.
+    ///     Errors are logged but do not affect stream processing.
     /// </remarks>
     private async Task PersistSessionEndAsync(string sessionId, RunStatus status, CancellationToken ct)
     {

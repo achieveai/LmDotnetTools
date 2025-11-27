@@ -7,11 +7,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 
 /// <summary>
-/// SQLite implementation of <see cref="IEventRepository"/>.
+///     SQLite implementation of <see cref="IEventRepository" />.
 /// </summary>
 /// <remarks>
-/// Thread-safe implementation using parameterized queries.
-/// All database operations are async and support cancellation.
+///     Thread-safe implementation using parameterized queries.
+///     All database operations are async and support cancellation.
 /// </remarks>
 public sealed class EventRepository : IEventRepository
 {
@@ -19,7 +19,7 @@ public sealed class EventRepository : IEventRepository
     private readonly ILogger<EventRepository> _logger;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="EventRepository"/> class.
+    ///     Initializes a new instance of the <see cref="EventRepository" /> class.
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
@@ -29,7 +29,7 @@ public sealed class EventRepository : IEventRepository
         _logger = logger ?? NullLogger<EventRepository>.Instance;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<EventEntity?> GetByIdAsync(string id, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -48,7 +48,7 @@ public sealed class EventRepository : IEventRepository
         return await reader.ReadAsync(ct) ? MapEventEntity(reader) : null;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task<IReadOnlyList<EventEntity>> GetBySessionIdAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
@@ -76,7 +76,7 @@ public sealed class EventRepository : IEventRepository
         return events;
     }
 
-    /// <inheritdoc/>
+    /// <inheritdoc />
     public async Task CreateAsync(EventEntity evt, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(evt);
@@ -106,7 +106,7 @@ public sealed class EventRepository : IEventRepository
     }
 
     /// <summary>
-    /// Maps a data reader row to an EventEntity.
+    ///     Maps a data reader row to an EventEntity.
     /// </summary>
     private static EventEntity MapEventEntity(SqliteDataReader reader)
     {

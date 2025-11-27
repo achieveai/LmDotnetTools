@@ -4,11 +4,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
 
 /// <summary>
-/// Initializes the SQLite database schema for AG-UI persistence.
+///     Initializes the SQLite database schema for AG-UI persistence.
 /// </summary>
 /// <remarks>
-/// Creates three tables: Sessions, Messages, and Events with appropriate indexes.
-/// Safe to call multiple times - uses CREATE TABLE IF NOT EXISTS.
+///     Creates three tables: Sessions, Messages, and Events with appropriate indexes.
+///     Safe to call multiple times - uses CREATE TABLE IF NOT EXISTS.
 /// </remarks>
 public sealed class DatabaseInitializer
 {
@@ -16,7 +16,7 @@ public sealed class DatabaseInitializer
     private readonly ILogger<DatabaseInitializer> _logger;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="DatabaseInitializer"/> class.
+    ///     Initializes a new instance of the <see cref="DatabaseInitializer" /> class.
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
@@ -27,13 +27,13 @@ public sealed class DatabaseInitializer
     }
 
     /// <summary>
-    /// Initializes the database schema by creating all required tables and indexes.
+    ///     Initializes the database schema by creating all required tables and indexes.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Task representing the async operation.</returns>
     /// <remarks>
-    /// This method is idempotent and safe to call multiple times.
-    /// Uses transactions to ensure schema consistency.
+    ///     This method is idempotent and safe to call multiple times.
+    ///     Uses transactions to ensure schema consistency.
     /// </remarks>
     public async Task InitializeAsync(CancellationToken ct = default)
     {

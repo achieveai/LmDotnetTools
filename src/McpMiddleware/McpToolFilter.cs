@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -10,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 // These now map to the generalized configuration classes in LmCore
 
 /// <summary>
-/// Configuration for MCP tool filtering - now an alias for FunctionFilterConfig
+///     Configuration for MCP tool filtering - now an alias for FunctionFilterConfig
 /// </summary>
 [Obsolete("Use AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig instead")]
 public class McpToolFilterConfig : FunctionFilterConfig
@@ -19,7 +20,7 @@ public class McpToolFilterConfig : FunctionFilterConfig
 }
 
 /// <summary>
-/// Configuration for an MCP server - now an alias for ProviderFilterConfig
+///     Configuration for an MCP server - now an alias for ProviderFilterConfig
 /// </summary>
 [Obsolete("Use AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig instead")]
 public class McpServerFilterConfig : ProviderFilterConfig
@@ -28,17 +29,17 @@ public class McpServerFilterConfig : ProviderFilterConfig
 }
 
 /// <summary>
-/// Handles tool filtering based on configuration rules
-/// Legacy wrapper around FunctionFilter for backward compatibility
+///     Handles tool filtering based on configuration rules
+///     Legacy wrapper around FunctionFilter for backward compatibility
 /// </summary>
 [Obsolete("Use AchieveAi.LmDotnetTools.LmCore.Middleware.FunctionFilter instead")]
 public class McpToolFilter
 {
-    private readonly FunctionFilter _functionFilter;
     private readonly FunctionFilterConfig? _config;
+    private readonly FunctionFilter _functionFilter;
 
     /// <summary>
-    /// Initializes a new instance of the McpToolFilter class
+    ///     Initializes a new instance of the McpToolFilter class
     /// </summary>
     /// <param name="globalConfig">Global tool filtering configuration</param>
     /// <param name="serverConfigs">Per-server configurations</param>
@@ -63,7 +64,7 @@ public class McpToolFilter
     }
 
     /// <summary>
-    /// Determines whether a tool should be filtered out based on configuration
+    ///     Determines whether a tool should be filtered out based on configuration
     /// </summary>
     /// <param name="serverId">The ID of the server providing the tool</param>
     /// <param name="originalToolName">The original tool name from the server</param>
@@ -74,7 +75,7 @@ public class McpToolFilter
         // Create a temporary descriptor to pass to the generalized filter
         var descriptor = new FunctionDescriptor
         {
-            Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = originalToolName },
+            Contract = new FunctionContract { Name = originalToolName },
             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
             ProviderName = serverId,
         };

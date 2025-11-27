@@ -2,6 +2,7 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
@@ -19,12 +20,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 public class OpenClient : BaseHttpService, IOpenClient
 {
+    private const string ProviderName = "OpenAI";
+
     public static readonly JsonSerializerOptions S_jsonSerializerOptions =
         OpenAIJsonSerializerOptionsFactory.CreateForProduction();
 
-    private readonly IPerformanceTracker _performanceTracker;
     private readonly string _baseUrl;
-    private const string ProviderName = "OpenAI";
+
+    private readonly IPerformanceTracker _performanceTracker;
 
     public OpenClient(
         string apiKey,
@@ -34,6 +37,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     )
         : base(logger ?? NullLogger.Instance, CreateHttpClient(apiKey, baseUrl))
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
@@ -56,6 +60,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
         _baseUrl = baseUrl.TrimEnd('/');
@@ -69,51 +74,13 @@ public class OpenClient : BaseHttpService, IOpenClient
         );
     }
 
-    private static HttpClient CreateHttpClient(string apiKey, string baseUrl)
-    {
-        return HttpClientFactory.CreateForOpenAI(apiKey, baseUrl);
-    }
-
-    /// <summary>
-    /// Determines provider name based on base URL
-    /// </summary>
-    private static string GetProviderName(string baseUrl)
-    {
-        if (baseUrl.Contains("openrouter.ai"))
-        {
-            return "OpenRouter";
-        }
-        else if (baseUrl.Contains("api.openai.com"))
-        {
-            return "OpenAI";
-        }
-        else if (baseUrl.Contains("api.deepinfra.com"))
-        {
-            return "DeepInfra";
-        }
-        else if (baseUrl.Contains("api.together.xyz"))
-        {
-            return "Together";
-        }
-        else if (baseUrl.Contains("api.fireworks.ai"))
-        {
-            return "Fireworks";
-        }
-        else
-        {
-            return baseUrl.Contains("groq.com")
-                ? "Groq"
-                : baseUrl.Contains("cerebras.ai") ? "Cerebras"
-                            : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
-                            : "Unknown";
-        }
-    }
-
     public async Task<ChatCompletionResponse> CreateChatCompletionsAsync(
         ChatCompletionRequest chatCompletionRequest,
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(chatCompletionRequest);
+
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
 
@@ -155,7 +122,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
                     return await HttpClient.SendAsync(request, cancellationToken);
                 },
-                async (httpResponse) =>
+                async httpResponse =>
                 {
                     _ = httpResponse.EnsureSuccessStatusCode();
                     var responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
@@ -205,9 +172,9 @@ public class OpenClient : BaseHttpService, IOpenClient
 
             // Track successful request metrics
             var completedMetrics = metrics.Complete(
-                statusCode: 200,
-                usage: response.Usage != null
-                    ? new AchieveAi.LmDotnetTools.LmCore.Models.Usage
+                200,
+                response.Usage != null
+                    ? new Usage
                     {
                         PromptTokens = response.Usage.PromptTokens,
                         CompletionTokens = response.Usage.CompletionTokens,
@@ -232,11 +199,7 @@ public class OpenClient : BaseHttpService, IOpenClient
         catch (Exception ex)
         {
             // Track failed request metrics
-            var completedMetrics = metrics.Complete(
-                statusCode: 0,
-                errorMessage: ex.Message,
-                exceptionType: ex.GetType().Name
-            );
+            var completedMetrics = metrics.Complete(0, errorMessage: ex.Message, exceptionType: ex.GetType().Name);
 
             _performanceTracker.TrackRequest(completedMetrics);
 
@@ -258,6 +221,8 @@ public class OpenClient : BaseHttpService, IOpenClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(chatCompletionRequest);
+
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
 
@@ -287,6 +252,27 @@ public class OpenClient : BaseHttpService, IOpenClient
         {
             yield return response;
         }
+    }
+
+    private static HttpClient CreateHttpClient(string apiKey, string baseUrl)
+    {
+        return HttpClientFactory.CreateForOpenAI(apiKey, baseUrl);
+    }
+
+    /// <summary>
+    ///     Determines provider name based on base URL
+    /// </summary>
+    private static string GetProviderName(string baseUrl)
+    {
+        return baseUrl.Contains("openrouter.ai") ? "OpenRouter"
+            : baseUrl.Contains("api.openai.com") ? "OpenAI"
+            : baseUrl.Contains("api.deepinfra.com") ? "DeepInfra"
+            : baseUrl.Contains("api.together.xyz") ? "Together"
+            : baseUrl.Contains("api.fireworks.ai") ? "Fireworks"
+            : baseUrl.Contains("groq.com") ? "Groq"
+            : baseUrl.Contains("cerebras.ai") ? "Cerebras"
+            : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
+            : "Unknown";
     }
 
     private async Task<IAsyncEnumerable<ChatCompletionResponse>> SetupStreamingRequestAsync(
@@ -319,7 +305,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                         cancellationToken
                     );
                 },
-                async (httpResponse) =>
+                async httpResponse =>
                 {
                     var stream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
 
@@ -336,7 +322,7 @@ public class OpenClient : BaseHttpService, IOpenClient
             );
 
             // Track successful setup
-            var successMetrics = metrics.Complete(statusCode: 200);
+            var successMetrics = metrics.Complete(200);
             _performanceTracker.TrackRequest(successMetrics);
 
             return ProcessStreamingResponseAsync(
@@ -349,11 +335,7 @@ public class OpenClient : BaseHttpService, IOpenClient
         catch (Exception ex)
         {
             // Track failed streaming request metrics
-            var completedMetrics = metrics.Complete(
-                statusCode: 0,
-                errorMessage: ex.Message,
-                exceptionType: ex.GetType().Name
-            );
+            var completedMetrics = metrics.Complete(0, errorMessage: ex.Message, exceptionType: ex.GetType().Name);
 
             _performanceTracker.TrackRequest(completedMetrics);
 
@@ -451,7 +433,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     }
 
     /// <summary>
-    /// Determines whether a streaming response should be skipped to reduce noise.
+    ///     Determines whether a streaming response should be skipped to reduce noise.
     /// </summary>
     /// <param name="response">The streaming response to evaluate</param>
     /// <returns>True if the response should be skipped, false otherwise</returns>

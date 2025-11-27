@@ -3,13 +3,13 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for topic-based document segmentation services.
-/// Provides specialized methods for detecting topic boundaries and analyzing thematic coherence.
+///     Interface for topic-based document segmentation services.
+///     Provides specialized methods for detecting topic boundaries and analyzing thematic coherence.
 /// </summary>
 public interface ITopicBasedSegmentationService
 {
     /// <summary>
-    /// Segments document content based on topic boundaries and thematic coherence.
+    ///     Segments document content based on topic boundaries and thematic coherence.
     /// </summary>
     /// <param name="content">The document content to segment</param>
     /// <param name="documentType">Type of document for optimization</param>
@@ -24,7 +24,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Detects topic boundaries within the document content.
+    ///     Detects topic boundaries within the document content.
     /// </summary>
     /// <param name="content">The document content to analyze</param>
     /// <param name="documentType">Type of document for context</param>
@@ -37,7 +37,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Analyzes thematic coherence of a text segment.
+    ///     Analyzes thematic coherence of a text segment.
     /// </summary>
     /// <param name="content">The content to analyze</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -48,7 +48,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Validates topic-based segments for quality and coherence.
+    ///     Validates topic-based segments for quality and coherence.
     /// </summary>
     /// <param name="segments">Segments to validate</param>
     /// <param name="originalContent">Original document content</param>
@@ -61,7 +61,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Performs comprehensive topic analysis on a document segment.
+    ///     Performs comprehensive topic analysis on a document segment.
     /// </summary>
     /// <param name="content">The content to analyze</param>
     /// <param name="analysisMethod">Method to use for topic analysis</param>
@@ -74,7 +74,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Identifies topic transitions and their quality between adjacent segments.
+    ///     Identifies topic transitions and their quality between adjacent segments.
     /// </summary>
     /// <param name="previousContent">Content of the previous segment</param>
     /// <param name="currentContent">Content of the current segment</param>
@@ -87,7 +87,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Calculates semantic similarity between two text segments for topic analysis.
+    ///     Calculates semantic similarity between two text segments for topic analysis.
     /// </summary>
     /// <param name="content1">First segment content</param>
     /// <param name="content2">Second segment content</param>
@@ -100,7 +100,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Extracts key terms and concepts from content for topic analysis.
+    ///     Extracts key terms and concepts from content for topic analysis.
     /// </summary>
     /// <param name="content">Content to analyze</param>
     /// <param name="maxKeywords">Maximum number of keywords to extract</param>
@@ -113,7 +113,7 @@ public interface ITopicBasedSegmentationService
     );
 
     /// <summary>
-    /// Assesses topic coherence within a segment and identifies issues.
+    ///     Assesses topic coherence within a segment and identifies issues.
     /// </summary>
     /// <param name="content">Content to assess</param>
     /// <param name="primaryTopic">Primary topic of the segment</param>

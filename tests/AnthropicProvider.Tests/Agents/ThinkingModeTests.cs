@@ -1,17 +1,9 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
-
-using System;
 using System.Collections.Immutable;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class ThinkingModeTests
 {
@@ -60,12 +52,12 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
 
         var thinking = new AnthropicThinking(2048);
         Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
@@ -79,10 +71,7 @@ public class ThinkingModeTests
                 new AnthropicMessage
                 {
                     Role = "user",
-                    Content =
-                    [
-                        new AnthropicContent { Type = "text", Text = "Hello" },
-                    ],
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
                 },
             ],
         };
@@ -90,7 +79,7 @@ public class ThinkingModeTests
 
         // Act - async call with proper await
         _ = await anthropicClient.CreateChatCompletionsAsync(request);
-        Console.WriteLine($"After API call - Captured thinking from request");
+        Console.WriteLine("After API call - Captured thinking from request");
 
         // Assert using the RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -113,12 +102,12 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -139,8 +128,8 @@ public class ThinkingModeTests
         {
             Name = "python_mcp-execute_python_in_container",
             Description = "Execute Python code in a Docker container",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "code",
@@ -148,7 +137,7 @@ public class ThinkingModeTests
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         // Set up thinking in options

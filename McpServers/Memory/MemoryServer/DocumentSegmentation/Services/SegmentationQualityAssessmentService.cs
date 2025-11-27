@@ -5,20 +5,19 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Comprehensive implementation of quality assessment for document segmentation results.
-/// Provides detailed analysis of semantic coherence, independence, topic consistency, and completeness.
+///     Comprehensive implementation of quality assessment for document segmentation results.
+///     Provides detailed analysis of semantic coherence, independence, topic consistency, and completeness.
 /// </summary>
 public partial class SegmentationQualityAssessmentService : ISegmentationQualityAssessmentService
 {
-    private readonly ILlmProviderIntegrationService _llmService;
-    private readonly ILogger<SegmentationQualityAssessmentService> _logger;
-
     // Text analysis patterns
     private static readonly Regex SentencePattern = MyRegex();
     private static readonly Regex ParagraphPattern = MyRegex1();
     private static readonly Regex CoherenceMarkerPattern = MyRegex2();
     private static readonly Regex ReferentialPattern = MyRegex3();
     private static readonly Regex TransitionPattern = MyRegex4();
+    private readonly ILlmProviderIntegrationService _llmService;
+    private readonly ILogger<SegmentationQualityAssessmentService> _logger;
 
     public SegmentationQualityAssessmentService(
         ILlmProviderIntegrationService llmService,
@@ -30,7 +29,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Performs comprehensive quality assessment of segmentation results.
+    ///     Performs comprehensive quality assessment of segmentation results.
     /// </summary>
     public async Task<ComprehensiveQualityAssessment> AssessSegmentationQualityAsync(
         List<DocumentSegment> segments,
@@ -40,6 +39,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Starting comprehensive quality assessment for {SegmentCount} segments", segments.Count);
 
         var startTime = DateTime.UtcNow;
@@ -147,7 +148,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Validates semantic coherence within individual segments.
+    ///     Validates semantic coherence within individual segments.
     /// </summary>
     public async Task<SemanticCoherenceValidation> ValidateSemanticCoherenceAsync(
         DocumentSegment segment,
@@ -155,6 +156,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segment);
         _logger.LogDebug("Validating semantic coherence for segment {SegmentId}", segment.Id);
 
         options ??= new QualityAssessmentOptions();
@@ -207,7 +209,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Calculates independence score for a segment.
+    ///     Calculates independence score for a segment.
     /// </summary>
     public async Task<IndependenceScoreAnalysis> CalculateIndependenceScoreAsync(
         DocumentSegment segment,
@@ -216,6 +218,9 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segment);
+        ArgumentNullException.ThrowIfNull(allSegments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Calculating independence score for segment {SegmentId}", segment.Id);
 
         var analysis = new IndependenceScoreAnalysis { SegmentId = segment.Id };
@@ -264,7 +269,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Validates topic consistency within and across segments.
+    ///     Validates topic consistency within and across segments.
     /// </summary>
     public Task<TopicConsistencyValidation> ValidateTopicConsistencyAsync(
         List<DocumentSegment> segments,
@@ -272,6 +277,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating topic consistency across {SegmentCount} segments", segments.Count);
 
         var validation = new TopicConsistencyValidation();
@@ -316,7 +323,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Verifies completeness of segmentation coverage.
+    ///     Verifies completeness of segmentation coverage.
     /// </summary>
     public async Task<CompletenessVerification> VerifyCompletenessAsync(
         List<DocumentSegment> segments,
@@ -324,6 +331,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Verifying completeness of segmentation");
 
         var verification = new CompletenessVerification();
@@ -371,7 +380,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Identifies and analyzes quality issues across segments.
+    ///     Identifies and analyzes quality issues across segments.
     /// </summary>
     public Task<QualityIssueAnalysis> AnalyzeQualityIssuesAsync(
         List<DocumentSegment> segments,
@@ -380,6 +389,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Analyzing quality issues across {SegmentCount} segments", segments.Count);
 
         var analysis = new QualityIssueAnalysis();
@@ -484,12 +495,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
 
             // Determine acceptability
             analysis.IsAcceptableIssueLevel =
-                analysis
-                    .IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.Critical, [])
-                    .Count == 0
-                && analysis
-                    .IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.High, [])
-                    .Count <= 2;
+                analysis.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.Critical, []).Count == 0
+                && analysis.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.High, []).Count <= 2;
 
             return Task.FromResult(analysis);
         }
@@ -505,7 +512,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Generates improvement recommendations based on quality assessment.
+    ///     Generates improvement recommendations based on quality assessment.
     /// </summary>
     public Task<ImprovementRecommendations> GenerateImprovementRecommendationsAsync(
         ComprehensiveQualityAssessment assessment,
@@ -514,6 +521,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(assessment);
         _logger.LogDebug("Generating improvement recommendations");
 
         var recommendations = new ImprovementRecommendations();
@@ -571,7 +579,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Compares quality across different segmentation approaches.
+    ///     Compares quality across different segmentation approaches.
     /// </summary>
     public async Task<ComparativeQualityAnalysis> CompareSegmentationQualityAsync(
         Dictionary<SegmentationStrategy, List<DocumentSegment>> segmentationResults,
@@ -579,6 +587,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segmentationResults);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Comparing quality across {StrategyCount} segmentation strategies", segmentationResults.Count);
 
         var analysis = new ComparativeQualityAnalysis();
@@ -622,19 +632,22 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
                 .Key;
 
             // Create strategy rankings
-            analysis.StrategyRankings = [.. analysis
-                .StrategyQualityScores.OrderByDescending(kvp => kvp.Value)
-                .Select(
-                    (kvp, index) =>
-                        new StrategyRanking
-                        {
-                            Strategy = kvp.Key,
-                            Rank = index + 1,
-                            Score = kvp.Value,
-                            Strengths = GenerateStrategyStrengths(kvp.Key, analysis.MetricComparison[kvp.Key]),
-                            Weaknesses = GenerateStrategyWeaknesses(kvp.Key, analysis.MetricComparison[kvp.Key]),
-                        }
-                )];
+            analysis.StrategyRankings =
+            [
+                .. analysis
+                    .StrategyQualityScores.OrderByDescending(kvp => kvp.Value)
+                    .Select(
+                        (kvp, index) =>
+                            new StrategyRanking
+                            {
+                                Strategy = kvp.Key,
+                                Rank = index + 1,
+                                Score = kvp.Value,
+                                Strengths = GenerateStrategyStrengths(kvp.Key, analysis.MetricComparison[kvp.Key]),
+                                Weaknesses = GenerateStrategyWeaknesses(kvp.Key, analysis.MetricComparison[kvp.Key]),
+                            }
+                    ),
+            ];
 
             // Generate comparative insights
             analysis.ComparativeInsights = GenerateComparativeInsights(analysis);
@@ -649,7 +662,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     }
 
     /// <summary>
-    /// Validates quality against custom criteria.
+    ///     Validates quality against custom criteria.
     /// </summary>
     public Task<CustomValidationResults> ValidateCustomCriteriaAsync(
         List<DocumentSegment> segments,
@@ -657,6 +670,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(customCriteria);
         _logger.LogDebug(
             "Validating {SegmentCount} segments against {CriteriaCount} custom criteria",
             segments.Count,
@@ -699,9 +714,12 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             results.PassesCustomValidation = results.CriterionResults.Values.All(r => r.Passed);
 
             // Generate feedback
-            results.CustomFeedback = [.. results
-                .CriterionResults.Where(kvp => !kvp.Value.Passed)
-                .Select(kvp => $"Failed criterion: {kvp.Key} - {kvp.Value.Feedback}")];
+            results.CustomFeedback =
+            [
+                .. results
+                    .CriterionResults.Where(kvp => !kvp.Value.Passed)
+                    .Select(kvp => $"Failed criterion: {kvp.Key} - {kvp.Value.Feedback}"),
+            ];
 
             return Task.FromResult(results);
         }
@@ -775,7 +793,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         var factors = new List<double>
         {
             // Higher confidence if more segments were analyzed
-            Math.Min(1.0, assessment.CoherenceValidations.Count / 10.0)
+            Math.Min(1.0, assessment.CoherenceValidations.Count / 10.0),
         };
 
         // Higher confidence if fewer critical issues
@@ -1169,10 +1187,13 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
 
     private static HashSet<string> ExtractSignificantWords(string content)
     {
-        return [.. content
-            .ToLowerInvariant()
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length > 3 && !IsStopWord(w))];
+        return
+        [
+            .. content
+                .ToLowerInvariant()
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 3 && !IsStopWord(w)),
+        ];
     }
 
     private static bool IsStopWord(string word)
@@ -1237,7 +1258,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             {
                 if (!distribution.TryGetValue(word, out var value))
                 {
-                    value = ([]);
+                    value = [];
                     distribution[word] = value;
                 }
 
@@ -1273,12 +1294,12 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
     {
         // Heuristic approach for information preservation
         var segmentContent = string.Join(" ", segments.Select(s => s.Content));
-        var originalSentences = SentencePattern
-            .Split(originalContent)
-            .Count(s => !string.IsNullOrWhiteSpace(s));
+        var originalSentences = SentencePattern.Split(originalContent).Count(s => !string.IsNullOrWhiteSpace(s));
         var segmentSentences = SentencePattern.Split(segmentContent).Count(s => !string.IsNullOrWhiteSpace(s));
 
-        return originalSentences == 0 ? Task.FromResult(1.0) : Task.FromResult(Math.Min(1.0, (double)segmentSentences / originalSentences));
+        return originalSentences == 0
+            ? Task.FromResult(1.0)
+            : Task.FromResult(Math.Min(1.0, (double)segmentSentences / originalSentences));
     }
 
     private static List<ContentGap> IdentifyContentGaps(List<DocumentSegment> segments, string originalContent)
@@ -1653,6 +1674,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             count++;
             index += word.Length;
         }
+
         return count;
     }
 

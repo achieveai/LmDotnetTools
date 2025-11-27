@@ -9,19 +9,19 @@ public class Choice
     public enum FinishReasonEnum
     {
         /// <summary>
-        /// Enum Stop for value: stop
+        ///     Enum Stop for value: stop
         /// </summary>
         [JsonPropertyName("stop")]
         Stop = 1,
 
         /// <summary>
-        /// Enum Length for value: length
+        ///     Enum Length for value: length
         /// </summary>
         [JsonPropertyName("length")]
         Length = 2,
 
         /// <summary>
-        /// Enum ModelLength for value: model_length
+        ///     Enum ModelLength for value: model_length
         /// </summary>
         [JsonPropertyName("model_length")]
         ModelLength = 3,
@@ -40,7 +40,7 @@ public class Choice
     }
 
     /// <summary>
-    /// Gets or Sets FinishReason
+    ///     Gets or Sets FinishReason
     /// </summary>
     [JsonPropertyName("finish_reason")]
     public FinishReasonEnum? FinishReason { get; set; }
@@ -49,13 +49,13 @@ public class Choice
     public int Index { get; set; }
 
     /// <summary>
-    /// Gets or Sets Message
+    ///     Gets or Sets Message
     /// </summary>
     [JsonPropertyName("message")]
     public ChatMessage? Message { get; set; }
 
     /// <summary>
-    /// Gets or Sets Delta
+    ///     Gets or Sets Delta
     /// </summary>
     [JsonPropertyName("delta")]
     public ChatMessage? Delta { get; set; }

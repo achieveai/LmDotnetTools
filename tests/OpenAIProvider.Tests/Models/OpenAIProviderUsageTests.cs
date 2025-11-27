@@ -8,8 +8,8 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 
 public class OpenAIProviderUsageTests
 {
-    private readonly ITestOutputHelper _output;
     private readonly JsonSerializerOptions _options;
+    private readonly ITestOutputHelper _output;
 
     public OpenAIProviderUsageTests(ITestOutputHelper output)
     {

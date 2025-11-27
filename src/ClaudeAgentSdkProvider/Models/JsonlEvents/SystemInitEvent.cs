@@ -3,8 +3,8 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 
 /// <summary>
-/// System initialization event from claude-agent-sdk CLI
-/// Contains session info, available tools, MCP servers status, etc.
+///     System initialization event from claude-agent-sdk CLI
+///     Contains session info, available tools, MCP servers status, etc.
 /// </summary>
 public record SystemInitEvent : JsonlEventBase
 {
@@ -55,7 +55,7 @@ public record SystemInitEvent : JsonlEventBase
 }
 
 /// <summary>
-/// MCP server status information
+///     MCP server status information
 /// </summary>
 public record McpServerStatus
 {

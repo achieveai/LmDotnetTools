@@ -6,26 +6,25 @@ using AchieveAi.LmDotnetTools.TestUtils.MockTools;
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
 /// <summary>
-/// Examples of how to use the MockToolCallHelper
+///     Examples of how to use the MockToolCallHelper
 /// </summary>
 public static class MockToolCallHelperExamples
 {
     /// <summary>
-    /// Example showing how to create mock tool calls with all tools
+    ///     Example showing how to create mock tool calls with all tools
     /// </summary>
     public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) CreateAllMockTools()
     {
         var callbackOverrides = new Dictionary<string, Func<string, Task<string>>>
         {
             // Override greeting tool methods
-            ["MockGreetingTool-SayHello"] = (argsJson) =>
+            ["MockGreetingTool-SayHello"] = argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var name = args!["name"].GetString();
                 return Task.FromResult($"Hello, {name}! This is a mock response.");
             },
-
-            ["MockGreetingTool-SayGoodbye"] = (argsJson) =>
+            ["MockGreetingTool-SayGoodbye"] = argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var name = args!["name"].GetString();
@@ -33,7 +32,7 @@ public static class MockToolCallHelperExamples
             },
 
             // Override calculator method as an example
-            ["MockCalculatorTool-Add"] = (argsJson) =>
+            ["MockCalculatorTool-Add"] = argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var a = args!["a"].GetDouble();
@@ -42,7 +41,7 @@ public static class MockToolCallHelperExamples
             },
 
             // Override one Python tool method using correct Python method name
-            ["MockPythonExecutionTool-execute_python_in_container"] = (argsJson) =>
+            ["MockPythonExecutionTool-execute_python_in_container"] = argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var code = args!["code"].GetString();
@@ -54,7 +53,7 @@ public static class MockToolCallHelperExamples
     }
 
     /// <summary>
-    /// Example showing how to create mock tool calls for C# sample only
+    ///     Example showing how to create mock tool calls for C# sample only
     /// </summary>
     public static (
         IEnumerable<FunctionContract>,
@@ -65,7 +64,7 @@ public static class MockToolCallHelperExamples
     }
 
     /// <summary>
-    /// Example of creating a specific override for a calculator method
+    ///     Example of creating a specific override for a calculator method
     /// </summary>
     public static (
         IEnumerable<FunctionContract>,
@@ -74,7 +73,7 @@ public static class MockToolCallHelperExamples
     {
         var callbackOverrides = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["MockCalculatorTool-Divide"] = (argsJson) =>
+            ["MockCalculatorTool-Divide"] = argsJson =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var a = args!["a"].GetDouble();
@@ -86,6 +85,6 @@ public static class MockToolCallHelperExamples
             },
         };
 
-        return MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockCalculatorTool) }, callbackOverrides);
+        return MockToolCallHelper.CreateMockToolCalls([typeof(MockCalculatorTool)], callbackOverrides);
     }
 }

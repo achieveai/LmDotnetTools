@@ -11,6 +11,9 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("text")]
     public required string Text { get; init; }
 
+    [JsonPropertyName("isThinking")]
+    public bool IsThinking { get; init; }
+
     public string? GetText()
     {
         return Text;
@@ -27,9 +30,6 @@ public record TextMessage : IMessage, ICanGetText
 
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
-
-    [JsonPropertyName("isThinking")]
-    public bool IsThinking { get; init; }
 
     [JsonPropertyName("threadId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -75,10 +75,6 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 {
     private readonly StringBuilder _textBuilder = new();
 
-    public string? FromAgent { get; set; }
-
-    public Role Role { get; set; }
-
     public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; set; }
@@ -93,13 +89,18 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public int? MessageOrderIdx { get; set; }
 
+    public string? FromAgent { get; set; }
+
+    public Role Role { get; set; }
+
     IMessage IMessageBuilder.Build()
     {
-        return this.Build();
+        return Build();
     }
 
     public void Add(TextUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         _ = _textBuilder.Append(streamingMessageUpdate.Text);
 
         // Set IsThinking from the update

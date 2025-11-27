@@ -7,12 +7,11 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
 /// <summary>
-/// Mock search tool for demonstrating search functionality
-/// Returns mock search results based on query
+///     Mock search tool for demonstrating search functionality
+///     Returns mock search results based on query
 /// </summary>
 public class SearchTool : IFunctionProvider
 {
-    private readonly ILogger<SearchTool> _logger;
     private static readonly string[] MockTitles =
     [
         "Understanding AG-UI Protocol",
@@ -21,6 +20,8 @@ public class SearchTool : IFunctionProvider
         "Tool Calling in AI Agents",
         "Streaming Event Systems",
     ];
+
+    private readonly ILogger<SearchTool> _logger;
 
     public SearchTool(ILogger<SearchTool> logger)
     {
@@ -65,7 +66,7 @@ public class SearchTool : IFunctionProvider
     }
 
     /// <summary>
-    /// Executes the search with mock results
+    ///     Executes the search with mock results
     /// </summary>
     private async Task<string> ExecuteAsync(string arguments)
     {
@@ -103,7 +104,7 @@ public class SearchTool : IFunctionProvider
             {
                 query = args.Query,
                 totalResults = results.Count,
-                results = results,
+                results,
                 timestamp = DateTime.UtcNow.ToString("o"),
             };
 

@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -8,8 +7,6 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 public record ChatMessage
 {
-    public ChatMessage() { }
-
     [JsonPropertyName("role")]
     public RoleEnum? Role { get; set; }
 
@@ -37,7 +34,8 @@ public record ChatMessage
     // Some providers (e.g., OpenAI o-series) return a duplicate field "reasoning_content"
     // that mirrors "reasoning". We need to *read* it during deserialization but must **not**
     // emit it when serializing outbound requests (it would duplicate `reasoning`).
-    [JsonPropertyName("reasoning_content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    [JsonPropertyName("reasoning_content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ReasoningContent
     {
         // Write-only for deserialization; getter intentionally returns null so the
@@ -50,19 +48,6 @@ public record ChatMessage
     // We model the minimal shape we need: a `type` discriminator and `data` payload.
     [JsonPropertyName("reasoning_details")]
     public List<ReasoningDetail>? ReasoningDetails { get; set; }
-
-    public record ReasoningDetail
-    {
-        [JsonPropertyName("type")]
-        public string? Type { get; set; }
-
-        [JsonPropertyName("data")]
-        public string? Data { get; set; }
-
-        // Some providers (OpenAI o-series) put summary text under a "summary" field instead of "data".
-        [JsonPropertyName("summary")]
-        public string? Summary { get; set; }
-    }
 
     private IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null, bool isStreaming = false)
     {
@@ -91,26 +76,27 @@ public record ChatMessage
 
                 yield break;
             }
-            else
-            {
-                var toolCalls = ToolCalls
-                    .Select((tc, idx) => new ToolCall
-                    {
-                        FunctionName = tc.Function.Name,
-                        FunctionArgs = tc.Function.Arguments,
-                        ToolCallId = tc.Id,
-                        ToolCallIdx = idx // Assign sequential tool call index
-                    })
-                    .ToArray();
 
-                yield return new ToolsCallMessage
-                {
-                    Role = ToRole(role!.Value),
-                    ToolCalls = [.. toolCalls],
-                    FromAgent = name,
-                    GenerationId = Id,
-                };
-            }
+            var toolCalls = ToolCalls
+                .Select(
+                    (tc, idx) =>
+                        new ToolCall
+                        {
+                            FunctionName = tc.Function.Name,
+                            FunctionArgs = tc.Function.Arguments,
+                            ToolCallId = tc.Id,
+                            ToolCallIdx = idx, // Assign sequential tool call index
+                        }
+                )
+                .ToArray();
+
+            yield return new ToolsCallMessage
+            {
+                Role = ToRole(role!.Value),
+                ToolCalls = [.. toolCalls],
+                FromAgent = name,
+                GenerationId = Id,
+            };
         }
 
         // Reasoning handling – emit all reasoning blocks, but prioritize reasoning_details visibility when text matches.
@@ -230,13 +216,13 @@ public record ChatMessage
 
     public IEnumerable<IMessage> ToStreamingMessages(string? name, RoleEnum? role = null)
     {
-        return ToMessages(name, role, isStreaming: true);
+        return ToMessages(name, role, true);
     }
 
     // Keeping original non-streaming method as a wrapper for backward compatibility
     public IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null)
     {
-        return ToMessages(name, role, isStreaming: false);
+        return ToMessages(name, role, false);
     }
 
     public static Role ToRole(RoleEnum role)
@@ -263,6 +249,19 @@ public record ChatMessage
     public static Union<string, Union<TextContent, ImageContent>[]> CreateContent(string text)
     {
         return new Union<string, Union<TextContent, ImageContent>[]>(text);
+    }
+
+    public record ReasoningDetail
+    {
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
+        [JsonPropertyName("data")]
+        public string? Data { get; set; }
+
+        // Some providers (OpenAI o-series) put summary text under a "summary" field instead of "data".
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
     }
 }
 
@@ -305,13 +304,12 @@ public record ImageContent
         {
             get
             {
-                var formattedUrl =
-                    Url.Length <= 50 ? Url : $"{Url[..23]}...{Url[^24..]}";
+                var formattedUrl = Url.Length <= 50 ? Url : $"{Url[..23]}...{Url[^24..]}";
 
                 return AltText != null ? $"Url = {formattedUrl}, AltText = {AltText}" : $"Url = {formattedUrl}";
             }
         }
-    };
+    }
 }
 
 public record FunctionContent(

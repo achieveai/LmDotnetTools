@@ -1,5 +1,4 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,159 +7,11 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Logging;
 
 /// <summary>
-/// Integration tests for the comprehensive logging system to verify that logging works correctly
-/// across agents, middleware, and factories with proper null handling and performance.
+///     Integration tests for the comprehensive logging system to verify that logging works correctly
+///     across agents, middleware, and factories with proper null handling and performance.
 /// </summary>
 public class LoggingSystemIntegrationTests
 {
-    #region Agent Logging Integration Tests
-
-    [Fact]
-    public void FunctionCallMiddleware_WithNullLogger_HandlesGracefully()
-    {
-        // Arrange
-        var functions = new List<FunctionContract>
-        {
-            new FunctionContract
-            {
-                Name = "test_function",
-                Description = "Test function for logging",
-                Parameters = [],
-            },
-        };
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
-        {
-            { "test_function", args => Task.FromResult("test result") },
-        };
-
-        // Act & Assert - Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", null);
-        Assert.NotNull(middleware);
-        Assert.Equal("test-middleware", middleware.Name);
-    }
-
-    [Fact]
-    public async Task FunctionCallMiddleware_WithLogger_LogsCorrectly()
-    {
-        // Arrange
-        var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
-        var functions = new List<FunctionContract>
-        {
-            new FunctionContract
-            {
-                Name = "test_function",
-                Description = "Test function for logging",
-                Parameters = [],
-            },
-        };
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
-        {
-            { "test_function", args => Task.FromResult("test result") },
-        };
-
-        var messages = new List<IMessage>
-        {
-            new TextMessage { Text = "Hello", Role = Role.User },
-        };
-        var context = new MiddlewareContext(messages, null);
-        var mockAgent = new Mock<IAgent>();
-
-        _ = mockAgent
-            .Setup(x =>
-                x.GenerateReplyAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()
-                )
-            )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
-            );
-
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
-
-        // Act
-        _ = await middleware.InvokeAsync(context, mockAgent.Object);
-
-        // Assert - Verify that logging was called
-        mockLogger.Verify(
-            x =>
-                x.Log(
-                    It.IsAny<LogLevel>(),
-                    It.IsAny<EventId>(),
-                    It.IsAny<It.IsAnyType>(),
-                    It.IsAny<Exception>(),
-                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
-                ),
-            Times.AtLeastOnce
-        );
-    }
-
-    [Fact]
-    public async Task FunctionCallMiddleware_WithToolCall_LogsFunctionExecution()
-    {
-        // Arrange
-        var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
-        var functions = new List<FunctionContract>
-        {
-            new FunctionContract
-            {
-                Name = "logging_test_function",
-                Description = "Function to test logging",
-                Parameters = [],
-            },
-        };
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
-        {
-            { "logging_test_function", args => Task.FromResult("logging test result") },
-        };
-
-        var toolCall = new ToolCall
-        {
-            ToolCallId = "test-call-id",
-            FunctionName = "logging_test_function",
-            FunctionArgs = "{}",
-        };
-
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = [toolCall],
-            Role = Role.Assistant,
-            FromAgent = "test-agent",
-        };
-
-        var messages = new List<IMessage> { toolCallMessage };
-        var context = new MiddlewareContext(messages, null);
-
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "logging-test-middleware",
-            mockLogger.Object
-        );
-
-        // Act
-        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
-
-        // Assert - Verify that function execution was logged
-        mockLogger.Verify(
-            x =>
-                x.Log(
-                    LogLevel.Information,
-                    It.IsAny<EventId>(),
-                    It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Function executed")),
-                    It.IsAny<Exception>(),
-                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
-                ),
-            Times.AtLeastOnce
-        );
-    }
-
-    #endregion
-
     #region Performance and Overhead Tests
 
     [Fact]
@@ -172,7 +23,7 @@ public class LoggingSystemIntegrationTests
 
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
+            new()
             {
                 Name = "perf_test_function",
                 Description = "Function for performance testing",
@@ -188,7 +39,7 @@ public class LoggingSystemIntegrationTests
         {
             new TextMessage { Text = "Performance test", Role = Role.User },
         };
-        var context = new MiddlewareContext(messages, null);
+        var context = new MiddlewareContext(messages);
         var mockAgent = new Mock<IAgent>();
 
         _ = mockAgent
@@ -199,18 +50,13 @@ public class LoggingSystemIntegrationTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new List<IMessage>
-                {
-                    new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
-            );
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         var middleware = new FunctionCallMiddleware(functions, functionMap, "perf-test", mockLogger.Object);
 
         // Act - Measure performance
         const int iterations = 100;
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
 
         for (var i = 0; i < iterations; i++)
         {
@@ -243,7 +89,7 @@ public class LoggingSystemIntegrationTests
 
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
+            new()
             {
                 Name = "failing_function",
                 Description = "Function that fails for testing",
@@ -270,7 +116,7 @@ public class LoggingSystemIntegrationTests
         };
 
         var messages = new List<IMessage> { toolCallMessage };
-        var context = new MiddlewareContext(messages, null);
+        var context = new MiddlewareContext(messages);
 
         var middleware = new FunctionCallMiddleware(functions, functionMap, "error-test-middleware", mockLogger.Object);
 
@@ -292,6 +138,149 @@ public class LoggingSystemIntegrationTests
                     It.IsAny<Func<It.IsAnyType, Exception?, string>>()
                 ),
             Times.Once
+        );
+    }
+
+    #endregion
+
+    #region Agent Logging Integration Tests
+
+    [Fact]
+    public void FunctionCallMiddleware_WithNullLogger_HandlesGracefully()
+    {
+        // Arrange
+        var functions = new List<FunctionContract>
+        {
+            new()
+            {
+                Name = "test_function",
+                Description = "Test function for logging",
+                Parameters = [],
+            },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
+            { "test_function", args => Task.FromResult("test result") },
+        };
+
+        // Act & Assert - Should not throw with null logger
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware");
+        Assert.NotNull(middleware);
+        Assert.Equal("test-middleware", middleware.Name);
+    }
+
+    [Fact]
+    public async Task FunctionCallMiddleware_WithLogger_LogsCorrectly()
+    {
+        // Arrange
+        var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
+        var functions = new List<FunctionContract>
+        {
+            new()
+            {
+                Name = "test_function",
+                Description = "Test function for logging",
+                Parameters = [],
+            },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
+            { "test_function", args => Task.FromResult("test result") },
+        };
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
+        var context = new MiddlewareContext(messages);
+        var mockAgent = new Mock<IAgent>();
+
+        _ = mockAgent
+            .Setup(x =>
+                x.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
+
+        // Act
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert - Verify that logging was called
+        mockLogger.Verify(
+            x =>
+                x.Log(
+                    It.IsAny<LogLevel>(),
+                    It.IsAny<EventId>(),
+                    It.IsAny<It.IsAnyType>(),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.AtLeastOnce
+        );
+    }
+
+    [Fact]
+    public async Task FunctionCallMiddleware_WithToolCall_LogsFunctionExecution()
+    {
+        // Arrange
+        var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
+        var functions = new List<FunctionContract>
+        {
+            new()
+            {
+                Name = "logging_test_function",
+                Description = "Function to test logging",
+                Parameters = [],
+            },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
+            { "logging_test_function", args => Task.FromResult("logging test result") },
+        };
+
+        var toolCall = new ToolCall
+        {
+            ToolCallId = "test-call-id",
+            FunctionName = "logging_test_function",
+            FunctionArgs = "{}",
+        };
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls = [toolCall],
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+        };
+
+        var messages = new List<IMessage> { toolCallMessage };
+        var context = new MiddlewareContext(messages);
+
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            functionMap,
+            "logging-test-middleware",
+            mockLogger.Object
+        );
+
+        // Act
+        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+
+        // Assert - Verify that function execution was logged
+        mockLogger.Verify(
+            x =>
+                x.Log(
+                    LogLevel.Information,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Function executed")),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.AtLeastOnce
         );
     }
 
@@ -403,7 +392,7 @@ public class LoggingSystemIntegrationTests
         // Arrange & Act & Assert - All should work with null loggers
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
+            new()
             {
                 Name = "null_safe_function",
                 Description = "Function for null safety testing",
@@ -416,7 +405,7 @@ public class LoggingSystemIntegrationTests
         };
 
         // Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "null-safe-test", null);
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "null-safe-test");
         Assert.NotNull(middleware);
         Assert.Equal("null-safe-test", middleware.Name);
     }

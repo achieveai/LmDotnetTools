@@ -7,11 +7,12 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
 /// <summary>
-/// Tool for getting current time and date information
-/// Demonstrates simple synchronous tool execution
+///     Tool for getting current time and date information
+///     Demonstrates simple synchronous tool execution
 /// </summary>
 public class TimeTool : IFunctionProvider
 {
+    private static readonly string[] sourceArray = ["iso", "friendly", "unix"];
     private readonly ILogger<TimeTool> _logger;
 
     public TimeTool(ILogger<TimeTool> logger)
@@ -22,8 +23,6 @@ public class TimeTool : IFunctionProvider
 
     public string ProviderName => "TimeProvider";
     public int Priority => 100;
-
-    private static readonly string[] sourceArray = ["iso", "friendly", "unix"];
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
@@ -59,7 +58,7 @@ public class TimeTool : IFunctionProvider
     }
 
     /// <summary>
-    /// Executes time lookup
+    ///     Executes time lookup
     /// </summary>
     private async Task<string> ExecuteAsync(string arguments)
     {
@@ -99,8 +98,8 @@ public class TimeTool : IFunctionProvider
 
             var result = new
             {
-                timezone = timezone,
-                format = format,
+                timezone,
+                format,
                 timestamp = formattedTime,
                 iso = now.ToString("o"),
                 unix = new DateTimeOffset(now).ToUnixTimeSeconds(),

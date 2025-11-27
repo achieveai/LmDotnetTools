@@ -10,7 +10,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.Core;
 
 /// <summary>
-/// Comprehensive tests for ServerEmbeddings class using HTTP mocking
+///     Comprehensive tests for ServerEmbeddings class using HTTP mocking
 /// </summary>
 public class ServerEmbeddingsTests
 {
@@ -20,6 +20,69 @@ public class ServerEmbeddingsTests
     {
         _logger = TestLoggerFactory.CreateLogger<ServerEmbeddings>();
     }
+
+    // Test Data
+    public static IEnumerable<object[]> ConstructorTestCases =>
+        [
+            [
+                "https://api.openai.com",
+                "text-embedding-3-small",
+                1536,
+                "test-key",
+                100,
+                EmbeddingApiType.Default,
+                "OpenAI configuration",
+            ],
+            [
+                "https://api.jina.ai",
+                "jina-embeddings-v3",
+                1024,
+                "jina-key",
+                50,
+                EmbeddingApiType.Jina,
+                "Jina configuration",
+            ],
+            [
+                "https://custom.api.com",
+                "custom-model",
+                768,
+                "custom-key",
+                200,
+                EmbeddingApiType.Default,
+                "Custom configuration",
+            ],
+        ];
+
+    public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
+        [
+            [null!, "model", 1536, "key", 100, typeof(ArgumentNullException), "Null endpoint"],
+            ["https://api.test.com", null!, 1536, "key", 100, typeof(ArgumentNullException), "Null model"],
+            ["https://api.test.com", "model", 0, "key", 100, typeof(ArgumentException), "Zero embedding size"],
+            ["https://api.test.com", "model", -1, "key", 100, typeof(ArgumentException), "Negative embedding size"],
+            ["https://api.test.com", "model", 1536, null!, 100, typeof(ArgumentException), "Null API key"],
+            ["https://api.test.com", "model", 1536, "", 100, typeof(ArgumentException), "Empty API key"],
+            ["https://api.test.com", "model", 1536, "key", 0, typeof(ArgumentException), "Zero batch size"],
+        ];
+
+    public static IEnumerable<object[]> BasicEmbeddingTestCases =>
+        [
+            ["Hello world", "Simple text"],
+            ["The quick brown fox jumps over the lazy dog", "Longer sentence"],
+            ["🌟 Unicode text with emojis 🚀", "Unicode and emojis"],
+        ];
+
+    public static IEnumerable<object[]> TextChunkingTestCases =>
+        [
+            [new string('a', 10000), 2, "Long text requiring chunking"],
+            [string.Join(" ", Enumerable.Repeat("word", 2000)), 2, "Many words requiring chunking"],
+            ["Short text", 1, "Short text not requiring chunking"],
+        ];
+
+    public static IEnumerable<object[]> ApiTypeTestCases =>
+        [
+            [EmbeddingApiType.Default, "OpenAI API format"],
+            [EmbeddingApiType.Jina, "Jina API format"],
+        ];
 
     [Theory]
     [MemberData(nameof(ConstructorTestCases))]
@@ -169,7 +232,7 @@ public class ServerEmbeddingsTests
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(expectedChunks)
         );
         using var service = CreateServerEmbeddings(fakeHandler);
-        var request = new EmbeddingRequest { Inputs = new[] { longText }, Model = "test-model" };
+        var request = new EmbeddingRequest { Inputs = [longText], Model = "test-model" };
 
         // Act
         var result = await service.GenerateEmbeddingsAsync(request);
@@ -225,122 +288,6 @@ public class ServerEmbeddingsTests
         Assert.Equal("test-model", models[0]);
         Debug.WriteLine($"Available models returned: {string.Join(", ", models)}");
     }
-
-    // Test Data
-    public static IEnumerable<object[]> ConstructorTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
-                "https://api.openai.com",
-                "text-embedding-3-small",
-                1536,
-                "test-key",
-                100,
-                EmbeddingApiType.Default,
-                "OpenAI configuration",
-            },
-            new object[]
-            {
-                "https://api.jina.ai",
-                "jina-embeddings-v3",
-                1024,
-                "jina-key",
-                50,
-                EmbeddingApiType.Jina,
-                "Jina configuration",
-            },
-            new object[]
-            {
-                "https://custom.api.com",
-                "custom-model",
-                768,
-                "custom-key",
-                200,
-                EmbeddingApiType.Default,
-                "Custom configuration",
-            },
-        };
-
-    public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
-        new List<object[]>
-        {
-            new object[] { null!, "model", 1536, "key", 100, typeof(ArgumentNullException), "Null endpoint" },
-            new object[]
-            {
-                "https://api.test.com",
-                null!,
-                1536,
-                "key",
-                100,
-                typeof(ArgumentNullException),
-                "Null model",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                0,
-                "key",
-                100,
-                typeof(ArgumentException),
-                "Zero embedding size",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                -1,
-                "key",
-                100,
-                typeof(ArgumentException),
-                "Negative embedding size",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                1536,
-                null!,
-                100,
-                typeof(ArgumentException),
-                "Null API key",
-            },
-            new object[] { "https://api.test.com", "model", 1536, "", 100, typeof(ArgumentException), "Empty API key" },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                1536,
-                "key",
-                0,
-                typeof(ArgumentException),
-                "Zero batch size",
-            },
-        };
-
-    public static IEnumerable<object[]> BasicEmbeddingTestCases =>
-        new List<object[]>
-        {
-            new object[] { "Hello world", "Simple text" },
-            new object[] { "The quick brown fox jumps over the lazy dog", "Longer sentence" },
-            new object[] { "🌟 Unicode text with emojis 🚀", "Unicode and emojis" },
-        };
-
-    public static IEnumerable<object[]> TextChunkingTestCases =>
-        new List<object[]>
-        {
-            new object[] { new string('a', 10000), 2, "Long text requiring chunking" },
-            new object[] { string.Join(" ", Enumerable.Repeat("word", 2000)), 2, "Many words requiring chunking" },
-            new object[] { "Short text", 1, "Short text not requiring chunking" },
-        };
-
-    public static IEnumerable<object[]> ApiTypeTestCases =>
-        new List<object[]>
-        {
-            new object[] { EmbeddingApiType.Default, "OpenAI API format" },
-            new object[] { EmbeddingApiType.Jina, "Jina API format" },
-        };
 
     // Helper Methods
     private ServerEmbeddings CreateServerEmbeddings(

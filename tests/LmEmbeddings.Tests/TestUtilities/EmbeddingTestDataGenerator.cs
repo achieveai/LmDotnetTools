@@ -3,15 +3,15 @@ using System.Text.Json;
 namespace LmEmbeddings.Tests.TestUtilities;
 
 /// <summary>
-/// Centralized test data generator for embedding-related tests
-/// Provides consistent test data creation methods
+///     Centralized test data generator for embedding-related tests
+///     Provides consistent test data creation methods
 /// </summary>
 public static class EmbeddingTestDataGenerator
 {
     private static readonly Random DefaultRandom = new(42); // Fixed seed for consistent tests
 
     /// <summary>
-    /// Creates a valid embedding response JSON string for testing
+    ///     Creates a valid embedding response JSON string for testing
     /// </summary>
     /// <param name="embeddingCount">Number of embeddings in the response</param>
     /// <param name="embeddingSize">Size of each embedding vector (default: 1536)</param>
@@ -47,7 +47,7 @@ public static class EmbeddingTestDataGenerator
     }
 
     /// <summary>
-    /// Creates a valid rerank response JSON string for testing
+    ///     Creates a valid rerank response JSON string for testing
     /// </summary>
     /// <param name="documentCount">Number of documents in the response</param>
     /// <param name="model">Model name to include in response (default: "test-rerank-model")</param>
@@ -69,8 +69,8 @@ public static class EmbeddingTestDataGenerator
 
         var response = new
         {
-            results = results,
-            model = model,
+            results,
+            model,
             usage = new { total_tokens = documentCount * 5 },
         };
 
@@ -78,7 +78,7 @@ public static class EmbeddingTestDataGenerator
     }
 
     /// <summary>
-    /// Generates a test embedding array with deterministic values
+    ///     Generates a test embedding array with deterministic values
     /// </summary>
     /// <param name="size">Size of the embedding array</param>
     /// <param name="seed">Random seed for reproducible results (default: 42)</param>
@@ -91,11 +91,12 @@ public static class EmbeddingTestDataGenerator
         {
             embedding[i] = (float)((random.NextDouble() * 2.0) - 1.0); // Range [-1, 1]
         }
+
         return embedding;
     }
 
     /// <summary>
-    /// Generates multiple test embedding arrays
+    ///     Generates multiple test embedding arrays
     /// </summary>
     /// <param name="count">Number of embedding arrays to generate</param>
     /// <param name="size">Size of each embedding array</param>
@@ -108,11 +109,12 @@ public static class EmbeddingTestDataGenerator
         {
             embeddings.Add(GenerateTestEmbeddingArray(size, baseSeed + i));
         }
+
         return embeddings;
     }
 
     /// <summary>
-    /// Creates test input texts for embedding requests
+    ///     Creates test input texts for embedding requests
     /// </summary>
     /// <param name="count">Number of input texts to generate</param>
     /// <param name="prefix">Prefix for generated texts (default: "test_input")</param>
@@ -124,11 +126,12 @@ public static class EmbeddingTestDataGenerator
         {
             inputs[i] = $"{prefix}_{i}";
         }
+
         return inputs;
     }
 
     /// <summary>
-    /// Creates test document texts for reranking requests
+    ///     Creates test document texts for reranking requests
     /// </summary>
     /// <param name="count">Number of document texts to generate</param>
     /// <param name="prefix">Prefix for generated texts (default: "test_document")</param>
@@ -140,11 +143,12 @@ public static class EmbeddingTestDataGenerator
         {
             documents[i] = $"{prefix}_{i} - This is a test document with some content for testing purposes.";
         }
+
         return documents;
     }
 
     /// <summary>
-    /// Creates an error response JSON string for testing error scenarios
+    ///     Creates an error response JSON string for testing error scenarios
     /// </summary>
     /// <param name="errorCode">Error code</param>
     /// <param name="errorMessage">Error message</param>
@@ -170,7 +174,7 @@ public static class EmbeddingTestDataGenerator
     }
 
     /// <summary>
-    /// Creates a rate limit error response for testing
+    ///     Creates a rate limit error response for testing
     /// </summary>
     /// <returns>JSON string representing a rate limit error</returns>
     public static string CreateRateLimitErrorResponse()
@@ -183,7 +187,7 @@ public static class EmbeddingTestDataGenerator
     }
 
     /// <summary>
-    /// Creates an authentication error response for testing
+    ///     Creates an authentication error response for testing
     /// </summary>
     /// <returns>JSON string representing an authentication error</returns>
     public static string CreateAuthErrorResponse()
@@ -192,33 +196,33 @@ public static class EmbeddingTestDataGenerator
     }
 
     /// <summary>
-    /// Creates test data for parameterized tests with various embedding scenarios
+    ///     Creates test data for parameterized tests with various embedding scenarios
     /// </summary>
     /// <returns>Test data for use with [MemberData] attributes</returns>
     public static IEnumerable<object[]> GetEmbeddingTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { 1, 1536, "Single embedding with standard size" },
-            new object[] { 3, 1536, "Multiple embeddings with standard size" },
-            new object[] { 1, 512, "Single embedding with small size" },
-            new object[] { 5, 768, "Multiple embeddings with custom size" },
-            new object[] { 10, 1536, "Large batch with standard size" },
-        };
+        return
+        [
+            [1, 1536, "Single embedding with standard size"],
+            [3, 1536, "Multiple embeddings with standard size"],
+            [1, 512, "Single embedding with small size"],
+            [5, 768, "Multiple embeddings with custom size"],
+            [10, 1536, "Large batch with standard size"],
+        ];
     }
 
     /// <summary>
-    /// Creates test data for error scenarios
+    ///     Creates test data for error scenarios
     /// </summary>
     /// <returns>Test data for error testing</returns>
     public static IEnumerable<object[]> GetErrorTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { "rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario" },
-            new object[] { "invalid_api_key", "Invalid API key", "Authentication error scenario" },
-            new object[] { "model_not_found", "Model not found", "Model error scenario" },
-            new object[] { "invalid_input", "Invalid input format", "Input validation error scenario" },
-        };
+        return
+        [
+            ["rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario"],
+            ["invalid_api_key", "Invalid API key", "Authentication error scenario"],
+            ["model_not_found", "Model not found", "Model error scenario"],
+            ["invalid_input", "Invalid input format", "Input validation error scenario"],
+        ];
     }
 }

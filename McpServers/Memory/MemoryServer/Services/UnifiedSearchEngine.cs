@@ -4,18 +4,18 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Unified multi-source search engine that searches across memories, entities, and relationships.
-/// Executes all 6 search operations in parallel (Memory FTS5/Vector, Entity FTS5/Vector, Relationship FTS5/Vector).
+///     Unified multi-source search engine that searches across memories, entities, and relationships.
+///     Executes all 6 search operations in parallel (Memory FTS5/Vector, Entity FTS5/Vector, Relationship FTS5/Vector).
 /// </summary>
 public class UnifiedSearchEngine : IUnifiedSearchEngine
 {
-    private readonly IMemoryRepository _memoryRepository;
-    private readonly IGraphRepository _graphRepository;
-    private readonly IEmbeddingManager _embeddingManager;
-    private readonly IRerankingEngine _rerankingEngine;
     private readonly IDeduplicationEngine _deduplicationEngine;
-    private readonly IResultEnricher _resultEnricher;
+    private readonly IEmbeddingManager _embeddingManager;
+    private readonly IGraphRepository _graphRepository;
     private readonly ILogger<UnifiedSearchEngine> _logger;
+    private readonly IMemoryRepository _memoryRepository;
+    private readonly IRerankingEngine _rerankingEngine;
+    private readonly IResultEnricher _resultEnricher;
 
     public UnifiedSearchEngine(
         IMemoryRepository memoryRepository,
@@ -352,8 +352,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                     _logger.LogWarning(ex, "Enrichment failed, using original results");
                     metrics.Errors.Add($"Enrichment failed: {ex.Message}");
                     // Convert to enriched results without enrichment
-                    enrichedResults = [.. finalResults
-                        .Select(r => new EnrichedSearchResult
+                    enrichedResults =
+                    [
+                        .. finalResults.Select(r => new EnrichedSearchResult
                         {
                             Type = r.Type,
                             Id = r.Id,
@@ -367,7 +368,8 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                             OriginalMemory = r.OriginalMemory,
                             OriginalEntity = r.OriginalEntity,
                             OriginalRelationship = r.OriginalRelationship,
-                        })];
+                        }),
+                    ];
                 }
             }
 
@@ -386,11 +388,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 metrics.TotalDuration.TotalMilliseconds
             );
 
-            return new UnifiedSearchResults
-            {
-                Results = [.. sortedResults.Cast<UnifiedSearchResult>()],
-                Metrics = metrics,
-            };
+            return new UnifiedSearchResults { Results = [.. sortedResults], Metrics = metrics };
         }
         catch (Exception ex)
         {
@@ -447,6 +445,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.MemoryFtsResultCount = memories.Count;
             }
 
@@ -507,6 +506,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.MemoryVectorResultCount = vectorResults.Count;
             }
 
@@ -568,6 +568,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.EntityFtsResultCount = entities.Count();
             }
 
@@ -630,6 +631,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.EntityVectorResultCount = vectorResults.Count;
             }
 
@@ -691,6 +693,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.RelationshipFtsResultCount = relationships.Count();
             }
 
@@ -754,6 +757,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         }
                     );
                 }
+
                 metrics.RelationshipVectorResultCount = vectorResults.Count;
             }
 

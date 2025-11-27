@@ -1,6 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
@@ -11,16 +14,16 @@ using ModelContextProtocol.Protocol;
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
 /// <summary>
-/// Function provider that provides functions from MCP clients
+///     Function provider that provides functions from MCP clients
 /// </summary>
 public partial class McpClientFunctionProvider : IFunctionProvider
 {
-    private readonly Dictionary<string, IMcpClient> _mcpClients;
     private readonly List<FunctionDescriptor> _functions;
     private readonly ILogger<McpClientFunctionProvider> _logger;
+    private readonly Dictionary<string, IMcpClient> _mcpClients;
 
     /// <summary>
-    /// Private constructor for async factory pattern
+    ///     Private constructor for async factory pattern
     /// </summary>
     private McpClientFunctionProvider(
         Dictionary<string, IMcpClient> mcpClients,
@@ -35,8 +38,20 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         _logger = logger ?? NullLogger<McpClientFunctionProvider>.Instance;
     }
 
+    public string ProviderName { get; }
+
     /// <summary>
-    /// Creates a new instance of McpClientFunctionProvider asynchronously
+    ///     MCP client functions have medium priority (100)
+    /// </summary>
+    public int Priority => 100;
+
+    public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        return _functions;
+    }
+
+    /// <summary>
+    ///     Creates a new instance of McpClientFunctionProvider asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="providerName">Optional provider name</param>
@@ -50,6 +65,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         logger ??= NullLogger<McpClientFunctionProvider>.Instance;
 
         logger.LogInformation(
@@ -90,7 +107,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Creates a new instance from a single MCP client
+    ///     Creates a new instance from a single MCP client
     /// </summary>
     /// <param name="mcpClient">The MCP client</param>
     /// <param name="clientId">Client identifier</param>
@@ -111,7 +128,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Creates a new instance with configuration for tool filtering and collision handling
+    ///     Creates a new instance with configuration for tool filtering and collision handling
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="toolFilterConfig">Tool filtering configuration</param>
@@ -122,13 +139,15 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <returns>A new instance of McpClientFunctionProvider</returns>
     public static async Task<McpClientFunctionProvider> CreateAsync(
         Dictionary<string, IMcpClient> mcpClients,
-        AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig? toolFilterConfig,
-        Dictionary<string, AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig>? serverConfigs,
+        FunctionFilterConfig? toolFilterConfig,
+        Dictionary<string, ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         logger ??= NullLogger<McpClientFunctionProvider>.Instance;
 
         logger.LogInformation(
@@ -166,7 +185,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 var descriptor = new FunctionDescriptor
                 {
-                    Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract
+                    Contract = new FunctionContract
                     {
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
@@ -181,7 +200,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         }
 
         // Use the generalized collision detector
-        var collisionConfig = new AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig
+        var collisionConfig = new FunctionFilterConfig
         {
             UsePrefixOnlyForCollisions = toolFilterConfig?.UsePrefixOnlyForCollisions ?? true,
         };
@@ -206,11 +225,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             // Convert server configs to provider configs if needed
             if (serverConfigs != null && serverConfigs.Count > 0)
             {
-                toolFilterConfig.ProviderConfigs = serverConfigs.ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => (AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig)kvp.Value
-                );
+                toolFilterConfig.ProviderConfigs = serverConfigs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
             }
+
             toolFilter = new FunctionFilter(toolFilterConfig, logger);
         }
 
@@ -259,21 +276,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         return new McpClientFunctionProvider(mcpClients, functions, providerName, logger);
     }
 
-    public string ProviderName { get; }
-
     /// <summary>
-    /// MCP client functions have medium priority (100)
-    /// </summary>
-    public int Priority => 100;
-
-    public IEnumerable<FunctionDescriptor> GetFunctions()
-    {
-        return _functions;
-    }
-
-    /// <summary>
-    /// Extracts function contracts from MCP client tools
-    /// (Reused from McpMiddleware with minor adaptations)
+    ///     Extracts function contracts from MCP client tools
+    ///     (Reused from McpMiddleware with minor adaptations)
     /// </summary>
     private static async Task<IEnumerable<FunctionContract>> ExtractFunctionContractsAsync(
         Dictionary<string, IMcpClient> mcpClients,
@@ -312,7 +317,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             tool.Name
                         );
                         // Continue with other tools even if one fails
-                        continue;
                     }
                 }
             }
@@ -320,7 +324,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
                 // Continue with other clients even if one fails
-                continue;
             }
         }
 
@@ -328,8 +331,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Creates function delegates for the MCP clients asynchronously
-    /// (Reused from McpMiddleware with minor adaptations)
+    ///     Creates function delegates for the MCP clients asynchronously
+    ///     (Reused from McpMiddleware with minor adaptations)
     /// </summary>
     private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
@@ -377,9 +380,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     );
 
                     // Create a delegate that calls the appropriate MCP client
-                    functionMap[functionName] = async (argsJson) =>
+                    functionMap[functionName] = async argsJson =>
                     {
-                        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                        var stopwatch = Stopwatch.StartNew();
                         try
                         {
                             logger.LogDebug(
@@ -429,7 +432,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                 response.Content != null
                                     ? response
                                         .Content.Where(c => c?.Type == "text")
-                                        .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
+                                        .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
                                     : []
                             );
 
@@ -478,7 +481,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
                 // Continue with other clients even if one fails
-                continue;
             }
         }
 
@@ -486,8 +488,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Sanitizes a tool name to comply with OpenAI's function name requirements
-    /// OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
+    ///     Sanitizes a tool name to comply with OpenAI's function name requirements
+    ///     OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
     /// </summary>
     private static string SanitizeToolName(string toolName)
     {
@@ -515,8 +517,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Converts an MCP client tool to a function contract
-    /// (Reused from McpMiddleware)
+    ///     Converts an MCP client tool to a function contract
+    ///     (Reused from McpMiddleware)
     /// </summary>
     private static FunctionContract ConvertToFunctionContract(
         string clientName,
@@ -536,8 +538,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Extracts function parameters from a JSON schema
-    /// (Reused from McpMiddleware)
+    ///     Extracts function parameters from a JSON schema
+    ///     (Reused from McpMiddleware)
     /// </summary>
     private static IList<FunctionParameterContract>? ExtractParametersFromSchema(
         object? inputSchema,
@@ -651,8 +653,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Maps JSON Schema types to .NET types
-    /// (Reused from McpMiddleware)
+    ///     Maps JSON Schema types to .NET types
+    ///     (Reused from McpMiddleware)
     /// </summary>
     private static Type GetTypeFromJsonSchemaType(string? jsonSchemaType)
     {
@@ -669,7 +671,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Extracts function contracts using the naming map from collision detection
+    ///     Extracts function contracts using the naming map from collision detection
     /// </summary>
     private static Task<IEnumerable<FunctionContract>> ExtractFunctionContractsWithNamingMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
@@ -704,7 +706,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     {
                         var descriptor = new FunctionDescriptor
                         {
-                            Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = tool.Name },
+                            Contract = new FunctionContract { Name = tool.Name },
                             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                             ProviderName = serverId,
                         };
@@ -744,7 +746,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         serverId,
                         tool.Name
                     );
-                    continue;
                 }
             }
         }
@@ -753,7 +754,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Creates function delegates using the naming map from collision detection
+    ///     Creates function delegates using the naming map from collision detection
     /// </summary>
     private static Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapWithNamingMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
@@ -792,7 +793,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 {
                     var descriptor = new FunctionDescriptor
                     {
-                        Contract = new AchieveAi.LmDotnetTools.LmCore.Core.FunctionContract { Name = tool.Name },
+                        Contract = new FunctionContract { Name = tool.Name },
                         Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                         ProviderName = serverId,
                     };
@@ -817,9 +818,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 );
 
                 // Create a delegate that calls the appropriate MCP client
-                functionMap[registeredName] = async (argsJson) =>
+                functionMap[registeredName] = async argsJson =>
                 {
-                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    var stopwatch = Stopwatch.StartNew();
                     try
                     {
                         logger.LogDebug(
@@ -869,7 +870,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             response.Content != null
                                 ? response
                                     .Content.Where(c => c?.Type == "text")
-                                    .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
+                                    .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
                                 : []
                         );
 
@@ -918,6 +919,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         return Task.FromResult<IDictionary<string, Func<string, Task<string>>>>(functionMap);
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex(@"[^a-zA-Z0-9_-]")]
-    private static partial System.Text.RegularExpressions.Regex MyRegex();
+    [GeneratedRegex(@"[^a-zA-Z0-9_-]")]
+    private static partial Regex MyRegex();
 }

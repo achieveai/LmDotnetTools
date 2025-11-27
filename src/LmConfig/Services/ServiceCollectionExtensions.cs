@@ -12,23 +12,25 @@ using Microsoft.Extensions.Options;
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
 
 /// <summary>
-/// Extension methods for registering LmConfig services with dependency injection.
+///     Extension methods for registering LmConfig services with dependency injection.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds LmConfig services to the service collection, including the unified agent system.
+    ///     Adds LmConfig services to the service collection, including the unified agent system.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configuration">The configuration containing model and provider settings.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(this IServiceCollection services, IConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
         return services.AddLmConfig(configuration.GetSection("LmConfig"));
     }
 
     /// <summary>
-    /// Adds LmConfig services to the service collection, including the unified agent system.
+    ///     Adds LmConfig services to the service collection, including the unified agent system.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configurationSection">The configuration section containing model and provider settings.</param>
@@ -38,32 +40,35 @@ public static class ServiceCollectionExtensions
         IConfigurationSection configurationSection
     )
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configurationSection);
         // Configure AppConfig from configuration
         _ = services.Configure<AppConfig>(configurationSection);
 
         // Register core services using shared helper
-        return RegisterLmConfigServices(services, registerAsDefaultAgent: true);
+        return RegisterLmConfigServices(services, true);
     }
 
     /// <summary>
-    /// Adds LmConfig services with a pre-configured AppConfig instance.
+    ///     Adds LmConfig services with a pre-configured AppConfig instance.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="appConfig">The pre-configured AppConfig instance.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(this IServiceCollection services, AppConfig appConfig)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(appConfig);
 
         // Configure AppConfig as singleton
         _ = services.AddSingleton(Options.Create(appConfig));
 
         // Register core services using shared helper
-        return RegisterLmConfigServices(services, registerAsDefaultAgent: true);
+        return RegisterLmConfigServices(services, true);
     }
 
     /// <summary>
-    /// Adds LmConfig services by loading configuration from a JSON file.
+    ///     Adds LmConfig services by loading configuration from a JSON file.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configFilePath">Path to the JSON configuration file.</param>
@@ -100,11 +105,7 @@ public static class ServiceCollectionExtensions
         }
 
         // Otherwise treat file as standard configuration with "LmConfig" section
-        var configBuilder = new ConfigurationBuilder().AddJsonFile(
-            configFilePath,
-            optional: false,
-            reloadOnChange: true
-        );
+        var configBuilder = new ConfigurationBuilder().AddJsonFile(configFilePath, false, true);
 
         var configuration = configBuilder.Build();
 
@@ -112,7 +113,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds LmConfig services with advanced configuration options.
+    ///     Adds LmConfig services with advanced configuration options.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configureOptions">Action to configure advanced options.</param>
@@ -122,37 +123,30 @@ public static class ServiceCollectionExtensions
         Action<LmConfigOptions> configureOptions
     )
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configureOptions);
         var options = new LmConfigOptions();
         configureOptions(options);
 
         // Configure AppConfig from options
-        if (options.AppConfig != null)
-        {
-            _ = services.AddSingleton(Options.Create(options.AppConfig));
-        }
-        else
-        {
-            _ = options.ConfigurationSection != null
-                ? services.Configure<AppConfig>(options.ConfigurationSection)
-                : throw new InvalidOperationException(
+        _ =
+            options.AppConfig != null ? services.AddSingleton(Options.Create(options.AppConfig))
+            : options.ConfigurationSection != null ? services.Configure<AppConfig>(options.ConfigurationSection)
+            : throw new InvalidOperationException(
                 "Either AppConfig or ConfigurationSection must be specified in LmConfigOptions"
             );
-        }
 
         // Register core services using shared helper
         _ = RegisterLmConfigServices(services, options.RegisterAsDefaultAgent);
 
         // Configure HTTP clients for providers if specified
-        if (options.ConfigureHttpClients != null)
-        {
-            options.ConfigureHttpClients(services);
-        }
+        options.ConfigureHttpClients?.Invoke(services);
 
         return services;
     }
 
     /// <summary>
-    /// Adds LmConfig services by loading configuration from an embedded resource.
+    ///     Adds LmConfig services by loading configuration from an embedded resource.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="resourceName">Name of the embedded resource (e.g., "models.json").</param>
@@ -173,7 +167,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds LmConfig services by loading configuration from a stream factory.
+    ///     Adds LmConfig services by loading configuration from a stream factory.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="streamFactory">Factory function that provides the configuration stream.</param>
@@ -187,7 +181,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds LmConfig services by loading configuration from an async stream factory.
+    ///     Adds LmConfig services by loading configuration from an async stream factory.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="streamFactory">Async factory function that provides the configuration stream.</param>
@@ -204,7 +198,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Shared method to register core LmConfig services, eliminating duplication.
+    ///     Shared method to register core LmConfig services, eliminating duplication.
     /// </summary>
     private static IServiceCollection RegisterLmConfigServices(IServiceCollection services, bool registerAsDefaultAgent)
     {
@@ -230,8 +224,8 @@ public static class ServiceCollectionExtensions
             _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var inner =
-                    (hbDescriptor.ImplementationInstance as HandlerBuilder)
-                    ?? (hbDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
+                    hbDescriptor.ImplementationInstance as HandlerBuilder
+                    ?? hbDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder
                     ?? new HandlerBuilder();
 
                 _ = inner.Use(LmConfigStandardWrappers.WithRetry());
@@ -256,7 +250,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Shared validation for string parameters.
+    ///     Shared validation for string parameters.
     /// </summary>
     private static void ValidateStringParameter(string value, string parameterName)
     {
@@ -267,7 +261,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Loads configuration from async stream factory.
+    ///     Loads configuration from async stream factory.
     /// </summary>
     private static AppConfig LoadConfigFromStreamAsync(Func<Task<Stream>> streamFactory)
     {
@@ -283,7 +277,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Shared internal method for loading configuration from stream.
+    ///     Shared internal method for loading configuration from stream.
     /// </summary>
     private static AppConfig LoadConfigFromStreamInternal(Stream stream)
     {
@@ -312,7 +306,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Validates the LmConfig configuration and throws an exception if invalid.
+    ///     Validates the LmConfig configuration and throws an exception if invalid.
     /// </summary>
     /// <param name="services">The service collection to validate.</param>
     /// <returns>The service collection for chaining.</returns>
@@ -441,28 +435,28 @@ public static class ServiceCollectionExtensions
 }
 
 /// <summary>
-/// Advanced configuration options for LmConfig services.
+///     Advanced configuration options for LmConfig services.
 /// </summary>
 public class LmConfigOptions
 {
     /// <summary>
-    /// Pre-configured AppConfig instance.
+    ///     Pre-configured AppConfig instance.
     /// </summary>
     public AppConfig? AppConfig { get; set; }
 
     /// <summary>
-    /// Configuration section containing AppConfig settings.
+    ///     Configuration section containing AppConfig settings.
     /// </summary>
     public IConfigurationSection? ConfigurationSection { get; set; }
 
     /// <summary>
-    /// Whether to register UnifiedAgent as the default IAgent and IStreamingAgent.
-    /// Default is true.
+    ///     Whether to register UnifiedAgent as the default IAgent and IStreamingAgent.
+    ///     Default is true.
     /// </summary>
     public bool RegisterAsDefaultAgent { get; set; } = true;
 
     /// <summary>
-    /// Optional action to configure HTTP clients for providers.
+    ///     Optional action to configure HTTP clients for providers.
     /// </summary>
     public Action<IServiceCollection>? ConfigureHttpClients { get; set; }
 }

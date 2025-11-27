@@ -1,52 +1,52 @@
 namespace AchieveAi.LmDotnetTools.Misc.Configuration;
 
 /// <summary>
-/// Configuration options for LLM request caching.
+///     Configuration options for LLM request caching.
 /// </summary>
 public record LlmCacheOptions
 {
     /// <summary>
-    /// Gets the directory where cache files will be stored.
-    /// Defaults to a subdirectory in the current working directory.
+    ///     Gets the directory where cache files will be stored.
+    ///     Defaults to a subdirectory in the current working directory.
     /// </summary>
     public string CacheDirectory { get; init; } = GetDefaultCacheDirectory();
 
     /// <summary>
-    /// Gets whether caching is enabled.
-    /// Defaults to true.
+    ///     Gets whether caching is enabled.
+    ///     Defaults to true.
     /// </summary>
     public bool EnableCaching { get; init; } = true;
 
     /// <summary>
-    /// Gets the cache expiration time.
-    /// If null, cached items never expire.
-    /// Defaults to 24 hours.
+    ///     Gets the cache expiration time.
+    ///     If null, cached items never expire.
+    ///     Defaults to 24 hours.
     /// </summary>
     public TimeSpan? CacheExpiration { get; init; } = TimeSpan.FromHours(24);
 
     /// <summary>
-    /// Gets the maximum number of cached items.
-    /// If null, there is no limit.
-    /// Defaults to 10,000 items.
+    ///     Gets the maximum number of cached items.
+    ///     If null, there is no limit.
+    ///     Defaults to 10,000 items.
     /// </summary>
     public int? MaxCacheItems { get; init; } = 10_000;
 
     /// <summary>
-    /// Gets the maximum size of the cache directory in bytes.
-    /// If null, there is no size limit.
-    /// Defaults to 1 GB.
+    ///     Gets the maximum size of the cache directory in bytes.
+    ///     If null, there is no size limit.
+    ///     Defaults to 1 GB.
     /// </summary>
     public long? MaxCacheSizeBytes { get; init; } = 1_073_741_824; // 1 GB
 
     /// <summary>
-    /// Gets whether to clean up expired cache files on startup.
-    /// Defaults to false to keep implementation simple.
+    ///     Gets whether to clean up expired cache files on startup.
+    ///     Defaults to false to keep implementation simple.
     /// </summary>
-    public bool CleanupOnStartup { get; init; } = false;
+    public bool CleanupOnStartup { get; init; }
 
     /// <summary>
-    /// Gets the default cache directory path.
-    /// Uses current directory + "/LLM_CACHE" for simplicity.
+    ///     Gets the default cache directory path.
+    ///     Uses current directory + "/LLM_CACHE" for simplicity.
     /// </summary>
     public static string GetDefaultCacheDirectory()
     {
@@ -54,7 +54,7 @@ public record LlmCacheOptions
     }
 
     /// <summary>
-    /// Validates the configuration options.
+    ///     Validates the configuration options.
     /// </summary>
     /// <returns>A list of validation errors, or an empty list if valid.</returns>
     public List<string> Validate()
@@ -97,14 +97,14 @@ public record LlmCacheOptions
     }
 
     /// <summary>
-    /// Creates LlmCacheOptions from environment variables.
-    /// Environment variables:
-    /// - LLM_CACHE_DIRECTORY: Cache directory path (defaults to current directory + "/LLM_CACHE")
-    /// - LLM_CACHE_ENABLED: Enable/disable caching (defaults to true)
-    /// - LLM_CACHE_EXPIRATION_HOURS: Cache expiration in hours (defaults to 24)
-    /// - LLM_CACHE_MAX_ITEMS: Maximum number of cached items (defaults to 10,000)
-    /// - LLM_CACHE_MAX_SIZE_MB: Maximum cache size in megabytes (defaults to 1,024 MB)
-    /// - LLM_CACHE_CLEANUP_ON_STARTUP: Cleanup on startup (defaults to false for simplicity)
+    ///     Creates LlmCacheOptions from environment variables.
+    ///     Environment variables:
+    ///     - LLM_CACHE_DIRECTORY: Cache directory path (defaults to current directory + "/LLM_CACHE")
+    ///     - LLM_CACHE_ENABLED: Enable/disable caching (defaults to true)
+    ///     - LLM_CACHE_EXPIRATION_HOURS: Cache expiration in hours (defaults to 24)
+    ///     - LLM_CACHE_MAX_ITEMS: Maximum number of cached items (defaults to 10,000)
+    ///     - LLM_CACHE_MAX_SIZE_MB: Maximum cache size in megabytes (defaults to 1,024 MB)
+    ///     - LLM_CACHE_CLEANUP_ON_STARTUP: Cleanup on startup (defaults to false for simplicity)
     /// </summary>
     /// <returns>LlmCacheOptions configured from environment variables.</returns>
     public static LlmCacheOptions FromEnvironment()
@@ -132,8 +132,7 @@ public record LlmCacheOptions
                     ? sizeMB * 1024 * 1024
                     : 1_073_741_824,
             CleanupOnStartup =
-                !string.IsNullOrEmpty(cleanupOnStartup) && bool.TryParse(cleanupOnStartup, out var cleanup)
-                    && cleanup,
+                !string.IsNullOrEmpty(cleanupOnStartup) && bool.TryParse(cleanupOnStartup, out var cleanup) && cleanup,
         };
     }
 }

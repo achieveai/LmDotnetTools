@@ -8,8 +8,8 @@ using Xunit.Abstractions;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Unit tests for RerankingEngine to verify Phase 7 implementation.
-/// Tests the intelligent reranking functionality with mocked dependencies.
+///     Unit tests for RerankingEngine to verify Phase 7 implementation.
+///     Tests the intelligent reranking functionality with mocked dependencies.
 /// </summary>
 public class RerankingEngineTests
 {
@@ -64,9 +64,13 @@ public class RerankingEngineTests
         // Act & Assert
         _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("", results, sessionContext));
 
-        _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("   ", results, sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
+            engine.RerankResultsAsync("   ", results, sessionContext)
+        );
 
-        _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync(null!, results, sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
+            engine.RerankResultsAsync(null!, results, sessionContext)
+        );
     }
 
     [Fact]
@@ -105,7 +109,7 @@ public class RerankingEngineTests
     public async Task RerankResultsAsync_WithDisabledReranking_ReturnsOriginalResults()
     {
         // Arrange
-        var options = CreateTestOptions(enableReranking: false);
+        var options = CreateTestOptions(false);
         var engine = new RerankingEngine(options, _mockLogger.Object);
         var sessionContext = CreateTestSessionContext();
         var results = CreateTestResults();
@@ -164,7 +168,7 @@ public class RerankingEngineTests
         // Create results with different creation dates
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
+            new()
             {
                 Id = 1,
                 Type = UnifiedResultType.Memory,
@@ -172,7 +176,7 @@ public class RerankingEngineTests
                 Score = 0.5f,
                 CreatedAt = DateTime.UtcNow.AddDays(-60), // Old content
             },
-            new UnifiedSearchResult
+            new()
             {
                 Id = 2,
                 Type = UnifiedResultType.Memory,
@@ -211,7 +215,7 @@ public class RerankingEngineTests
         // Create results with different types but same initial score
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
+            new()
             {
                 Id = 1,
                 Type = UnifiedResultType.Memory,
@@ -219,7 +223,7 @@ public class RerankingEngineTests
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
+            new()
             {
                 Id = 2,
                 Type = UnifiedResultType.Entity,
@@ -227,7 +231,7 @@ public class RerankingEngineTests
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
+            new()
             {
                 Id = 3,
                 Type = UnifiedResultType.Relationship,
@@ -270,7 +274,7 @@ public class RerankingEngineTests
         var options = CreateTestOptions(maxCandidates: 2);
         var engine = new RerankingEngine(options, _mockLogger.Object);
         var sessionContext = CreateTestSessionContext();
-        var results = CreateTestResults(count: 5); // More than max candidates
+        var results = CreateTestResults(5); // More than max candidates
 
         // Act
         var result = await engine.RerankResultsAsync("test query", results, sessionContext);
@@ -292,7 +296,7 @@ public class RerankingEngineTests
 
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
+            new()
             {
                 Id = 1,
                 Type = UnifiedResultType.Entity,
@@ -301,7 +305,7 @@ public class RerankingEngineTests
                 Confidence = 0.3f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
+            new()
             {
                 Id = 2,
                 Type = UnifiedResultType.Entity,
@@ -343,7 +347,7 @@ public class RerankingEngineTests
         // Create results that will likely change positions after scoring
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
+            new()
             {
                 Id = 1,
                 Type = UnifiedResultType.Relationship, // Lower weight
@@ -351,7 +355,7 @@ public class RerankingEngineTests
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow.AddDays(-60),
             },
-            new UnifiedSearchResult
+            new()
             {
                 Id = 2,
                 Type = UnifiedResultType.Memory, // Higher weight

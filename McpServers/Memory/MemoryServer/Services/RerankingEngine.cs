@@ -6,13 +6,13 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Intelligent reranking engine that applies semantic reranking to unified search results.
-/// Integrates with LmEmbeddings RerankingService and provides multi-dimensional scoring.
+///     Intelligent reranking engine that applies semantic reranking to unified search results.
+///     Integrates with LmEmbeddings RerankingService and provides multi-dimensional scoring.
 /// </summary>
 public class RerankingEngine : IRerankingEngine
 {
     private readonly ILogger<RerankingEngine> _logger;
-    private readonly MemoryServer.Models.RerankingOptions _options;
+    private readonly RerankingOptions _options;
     private readonly RerankingService? _rerankingService;
 
     public RerankingEngine(IOptions<MemoryServerOptions> options, ILogger<RerankingEngine> logger)
@@ -60,7 +60,7 @@ public class RerankingEngine : IRerankingEngine
         string query,
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
-        MemoryServer.Models.RerankingOptions? options = null,
+        RerankingOptions? options = null,
         CancellationToken cancellationToken = default
     )
     {
@@ -277,10 +277,7 @@ public class RerankingEngine : IRerankingEngine
         return sortedResults;
     }
 
-    private static void ApplyMultiDimensionalScoring(
-        UnifiedSearchResult result,
-        MemoryServer.Models.RerankingOptions options
-    )
+    private static void ApplyMultiDimensionalScoring(UnifiedSearchResult result, RerankingOptions options)
     {
         var originalScore = result.Score;
         var newScore = originalScore;
@@ -368,6 +365,7 @@ public class RerankingEngine : IRerankingEngine
                 changes++;
             }
         }
+
         return changes;
     }
 

@@ -3,7 +3,7 @@ using System.Text;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 /// <summary>
-/// Unit tests for the tool call parsing components that will be used in the refactored middleware
+///     Unit tests for the tool call parsing components that will be used in the refactored middleware
 /// </summary>
 public class ToolCallParsingComponentsTests
 {
@@ -307,7 +307,7 @@ public class ToolCallParsingComponentsTests
         if (shouldMatch)
         {
             Assert.Equal(expectedStartIndex, result.StartIndex);
-            Assert.Equal(input.Substring(expectedStartIndex), result.PartialPattern);
+            Assert.Equal(input[expectedStartIndex..], result.PartialPattern);
         }
         else
         {

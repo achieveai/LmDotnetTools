@@ -7,22 +7,22 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ToolsCallResultMessageJsonConverter))]
 public record ToolsCallResultMessage : IMessage
 {
+    [JsonPropertyName("tool_call_results")]
+    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = [];
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? FromAgent { get; init; } = null;
+    public string? FromAgent { get; init; }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? GenerationId { get; init; } = null;
-
-    [JsonPropertyName("tool_call_results")]
-    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = [];
+    public string? GenerationId { get; init; }
 
     [JsonPropertyName("threadId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -66,6 +66,7 @@ public record ToolsCallResultMessage : IMessage
         string? generationId = null
     )
     {
+        ArgumentNullException.ThrowIfNull(toolCall);
         return new ToolsCallResultMessage
         {
             Role = role,
@@ -91,7 +92,10 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = [.. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty))],
+            ToolCallResults =
+            [
+                .. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)),
+            ],
         };
     }
 }

@@ -3,24 +3,24 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmConfig.Models;
 
 /// <summary>
-/// Pricing configuration for token-based costs.
+///     Pricing configuration for token-based costs.
 /// </summary>
 public record PricingConfig
 {
     /// <summary>
-    /// Cost per million prompt tokens.
+    ///     Cost per million prompt tokens.
     /// </summary>
     [JsonPropertyName("prompt_per_million")]
     public required double PromptPerMillion { get; init; }
 
     /// <summary>
-    /// Cost per million completion tokens.
+    ///     Cost per million completion tokens.
     /// </summary>
     [JsonPropertyName("completion_per_million")]
     public required double CompletionPerMillion { get; init; }
 
     /// <summary>
-    /// Calculates the total cost for a request.
+    ///     Calculates the total cost for a request.
     /// </summary>
     /// <param name="promptTokens">Number of prompt tokens</param>
     /// <param name="completionTokens">Number of completion tokens</param>
@@ -33,7 +33,7 @@ public record PricingConfig
     }
 
     /// <summary>
-    /// Calculates the prompt cost for a request.
+    ///     Calculates the prompt cost for a request.
     /// </summary>
     /// <param name="promptTokens">Number of prompt tokens</param>
     /// <returns>Prompt cost in dollars</returns>
@@ -43,7 +43,7 @@ public record PricingConfig
     }
 
     /// <summary>
-    /// Calculates the completion cost for a request.
+    ///     Calculates the completion cost for a request.
     /// </summary>
     /// <param name="completionTokens">Number of completion tokens</param>
     /// <returns>Completion cost in dollars</returns>
@@ -54,7 +54,7 @@ public record PricingConfig
 }
 
 /// <summary>
-/// Enhanced cost estimation with provider and subprovider details.
+///     Enhanced cost estimation with provider and subprovider details.
 /// </summary>
 public record CostEstimation
 {
@@ -71,13 +71,13 @@ public record CostEstimation
     public DateTime EstimatedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
-    /// Full provider path for aggregators (e.g., "OpenRouter -> OpenAI")
+    ///     Full provider path for aggregators (e.g., "OpenRouter -> OpenAI")
     /// </summary>
     public string ProviderPath => SubProvider != null ? $"{Provider} -> {SubProvider}" : Provider;
 }
 
 /// <summary>
-/// Actual cost report with provider and subprovider tracking.
+///     Actual cost report with provider and subprovider tracking.
 /// </summary>
 public record CostReport
 {
@@ -96,13 +96,13 @@ public record CostReport
     public string? RequestId { get; init; } // For tracking and debugging
 
     /// <summary>
-    /// Full provider path for aggregators (e.g., "OpenRouter -> Together AI")
+    ///     Full provider path for aggregators (e.g., "OpenRouter -> Together AI")
     /// </summary>
     public string ProviderPath => SubProvider != null ? $"{Provider} -> {SubProvider}" : Provider;
 }
 
 /// <summary>
-/// Cost comparison between different provider options.
+///     Cost comparison between different provider options.
 /// </summary>
 public record CostComparison
 {
@@ -113,17 +113,17 @@ public record CostComparison
     public DateTime ComparedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
-    /// Gets the cheapest cost option.
+    ///     Gets the cheapest cost option.
     /// </summary>
     public CostOption Cheapest => Options.OrderBy(o => o.TotalCost).First();
 
     /// <summary>
-    /// Gets the most expensive cost option.
+    ///     Gets the most expensive cost option.
     /// </summary>
     public CostOption MostExpensive => Options.OrderByDescending(o => o.TotalCost).First();
 
     /// <summary>
-    /// Gets options grouped by reliability tier.
+    ///     Gets options grouped by reliability tier.
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyList<CostOption>> ByReliability =>
         Options
@@ -132,7 +132,7 @@ public record CostComparison
 }
 
 /// <summary>
-/// Individual cost option in a comparison.
+///     Individual cost option in a comparison.
 /// </summary>
 public record CostOption
 {
@@ -148,12 +148,12 @@ public record CostOption
     public double? UptimePercentage { get; init; } // 99.9, 99.5, etc.
 
     /// <summary>
-    /// Full provider path for aggregators.
+    ///     Full provider path for aggregators.
     /// </summary>
     public string ProviderPath => SubProvider != null ? $"{Provider} -> {SubProvider}" : Provider;
 
     /// <summary>
-    /// Cost savings compared to a reference cost.
+    ///     Cost savings compared to a reference cost.
     /// </summary>
     public decimal CalculateSavings(decimal referenceCost)
     {
@@ -161,7 +161,7 @@ public record CostOption
     }
 
     /// <summary>
-    /// Percentage savings compared to a reference cost.
+    ///     Percentage savings compared to a reference cost.
     /// </summary>
     public double CalculateSavingsPercentage(decimal referenceCost)
     {
@@ -170,7 +170,7 @@ public record CostOption
 }
 
 /// <summary>
-/// Provider selection strategy for cost optimization.
+///     Provider selection strategy for cost optimization.
 /// </summary>
 public enum ProviderSelectionStrategy
 {

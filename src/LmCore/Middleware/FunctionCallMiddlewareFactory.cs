@@ -1,7 +1,7 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Default implementation of IFunctionCallMiddlewareFactory
+///     Default implementation of IFunctionCallMiddlewareFactory
 /// </summary>
 public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
 {

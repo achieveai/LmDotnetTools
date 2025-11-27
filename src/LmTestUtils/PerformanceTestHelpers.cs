@@ -6,13 +6,13 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Utilities for testing performance tracking functionality
-/// Provides helpers for validating performance metrics across all providers
+///     Utilities for testing performance tracking functionality
+///     Provides helpers for validating performance metrics across all providers
 /// </summary>
 public static class PerformanceTestHelpers
 {
     /// <summary>
-    /// Creates a test performance tracker for testing
+    ///     Creates a test performance tracker for testing
     /// </summary>
     /// <returns>IPerformanceTracker instance for testing</returns>
     public static IPerformanceTracker CreateTestPerformanceTracker()
@@ -21,7 +21,7 @@ public static class PerformanceTestHelpers
     }
 
     /// <summary>
-    /// Creates a test RequestMetrics instance
+    ///     Creates a test RequestMetrics instance
     /// </summary>
     /// <param name="providerName">Provider name</param>
     /// <param name="model">Model name</param>
@@ -37,7 +37,7 @@ public static class PerformanceTestHelpers
     }
 
     /// <summary>
-    /// Creates a completed RequestMetrics instance with test data
+    ///     Creates a completed RequestMetrics instance with test data
     /// </summary>
     /// <param name="providerName">Provider name</param>
     /// <param name="model">Model name</param>
@@ -64,11 +64,11 @@ public static class PerformanceTestHelpers
             TotalTokens = promptTokens + completionTokens,
         };
 
-        return metrics.Complete(statusCode: statusCode, usage: usage);
+        return metrics.Complete(statusCode, usage);
     }
 
     /// <summary>
-    /// Creates a failed RequestMetrics instance with test data
+    ///     Creates a failed RequestMetrics instance with test data
     /// </summary>
     /// <param name="providerName">Provider name</param>
     /// <param name="model">Model name</param>
@@ -87,11 +87,11 @@ public static class PerformanceTestHelpers
     )
     {
         var metrics = CreateTestRequestMetrics(providerName, model, operation);
-        return metrics.Complete(statusCode: statusCode, errorMessage: errorMessage, exceptionType: exceptionType);
+        return metrics.Complete(statusCode, errorMessage: errorMessage, exceptionType: exceptionType);
     }
 
     /// <summary>
-    /// Validates that RequestMetrics contains expected values
+    ///     Validates that RequestMetrics contains expected values
     /// </summary>
     /// <param name="metrics">RequestMetrics to validate</param>
     /// <param name="expectedProvider">Expected provider name</param>
@@ -135,21 +135,11 @@ public static class PerformanceTestHelpers
         }
 
         // Validate timing
-        if (metrics.StartTime == default)
-        {
-            return false;
-        }
-
-        if (metrics.EndTime == default)
-        {
-            return false;
-        }
-
-        return metrics.Duration > TimeSpan.Zero;
+        return metrics.StartTime != default && metrics.EndTime != default && metrics.Duration > TimeSpan.Zero;
     }
 
     /// <summary>
-    /// Validates that Usage contains expected token counts
+    ///     Validates that Usage contains expected token counts
     /// </summary>
     /// <param name="usage">Usage to validate</param>
     /// <param name="expectedPromptTokens">Expected prompt tokens</param>
@@ -170,68 +160,38 @@ public static class PerformanceTestHelpers
     }
 
     /// <summary>
-    /// Creates test data for performance tracking scenarios
+    ///     Creates test data for performance tracking scenarios
     /// </summary>
     /// <returns>Test data for performance tracking</returns>
     public static IEnumerable<object[]> GetPerformanceTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 200, 10, 20, true, "Successful OpenAI request" },
-            new object[]
-            {
-                "Anthropic",
-                "claude-3-sonnet",
-                "ChatCompletion",
-                200,
-                15,
-                25,
-                true,
-                "Successful Anthropic request",
-            },
-            new object[]
-            {
-                "OpenAI",
-                "gpt-4",
-                "StreamingChatCompletion",
-                200,
-                5,
-                15,
-                true,
-                "Successful streaming request",
-            },
-            new object[]
-            {
-                "Anthropic",
-                "claude-3-sonnet",
-                "ChatCompletion",
-                400,
-                0,
-                0,
-                false,
-                "Failed request with bad request",
-            },
-            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 500, 0, 0, false, "Failed request with server error" },
-        };
+        return
+        [
+            ["OpenAI", "gpt-4", "ChatCompletion", 200, 10, 20, true, "Successful OpenAI request"],
+            ["Anthropic", "claude-3-sonnet", "ChatCompletion", 200, 15, 25, true, "Successful Anthropic request"],
+            ["OpenAI", "gpt-4", "StreamingChatCompletion", 200, 5, 15, true, "Successful streaming request"],
+            ["Anthropic", "claude-3-sonnet", "ChatCompletion", 400, 0, 0, false, "Failed request with bad request"],
+            ["OpenAI", "gpt-4", "ChatCompletion", 500, 0, 0, false, "Failed request with server error"],
+        ];
     }
 
     /// <summary>
-    /// Creates test data for retry scenarios with performance tracking
+    ///     Creates test data for retry scenarios with performance tracking
     /// </summary>
     /// <returns>Test data for retry performance tracking</returns>
     public static IEnumerable<object[]> GetRetryPerformanceTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { 0, TimeSpan.FromMilliseconds(100), "No retries - fast response" },
-            new object[] { 1, TimeSpan.FromMilliseconds(300), "1 retry - medium response time" },
-            new object[] { 2, TimeSpan.FromMilliseconds(700), "2 retries - slower response time" },
-            new object[] { 3, TimeSpan.FromSeconds(1.5), "3 retries - slow response time" },
-        };
+        return
+        [
+            [0, TimeSpan.FromMilliseconds(100), "No retries - fast response"],
+            [1, TimeSpan.FromMilliseconds(300), "1 retry - medium response time"],
+            [2, TimeSpan.FromMilliseconds(700), "2 retries - slower response time"],
+            [3, TimeSpan.FromSeconds(1.5), "3 retries - slow response time"],
+        ];
     }
 
     /// <summary>
-    /// Simulates a delay for testing timing accuracy
+    ///     Simulates a delay for testing timing accuracy
     /// </summary>
     /// <param name="delay">Delay duration</param>
     /// <returns>Task representing the delay</returns>
@@ -241,7 +201,7 @@ public static class PerformanceTestHelpers
     }
 
     /// <summary>
-    /// Measures the execution time of an operation
+    ///     Measures the execution time of an operation
     /// </summary>
     /// <param name="operation">Operation to measure</param>
     /// <returns>Tuple containing the result and execution time</returns>
@@ -256,7 +216,7 @@ public static class PerformanceTestHelpers
     }
 
     /// <summary>
-    /// Validates that a duration is within expected bounds
+    ///     Validates that a duration is within expected bounds
     /// </summary>
     /// <param name="actualDuration">Actual measured duration</param>
     /// <param name="expectedDuration">Expected duration</param>

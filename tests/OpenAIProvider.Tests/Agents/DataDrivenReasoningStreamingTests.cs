@@ -16,18 +16,18 @@ using static AchieveAi.LmDotnetTools.TestUtils.TestUtils;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 /// <summary>
-/// Data-driven end-to-end tests exercising the <see cref="IStreamingAgent"/> pipeline (HTTP + streaming parsing)
-/// for models that emit reasoning. Tests both raw streaming and joined streaming (via MessageUpdateJoinerMiddleware).
-/// Each test has two parts:
-///   • a one-off creator fact that records the interaction to <c>tests/TestData/OpenAI/&lt;TestName&gt;.stream.json</c>
+///     Data-driven end-to-end tests exercising the <see cref="IStreamingAgent" /> pipeline (HTTP + streaming parsing)
+///     for models that emit reasoning. Tests both raw streaming and joined streaming (via MessageUpdateJoinerMiddleware).
+///     Each test has two parts:
+///     • a one-off creator fact that records the interaction to <c>tests/TestData/OpenAI/&lt;TestName&gt;.stream.json</c>
 ///     and stores the LmCore request + final streamed response;
-///   • theories that replay the cassette offline and assert invariants for both raw and joined streaming.
+///     • theories that replay the cassette offline and assert invariants for both raw and joined streaming.
 /// </summary>
 public class DataDrivenReasoningStreamingTests
 {
-    private readonly ProviderTestDataManager _dm = new();
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
+    private readonly ProviderTestDataManager _dm = new();
 
     #region Raw Streaming Playback
 
@@ -54,7 +54,7 @@ public class DataDrivenReasoningStreamingTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: false)
+            .WithRecordPlayback(cassettePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -150,7 +150,7 @@ public class DataDrivenReasoningStreamingTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: false)
+            .WithRecordPlayback(cassettePath)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -252,9 +252,7 @@ public class DataDrivenReasoningStreamingTests
         Assert.True(streamingResponse.Count > 0, "Should have some messages");
 
         // Check that we don't have excessive empty text updates
-        var emptyTextUpdates = streamingResponse
-            .OfType<TextUpdateMessage>()
-            .Count(t => string.IsNullOrEmpty(t.Text));
+        var emptyTextUpdates = streamingResponse.OfType<TextUpdateMessage>().Count(t => string.IsNullOrEmpty(t.Text));
 
         Debug.WriteLine($"Empty text updates found: {emptyTextUpdates}");
         Assert.True(emptyTextUpdates < 10, $"Should not have many empty text updates, found {emptyTextUpdates}");
@@ -345,14 +343,14 @@ public class DataDrivenReasoningStreamingTests
     public async Task CreateBasicReasoningStreamingTestData()
     {
         const string testName = "BasicReasoningStreaming";
-        await CreateStreamingArtefactsAsync(testName, modelId: "deepseek/deepseek-r1-0528:free");
+        await CreateStreamingArtefactsAsync(testName, "deepseek/deepseek-r1-0528:free");
     }
 
     [Fact]
     public async Task CreateO4MiniReasoningStreamingTestData()
     {
         const string testName = "O4MiniReasoningStreaming";
-        await CreateStreamingArtefactsAsync(testName, modelId: "o4-mini");
+        await CreateStreamingArtefactsAsync(testName, "o4-mini");
     }
 
     private async Task CreateStreamingArtefactsAsync(string testName, string modelId)
@@ -396,7 +394,7 @@ public class DataDrivenReasoningStreamingTests
 
         var handler = MockHttpHandlerBuilder
             .Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -427,12 +425,12 @@ public class DataDrivenReasoningStreamingTests
 
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
     }
 
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
     }
 
     #endregion

@@ -1,15 +1,11 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 /// <summary>
-/// Integration tests for the agentic loop with the new simplified message flow.
-/// Tests the interaction between MessageTransformationMiddleware, ToolCallInjectionMiddleware,
-/// ToolCallExecutor, and the provider agents.
+///     Integration tests for the agentic loop with the new simplified message flow.
+///     Tests the interaction between MessageTransformationMiddleware, ToolCallInjectionMiddleware,
+///     ToolCallExecutor, and the provider agents.
 /// </summary>
 public class AgenticLoopIntegrationTests
 {
@@ -27,17 +23,23 @@ public class AgenticLoopIntegrationTests
             {
                 ToolCalls =
                 [
-                    new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San Francisco\"}", ToolCallId = "call_1", ToolCallIdx = 0 }
+                    new ToolCall
+                    {
+                        FunctionName = "get_weather",
+                        FunctionArgs = "{\"location\":\"San Francisco\"}",
+                        ToolCallId = "call_1",
+                        ToolCallIdx = 0,
+                    },
                 ],
                 Role = Role.Assistant,
                 GenerationId = generationId1,
-                FromAgent = "MockProvider"
+                FromAgent = "MockProvider",
             },
             new UsageMessage
             {
-                Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage { TotalTokens = 100 },
+                Usage = new Usage { TotalTokens = 100 },
                 GenerationId = generationId1,
-                FromAgent = "MockProvider"
+                FromAgent = "MockProvider",
             }
         );
         // Wrap provider with MessageTransformationMiddleware
@@ -46,7 +48,7 @@ public class AgenticLoopIntegrationTests
         // Define tool function
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["get_weather"] = args => Task.FromResult("{\"temperature\": 72, \"condition\": \"sunny\"}")
+            ["get_weather"] = args => Task.FromResult("{\"temperature\": 72, \"condition\": \"sunny\"}"),
         };
         // Act
         // Step 1: Initial call to LLM
@@ -82,13 +84,13 @@ public class AgenticLoopIntegrationTests
                 Text = "The weather in San Francisco is 72°F and sunny.",
                 Role = Role.Assistant,
                 GenerationId = generationId2,
-                FromAgent = "MockProvider"
+                FromAgent = "MockProvider",
             },
             new UsageMessage
             {
-                Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage { TotalTokens = 50 },
+                Usage = new Usage { TotalTokens = 50 },
                 GenerationId = generationId2,
-                FromAgent = "MockProvider"
+                FromAgent = "MockProvider",
             }
         );
         var conversationHistory = new List<IMessage>
@@ -116,31 +118,41 @@ public class AgenticLoopIntegrationTests
         // Arrange
         var mockProvider = new MockSequentialAgent(
             // Turn 1: Request weather
-            new IMessage[]
-            {
+            [
                 new ToolsCallMessage
                 {
                     ToolCalls =
                     [
-                        new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"SF\"}", ToolCallId = "call_1", ToolCallIdx = 0 },
-                        new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"NYC\"}", ToolCallId = "call_2", ToolCallIdx = 1 }
+                        new ToolCall
+                        {
+                            FunctionName = "get_weather",
+                            FunctionArgs = "{\"location\":\"SF\"}",
+                            ToolCallId = "call_1",
+                            ToolCallIdx = 0,
+                        },
+                        new ToolCall
+                        {
+                            FunctionName = "get_weather",
+                            FunctionArgs = "{\"location\":\"NYC\"}",
+                            ToolCallId = "call_2",
+                            ToolCallIdx = 1,
+                        },
                     ],
                     Role = Role.Assistant,
                     GenerationId = "gen1",
-                    FromAgent = "MockProvider"
-                }
-            },
+                    FromAgent = "MockProvider",
+                },
+            ],
             // Turn 2: Final response
-            new IMessage[]
-            {
+            [
                 new TextMessage
                 {
                     Text = "SF: 72°F, NYC: 65°F",
                     Role = Role.Assistant,
                     GenerationId = "gen2",
-                    FromAgent = "MockProvider"
-                }
-            }
+                    FromAgent = "MockProvider",
+                },
+            ]
         );
         var middleware = new MessageTransformationMiddleware();
         var agent = new MiddlewareWrappingAgent(mockProvider, middleware);
@@ -151,12 +163,12 @@ public class AgenticLoopIntegrationTests
                 var location = args.Contains("SF") ? "SF" : "NYC";
                 var temp = location == "SF" ? "72" : "65";
                 return Task.FromResult($"{{\"temperature\": {temp}}}");
-            }
+            },
         };
         // Act
         var userMessage = new TextMessage { Text = "Compare weather SF vs NYC", Role = Role.User };
         // Turn 1
-        var response1 = await agent.GenerateReplyAsync(new[] { userMessage });
+        var response1 = await agent.GenerateReplyAsync([userMessage]);
         var msg1 = response1.Single();
         var toolCallMsg = Assert.IsType<ToolsCallMessage>(msg1);
         Assert.Equal(2, toolCallMsg.ToolCalls.Count);
@@ -188,7 +200,7 @@ public class AgenticLoopIntegrationTests
             {
                 Text = "Response",
                 Role = Role.Assistant,
-                GenerationId = "gen1"
+                GenerationId = "gen1",
             }
         );
         var middleware = new MessageTransformationMiddleware();
@@ -198,18 +210,27 @@ public class AgenticLoopIntegrationTests
         {
             new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall { FunctionName = "test", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 }],
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "test",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call_1",
+                        ToolCallIdx = 0,
+                    },
+                ],
                 Role = Role.Assistant,
                 GenerationId = "gen0",
-                MessageOrderIdx = 0
+                MessageOrderIdx = 0,
             },
             new ToolsCallResultMessage
             {
                 ToolCallResults = [new ToolCallResult("call_1", "result")],
                 Role = Role.Tool,
                 GenerationId = "gen0",
-                MessageOrderIdx = 1
-            }
+                MessageOrderIdx = 1,
+            },
         };
         // Act
         var response = await agent.GenerateReplyAsync(inputMessages);
@@ -230,15 +251,16 @@ public class AgenticLoopIntegrationTests
     {
         // Arrange
         var captureAgent = new OptionsCapturingAgent(
-            new TextMessage { Text = "Response", Role = Role.Assistant, GenerationId = "gen1" }
+            new TextMessage
+            {
+                Text = "Response",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+            }
         );
         var functions = new[]
         {
-            new FunctionContract
-            {
-                Name = "test_function",
-                Description = "Test function"
-            }
+            new FunctionContract { Name = "test_function", Description = "Test function" },
         };
         // Create middleware pipeline: MessageTransformation → ToolInjection → Provider
         var transformationMiddleware = new MessageTransformationMiddleware();
@@ -251,6 +273,7 @@ public class AgenticLoopIntegrationTests
         var response = await agent.GenerateReplyAsync(
             new[] { new TextMessage { Text = "Test", Role = Role.User } }
         );
+
         // Assert
         Assert.NotNull(captureAgent.CapturedOptions);
         Assert.NotNull(captureAgent.CapturedOptions.Functions);
@@ -282,7 +305,8 @@ public class AgenticLoopIntegrationTests
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             ReceivedMessages.AddRange(messages);
             var responses = new List<IMessage>();
@@ -296,20 +320,25 @@ public class AgenticLoopIntegrationTests
     private class MockSequentialAgent : IAgent
     {
         private readonly Queue<IEnumerable<IMessage>> _responseSequence;
-        public string Name => "MockSequentialAgent";
+
         public MockSequentialAgent(params IEnumerable<IMessage>[] responseSequence)
         {
             _responseSequence = new Queue<IEnumerable<IMessage>>(responseSequence);
         }
+
+        public static string Name => "MockSequentialAgent";
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             if (_responseSequence.Count == 0)
             {
                 return Task.FromResult<IEnumerable<IMessage>>([]);
             }
+
             return Task.FromResult(_responseSequence.Dequeue());
         }
     }
@@ -317,15 +346,19 @@ public class AgenticLoopIntegrationTests
     {
         private readonly IMessage _responseToReturn;
         public List<IMessage> ReceivedMessages { get; } = new();
+
         public string Name => "MessageTrackingAgent";
+
         public MessageTrackingAgent(IMessage responseToReturn)
         {
             _responseToReturn = responseToReturn;
         }
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             ReceivedMessages.AddRange(messages);
             return Task.FromResult<IEnumerable<IMessage>>([_responseToReturn]);
@@ -335,15 +368,19 @@ public class AgenticLoopIntegrationTests
     {
         private readonly IMessage _responseToReturn;
         public GenerateReplyOptions? CapturedOptions { get; private set; }
+
         public string Name => "OptionsCapturingAgent";
+
         public OptionsCapturingAgent(IMessage responseToReturn)
         {
             _responseToReturn = responseToReturn;
         }
+
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             CapturedOptions = options;
             return Task.FromResult<IEnumerable<IMessage>>([_responseToReturn]);

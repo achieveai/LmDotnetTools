@@ -2,12 +2,13 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Json.Schema;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Validates JSON data against a schema.
+///     Validates JSON data against a schema.
 /// </summary>
 public class JsonSchemaValidator : IJsonSchemaValidator
 {
@@ -31,12 +32,12 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         // Basic checks
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SchemaValidationResult(false, new List<string> { "Input json is null or empty" });
+            return new SchemaValidationResult(false, ["Input json is null or empty"]);
         }
 
         if (schema is null)
         {
-            return new SchemaValidationResult(false, new List<string> { "Schema is null" });
+            return new SchemaValidationResult(false, ["Schema is null"]);
         }
 
         JsonNode? dataNode;
@@ -46,17 +47,17 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (JsonException)
         {
-            return new SchemaValidationResult(false, new List<string> { "Invalid JSON payload" });
+            return new SchemaValidationResult(false, ["Invalid JSON payload"]);
         }
 
-        Json.Schema.JsonSchema jsonSchema;
+        JsonSchema jsonSchema;
 
         try
         {
             jsonSchema = schema switch
             {
                 string schemaText => JsonSchema.FromText(schemaText),
-                Models.JsonSchemaObject schemaObj => JsonSchema.FromText(
+                JsonSchemaObject schemaObj => JsonSchema.FromText(
                     JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
                 ),
                 FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
@@ -65,7 +66,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Failed to parse schema: {ex.Message}" });
+            return new SchemaValidationResult(false, [$"Failed to parse schema: {ex.Message}"]);
         }
 
         Console.WriteLine($"[DEBUG] Validating JSON: {json}");
@@ -84,11 +85,11 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Validation error: {ex.Message}" });
+            return new SchemaValidationResult(false, [$"Validation error: {ex.Message}"]);
         }
     }
 
-    private static Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
+    private static JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
     {
         var root = new JsonObject { ["type"] = "object" };
 
@@ -136,8 +137,8 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             {
                 if (detail.HasErrors)
                 {
-                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"]?.ToString())
-                        ? detail.Errors["error"].ToString()
+                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"])
+                        ? detail.Errors["error"]
                         : $"Validation failed at '{detail.InstanceLocation}'";
                     errors.Add(errorMessage);
                 }

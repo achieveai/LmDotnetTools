@@ -1,18 +1,15 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
-
-using System;
 using System.Collections.Immutable;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
+
 /// <summary>
-/// Tests for validating that the shadow property pattern works correctly for serialization.
+///     Tests for validating that the shadow property pattern works correctly for serialization.
 /// </summary>
 public class ShadowPropertySerializationTests
 {
@@ -187,8 +184,6 @@ public class ShadowPropertySerializationTests
         }
     }
 
-    public record Person(string Name, int Age, string? Address = null);
-
     [Fact]
     public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_SimpleType()
     {
@@ -209,19 +204,6 @@ public class ShadowPropertySerializationTests
         Assert.Contains("Address", schemaObj.Properties.Keys);
         Assert.Contains("Name", schemaObj.Required ?? []);
         Assert.Contains("Age", schemaObj.Required ?? []);
-    }
-
-    public class UserProfile
-    {
-        public string DisplayName { get; set; } = string.Empty;
-        public int Level { get; set; }
-    }
-
-    public class UserAccount
-    {
-        public Guid Id { get; set; }
-        public string Email { get; set; } = string.Empty;
-        public UserProfile? Profile { get; set; }
     }
 
     [Fact]
@@ -248,5 +230,20 @@ public class ShadowPropertySerializationTests
         // If Profile is nullable, type may be ["object", "null"] or similar
         // We check that type contains "object" or is "object"
         Assert.Equal("object", profileProp.Type.GetTypeString());
+    }
+
+    public record Person(string Name, int Age, string? Address = null);
+
+    public class UserProfile
+    {
+        public string DisplayName { get; set; } = string.Empty;
+        public int Level { get; set; }
+    }
+
+    public class UserAccount
+    {
+        public Guid Id { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public UserProfile? Profile { get; set; }
     }
 }

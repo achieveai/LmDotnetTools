@@ -1,14 +1,8 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
-
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.TestUtils.MockTools;
-using Xunit;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class FunctionToolTests
 {
@@ -20,12 +14,12 @@ public class FunctionToolTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -36,7 +30,7 @@ public class FunctionToolTests
         TestLogger.Log($"Created {messages.Length} messages");
 
         // Get weather function from MockWeatherTool
-        var weatherFunction = MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockWeatherTool) }).Item1.First();
+        var weatherFunction = MockToolCallHelper.CreateMockToolCalls([typeof(MockWeatherTool)]).Item1.First();
 
         var options = new GenerateReplyOptions
         {
@@ -82,12 +76,12 @@ public class FunctionToolTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -103,7 +97,7 @@ public class FunctionToolTests
         TestLogger.Log($"Created messages array with {messages.Length} messages");
 
         // Get mock functions from MockPythonExecutionTool
-        var mockFunctions = MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockPythonExecutionTool) }).Item1;
+        var mockFunctions = MockToolCallHelper.CreateMockToolCalls([typeof(MockPythonExecutionTool)]).Item1;
 
         // Create multiple function definitions based on example_requests.json
         // But extract parameter information from the mock tools
@@ -199,7 +193,7 @@ public class FunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and mock handler for tool use response");
 
@@ -210,7 +204,7 @@ public class FunctionToolTests
 
         // Extract list_directory function from MockPythonExecutionTool
         var listDirTemplate = MockToolCallHelper
-            .CreateMockToolCalls(new[] { typeof(MockPythonExecutionTool) })
+            .CreateMockToolCalls([typeof(MockPythonExecutionTool)])
             .Item1.First(f => f.Name == "list_directory");
 
         // Create function definition following the original test pattern

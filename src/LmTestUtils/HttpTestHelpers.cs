@@ -1,17 +1,18 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Common HTTP testing helpers and utilities
-/// Provides standardized HTTP mocking and testing patterns
-/// Shared utility for all LmDotnetTools provider testing
+///     Common HTTP testing helpers and utilities
+///     Provides standardized HTTP mocking and testing patterns
+///     Shared utility for all LmDotnetTools provider testing
 /// </summary>
 public static class HttpTestHelpers
 {
     /// <summary>
-    /// Creates an HttpClient with a base address for testing
+    ///     Creates an HttpClient with a base address for testing
     /// </summary>
     /// <param name="handler">Message handler to use</param>
     /// <param name="baseAddress">Base address for the client</param>
@@ -25,7 +26,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient with a simple JSON response handler
+    ///     Creates an HttpClient with a simple JSON response handler
     /// </summary>
     /// <param name="jsonResponse">JSON response to return</param>
     /// <param name="statusCode">HTTP status code to return</param>
@@ -42,7 +43,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient that simulates retry scenarios
+    ///     Creates an HttpClient that simulates retry scenarios
     /// </summary>
     /// <param name="failureCount">Number of failures before success</param>
     /// <param name="successResponse">Response to return on success</param>
@@ -61,7 +62,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient that returns different responses based on request patterns
+    ///     Creates an HttpClient that returns different responses based on request patterns
     /// </summary>
     /// <param name="responses">Dictionary mapping request patterns to responses</param>
     /// <param name="baseAddress">Base address for the client</param>
@@ -76,7 +77,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient with OpenAI-formatted response for testing
+    ///     Creates an HttpClient with OpenAI-formatted response for testing
     /// </summary>
     /// <param name="content">The response content text</param>
     /// <param name="model">The model name</param>
@@ -102,7 +103,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient with Anthropic-formatted response for testing
+    ///     Creates an HttpClient with Anthropic-formatted response for testing
     /// </summary>
     /// <param name="content">The response content text</param>
     /// <param name="model">The model name</param>
@@ -123,7 +124,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates an HttpClient with request capture capability for testing
+    ///     Creates an HttpClient with request capture capability for testing
     /// </summary>
     /// <param name="responseJson">JSON response to return</param>
     /// <param name="capturedRequest">Out parameter to receive captured request</param>
@@ -142,7 +143,7 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates HTTP content from a string with JSON content type
+    ///     Creates HTTP content from a string with JSON content type
     /// </summary>
     /// <param name="content">String content</param>
     /// <param name="encoding">Text encoding (default: UTF8)</param>
@@ -153,19 +154,19 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
-    /// Creates HTTP content from an object serialized as JSON
+    ///     Creates HTTP content from an object serialized as JSON
     /// </summary>
     /// <param name="obj">Object to serialize</param>
     /// <param name="encoding">Text encoding (default: UTF8)</param>
     /// <returns>HttpContent with serialized object</returns>
     public static HttpContent CreateJsonContent(object obj, Encoding? encoding = null)
     {
-        var json = System.Text.Json.JsonSerializer.Serialize(obj);
+        var json = JsonSerializer.Serialize(obj);
         return CreateJsonContent(json, encoding);
     }
 
     /// <summary>
-    /// Validates that an HTTP request contains expected headers
+    ///     Validates that an HTTP request contains expected headers
     /// </summary>
     /// <param name="request">HTTP request to validate</param>
     /// <param name="expectedHeaders">Dictionary of expected headers</param>
@@ -190,11 +191,12 @@ public static class HttpTestHelpers
                     : false;
             }
         }
+
         return true;
     }
 
     /// <summary>
-    /// Validates that an HTTP request contains expected JSON content
+    ///     Validates that an HTTP request contains expected JSON content
     /// </summary>
     /// <param name="request">HTTP request to validate</param>
     /// <param name="expectedKeys">Keys that should be present in JSON</param>
@@ -212,21 +214,24 @@ public static class HttpTestHelpers
         }
 
         var content = await request.Content.ReadAsStringAsync();
-        using var document = System.Text.Json.JsonDocument.Parse(content);
+        using var document = JsonDocument.Parse(content);
         var root = document.RootElement;
 
         foreach (var key in expectedKeys)
         {
             if (!root.TryGetProperty(key, out _))
             {
-                return throwOnMissing ? throw new AssertionException($"Expected JSON key '{key}' not found in request content") : false;
+                return throwOnMissing
+                    ? throw new AssertionException($"Expected JSON key '{key}' not found in request content")
+                    : false;
             }
         }
+
         return true;
     }
 
     /// <summary>
-    /// Creates a standardized error response for testing
+    ///     Creates a standardized error response for testing
     /// </summary>
     /// <param name="statusCode">HTTP status code</param>
     /// <param name="errorMessage">Error message</param>
@@ -248,44 +253,34 @@ public static class HttpTestHelpers
             },
         };
 
-        var json = System.Text.Json.JsonSerializer.Serialize(errorResponse);
+        var json = JsonSerializer.Serialize(errorResponse);
         var response = new HttpResponseMessage(statusCode) { Content = CreateJsonContent(json) };
 
         return response;
     }
 
     /// <summary>
-    /// Creates common test scenarios for HTTP status codes
+    ///     Creates common test scenarios for HTTP status codes
     /// </summary>
     /// <returns>Test data for various HTTP status code scenarios</returns>
     public static IEnumerable<object[]> GetHttpStatusCodeTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { HttpStatusCode.OK, true, "200 OK should succeed" },
-            new object[] { HttpStatusCode.Created, true, "201 Created should succeed" },
-            new object[] { HttpStatusCode.BadRequest, false, "400 Bad Request should fail" },
-            new object[] { HttpStatusCode.Unauthorized, false, "401 Unauthorized should fail" },
-            new object[] { HttpStatusCode.Forbidden, false, "403 Forbidden should fail" },
-            new object[] { HttpStatusCode.NotFound, false, "404 Not Found should fail" },
-            new object[]
-            {
-                HttpStatusCode.InternalServerError,
-                false,
-                "500 Internal Server Error should fail (but be retryable)",
-            },
-            new object[] { HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)" },
-            new object[]
-            {
-                HttpStatusCode.ServiceUnavailable,
-                false,
-                "503 Service Unavailable should fail (but be retryable)",
-            },
-        };
+        return
+        [
+            [HttpStatusCode.OK, true, "200 OK should succeed"],
+            [HttpStatusCode.Created, true, "201 Created should succeed"],
+            [HttpStatusCode.BadRequest, false, "400 Bad Request should fail"],
+            [HttpStatusCode.Unauthorized, false, "401 Unauthorized should fail"],
+            [HttpStatusCode.Forbidden, false, "403 Forbidden should fail"],
+            [HttpStatusCode.NotFound, false, "404 Not Found should fail"],
+            [HttpStatusCode.InternalServerError, false, "500 Internal Server Error should fail (but be retryable)"],
+            [HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)"],
+            [HttpStatusCode.ServiceUnavailable, false, "503 Service Unavailable should fail (but be retryable)"],
+        ];
     }
 
     /// <summary>
-    /// Custom exception for test assertions
+    ///     Custom exception for test assertions
     /// </summary>
     public class AssertionException : Exception
     {

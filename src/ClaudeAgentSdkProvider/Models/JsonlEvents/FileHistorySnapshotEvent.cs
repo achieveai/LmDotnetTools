@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 
 /// <summary>
-/// File history snapshot event for tracking file changes
+///     File history snapshot event for tracking file changes
 /// </summary>
 public record FileHistorySnapshotEvent : JsonlEventBase
 {

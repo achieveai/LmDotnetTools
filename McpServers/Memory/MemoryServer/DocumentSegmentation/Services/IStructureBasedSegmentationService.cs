@@ -3,13 +3,13 @@ using MemoryServer.DocumentSegmentation.Models;
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for structure-based document segmentation services.
-/// Provides specialized methods for detecting structural boundaries and analyzing hierarchical organization.
+///     Interface for structure-based document segmentation services.
+///     Provides specialized methods for detecting structural boundaries and analyzing hierarchical organization.
 /// </summary>
 public interface IStructureBasedSegmentationService
 {
     /// <summary>
-    /// Segments document content based on structural elements like headings, sections, and hierarchical organization.
+    ///     Segments document content based on structural elements like headings, sections, and hierarchical organization.
     /// </summary>
     /// <param name="content">Document content to segment</param>
     /// <param name="documentType">Type of document being segmented</param>
@@ -24,7 +24,7 @@ public interface IStructureBasedSegmentationService
     );
 
     /// <summary>
-    /// Detects structural boundaries within the document content.
+    ///     Detects structural boundaries within the document content.
     /// </summary>
     /// <param name="content">Document content to analyze</param>
     /// <param name="documentType">Type of document being analyzed</param>
@@ -37,7 +37,7 @@ public interface IStructureBasedSegmentationService
     );
 
     /// <summary>
-    /// Analyzes the hierarchical structure of a document.
+    ///     Analyzes the hierarchical structure of a document.
     /// </summary>
     /// <param name="content">Document content to analyze</param>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -48,7 +48,7 @@ public interface IStructureBasedSegmentationService
     );
 
     /// <summary>
-    /// Validates structure-based segments for quality and organization.
+    ///     Validates structure-based segments for quality and organization.
     /// </summary>
     /// <param name="segments">Segments to validate</param>
     /// <param name="originalContent">Original document content</param>

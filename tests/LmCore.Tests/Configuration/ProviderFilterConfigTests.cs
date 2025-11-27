@@ -1,3 +1,4 @@
+using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Configuration;
@@ -11,7 +12,7 @@ public class ProviderFilterConfigTests
         var config = new ProviderFilterConfig
         {
             // Act
-            CustomPrefix = "valid_prefix"
+            CustomPrefix = "valid_prefix",
         };
 
         // Assert
@@ -22,10 +23,7 @@ public class ProviderFilterConfigTests
     public void CustomPrefix_WithNull_SetsSuccessfully()
     {
         // Arrange
-        var config = new ProviderFilterConfig
-        {
-            CustomPrefix = "initial"
-        };
+        var config = new ProviderFilterConfig { CustomPrefix = "initial" };
 
         // Act
         config.CustomPrefix = null;
@@ -138,7 +136,7 @@ public class ProviderFilterConfigTests
         // Force set an invalid prefix using reflection (simulating deserialization)
         var field = typeof(ProviderFilterConfig).GetField(
             "_customPrefix",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            BindingFlags.NonPublic | BindingFlags.Instance
         );
         field?.SetValue(config, "invalid prefix");
 
@@ -176,7 +174,7 @@ public class ProviderFilterConfigTests
         var config = new ProviderFilterConfig
         {
             // Act
-            CustomPrefix = validPrefix
+            CustomPrefix = validPrefix,
         };
 
         // Assert

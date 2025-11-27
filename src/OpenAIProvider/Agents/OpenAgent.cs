@@ -14,7 +14,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 public class OpenClientAgent : IStreamingAgent, IDisposable
 {
-    private IOpenClient _client;
+    private readonly IOpenClient _client;
     private readonly ILogger<OpenClientAgent> _logger;
 
     public OpenClientAgent(string name, IOpenClient client, ILogger<OpenClientAgent>? logger = null)
@@ -140,9 +140,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             // Calculate tokens per second
             var tokensPerSecond =
-                openUsage.CompletionTokens > 0 && duration > 0
-                    ? (openUsage.CompletionTokens / (duration / 1000.0))
-                    : 0.0;
+                openUsage.CompletionTokens > 0 && duration > 0 ? openUsage.CompletionTokens / (duration / 1000.0) : 0.0;
 
             _logger.LogInformation(
                 "LLM request completed: CompletionId={CompletionId}, Model={Model}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalCost={TotalCost:F6}, Duration={Duration}ms, TokensPerSecond={TokensPerSecond:F2}",
@@ -317,7 +315,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
         var timeToFirstToken = firstTokenTime.HasValue ? (firstTokenTime.Value - startTime).TotalMilliseconds : 0.0;
         var tokensPerSecond =
-            totalCompletionTokens > 0 && totalDuration > 0 ? (totalCompletionTokens / (totalDuration / 1000.0)) : 0.0;
+            totalCompletionTokens > 0 && totalDuration > 0 ? totalCompletionTokens / (totalDuration / 1000.0) : 0.0;
 
         _logger.LogDebug(
             "Streaming metrics: CompletionId={CompletionId}, TotalChunks={TotalChunks}, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}, HadUsageData={HadUsageData}",

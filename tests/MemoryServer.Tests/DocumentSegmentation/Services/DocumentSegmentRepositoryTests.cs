@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Integration tests for DocumentSegmentRepository service.
+///     Integration tests for DocumentSegmentRepository service.
 /// </summary>
 public class DocumentSegmentRepositoryTests : IAsyncDisposable
 {
@@ -29,6 +29,18 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
             AgentId = "test-agent-456",
             RunId = "test-run-789",
         };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sessionFactory is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (_sessionFactory is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     [Fact]
@@ -291,28 +303,17 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
     {
         return segments.Count < 2
             ? []
-            : [
-            new()
-            {
-                Id = Guid.NewGuid().ToString(),
-                SourceSegmentId = segments[0].Id,
-                TargetSegmentId = segments[1].Id,
-                RelationshipType = SegmentRelationshipType.Sequential,
-                Strength = 0.9,
-                Metadata = new Dictionary<string, object> { ["test"] = true },
-            },
-        ];
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_sessionFactory is IAsyncDisposable asyncDisposable)
-        {
-            await asyncDisposable.DisposeAsync();
-        }
-        else if (_sessionFactory is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
+            :
+            [
+                new SegmentRelationship
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    SourceSegmentId = segments[0].Id,
+                    TargetSegmentId = segments[1].Id,
+                    RelationshipType = SegmentRelationshipType.Sequential,
+                    Strength = 0.9,
+                    Metadata = new Dictionary<string, object> { ["test"] = true },
+                },
+            ];
     }
 }

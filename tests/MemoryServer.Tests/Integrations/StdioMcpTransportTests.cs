@@ -4,14 +4,14 @@ using Xunit.Abstractions;
 namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
-/// STDIO transport implementation of the MCP transport test suite.
-/// This class provides STDIO-specific client creation and server management
-/// while inheriting all the core MCP functionality tests from the base class.
+///     STDIO transport implementation of the MCP transport test suite.
+///     This class provides STDIO-specific client creation and server management
+///     while inheriting all the core MCP functionality tests from the base class.
 /// </summary>
 public class StdioMcpTransportTests : McpTransportTestBase
 {
-    private readonly string _serverExecutablePath;
     private static readonly string[] options = ["--stdio"];
+    private readonly string _serverExecutablePath;
 
     public StdioMcpTransportTests(ITestOutputHelper output)
         : base(output)
