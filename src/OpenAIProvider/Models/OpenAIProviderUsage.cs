@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 
 using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;

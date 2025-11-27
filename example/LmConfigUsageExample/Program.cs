@@ -9,13 +9,13 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
-using ModelContextProtocol.Client;
 using CommandLine;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
 
 namespace LmConfigUsageExample;
 
@@ -931,6 +931,10 @@ internal class Program
                             break;
                         case ToolCallResultMessage toolResult:
                             Console.WriteLine($"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}...");
+                            break;
+
+                        default:
+                            // Ignore other message types
                             break;
                     }
                 }

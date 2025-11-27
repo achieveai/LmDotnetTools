@@ -1,10 +1,4 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageTransformationMiddlewareTests
@@ -1155,7 +1149,7 @@ public class MessageTransformationMiddlewareTests
     private class MockAgent : IAgent
     {
         private readonly IMessage[] _responsesToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
         public string Name => "MockAgent";
         public MockAgent(params IMessage[] responsesToReturn)
         {

@@ -134,6 +134,8 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
     /// <param name="streamingMessageUpdate">The streaming update to add.</param>
     public void Add(ToolCallUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
+
         // Update function name if provided
         if (streamingMessageUpdate.FunctionName != null)
         {
@@ -225,5 +227,8 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
     /// <summary>
     /// Builds the message (non-generic interface implementation).
     /// </summary>
-    IMessage IMessageBuilder.Build() => Build();
+    IMessage IMessageBuilder.Build()
+    {
+        return Build();
+    }
 }

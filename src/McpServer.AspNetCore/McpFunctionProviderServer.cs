@@ -129,7 +129,7 @@ public sealed class McpFunctionProviderServer : IAsyncDisposable
         var timeout = TimeSpan.FromSeconds(5);
         var startTime = DateTime.UtcNow;
 
-        while (addresses?.Addresses == null || !addresses.Addresses.Any())
+        while (addresses?.Addresses == null || addresses.Addresses.Count == 0)
         {
             if (DateTime.UtcNow - startTime > timeout)
             {

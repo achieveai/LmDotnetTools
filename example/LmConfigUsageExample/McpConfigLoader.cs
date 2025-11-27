@@ -129,7 +129,7 @@ public sealed class McpConfigLoader : IAsyncDisposable
         // Add environment variables if specified
         if (config.Env != null && config.Env.Count > 0)
         {
-            transportOptions.EnvironmentVariables = config.Env;
+            transportOptions.EnvironmentVariables = config.Env.ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value);
         }
 
         var transport = new StdioClientTransport(transportOptions);

@@ -894,9 +894,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
-                ? (IEnumerable<IMessage>)
-
-                    [
+                ? [
                         new ToolsCallMessage
                         {
                             GenerationId = Guid.NewGuid().ToString(),
@@ -913,7 +911,6 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             ],
                         },
                     ]
-
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 

@@ -2,7 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using LmModels = AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Tests.Parsers;
 

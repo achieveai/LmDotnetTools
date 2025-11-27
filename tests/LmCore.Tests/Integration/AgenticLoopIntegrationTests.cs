@@ -57,7 +57,7 @@ public class AgenticLoopIntegrationTests
             Text = "What's the weather in San Francisco?",
             Role = Role.User
         };
-        var firstResponse = await agent.GenerateReplyAsync(new[] { userMessage });
+        var firstResponse = await agent.GenerateReplyAsync([userMessage]);
         var firstMessages = firstResponse.ToList();
         // Assert first response has ordered messages
         Assert.Equal(2, firstMessages.Count);
@@ -271,7 +271,7 @@ public class AgenticLoopIntegrationTests
         );
         // Act
         var response = await agent.GenerateReplyAsync(
-            new[] { new TextMessage { Text = "Test", Role = Role.User } }
+            [new TextMessage { Text = "Test", Role = Role.User }]
         );
 
         // Assert
@@ -288,7 +288,7 @@ public class AgenticLoopIntegrationTests
     private class MockAgent : IAgent
     {
         private readonly Queue<IMessage> _responsesToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
         public string Name => "MockAgent";
         public MockAgent(params IMessage[] responsesToReturn)
         {
@@ -345,7 +345,7 @@ public class AgenticLoopIntegrationTests
     private class MessageTrackingAgent : IAgent
     {
         private readonly IMessage _responseToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
 
         public string Name => "MessageTrackingAgent";
 
