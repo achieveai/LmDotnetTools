@@ -1,6 +1,5 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using Microsoft.Extensions.Logging;
 

@@ -151,9 +151,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         var generationId = message.GenerationId;
 
         // Initialize state for this generation if needed
-        if (!state.MessageOrderByGeneration.ContainsKey(generationId))
+        if (!state.MessageOrderByGeneration.TryGetValue(generationId, out var value))
         {
-            state.MessageOrderByGeneration[generationId] = -1; // Start at -1 so first increment gives 0
+            value = -1;
+            state.MessageOrderByGeneration[generationId] = value; // Start at -1 so first increment gives 0
             state.ChunkIdxByGeneration[generationId] = 0;
             state.CurrentMessageIdentity[generationId] = null;
         }
@@ -161,13 +162,13 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         // Local helper: Gets current indices from state
         (int orderIdx, int chunkIdx) GetCurrentIndices()
         {
-            return (state.MessageOrderByGeneration[generationId], state.ChunkIdxByGeneration[generationId]);
+            return (value, state.ChunkIdxByGeneration[generationId]);
         }
 
         // Local helper: Starts a new message by incrementing messageOrderIdx and resetting chunkIdx
         void StartNewMessage(string? newIdentity = null)
         {
-            state.MessageOrderByGeneration[generationId]++;
+            state.MessageOrderByGeneration[generationId] = ++value;
             state.ChunkIdxByGeneration[generationId] = 0;
             state.CurrentMessageIdentity[generationId] = newIdentity;
         }
@@ -576,7 +577,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         }
 
         // Re-sort result by MessageOrderIdx to maintain order
-        return result.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue).ToList();
+        return [.. result.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue)];
     }
 
     /// <summary>

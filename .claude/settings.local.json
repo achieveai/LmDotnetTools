@@ -29,7 +29,8 @@
       "Bash(rm:*)",
       "Bash(tee:*)",
       "Bash(timeout 180 pwsh:*)",
-      "Skill(:*)"
+      "Skill(:*)",
+      "Bash(Select-Object -First 30)"
     ],
     "deny": [],
     "ask": [],

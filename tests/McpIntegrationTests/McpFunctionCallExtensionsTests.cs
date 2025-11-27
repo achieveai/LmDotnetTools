@@ -2,11 +2,8 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.McpMiddleware;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.McpSampleServer;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;

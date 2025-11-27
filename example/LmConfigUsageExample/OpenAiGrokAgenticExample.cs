@@ -1,6 +1,5 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -31,6 +30,7 @@ public class OpenAiGrokAgenticExample
     private readonly IModelResolver _modelResolver;
     private readonly IProviderAgentFactory _agentFactory;
     private readonly ILogger<OpenAiGrokAgenticExample> _logger;
+    private static readonly string[] stringArray = ["sunny", "cloudy", "rainy", "partly cloudy"];
 
     public OpenAiGrokAgenticExample(
         IModelResolver modelResolver,
@@ -109,7 +109,7 @@ public class OpenAiGrokAgenticExample
                     location = weatherArgs?.Location,
                     temperature = Random.Shared.Next(60, 85),
                     unit = weatherArgs?.Unit ?? "fahrenheit",
-                    condition = new[] { "sunny", "cloudy", "rainy", "partly cloudy" }[Random.Shared.Next(4)],
+                    condition = stringArray[Random.Shared.Next(4)],
                 };
 
                 return JsonSerializer.Serialize(weather);
@@ -276,6 +276,10 @@ public class OpenAiGrokAgenticExample
                             usage.Usage.PromptTokens,
                             usage.Usage.CompletionTokens
                         );
+                        break;
+
+                    default:
+                        // Ignore other message types
                         break;
                 }
             }
