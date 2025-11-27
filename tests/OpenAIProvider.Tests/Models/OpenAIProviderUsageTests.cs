@@ -1,5 +1,5 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Xunit.Abstractions;
 

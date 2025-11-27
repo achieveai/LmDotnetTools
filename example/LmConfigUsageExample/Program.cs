@@ -3,44 +3,267 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
+using CommandLine;
+using DotNetEnv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
 
 namespace LmConfigUsageExample;
 
 internal class Program
 {
-    private static async Task Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
-        // Parse command-line arguments
-        var promptArg = Array.FindIndex(args, a => a == "--prompt" || a == "-p");
-        var prompt =
-            promptArg >= 0 && promptArg + 1 < args.Length
-                ? args[promptArg + 1]
-                : "Hello! Can you tell me what MCP tools are available to you?";
+        // Load environment variables from .env file if it exists
+        // Searches current directory and parent directories
+        _ = Env.TraversePath().Load();
 
-        // Check if user wants to run all examples (excluding ClaudeAgentSDK)
-        var runAllExamples = args.Contains("--all");
+        return await Parser.Default.ParseArguments<CommandLineOptions>(args)
+            .MapResult(
+                async options => await RunWithOptionsAsync(options),
+                _ => Task.FromResult(1)
+            );
+    }
 
-        if (runAllExamples)
+    private static async Task<int> RunWithOptionsAsync(CommandLineOptions options)
+    {
+        try
         {
-            Console.WriteLine("=== LmConfig Usage Examples ===\n");
-            RunFileBasedExample();
-            RunEmbeddedResourceExample();
-            RunStreamFactoryExample();
-            RunIOptionsExample();
-            await RunProviderAvailabilityExample();
-            await RunModelIdResolutionExample();
-            Console.WriteLine("\nNote: ClaudeAgentSDK example (Example 7) requires OneShot mode.");
-            Console.WriteLine("Run with: dotnet run --prompt \"Your question here\"\n");
-            return;
+            // Handle list commands first
+            if (options.ListModels)
+            {
+                await ListModelsAsync(options.Verbose);
+                return 0;
+            }
+
+            if (options.ListProviders)
+            {
+                await ListProvidersAsync(options.Verbose);
+                return 0;
+            }
+
+            // Handle run modes
+            if (options.RunAll)
+            {
+                Console.WriteLine("=== LmConfig Usage Examples ===\n");
+                RunFileBasedExample();
+                RunEmbeddedResourceExample();
+                RunStreamFactoryExample();
+                RunIOptionsExample();
+                await RunProviderAvailabilityExample();
+                await RunModelIdResolutionExample();
+                Console.WriteLine("\nNote: Use --claude for ClaudeAgentSDK one-shot mode.");
+                Console.WriteLine("Note: Use --grok for Grok agentic example.");
+                Console.WriteLine("Note: Use --model <model-id> to specify a different model.\n");
+                return 0;
+            }
+
+            if (options.RunGrok)
+            {
+                var model = options.Model ?? "x-ai/grok-4-fast"; // "openai/gpt-5.1-codex-mini""x-ai/grok-4-fast";
+                Console.WriteLine($"=== Agentic Loop Example with {model} ===\n");
+                await RunAgenticExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            if (options.RunBackground)
+            {
+                var model = options.Model ?? "x-ai/grok-4-fast";
+                Console.WriteLine($"=== Background Agentic Loop Example with {model} ===\n");
+                await RunBackgroundAgenticLoopExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            if (options.RunClaude)
+            {
+                Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
+                await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
+                return 0;
+            }
+
+            // Default: If model is specified, run agentic example with that model
+            if (!string.IsNullOrEmpty(options.Model))
+            {
+                Console.WriteLine($"=== Agentic Loop Example with {options.Model} ===\n");
+                await RunAgenticExample(options.Prompt, options.Model, options.Temperature, options.MaxTurns, options.Verbose);
+                return 0;
+            }
+
+            // Default: Run ClaudeAgentSDK in OneShot mode
+            Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode (default) ===\n");
+            Console.WriteLine("Tip: Use --help to see all options, --grok for Grok example, --model <id> for other models.\n");
+            await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+            if (options.Verbose)
+            {
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            }
+
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Lists all available models from the configuration.
+    /// </summary>
+    private static async Task ListModelsAsync(bool verbose)
+    {
+        Console.WriteLine("=== Available Models ===\n");
+
+        var services = new ServiceCollection();
+        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
+        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLmConfigFromFile("models.json");
+
+        var serviceProvider = services.BuildServiceProvider();
+        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+
+        var models = appConfig.Value.Models;
+        Console.WriteLine($"Total models: {models.Count}\n");
+
+        // Group models by provider family
+        var groupedModels = models
+            .GroupBy(m => GetModelFamily(m.Id))
+            .OrderBy(g => g.Key);
+
+        foreach (var group in groupedModels)
+        {
+            Console.WriteLine($"--- {group.Key} ({group.Count()} models) ---");
+            foreach (var model in group.OrderBy(m => m.Id).Take(verbose ? int.MaxValue : 5))
+            {
+                var isReasoning = model.IsReasoning ? " [reasoning]" : "";
+                var contextLength = model.Capabilities?.TokenLimits?.MaxContextTokens;
+                var contextStr = contextLength.HasValue ? $" ({contextLength.Value / 1000}K ctx)" : "";
+
+                // Check if model can be resolved
+                var resolution = await modelResolver.ResolveProviderAsync(model.Id);
+                var status = resolution != null ? "✓" : "✗";
+
+                Console.WriteLine($"  {status} {model.Id}{isReasoning}{contextStr}");
+            }
+
+            if (!verbose && group.Count() > 5)
+            {
+                Console.WriteLine($"  ... and {group.Count() - 5} more (use --verbose to see all)");
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Lists all available providers and their status.
+    /// </summary>
+    private static async Task ListProvidersAsync(bool verbose)
+    {
+        Console.WriteLine("=== Available Providers ===\n");
+
+        var services = new ServiceCollection();
+        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
+        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLmConfigFromFile("models.json");
+
+        var serviceProvider = services.BuildServiceProvider();
+        var appConfig = serviceProvider.GetRequiredService<IOptions<AchieveAi.LmDotnetTools.LmConfig.Models.AppConfig>>();
+        var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+
+        var providers = appConfig.Value.ProviderRegistry ?? new Dictionary<string, AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConnectionInfo>();
+        Console.WriteLine($"Total providers: {providers.Count}\n");
+
+        foreach (var (providerName, providerInfo) in providers.OrderBy(p => p.Key))
+        {
+            var isAvailable = await modelResolver.IsProviderAvailableAsync(providerName);
+            var status = isAvailable ? "✓ Available" : "✗ Not available";
+            var envVar = providerInfo.ApiKeyEnvironmentVariable ?? "N/A";
+            var hasKey = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envVar ?? ""));
+
+            Console.WriteLine($"{status}: {providerName}");
+            Console.WriteLine($"  Endpoint: {providerInfo.EndpointUrl}");
+            Console.WriteLine($"  API Key Env: {envVar} {(hasKey ? "(set)" : "(not set)")}");
+            Console.WriteLine($"  Compatibility: {providerInfo.Compatibility}");
+
+            if (verbose && providerInfo.Description != null)
+            {
+                Console.WriteLine($"  Description: {providerInfo.Description}");
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    private static string GetModelFamily(string modelId)
+    {
+        var id = modelId.ToLowerInvariant();
+        if (id.Contains("grok") || id.Contains("x-ai"))
+        {
+            return "xAI (Grok)";
         }
 
-        // Default: Run ClaudeAgentSDK in OneShot mode
-        Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
-        await RunClaudeAgentSdkOneShotExample(prompt);
+        if (id.Contains("claude") || id.Contains("anthropic"))
+        {
+            return "Anthropic (Claude)";
+        }
+
+        if (id.Contains("gpt") || id.Contains("openai"))
+        {
+            return "OpenAI (GPT)";
+        }
+
+        if (id.Contains("gemini") || id.Contains("google"))
+        {
+            return "Google (Gemini)";
+        }
+
+        if (id.Contains("deepseek"))
+        {
+            return "DeepSeek";
+        }
+
+        if (id.Contains("qwen"))
+        {
+            return "Alibaba (Qwen)";
+        }
+
+        if (id.Contains("kimi") || id.Contains("moonshot"))
+        {
+            return "Moonshot (Kimi)";
+        }
+
+        if (id.Contains("minimax"))
+        {
+            return "MiniMax";
+        }
+
+        if (id.Contains("openrouter/"))
+        {
+            return "OpenRouter (Cloaked)";
+        }
+
+        if (id.Contains("mistral"))
+        {
+            return "Mistral";
+        }
+
+        if (id.Contains("llama") || id.Contains("meta"))
+        {
+            return "Meta (Llama)";
+        }
+
+        return "Other";
     }
 
     /// <summary>
@@ -335,11 +558,11 @@ internal class Program
             }
 
             Console.WriteLine("Key Benefits:");
-            Console.WriteLine("  • Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'");
-            Console.WriteLine("  • UnifiedAgent automatically resolves to the best available provider");
-            Console.WriteLine("  • Provider agents receive the correct provider-specific model names");
-            Console.WriteLine("  • Supports complex routing through aggregators like OpenRouter");
-            Console.WriteLine("  • Enables seamless model switching without code changes");
+            Console.WriteLine("  - Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'");
+            Console.WriteLine("  - UnifiedAgent automatically resolves to the best available provider");
+            Console.WriteLine("  - Provider agents receive the correct provider-specific model names");
+            Console.WriteLine("  - Supports complex routing through aggregators like OpenRouter");
+            Console.WriteLine("  - Enables seamless model switching without code changes");
             Console.WriteLine();
         }
         catch (Exception ex)
@@ -348,14 +571,11 @@ internal class Program
         }
     }
 
-    // NOTE: Interactive mode is not yet fully implemented.
-    // Example 7 has been removed. Use OneShot mode (default) for ClaudeAgentSDK testing.
-
     /// <summary>
     ///     ClaudeAgentSDK Provider in One-Shot Mode
     ///     Sends a prompt, runs to completion, and exits
     /// </summary>
-    private static async Task RunClaudeAgentSdkOneShotExample(string prompt)
+    private static async Task RunClaudeAgentSdkOneShotExample(string prompt, float temperature)
     {
         try
         {
@@ -421,7 +641,7 @@ internal class Program
             var options = new GenerateReplyOptions
             {
                 ModelId = "claude-sonnet-4-5",
-                Temperature = 0.7f,
+                Temperature = temperature,
                 MaxToken = 10, // Max turns in one-shot mode
             };
 
@@ -462,6 +682,9 @@ internal class Program
                             Console.WriteLine(
                                 $"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]"
                             );
+                            Console.WriteLine(
+                                $"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]"
+                            );
                             break;
                         case TextUpdateMessage:
                         case ToolsCallUpdateMessage:
@@ -498,6 +721,332 @@ internal class Program
         catch (Exception ex)
         {
             Console.WriteLine($"✗ ClaudeAgentSDK one-shot example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Agentic Loop Example with configurable model
+    /// Demonstrates the agentic loop pattern with middleware chain
+    /// </summary>
+    private static async Task RunAgenticExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
+    {
+        try
+        {
+            var services = new ServiceCollection();
+            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+
+            // Load configuration
+            _ = services.AddLmConfigFromFile("models.json");
+
+            var serviceProvider = services.BuildServiceProvider();
+            var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+            var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+            var logger = serviceProvider.GetRequiredService<ILogger<OpenAiGrokAgenticExample>>();
+
+            // Create and run the example with the specified model
+            var example = new OpenAiGrokAgenticExample(modelResolver, agentFactory, logger);
+            await example.RunAsync(prompt, modelId, temperature, maxTurns);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ Agentic example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Background Agentic Loop Example
+    /// Demonstrates the background agentic loop with event queues and multiple subscribers
+    /// </summary>
+    private static async Task RunBackgroundAgenticLoopExample(string prompt, string modelId, float temperature, int maxTurns, bool verbose)
+    {
+        try
+        {
+            var services = new ServiceCollection();
+            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+
+            // Load configuration
+            _ = services.AddLmConfigFromFile("models.json");
+
+            var serviceProvider = services.BuildServiceProvider();
+            var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+            var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+            var logger = serviceProvider.GetRequiredService<ILogger<BackgroundAgenticLoop>>();
+
+            // Resolve the model
+            var resolution = await modelResolver.ResolveProviderAsync(modelId);
+            if (resolution == null)
+            {
+                Console.WriteLine($"✗ Failed to resolve model: {modelId}");
+                return;
+            }
+
+            Console.WriteLine($"✓ Resolved model: {resolution.EffectiveModelName}");
+            Console.WriteLine($"  Provider: {resolution.EffectiveProviderName}");
+            Console.WriteLine($"  Endpoint: {resolution.Connection.EndpointUrl}\n");
+
+            // Create function registry with tools
+            var registry = new FunctionRegistry();
+
+            // Add built-in demo tool
+            _ = registry.AddFunction(
+                new FunctionContract
+                {
+                    Name = "get_weather",
+                    Description = "Get the current weather for a location",
+                    Parameters =
+                    [
+                        new FunctionParameterContract
+                        {
+                            Name = "location",
+                            Description = "The city name",
+                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                            IsRequired = true,
+                        },
+                    ],
+                },
+                async (args) =>
+                {
+                    await Task.Delay(100);
+                    return System.Text.Json.JsonSerializer.Serialize(new { location = args, temperature = 72, condition = "sunny" });
+                },
+                providerName: "Demo"
+            );
+
+            // Load MCP tools from .mcp.json if it exists
+            var mcpConfigPath = ".mcp.json";
+            var mcpLogger = serviceProvider.GetRequiredService<ILogger<McpConfigLoader>>();
+            var mcpProviderLogger = serviceProvider.GetService<ILogger<McpClientFunctionProvider>>();
+            await using var mcpLoader = new McpConfigLoader(mcpLogger);
+
+            if (File.Exists(mcpConfigPath))
+            {
+                Console.WriteLine("Loading MCP tools from .mcp.json...");
+                var mcpClients = await mcpLoader.LoadFromFileAsync(mcpConfigPath);
+
+                if (mcpClients.Count > 0)
+                {
+                    // Collect tool names from all MCP clients for display
+                    var allMcpTools = new List<string>();
+                    foreach (var (serverName, client) in mcpClients)
+                    {
+                        try
+                        {
+                            var tools = await client.ListToolsAsync();
+                            allMcpTools.AddRange(tools.Select(t => $"{serverName}-{t.Name}"));
+                        }
+                        catch
+                        {
+                            // Ignore errors listing tools - they'll be logged by the provider
+                        }
+                    }
+
+                    // Add MCP tools to the function registry
+                    _ = await registry.AddMcpClientsAsync(
+                        new Dictionary<string, IMcpClient>(mcpClients),
+                        providerName: "MCP",
+                        logger: mcpProviderLogger);
+
+                    Console.WriteLine($"✓ Loaded {mcpClients.Count} MCP server(s) with {allMcpTools.Count} tool(s)");
+                    if (allMcpTools.Count > 0)
+                    {
+                        Console.WriteLine($"  MCP tools: [{string.Join(", ", allMcpTools)}]\n");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("  No MCP servers could be started\n");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Note: No .mcp.json found at {mcpConfigPath}, running with built-in tools only\n");
+            }
+
+            // Create the base provider agent (no middleware - BackgroundAgenticLoop owns the stack)
+            var providerAgent = agentFactory.CreateStreamingAgent(resolution);
+
+            // Create default options with resolved model configuration
+            var defaultOptions = new GenerateReplyOptions
+            {
+                ModelId = resolution.EffectiveModelName,
+                Temperature = temperature,
+            };
+
+            // Create the background loop - it builds the full middleware stack internally:
+            // MessageTransformation -> JsonFragmentUpdate -> MessageUpdateJoiner -> ToolCallInjection
+            var threadId = Guid.NewGuid().ToString("N");
+            await using var loop = new BackgroundAgenticLoop(
+                providerAgent,
+                registry,
+                threadId,
+                defaultOptions: defaultOptions,
+                maxTurnsPerRun: maxTurns,
+                logger: logger);
+
+            using var cts = new CancellationTokenSource();
+
+            // Track run completions for "send and wait" pattern
+            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<bool>>();
+
+            // Start UI subscriber (displays messages)
+            var uiTask = Task.Run(async () =>
+            {
+                Console.WriteLine("[UI Subscriber] Connected\n");
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                {
+                    switch (msg)
+                    {
+                        case RunAssignmentMessage assignment:
+                            Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
+                            Console.WriteLine($"              GenerationId: {assignment.Assignment.GenerationId}");
+                            if (assignment.Assignment.WasInjected)
+                            {
+                                Console.WriteLine($"              (Injected from parent: {assignment.Assignment.ParentRunId})");
+                            }
+                            break;
+                        case RunCompletedMessage completed:
+                            Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
+                            if (completed.WasForked)
+                            {
+                                Console.WriteLine($"                Forked to: {completed.ForkedToRunId}");
+                            }
+                            // Signal completion for any waiters
+                            if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
+                            {
+                                _ = tcs.TrySetResult(true);
+                            }
+                            break;
+                        case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                            Console.Write(textMsg.Text);
+                            break;
+                        case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
+                            Console.Write(textUpdate.Text);
+                            break;
+                        case ToolCallMessage toolCall:
+                            Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
+                            break;
+                        case ToolCallResultMessage toolResult:
+                            Console.WriteLine($"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}...");
+                            break;
+
+                        default:
+                            // Ignore other message types
+                            break;
+                    }
+                }
+            }, cts.Token);
+
+            // Start persistence subscriber (just logs)
+            var persistTask = Task.Run(async () =>
+            {
+                Console.WriteLine("[Persistence Subscriber] Connected\n");
+                var count = 0;
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                {
+                    if (msg is TextMessage or ToolsCallMessage or ToolsCallResultMessage or RunAssignmentMessage or RunCompletedMessage)
+                    {
+                        count++;
+                        if (verbose)
+                        {
+                            Console.WriteLine($"[Persist] Stored message #{count}: {msg.GetType().Name}");
+                        }
+                    }
+                }
+                Console.WriteLine($"[Persistence] Total messages stored: {count}");
+            }, cts.Token);
+
+            // Start the background loop
+            var loopTask = loop.RunAsync(cts.Token);
+
+            Console.WriteLine("Background loop started. Type messages to send, or 'exit' to quit.\n");
+
+            // Helper to send and optionally wait for completion
+            async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
+            {
+                var assignment = await loop.SendAsync(
+                    [new TextMessage { Text = text, Role = Role.User }],
+                    inputId: inputId);
+
+                if (waitForCompletion && !assignment.WasInjected)
+                {
+                    // Register completion waiter before the run might complete
+                    var completionTcs = new TaskCompletionSource<bool>();
+                    runCompletions[assignment.RunId] = completionTcs;
+
+                    // Wait for run to complete (with timeout)
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
+
+                    try
+                    {
+                        _ = await completionTcs.Task.WaitAsync(linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        Console.WriteLine("\n[Timeout] Run did not complete within 5 minutes");
+                    }
+                }
+
+                return assignment;
+            }
+
+            // Send initial prompt and wait for completion
+            Console.WriteLine($"Sending initial prompt: \"{prompt}\"\n");
+            var assignment1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
+            Console.WriteLine($"[Client] Message assigned to run: {assignment1.RunId}\n");
+
+            // Check if we should go interactive (stdin available) or exit
+            var isInteractive = !Console.IsInputRedirected;
+
+            if (isInteractive)
+            {
+                // Interactive loop
+                while (true)
+                {
+                    Console.Write("\n> ");
+                    var input = Console.ReadLine();
+                    if (string.IsNullOrEmpty(input) || input.Equals("exit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    // Send the message and wait for completion
+                    var assignment = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+
+                    Console.WriteLine($"[Client] Message assigned to run: {assignment.RunId}");
+                    if (assignment.WasInjected)
+                    {
+                        Console.WriteLine($"         (Injected, will fork from: {assignment.ParentRunId})");
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine("\n[Non-interactive mode] Initial prompt completed, exiting.");
+            }
+
+            // Stop the loop
+            Console.WriteLine("\nStopping background loop...");
+            await cts.CancelAsync();
+
+            try
+            {
+                await Task.WhenAll(loopTask, uiTask, persistTask).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+
+            Console.WriteLine("\n✓ Background agentic loop example completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ Background agentic loop example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }

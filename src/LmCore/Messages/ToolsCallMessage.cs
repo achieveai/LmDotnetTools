@@ -104,6 +104,15 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonPropertyName("messageOrderIdx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// Note: A chunk represents partial updates to tool calls, not multiple distinct tool calls.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
 }
 
 public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>

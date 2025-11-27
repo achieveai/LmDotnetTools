@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -893,24 +894,23 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
-                ?
-                [
-                    new ToolsCallMessage
-                    {
-                        GenerationId = Guid.NewGuid().ToString(),
-                        Role = Role.Tool,
-                        ToolCalls =
-                        [
-                            new ToolCall
-                            {
-                                FunctionArgs = jsonText,
-                                FunctionName = toolName,
-                                Index = 0,
-                                ToolCallId = Guid.NewGuid().ToString(),
-                            },
-                        ],
-                    },
-                ]
+                ? [
+                        new ToolsCallMessage
+                        {
+                            GenerationId = Guid.NewGuid().ToString(),
+                            Role = Role.Tool,
+                            ToolCalls =
+                            [
+                                new ToolCall
+                                {
+                                    FunctionArgs = jsonText,
+                                    FunctionName = toolName,
+                                    Index = 0,
+                                    ToolCallId = Guid.NewGuid().ToString(),
+                                },
+                            ],
+                        },
+                    ]
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 

@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Agents;
+namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
 [AttributeUsage(AttributeTargets.Method, Inherited = false)]
 public class FunctionAttribute : Attribute

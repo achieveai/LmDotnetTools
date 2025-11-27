@@ -91,6 +91,14 @@ public record TextUpdateMessage : IMessage, ICanGetText
     public int? MessageOrderIdx { get; init; }
 
     /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
+
+    /// <summary>
     ///     Not supported for text updates.
     /// </summary>
     public static BinaryData? GetBinary()

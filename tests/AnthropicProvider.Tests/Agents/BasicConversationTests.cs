@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing

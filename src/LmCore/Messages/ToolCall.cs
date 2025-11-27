@@ -37,6 +37,99 @@ public record struct ToolCallResult(
     [property: JsonPropertyName("result")] string Result
 );
 
+/// <summary>
+/// Represents a single tool call result as a message.
+/// This is the singular version of ToolsCallResultMessage, containing a single result.
+/// </summary>
+[JsonConverter(typeof(ToolCallResultMessageJsonConverter))]
+public record ToolCallResultMessage : IMessage
+{
+    [JsonPropertyName("tool_call_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolCallId { get; init; }
+
+    [JsonPropertyName("result")]
+    public required string Result { get; init; }
+
+    [JsonPropertyName("role")]
+    public Role Role { get; init; } = Role.User;
+
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FromAgent { get; init; }
+
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GenerationId { get; init; }
+
+    [JsonIgnore]
+    public System.Collections.Immutable.ImmutableDictionary<string, object>? Metadata { get; init; }
+
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
+    /// Converts this message to a ToolCallResult struct.
+    /// </summary>
+    public ToolCallResult ToToolCallResult()
+    {
+        return new ToolCallResult(ToolCallId, Result);
+    }
+
+    /// <summary>
+    /// Creates a ToolCallResultMessage from a ToolCallResult struct.
+    /// </summary>
+    public static ToolCallResultMessage FromToolCallResult(
+        ToolCallResult result,
+        Role role = Role.User,
+        string? fromAgent = null,
+        string? generationId = null,
+        System.Collections.Immutable.ImmutableDictionary<string, object>? metadata = null,
+        string? threadId = null,
+        string? runId = null,
+        string? parentRunId = null,
+        int? messageOrderIdx = null)
+    {
+        return new ToolCallResultMessage
+        {
+            ToolCallId = result.ToolCallId,
+            Result = result.Result,
+            Role = role,
+            FromAgent = fromAgent,
+            GenerationId = generationId,
+            Metadata = metadata,
+            ThreadId = threadId,
+            RunId = runId,
+            ParentRunId = parentRunId,
+            MessageOrderIdx = messageOrderIdx,
+        };
+    }
+}
+
+/// <summary>
+/// JSON converter for ToolCallResultMessage that supports the shadow properties pattern.
+/// </summary>
+public class ToolCallResultMessageJsonConverter : ShadowPropertiesJsonConverter<ToolCallResultMessage>
+{
+    protected override ToolCallResultMessage CreateInstance()
+    {
+        return new ToolCallResultMessage { Result = string.Empty };
+    }
+}
+
 public record ToolCallUpdate
 {
     [JsonPropertyName("tool_call_id")]
@@ -60,4 +153,119 @@ public record ToolCallUpdate
     /// </summary>
     [JsonPropertyName("json_update_fragments")]
     public IList<JsonFragmentUpdate>? JsonFragmentUpdates { get; init; }
+}
+
+/// <summary>
+/// Represents a streaming tool call update from a language model.
+/// Contains the current accumulated tool call state at a point in time during streaming.
+/// </summary>
+[JsonConverter(typeof(ToolCallUpdateMessageJsonConverter))]
+public record ToolCallUpdateMessage : ToolCallUpdate, IMessage
+{
+    /// <summary>
+    /// The role of the message sender (typically Assistant for LM responses).
+    /// </summary>
+    [JsonPropertyName("role")]
+    public Role Role { get; init; } = Role.Assistant;
+
+    /// <summary>
+    /// The name or identifier of the agent that generated this message.
+    /// </summary>
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FromAgent { get; init; }
+
+    /// <summary>
+    /// A unique identifier for the generation this update is part of.
+    /// </summary>
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GenerationId { get; init; }
+
+    /// <summary>
+    /// Additional metadata associated with the message.
+    /// </summary>
+    [JsonIgnore]
+    public System.Collections.Immutable.ImmutableDictionary<string, object>? Metadata { get; init; }
+
+    /// <summary>
+    /// Thread identifier for conversation continuity (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    /// <summary>
+    /// Run identifier for this specific execution (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    /// <summary>
+    /// Parent Run identifier for branching/time travel (creates git-like lineage).
+    /// </summary>
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    /// <summary>
+    /// Order index of this message within its generation (same GenerationId).
+    /// </summary>
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// Note: A chunk represents partial updates to a single tool call, not multiple tool calls.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
+
+    /// <summary>
+    /// Indicates this is a streaming update rather than a complete message.
+    /// </summary>
+    [JsonPropertyName("isUpdate")]
+    public bool IsUpdate { get; init; } = true;
+
+    /// <summary>
+    /// Converts this update to a complete ToolCallMessage.
+    /// </summary>
+    /// <returns>A ToolCallMessage with the same content and properties.</returns>
+    public ToolCallMessage ToToolCallMessage()
+    {
+        return new ToolCallMessage
+        {
+            ToolCallId = ToolCallId,
+            Index = Index,
+            FunctionName = FunctionName,
+            FunctionArgs = FunctionArgs,
+            Role = Role,
+            FromAgent = FromAgent,
+            GenerationId = GenerationId,
+            Metadata = Metadata,
+            ThreadId = ThreadId,
+            RunId = RunId,
+            ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
+        };
+    }
+}
+
+/// <summary>
+/// JSON converter for ToolCallUpdateMessage that supports the shadow properties pattern.
+/// </summary>
+public class ToolCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolCallUpdateMessage>
+{
+    /// <summary>
+    /// Creates a new instance of ToolCallUpdateMessage during deserialization.
+    /// </summary>
+    /// <returns>A minimal ToolCallUpdateMessage instance.</returns>
+    protected override ToolCallUpdateMessage CreateInstance()
+    {
+        return new ToolCallUpdateMessage();
+    }
 }

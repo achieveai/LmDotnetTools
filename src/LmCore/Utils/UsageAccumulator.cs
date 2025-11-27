@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -12,8 +12,10 @@ public class UsageAccumulator
     private ImmutableDictionary<string, object>? _extraMetadata;
     private string? _fromAgent;
     private string? _generationId;
-    private bool _hasRawUsage;
+    private string? _threadId;
+    private string? _runId;
     private Role _role = Role.Assistant;
+    private bool _hasRawUsage;
 
     /// <summary>
     ///     Current accumulated usage data.
@@ -43,6 +45,8 @@ public class UsageAccumulator
         // Store context for the usage message
         _fromAgent = message.FromAgent;
         _generationId = message.GenerationId;
+        _threadId = message.ThreadId;
+        _runId = message.RunId;
         _role = message.Role;
 
         // Copy any other metadata (except usage)
@@ -72,6 +76,8 @@ public class UsageAccumulator
         // Store context for the usage message
         _fromAgent = usageMessage.FromAgent;
         _generationId = usageMessage.GenerationId;
+        _threadId = usageMessage.ThreadId;
+        _runId = usageMessage.RunId;
         _role = usageMessage.Role;
 
         // Copy any metadata
@@ -97,6 +103,8 @@ public class UsageAccumulator
                 Usage = CurrentUsage,
                 FromAgent = _fromAgent,
                 GenerationId = _generationId,
+                ThreadId = _threadId,
+                RunId = _runId,
                 Role = _role,
                 Metadata = _extraMetadata,
             };

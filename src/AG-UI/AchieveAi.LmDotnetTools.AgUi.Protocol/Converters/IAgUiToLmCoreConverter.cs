@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using ToolCall = AchieveAi.LmDotnetTools.LmCore.Messages.ToolCall;
 

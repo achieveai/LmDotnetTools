@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Core;
+namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 [JsonConverter(typeof(UsageShadowPropertiesJsonConverter))]
 public record Usage

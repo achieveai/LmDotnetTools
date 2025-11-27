@@ -1,6 +1,6 @@
 using System.Text;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -195,7 +195,24 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     )
     {
         var (contracts, handlers) = Build();
-        return new FunctionCallMiddleware(contracts, handlers, name, logger, resultCallback);
+        return new FunctionCallMiddleware(contracts, handlers, name, logger: logger, resultCallback: resultCallback);
+    }
+
+    /// <summary>
+    /// Build ToolCallInjectionMiddleware and handler dictionary for explicit tool execution.
+    /// Use this pattern when you want manual control over tool execution via ToolCallExecutor.
+    /// </summary>
+    /// <param name="name">Optional name for the middleware instance</param>
+    /// <param name="logger">Optional logger for the middleware</param>
+    /// <returns>A tuple containing the middleware and the handler dictionary for use with ToolCallExecutor</returns>
+    public (ToolCallInjectionMiddleware Middleware, IDictionary<string, Func<string, Task<string>>> Handlers) BuildToolCallComponents(
+        string? name = null,
+        ILogger<ToolCallInjectionMiddleware>? logger = null
+    )
+    {
+        var (contracts, handlers) = Build();
+        var middleware = new ToolCallInjectionMiddleware(contracts, name, logger);
+        return (middleware, handlers);
     }
 
     /// <summary>

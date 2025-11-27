@@ -8,7 +8,6 @@ global using System.Threading.Tasks;
 global using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 global using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 global using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
-global using AchieveAi.LmDotnetTools.LmCore.Agents;
 global using AchieveAi.LmDotnetTools.LmCore.Messages;
 global using AchieveAi.LmDotnetTools.TestUtils;
 global using Xunit;

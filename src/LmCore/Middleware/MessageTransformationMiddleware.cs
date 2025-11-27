@@ -36,6 +36,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent, nameof(agent));
+
         // UPSTREAM: Reconstruct aggregates for provider
         var aggregatedMessages = ReconstructAggregates(context.Messages);
 
@@ -82,6 +84,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent, nameof(agent));
+
         // UPSTREAM: Reconstruct aggregates for provider
         var aggregatedMessages = ReconstructAggregates(context.Messages);
 
@@ -115,40 +119,113 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     #region Downstream: Assign Message Ordering
 
     /// <summary>
-    ///     Assigns messageOrderIdx to messages with the same GenerationId
+    /// Tracking state for message and chunk indices per generation
     /// </summary>
-    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
+    private class OrderingState
     {
-        var messageList = messages.ToList();
-        var orderIndexByGeneration = new Dictionary<string, int>();
+        public Dictionary<string, int> MessageOrderByGeneration { get; } = [];
+        public Dictionary<string, int> ChunkIdxByGeneration { get; } = [];
+        /// <summary>
+        /// Tracks the current message identity to detect when we need to start a new message.
+        /// Identity is message type for most updates, or "tool_call_update_{toolCallId}" for tool call updates.
+        /// </summary>
+        public Dictionary<string, string?> CurrentMessageIdentity { get; } = [];
+    }
 
-        foreach (var message in messageList)
+    /// <summary>
+    /// Processes a single message and assigns messageOrderIdx and chunkIdx.
+    /// Yields one or more messages (e.g., expanding plural messages into singular ones).
+    /// </summary>
+    private static IEnumerable<IMessage> ProcessMessageForOrdering(
+        IMessage message,
+        OrderingState state
+    )
+    {
+        // Only assign ordering to messages with a GenerationId
+        if (string.IsNullOrEmpty(message.GenerationId))
         {
-            // Only assign ordering to messages with a GenerationId
-            if (string.IsNullOrEmpty(message.GenerationId))
+            yield return message;
+            yield break;
+        }
+
+        var generationId = message.GenerationId;
+
+        // Initialize state for this generation if needed
+        if (!state.MessageOrderByGeneration.TryGetValue(generationId, out var value))
+        {
+            value = -1;
+            state.MessageOrderByGeneration[generationId] = value; // Start at -1 so first increment gives 0
+            state.ChunkIdxByGeneration[generationId] = 0;
+            state.CurrentMessageIdentity[generationId] = null;
+        }
+
+        // Local helper: Gets current indices from state
+        (int orderIdx, int chunkIdx) GetCurrentIndices()
+        {
+            return (value, state.ChunkIdxByGeneration[generationId]);
+        }
+
+        // Local helper: Starts a new message by incrementing messageOrderIdx and resetting chunkIdx
+        void StartNewMessage(string? newIdentity = null)
+        {
+            state.MessageOrderByGeneration[generationId] = ++value;
+            state.ChunkIdxByGeneration[generationId] = 0;
+            state.CurrentMessageIdentity[generationId] = newIdentity;
+        }
+
+        // Local helper: Increments chunkIdx for continuing the current message
+        void IncrementChunk()
+        {
+            state.ChunkIdxByGeneration[generationId]++;
+        }
+
+        // Local helper: Checks if we should start a new message based on identity change
+        void CheckAndHandleIdentityChange(string newIdentity)
+        {
+            var currentIdentity = state.CurrentMessageIdentity[generationId];
+            if (currentIdentity != newIdentity)
             {
-                yield return message;
-                continue;
+                // Identity changed or first message with this identity - start new message
+                StartNewMessage(newIdentity);
             }
+        }
 
-            var generationId = message.GenerationId;
+        // Process message and assign indices
+        // For plural message types, convert them to singular messages
+        switch (message)
+        {
+            case TextMessage m:
+                StartNewMessage();
+                var (textOrderIdx, _) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = textOrderIdx };
+                break;
 
-            // Get or initialize the order index for this generation
-            if (!orderIndexByGeneration.ContainsKey(generationId))
-            {
-                orderIndexByGeneration[generationId] = 0;
-            }
+            case TextUpdateMessage m:
+                // Check if message type changed, which triggers new message
+                CheckAndHandleIdentityChange("text_update");
+                var (textUpdateOrderIdx, textUpdateChunkIdx) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = textUpdateOrderIdx, ChunkIdx = textUpdateChunkIdx };
+                IncrementChunk();
+                break;
 
-            var orderIdx = orderIndexByGeneration[generationId]++;
+            case ReasoningMessage m:
+                StartNewMessage();
+                var (reasoningOrderIdx, _) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = reasoningOrderIdx };
+                break;
 
-            // Create a new message with the assigned messageOrderIdx
-            yield return message switch
-            {
-                TextMessage m => m with { MessageOrderIdx = orderIdx },
-                TextUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ReasoningMessage m => m with { MessageOrderIdx = orderIdx },
-                ReasoningUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ImageMessage m => new ImageMessage
+            case ReasoningUpdateMessage m:
+                // Check if message type changed, which triggers new message
+                CheckAndHandleIdentityChange("reasoning_update");
+                var (reasoningUpdateOrderIdx, reasoningUpdateChunkIdx) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = reasoningUpdateOrderIdx, ChunkIdx = reasoningUpdateChunkIdx };
+                IncrementChunk();
+                break;
+
+            case ImageMessage m:
+                StartNewMessage();
+                var (imageOrderIdx, _) = GetCurrentIndices();
+                yield return new ImageMessage
                 {
                     Role = m.Role,
                     ImageData = m.ImageData,
@@ -157,105 +234,160 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                     Metadata = m.Metadata,
                     ThreadId = m.ThreadId,
                     RunId = m.RunId,
-                    MessageOrderIdx = orderIdx,
-                },
-                ToolsCallMessage m => m with { MessageOrderIdx = orderIdx },
-                ToolsCallUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ToolsCallResultMessage m => m with { MessageOrderIdx = orderIdx },
-                UsageMessage m => m with { MessageOrderIdx = orderIdx },
-                CompositeMessage m => new CompositeMessage
+                    MessageOrderIdx = imageOrderIdx,
+                };
+                break;
+
+            case ToolsCallMessage m:
+                // Convert ToolsCallMessage (plural) into individual ToolCallMessage (singular) instances
+                foreach (var toolCall in m.ToolCalls)
                 {
-                    Role = m.Role,
-                    FromAgent = m.FromAgent,
-                    GenerationId = m.GenerationId,
-                    Metadata = m.Metadata,
-                    Messages = m.Messages,
-                    ThreadId = m.ThreadId,
-                    RunId = m.RunId,
-                    MessageOrderIdx = orderIdx,
-                },
-                ToolsCallAggregateMessage m => new ToolsCallAggregateMessage(
-                    m.ToolsCallMessage with
+                    StartNewMessage();
+                    var (toolCallOrderIdx, _) = GetCurrentIndices();
+                    yield return new ToolCallMessage
                     {
-                        MessageOrderIdx = orderIdx,
-                    },
-                    m.ToolsCallResult,
-                    m.FromAgent
-                ),
-                _ => message, // Unknown message type, pass through unchanged
-            };
+                        FunctionName = toolCall.FunctionName,
+                        FunctionArgs = toolCall.FunctionArgs,
+                        Index = toolCall.Index,
+                        ToolCallId = toolCall.ToolCallId,
+                        ToolCallIdx = toolCall.ToolCallIdx,
+                        Role = m.Role,
+                        FromAgent = m.FromAgent,
+                        GenerationId = m.GenerationId,
+                        Metadata = m.Metadata,
+                        ThreadId = m.ThreadId,
+                        RunId = m.RunId,
+                        ParentRunId = m.ParentRunId,
+                        MessageOrderIdx = toolCallOrderIdx,
+                    };
+                }
+                break;
+
+            case ToolsCallUpdateMessage m:
+                // Convert ToolsCallUpdateMessage (plural) into individual ToolCallUpdateMessage (singular) instances
+                // Note: typically contains a single delta during streaming
+                foreach (var update in m.ToolCallUpdates)
+                {
+                    // Identity based on tool call ID - different tool calls get different messages
+                    var toolCallIdentity = $"tool_call_update_{update.ToolCallId ?? update.Index?.ToString() ?? "unknown"}";
+                    CheckAndHandleIdentityChange(toolCallIdentity);
+
+                    var (toolCallUpdateOrderIdx, toolCallUpdateChunkIdx) = GetCurrentIndices();
+
+                    yield return new ToolCallUpdateMessage
+                    {
+                        ToolCallId = update.ToolCallId,
+                        Index = update.Index,
+                        FunctionName = update.FunctionName,
+                        FunctionArgs = update.FunctionArgs,
+                        JsonFragmentUpdates = update.JsonFragmentUpdates,
+                        Role = m.Role,
+                        FromAgent = m.FromAgent,
+                        GenerationId = m.GenerationId,
+                        Metadata = m.Metadata,
+                        ThreadId = m.ThreadId,
+                        RunId = m.RunId,
+                        ParentRunId = m.ParentRunId,
+                        MessageOrderIdx = toolCallUpdateOrderIdx,
+                        ChunkIdx = toolCallUpdateChunkIdx,
+                    };
+
+                    IncrementChunk();
+                }
+                break;
+
+            case ToolCallUpdateMessage m:
+                // Handle singular ToolCallUpdateMessage - track identity based on tool call ID
+                var singularToolCallIdentity = $"tool_call_update_{m.ToolCallId ?? m.Index?.ToString() ?? "unknown"}";
+                CheckAndHandleIdentityChange(singularToolCallIdentity);
+
+                var (singularOrderIdx, singularChunkIdx) = GetCurrentIndices();
+                yield return m with
+                {
+                    MessageOrderIdx = singularOrderIdx,
+                    ChunkIdx = singularChunkIdx,
+                };
+                IncrementChunk();
+                break;
+
+            case ToolsCallResultMessage m:
+                // Convert ToolsCallResultMessage (plural) into individual ToolCallResultMessage (singular) instances
+                foreach (var result in m.ToolCallResults)
+                {
+                    StartNewMessage();
+                    var (toolCallResultOrderIdx, _) = GetCurrentIndices();
+                    yield return new ToolCallResultMessage
+                    {
+                        ToolCallId = result.ToolCallId,
+                        Result = result.Result,
+                        Role = m.Role,
+                        FromAgent = m.FromAgent,
+                        GenerationId = m.GenerationId,
+                        Metadata = m.Metadata,
+                        ThreadId = m.ThreadId,
+                        RunId = m.RunId,
+                        MessageOrderIdx = toolCallResultOrderIdx,
+                    };
+                }
+                break;
+
+            case UsageMessage m:
+                StartNewMessage();
+                var (usageOrderIdx, _) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = usageOrderIdx };
+                break;
+
+            case CompositeMessage:
+                throw new NotSupportedException(
+                    "CompositeMessage should not appear when assigning message orderings. " +
+                    "The downstream flow expects individual messages, not composites."
+                );
+
+            case ToolsCallAggregateMessage:
+                throw new NotSupportedException(
+                    "ToolsCallAggregateMessage should not appear when assigning message orderings. " +
+                    "The downstream flow expects individual messages, not aggregates."
+                );
+
+            default:
+                // Unknown message type, pass through unchanged
+                StartNewMessage();
+                yield return message;
+                break;
         }
     }
 
     /// <summary>
-    ///     Assigns messageOrderIdx to streaming messages on the fly
+    /// Assigns messageOrderIdx and chunkIdx to messages with the same GenerationId
     /// </summary>
-    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(IAsyncEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
     {
-        var orderIndexByGeneration = new Dictionary<string, int>();
+        var state = new OrderingState();
+
+        foreach (var message in messages)
+        {
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
+            {
+                yield return processedMessage;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Assigns messageOrderIdx and chunkIdx to streaming messages on the fly
+    /// </summary>
+    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
+        IAsyncEnumerable<IMessage> messages
+    )
+    {
+        var state = new OrderingState();
 
         await foreach (var message in messages)
         {
-            // Only assign ordering to messages with a GenerationId
-            if (string.IsNullOrEmpty(message.GenerationId))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
             {
-                yield return message;
-                continue;
+                yield return processedMessage;
             }
-
-            var generationId = message.GenerationId;
-
-            // Get or initialize the order index for this generation
-            if (!orderIndexByGeneration.ContainsKey(generationId))
-            {
-                orderIndexByGeneration[generationId] = 0;
-            }
-
-            var orderIdx = orderIndexByGeneration[generationId]++;
-
-            // Create a new message with the assigned messageOrderIdx
-            yield return message switch
-            {
-                TextMessage m => m with { MessageOrderIdx = orderIdx },
-                TextUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ReasoningMessage m => m with { MessageOrderIdx = orderIdx },
-                ReasoningUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ImageMessage m => new ImageMessage
-                {
-                    Role = m.Role,
-                    ImageData = m.ImageData,
-                    FromAgent = m.FromAgent,
-                    GenerationId = m.GenerationId,
-                    Metadata = m.Metadata,
-                    ThreadId = m.ThreadId,
-                    RunId = m.RunId,
-                    MessageOrderIdx = orderIdx,
-                },
-                ToolsCallMessage m => m with { MessageOrderIdx = orderIdx },
-                ToolsCallUpdateMessage m => m with { MessageOrderIdx = orderIdx },
-                ToolsCallResultMessage m => m with { MessageOrderIdx = orderIdx },
-                UsageMessage m => m with { MessageOrderIdx = orderIdx },
-                CompositeMessage m => new CompositeMessage
-                {
-                    Role = m.Role,
-                    FromAgent = m.FromAgent,
-                    GenerationId = m.GenerationId,
-                    Metadata = m.Metadata,
-                    Messages = m.Messages,
-                    ThreadId = m.ThreadId,
-                    RunId = m.RunId,
-                    MessageOrderIdx = orderIdx,
-                },
-                ToolsCallAggregateMessage m => new ToolsCallAggregateMessage(
-                    m.ToolsCallMessage with
-                    {
-                        MessageOrderIdx = orderIdx,
-                    },
-                    m.ToolsCallResult,
-                    m.FromAgent
-                ),
-                _ => message, // Unknown message type, pass through unchanged
-            };
         }
     }
 
@@ -276,8 +408,12 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
 
         foreach (var group in groups)
         {
+            // First, aggregate singular tool messages into plural versions
+            // This converts ToolCallMessage[] → ToolsCallMessage and ToolCallResultMessage[] → ToolsCallResultMessage
+            var aggregatedGroup = AggregateToolMessages(group);
+
             // Check if this group can be reconstructed into a ToolsCallAggregateMessage
-            var aggregate = TryCreateToolCallAggregate(group);
+            var aggregate = TryCreateToolCallAggregate(aggregatedGroup);
             if (aggregate != null)
             {
                 result.Add(aggregate);
@@ -285,16 +421,16 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             }
 
             // Check if this group has multiple messages that should be composed
-            if (group.Count > 1 && group.All(m => m.GenerationId == group[0].GenerationId))
+            if (aggregatedGroup.Count > 1 && aggregatedGroup.All(m => m.GenerationId == aggregatedGroup[0].GenerationId))
             {
                 // Create CompositeMessage for messages with same GenerationId
-                var composite = CreateCompositeMessage(group);
+                var composite = CreateCompositeMessage(aggregatedGroup);
                 result.Add(composite);
             }
             else
             {
                 // Add messages individually if they don't need aggregation
-                result.AddRange(group);
+                result.AddRange(aggregatedGroup);
             }
         }
 
@@ -344,8 +480,108 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    ///     Attempts to create a ToolsCallAggregateMessage if the group contains a ToolsCallMessage followed by
-    ///     ToolsCallResultMessage
+    /// Aggregates singular tool messages into plural versions.
+    /// Converts multiple ToolCallMessage instances into a single ToolsCallMessage,
+    /// and multiple ToolCallResultMessage instances into a single ToolsCallResultMessage.
+    /// Preserves MessageOrderIdx ordering throughout.
+    /// </summary>
+    private static List<IMessage> AggregateToolMessages(List<IMessage> group)
+    {
+        // If group is empty, nothing to do
+        if (group.Count == 0)
+        {
+            return group;
+        }
+
+        // Sort by MessageOrderIdx first to maintain order
+        var sorted = group.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue).ToList();
+
+        var result = new List<IMessage>();
+        var toolCallMessages = new List<ToolCallMessage>();
+        var toolCallResultMessages = new List<ToolCallResultMessage>();
+
+        // Separate tool messages from other messages, preserving order
+        foreach (var message in sorted)
+        {
+            switch (message)
+            {
+                case ToolCallMessage tcm:
+                    toolCallMessages.Add(tcm);
+                    break;
+                case ToolCallResultMessage tcrm:
+                    toolCallResultMessages.Add(tcrm);
+                    break;
+                default:
+                    result.Add(message);
+                    break;
+            }
+        }
+
+        // Aggregate ToolCallMessages into ToolsCallMessage
+        if (toolCallMessages.Count > 0)
+        {
+            var firstToolCall = toolCallMessages[0];
+
+            // Convert each ToolCallMessage to ToolCall
+            // ToolCallMessage inherits from ToolCall, so we can create ToolCall from it
+            var toolCalls = toolCallMessages
+                .Select(tcm => new ToolCall
+                {
+                    FunctionName = tcm.FunctionName,
+                    FunctionArgs = tcm.FunctionArgs,
+                    Index = tcm.Index,
+                    ToolCallId = tcm.ToolCallId,
+                    ToolCallIdx = tcm.ToolCallIdx
+                })
+                .ToImmutableList();
+
+            var toolsCallMessage = new ToolsCallMessage
+            {
+                ToolCalls = toolCalls,
+                Role = firstToolCall.Role,
+                FromAgent = firstToolCall.FromAgent,
+                GenerationId = firstToolCall.GenerationId,
+                Metadata = firstToolCall.Metadata,
+                ThreadId = firstToolCall.ThreadId,
+                RunId = firstToolCall.RunId,
+                ParentRunId = firstToolCall.ParentRunId,
+                MessageOrderIdx = firstToolCall.MessageOrderIdx,
+            };
+
+            result.Add(toolsCallMessage);
+        }
+
+        // Aggregate ToolCallResultMessages into ToolsCallResultMessage
+        if (toolCallResultMessages.Count > 0)
+        {
+            var firstResult = toolCallResultMessages[0];
+
+            // Convert each ToolCallResultMessage to ToolCallResult
+            var toolCallResults = toolCallResultMessages
+                .Select(tcrm => new ToolCallResult(tcrm.ToolCallId, tcrm.Result))
+                .ToImmutableList();
+
+            var toolsCallResultMessage = new ToolsCallResultMessage
+            {
+                ToolCallResults = toolCallResults,
+                Role = firstResult.Role,
+                FromAgent = firstResult.FromAgent,
+                GenerationId = firstResult.GenerationId,
+                Metadata = firstResult.Metadata,
+                ThreadId = firstResult.ThreadId,
+                RunId = firstResult.RunId,
+                MessageOrderIdx = firstResult.MessageOrderIdx,
+            };
+
+            result.Add(toolsCallResultMessage);
+        }
+
+        // Re-sort result by MessageOrderIdx to maintain order
+        return [.. result.OrderBy(m => m.MessageOrderIdx ?? int.MaxValue)];
+    }
+
+    /// <summary>
+    /// Attempts to create a ToolsCallAggregateMessage if the group contains a ToolsCallMessage followed by ToolsCallResultMessage
     /// </summary>
     private static ToolsCallAggregateMessage? TryCreateToolCallAggregate(List<IMessage> group)
     {

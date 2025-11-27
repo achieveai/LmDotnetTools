@@ -170,6 +170,66 @@
           "tags": ["high-quality", "thinking", "multimodal", "mcp-tools", "agent-sdk"]
         }
       ]
+    },
+    {
+      "id": "grok-4.1",
+      "is_reasoning": true,
+      "capabilities": {
+        "thinking": {
+          "type": "OpenAI",
+          "supports_budget_tokens": false,
+          "supports_thinking_type": false,
+          "max_thinking_tokens": 32768,
+          "is_built_in": true,
+          "is_exposed": true,
+          "parameter_name": "reasoning_effort"
+        },
+        "multimodal": {
+          "supports_images": true,
+          "supports_audio": false,
+          "supports_video": false,
+          "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+          "max_image_size": 20971520,
+          "max_images_per_message": 50
+        },
+        "function_calling": {
+          "supports_tools": true,
+          "supports_parallel_calls": true,
+          "supports_tool_choice": true,
+          "max_tools_per_request": 128,
+          "supported_tool_types": ["function"]
+        },
+        "token_limits": {
+          "max_context_tokens": 131072,
+          "max_output_tokens": 32768,
+          "recommended_max_prompt_tokens": 120000
+        },
+        "response_formats": {
+          "supports_json_mode": true,
+          "supports_structured_output": true,
+          "supports_json_schema": true
+        },
+        "supports_streaming": true,
+        "supported_features": ["thinking", "multimodal", "function-calling", "structured-output", "long-context"],
+        "performance": {
+          "typical_latency": "00:00:02",
+          "max_latency": "00:00:15",
+          "tokens_per_second": 100.0,
+          "quality_tier": "very-high"
+        }
+      },
+      "providers": [
+        {
+          "name": "xAI",
+          "model_name": "grok-2-latest",
+          "priority": 1,
+          "pricing": {
+            "prompt_per_million": 2.0,
+            "completion_per_million": 10.0
+          },
+          "tags": ["high-quality", "thinking", "multimodal", "reasoning"]
+        }
+      ]
     }
   ],
   "provider_registry": {
@@ -201,6 +261,15 @@
       "timeout": "00:05:00",
       "max_retries": 1,
       "description": "Claude Agent SDK with MCP server support via Node.js CLI. API key is optional when using Claude Code subscription."
+    },
+    "xAI": {
+      "endpoint_url": "https://api.x.ai/v1",
+      "api_key_environment_variable": "XAI_API_KEY",
+      "compatibility": "OpenAI",
+      "headers": null,
+      "timeout": "00:02:00",
+      "max_retries": 3,
+      "description": "xAI Grok API with OpenAI-compatible interface"
     }
   }
 } 

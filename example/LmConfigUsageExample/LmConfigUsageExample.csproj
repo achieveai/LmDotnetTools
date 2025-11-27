@@ -10,14 +10,17 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
+    <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="CommandLineParser" Version="2.9.1" />
+    <PackageReference Include="DotNetEnv" Version="3.1.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.5" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\..\src\LmConfig\docs\models.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="models.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include=".mcp.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

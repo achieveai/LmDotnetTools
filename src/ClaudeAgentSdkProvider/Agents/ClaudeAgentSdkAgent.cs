@@ -2,6 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 
@@ -136,7 +137,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         {
             try
             {
-                var mcpConfig = LoadMcpConfiguration(_options.McpConfigPath);
+                var mcpConfig = ClaudeAgentSdkAgent.LoadMcpConfiguration(_options.McpConfigPath);
                 mcpServers = mcpConfig?.McpServers;
             }
             catch (Exception ex)

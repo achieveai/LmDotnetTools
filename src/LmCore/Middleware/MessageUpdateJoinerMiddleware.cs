@@ -66,6 +66,9 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         Type? activeBuilderType = null;
         Type? lastMessageType = null;
 
+        // Track the number of completed tool calls for ToolCallIdx assignment
+        var completedToolCallCount = 0;
+
         // Use the usage accumulator to track usage data
         var usageAccumulator = new UsageAccumulator();
 
@@ -87,6 +90,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // Check if we're switching message types and need to complete current builder
             if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
+                // Track if we're completing a tool call builder
+                if (activeBuilder is ToolCallMessageBuilder)
+                {
+                    completedToolCallCount++;
+                }
+
                 // Complete the previous builder before processing the new message
                 var builtMessage = activeBuilder.Build();
                 activeBuilder = null;
@@ -94,11 +103,39 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 yield return builtMessage;
             }
 
+            // Check if tool call ID/Index changed for singular ToolCallUpdateMessage
+            // (ToolCallMessage builder handles single tool call, so we need to complete it when a new one starts)
+            if (message is ToolCallUpdateMessage toolCallMsg
+                && activeBuilder is ToolCallMessageBuilder currentBuilder
+                && activeBuilderType == typeof(ToolCallMessage))
+            {
+                var isDifferentToolCall =
+                    (currentBuilder.CurrentToolCallId != null && toolCallMsg.ToolCallId != null
+                        && currentBuilder.CurrentToolCallId != toolCallMsg.ToolCallId)
+                    || (currentBuilder.CurrentIndex != null && toolCallMsg.Index != null
+                        && currentBuilder.CurrentIndex != toolCallMsg.Index);
+
+                if (isDifferentToolCall)
+                {
+                    // Complete the previous tool call before starting the new one
+                    completedToolCallCount++;
+                    var builtMessage = activeBuilder.Build();
+                    activeBuilder = null;
+                    activeBuilderType = null;
+                    yield return builtMessage;
+                }
+            }
+
             // Update last message type
             lastMessageType = message.GetType();
 
             // Process the current message
-            var processedMessage = ProcessStreamingMessage(message, ref activeBuilder, ref activeBuilderType);
+            var processedMessage = ProcessStreamingMessage(
+                message,
+                ref activeBuilder,
+                ref activeBuilderType,
+                completedToolCallCount
+            );
 
             // Only emit the message if it's not being accumulated by a builder
             var isBeingAccumulated =
@@ -107,6 +144,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                     message is TextUpdateMessage
                     || message is ReasoningUpdateMessage
                     || message is ToolsCallUpdateMessage
+                    || message is ToolCallUpdateMessage
                     || (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage))
                 );
 
@@ -133,13 +171,24 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private static IMessage ProcessStreamingMessage(
         IMessage message,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType
+        ref Type? activeBuilderType,
+        int toolCallIdx
     )
     {
-        // Handle tool call updates (ToolsCallUpdateMessage)
+        // Handle tool call updates (ToolsCallUpdateMessage - plural)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
             return ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
+        }
+        // Handle tool call updates (ToolCallUpdateMessage - singular)
+        else if (message is ToolCallUpdateMessage toolCallSingularUpdate)
+        {
+            return ProcessToolCallSingularUpdate(
+                toolCallSingularUpdate,
+                toolCallIdx,
+                ref activeBuilder,
+                ref activeBuilderType
+            );
         }
         // For text update messages
 
@@ -180,6 +229,39 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         {
             // Add to existing builder
             var builder = (ToolsCallMessageBuilder)activeBuilder;
+            builder.Add(toolCallUpdate);
+            return toolCallUpdate;
+        }
+    }
+
+    private static IMessage ProcessToolCallSingularUpdate(
+        ToolCallUpdateMessage toolCallUpdate,
+        int toolCallIdx,
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType
+    )
+    {
+        var builderType = typeof(ToolCallMessage);
+
+        if (activeBuilder == null || activeBuilderType != builderType)
+        {
+            // Create a new builder for the first update
+            var builder = new ToolCallMessageBuilder
+            {
+                FromAgent = toolCallUpdate.FromAgent,
+                Role = toolCallUpdate.Role,
+                ToolCallIdx = toolCallIdx,
+            };
+            activeBuilder = builder;
+            activeBuilderType = builderType;
+            builder.Add(toolCallUpdate);
+            // Return the original update for the first time
+            return toolCallUpdate;
+        }
+        else
+        {
+            // Add to existing builder
+            var builder = (ToolCallMessageBuilder)activeBuilder;
             builder.Add(toolCallUpdate);
             return toolCallUpdate;
         }

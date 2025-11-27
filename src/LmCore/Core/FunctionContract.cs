@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Agents;
+namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
 /// <summary>
 ///     Represents a function contract for Tool calls.

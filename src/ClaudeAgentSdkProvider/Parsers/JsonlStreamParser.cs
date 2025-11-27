@@ -1,8 +1,8 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
+using LmModels = AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 
@@ -63,7 +63,7 @@ public class JsonlStreamParser
         // Process each content block
         foreach (var contentBlock in assistantEvent.Message.Content)
         {
-            var message = ConvertContentBlock(contentBlock, role, generationId, runId, parentRunId, threadId);
+            var message = JsonlStreamParser.ConvertContentBlock(contentBlock, role, generationId, runId, parentRunId, threadId);
             if (message != null)
             {
                 messages.Add(message);
@@ -73,7 +73,7 @@ public class JsonlStreamParser
         // Add usage message if available
         if (assistantEvent.Message.Usage != null)
         {
-            var usageMessage = ConvertUsage(
+            var usageMessage = JsonlStreamParser.ConvertUsage(
                 assistantEvent.Message.Usage,
                 role,
                 generationId,
@@ -118,7 +118,7 @@ public class JsonlStreamParser
             {
                 foreach (var contentBlock in contentBlocks)
                 {
-                    var message = ConvertContentBlock(contentBlock, role, generationId, runId, null, threadId);
+                    var message = JsonlStreamParser.ConvertContentBlock(contentBlock, role, generationId, runId, null, threadId);
                     if (message != null)
                     {
                         messages.Add(message);
@@ -231,14 +231,14 @@ public class JsonlStreamParser
         string threadId
     )
     {
-        var usage = new Usage
+        var usage = new LmModels.Usage
         {
             PromptTokens = usageInfo.InputTokens,
             CompletionTokens = usageInfo.OutputTokens,
             TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens,
             InputTokenDetails =
                 usageInfo.CacheReadInputTokens > 0 || usageInfo.CacheCreationInputTokens > 0
-                    ? new InputTokenDetails { CachedTokens = usageInfo.CacheReadInputTokens ?? 0 }
+                    ? new LmModels.InputTokenDetails { CachedTokens = usageInfo.CacheReadInputTokens ?? 0 }
                     : null,
         };
 
