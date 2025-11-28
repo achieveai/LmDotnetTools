@@ -1,5 +1,7 @@
 using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -7,12 +9,15 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore;
 using CommandLine;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Serilog;
+using Serilog.Events;
 
 namespace LmConfigUsageExample;
 
@@ -24,11 +29,40 @@ internal class Program
         // Searches current directory and parent directories
         _ = Env.TraversePath().Load();
 
-        return await Parser.Default.ParseArguments<CommandLineOptions>(args)
-            .MapResult(
-                async options => await RunWithOptionsAsync(options),
-                _ => Task.FromResult(1)
-            );
+        // Configure Serilog with Seq sink (Console fallback if SEQ_API_KEY not set)
+        var seqApiKey = Environment.GetEnvironmentVariable("SEQ_API_KEY");
+        var loggerConfig = new LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+            .MinimumLevel.Override("System", LogEventLevel.Warning)
+            .Enrich.FromLogContext()
+            .Enrich.WithProperty("Application", "LmConfigUsageExample");
+
+        if (!string.IsNullOrEmpty(seqApiKey))
+        {
+            loggerConfig = loggerConfig.WriteTo.Seq("http://localhost:5341", apiKey: seqApiKey);
+        }
+        else
+        {
+            // Fallback to console if Seq is not configured
+            loggerConfig = loggerConfig.WriteTo.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+        }
+
+        Log.Logger = loggerConfig.CreateLogger();
+
+        try
+        {
+            return await Parser.Default.ParseArguments<CommandLineOptions>(args)
+                .MapResult(
+                    async options => await RunWithOptionsAsync(options),
+                    _ => Task.FromResult(1)
+                );
+        }
+        finally
+        {
+            await Log.CloseAndFlushAsync();
+        }
     }
 
     private static async Task<int> RunWithOptionsAsync(CommandLineOptions options)
@@ -129,7 +163,7 @@ internal class Program
 
         var services = new ServiceCollection();
         var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
-        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
@@ -178,7 +212,7 @@ internal class Program
 
         var services = new ServiceCollection();
         var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
-        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
@@ -281,7 +315,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Create configuration from models.json file
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
@@ -312,7 +346,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Try to load from embedded resource (will fallback to file if not embedded)
             try
@@ -353,7 +387,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration using stream factory
             _ = services.AddLmConfigFromStream(() =>
@@ -387,7 +421,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Create configuration using .NET's configuration system
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, true).Build();
@@ -418,7 +452,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
@@ -482,7 +516,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
@@ -584,7 +618,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Configure ClaudeAgentSdkOptions with OneShot mode
             _ = services.AddSingleton(
@@ -739,7 +773,7 @@ internal class Program
         {
             var services = new ServiceCollection();
             var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
@@ -770,7 +804,7 @@ internal class Program
         {
             var services = new ServiceCollection();
             var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
@@ -1022,13 +1056,14 @@ internal class Program
         {
             var services = new ServiceCollection();
             var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
 
             var serviceProvider = services.BuildServiceProvider();
-            var logger = serviceProvider.GetRequiredService<ILogger<ClaudeAgentSdkBackgroundLoop>>();
+            var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+            var logger = loggerFactory.CreateLogger<ClaudeAgentSdkBackgroundLoop>();
 
             // Configure ClaudeAgentSdkOptions
             var claudeOptions = new ClaudeAgentSdkOptions
@@ -1084,6 +1119,20 @@ internal class Program
                 Console.WriteLine($"Note: No .mcp.json found at {mcpConfigPath}, running without MCP tools\n");
             }
 
+            // Start .NET MCP server hosting our weather tool
+            // This demonstrates how Claude can call back into our .NET function via MCP HTTP protocol
+            var weatherTool = new WeatherTool();
+            var mcpServer = McpFunctionProviderServer.Create(
+                [weatherTool],
+                configureLogging: logging => logging.AddSerilog());
+
+            await mcpServer.StartAsync();
+            Console.WriteLine($"✓ Started .NET MCP server at: {mcpServer.McpEndpointUrl}");
+
+            // Add .NET MCP server as HTTP type (Claude will call back into our function)
+            mcpServers["dotnet-weather"] = McpServerConfig.CreateHttp(mcpServer.McpEndpointUrl!);
+            Console.WriteLine($"  - dotnet-weather: HTTP endpoint at {mcpServer.McpEndpointUrl}\n");
+
             // Create default options
             var defaultOptions = new GenerateReplyOptions
             {
@@ -1099,7 +1148,8 @@ internal class Program
                 threadId,
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
-                logger: logger);
+                logger: logger,
+                loggerFactory: loggerFactory);
 
             using var cts = new CancellationTokenSource();
 
@@ -1220,6 +1270,10 @@ internal class Program
                 // Expected
             }
 
+            // Dispose the .NET MCP server
+            Console.WriteLine("Stopping .NET MCP server...");
+            await mcpServer.DisposeAsync();
+
             Console.WriteLine("\n✓ ClaudeAgentSdk background loop example completed");
         }
         catch (Exception ex)
@@ -1227,5 +1281,60 @@ internal class Program
             Console.WriteLine($"✗ ClaudeAgentSdk background loop example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
+    }
+}
+
+/// <summary>
+/// Weather tool that demonstrates IFunctionProvider implementation for MCP server exposure.
+/// This tool is exposed via McpFunctionProviderServer so Claude can call back into our .NET function.
+/// </summary>
+internal sealed class WeatherTool : IFunctionProvider
+{
+    public string ProviderName => "DotNetWeather";
+    public int Priority => 100;
+
+    public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        var contract = new FunctionContract
+        {
+            Name = "get_weather",
+            Description = "Get the current weather for a city (from .NET)",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "city",
+                    Description = "The city name",
+                    ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                    IsRequired = true,
+                },
+            ],
+            ReturnType = typeof(string),
+        };
+
+        yield return new FunctionDescriptor
+        {
+            Contract = contract,
+            Handler = GetWeatherAsync,
+            ProviderName = ProviderName,
+        };
+    }
+
+    private static async Task<string> GetWeatherAsync(string argumentsJson)
+    {
+        await Task.Delay(50); // Simulate async operation
+
+        var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argumentsJson);
+        var city = args?["city"].GetString() ?? "Unknown";
+
+        var result = new
+        {
+            city,
+            temperature = 72,
+            condition = "Sunny",
+            source = ".NET McpFunctionProviderServer",
+        };
+
+        return JsonSerializer.Serialize(result);
     }
 }

@@ -10,14 +10,18 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
+    <ProjectReference Include="..\..\src\McpServer.AspNetCore\AchieveAi.LmDotnetTools.McpServer.AspNetCore.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.5" />
     <PackageReference Include="ModelContextProtocol" Version="0.4.1-preview.1" />
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.Seq" Version="9.0.0" />
   </ItemGroup>
   <ItemGroup>
     <None Include="models.json" CopyToOutputDirectory="PreserveNewest" />

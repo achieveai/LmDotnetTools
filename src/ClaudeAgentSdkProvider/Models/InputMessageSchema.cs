@@ -35,8 +35,9 @@ public class InputMessage
 [JsonDerivedType(typeof(InputImageContentBlock), "image")]
 public abstract class InputContentBlock
 {
-    [JsonPropertyName("type")]
-    public abstract string Type { get; }
+    // Note: The 'type' property is handled by JsonPolymorphic discriminator,
+    // so we don't need an explicit property here. The discriminator will
+    // automatically write "type":"text" or "type":"image" during serialization.
 }
 
 /// <summary>
@@ -44,8 +45,6 @@ public abstract class InputContentBlock
 /// </summary>
 public class InputTextContentBlock : InputContentBlock
 {
-    public override string Type => "text";
-
     [JsonPropertyName("text")]
     public string Text { get; set; } = string.Empty;
 }
@@ -55,8 +54,6 @@ public class InputTextContentBlock : InputContentBlock
 /// </summary>
 public class InputImageContentBlock : InputContentBlock
 {
-    public override string Type => "image";
-
     [JsonPropertyName("source")]
     public ImageSource Source { get; set; } = new();
 }

@@ -13,20 +13,25 @@ public record McpServerConfig
 
     // For stdio type
     [JsonPropertyName("command")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Command { get; init; }
 
     [JsonPropertyName("args")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? Args { get; init; }
 
     // For http type
     [JsonPropertyName("url")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Url { get; init; }
 
     [JsonPropertyName("headers")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Headers { get; init; }
 
     // Shared
     [JsonPropertyName("env")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Env { get; init; }
 
     /// <summary>

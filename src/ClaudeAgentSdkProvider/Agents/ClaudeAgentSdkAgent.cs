@@ -132,19 +132,53 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         }
 
         // Build MCP server configuration
+        // Priority: ExtraProperties > file-based config (merged, ExtraProperties wins on conflict)
         Dictionary<string, McpServerConfig>? mcpServers = null;
+
+        // First, try to load from file
         if (!string.IsNullOrEmpty(_options.McpConfigPath) && File.Exists(_options.McpConfigPath))
         {
             try
             {
                 var mcpConfig = ClaudeAgentSdkAgent.LoadMcpConfiguration(_options.McpConfigPath);
                 mcpServers = mcpConfig?.McpServers;
+                _logger?.LogDebug(
+                    "Loaded {Count} MCP servers from file: {Path}",
+                    mcpServers?.Count ?? 0,
+                    _options.McpConfigPath);
             }
             catch (Exception ex)
             {
                 _logger?.LogWarning(ex, "Failed to load MCP configuration from {Path}", _options.McpConfigPath);
             }
         }
+
+        // Then, check ExtraProperties for mcpServers (takes precedence)
+        if (options?.ExtraProperties?.TryGetValue("mcpServers", out var mcpServersObj) == true
+            && mcpServersObj is Dictionary<string, McpServerConfig> extraMcpServers)
+        {
+            _logger?.LogDebug(
+                "Found {Count} MCP servers in ExtraProperties",
+                extraMcpServers.Count);
+
+            if (mcpServers == null)
+            {
+                mcpServers = extraMcpServers;
+            }
+            else
+            {
+                // Merge: ExtraProperties servers override file-based ones
+                foreach (var (name, config) in extraMcpServers)
+                {
+                    mcpServers[name] = config;
+                    _logger?.LogDebug("MCP server '{Name}' from ExtraProperties (override)", name);
+                }
+            }
+        }
+
+        _logger?.LogInformation(
+            "Final MCP server configuration: {Count} servers configured",
+            mcpServers?.Count ?? 0);
 
         // Build allowed tools list
         // Note: FunctionContract[] is NOT supported - claude-agent-sdk only supports MCP tools

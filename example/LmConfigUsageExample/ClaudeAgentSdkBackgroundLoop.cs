@@ -31,6 +31,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
     private readonly int _maxTurnsPerRun;
     private readonly GenerateReplyOptions _defaultOptions;
     private readonly ILogger<ClaudeAgentSdkBackgroundLoop> _logger;
+    private readonly ILoggerFactory? _loggerFactory;
 
     #endregion
 
@@ -107,6 +108,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
     /// <param name="logger">Optional logger</param>
+    /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
     public ClaudeAgentSdkBackgroundLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -115,7 +117,8 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
-        ILogger<ClaudeAgentSdkBackgroundLoop>? logger = null)
+        ILogger<ClaudeAgentSdkBackgroundLoop>? logger = null,
+        ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
         ArgumentNullException.ThrowIfNull(threadId);
@@ -127,6 +130,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
         _outputChannelCapacity = outputChannelCapacity;
         _defaultOptions = defaultOptions ?? new GenerateReplyOptions();
         _logger = logger ?? NullLogger<ClaudeAgentSdkBackgroundLoop>.Instance;
+        _loggerFactory = loggerFactory;
 
         _inputChannel = Channel.CreateBounded<(UserInput, TaskCompletionSource<RunAssignment>)>(
             new BoundedChannelOptions(inputChannelCapacity)
@@ -393,12 +397,17 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
                 config.Url);
         }
 
-        // Create client and agent
-        _client = new ClaudeAgentSdkClient(_claudeOptions);
+        // Create loggers for internal components
+        var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
+        var agentLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkAgent>();
+
+        // Create client and agent with loggers
+        _client = new ClaudeAgentSdkClient(_claudeOptions, clientLogger);
         _agent = new ClaudeAgentSdkAgent(
             name: "ClaudeAgentSdkBackgroundLoop",
             client: _client,
-            options: _claudeOptions);
+            options: _claudeOptions,
+            logger: agentLogger);
     }
 
     #endregion
@@ -419,13 +428,13 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    tcs.TrySetCanceled(ct);
+                    _ = tcs.TrySetCanceled(ct);
                     throw;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error processing input");
-                    tcs.TrySetException(ex);
+                    _ = tcs.TrySetException(ex);
                 }
             }
         }
