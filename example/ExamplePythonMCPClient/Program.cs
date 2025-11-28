@@ -153,7 +153,7 @@ public static class Program
         };
         var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fs" };
 
-        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
+        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClient.CreateAsync(transport)));
 
         try
         {
@@ -350,7 +350,7 @@ public static class Program
         var transports = new[] { pythonTransport, thinkingTransport, memoryTransport };
         var clientIds = new[] { "python-mcp", "thinking", "memory" };
 
-        // var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClientFactory.CreateAsync(transport)));
+        // var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClient.CreateAsync(transport)));
 
         try
         {

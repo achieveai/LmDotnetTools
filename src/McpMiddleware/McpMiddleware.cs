@@ -21,7 +21,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     private readonly FunctionCallMiddleware _functionCallMiddleware;
     private readonly IEnumerable<FunctionContract>? _functions;
     private readonly ILogger<McpMiddleware> _logger;
-    private readonly Dictionary<string, IMcpClient> _mcpClients;
+    private readonly Dictionary<string, McpClient> _mcpClients;
 
     /// <summary>
     ///     Private constructor for the async factory pattern
@@ -33,7 +33,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     /// <param name="logger">Logger instance</param>
     /// <param name="functionCallLogger">Logger for FunctionCallMiddleware</param>
     private McpMiddleware(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         IEnumerable<FunctionContract> functions,
         IDictionary<string, Func<string, Task<string>>> functionMap,
         string name,
@@ -92,7 +92,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpMiddleware</returns>
     public static async Task<McpMiddleware> CreateAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         IEnumerable<FunctionContract>? functions = null,
         string? name = null,
         ILogger<McpMiddleware>? logger = null,
@@ -138,7 +138,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of function delegates</returns>
     private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         ILogger<McpMiddleware> logger,
         CancellationToken cancellationToken = default
     )
@@ -298,7 +298,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Collection of function contracts</returns>
     private static async Task<IEnumerable<FunctionContract>> ExtractFunctionContractsAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         ILogger<McpMiddleware> logger,
         CancellationToken cancellationToken = default
     )

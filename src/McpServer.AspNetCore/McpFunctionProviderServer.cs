@@ -55,6 +55,8 @@ public sealed class McpFunctionProviderServer : IAsyncDisposable
         Action<ILoggingBuilder>? configureLogging = null,
         Action<IServiceCollection>? configureServices = null)
     {
+        ArgumentNullException.ThrowIfNull(functionProviders);
+
         var builder = WebApplication.CreateBuilder();
 
         // Configure Kestrel to listen on a dynamic port (0 = OS will assign a free port)

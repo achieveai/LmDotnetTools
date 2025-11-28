@@ -18,7 +18,7 @@ namespace MemoryServer.Tests.Integrations;
 public abstract class McpTransportTestBase : IDisposable
 {
     protected readonly ITestOutputHelper _output;
-    private IMcpClient? _client;
+    private McpClient? _client;
 
     protected McpTransportTestBase(ITestOutputHelper output)
     {
@@ -31,7 +31,7 @@ public abstract class McpTransportTestBase : IDisposable
     ///     Creates and returns an MCP client for the specific transport.
     ///     This is where transport-specific setup happens (STDIO process, SSE HTTP client, etc.).
     /// </summary>
-    protected abstract Task<IMcpClient> CreateClientAsync();
+    protected abstract Task<McpClient> CreateClientAsync();
 
     /// <summary>
     ///     Gets the name of the transport being tested (for logging/debugging).
@@ -63,7 +63,7 @@ public abstract class McpTransportTestBase : IDisposable
     /// <summary>
     ///     Gets or creates the MCP client for this test session.
     /// </summary>
-    protected async Task<IMcpClient> GetClientAsync()
+    protected async Task<McpClient> GetClientAsync()
     {
         if (_client == null)
         {
@@ -418,7 +418,7 @@ public abstract class McpTransportTestBase : IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
-        // IMcpClient doesn't implement IDisposable, so no cleanup needed
+        // McpClient doesn't implement IDisposable, so no cleanup needed
     }
 
     #endregion

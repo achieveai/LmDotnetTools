@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -92,6 +91,16 @@ public static class FunctionProviderMcpAdapter
 
                     CallToolHandler = async (request, cancellationToken) =>
                     {
+                        if (request.Params is null)
+                        {
+                            logger?.LogError("[McpAdapter] CallTool request has null Params");
+                            return new CallToolResult
+                            {
+                                Content = [new TextContentBlock { Text = "Invalid request: missing parameters" }],
+                                IsError = true
+                            };
+                        }
+
                         var toolName = request.Params.Name;
 
                         // Convert arguments dictionary to JSON string

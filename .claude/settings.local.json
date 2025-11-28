@@ -30,7 +30,8 @@
       "Bash(tee:*)",
       "Bash(timeout 180 pwsh:*)",
       "Skill(:*)",
-      "Bash(Select-Object -First 30)"
+      "Bash(Select-Object -First 30)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": [],
@@ -40,6 +41,7 @@
     "sequential-thinking-tools",
     "clarify-doubt",
     "playwright",
-    "seq"
+    "seq",
+    "debugger"
   ]
 }

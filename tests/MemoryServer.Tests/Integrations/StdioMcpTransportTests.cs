@@ -44,7 +44,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
         return "STDIO";
     }
 
-    protected override async Task<IMcpClient> CreateClientAsync()
+    protected override async Task<McpClient> CreateClientAsync()
     {
         _output.WriteLine($"🔌 Creating STDIO MCP client transport: {_serverExecutablePath}");
 
@@ -62,7 +62,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
             }
         );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
         _output.WriteLine("✅ STDIO MCP client connected successfully");
 
         return client;

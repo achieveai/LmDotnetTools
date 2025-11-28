@@ -77,7 +77,7 @@ public class McpMiddlewareFactory
         );
 
         // Create MCP clients from the configuration
-        var mcpClients = new Dictionary<string, IMcpClient>();
+        var mcpClients = new Dictionary<string, McpClient>();
 
         foreach (var clientConfig in config.Clients)
         {
@@ -109,7 +109,7 @@ public class McpMiddlewareFactory
                     transport.GetType().Name
                 );
 
-                var client = await McpClientFactory.CreateAsync(transport, cancellationToken: cancellationToken);
+                var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
                 mcpClients[clientId] = client;
 
                 _logger.LogInformation("Successfully created MCP client: {ClientId}", clientId);
@@ -213,7 +213,7 @@ public class McpMiddlewareFactory
                 $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
         }
 
-        var options = new SseClientTransportOptions
+        var options = new HttpClientTransportOptions
         {
             Name = clientId,
             Endpoint = new Uri(url),
@@ -260,7 +260,7 @@ public class McpMiddlewareFactory
             options.ConnectionTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         }
 
-        return new SseClientTransport(options);
+        return new HttpClientTransport(options);
     }
 
     /// <summary>
@@ -415,7 +415,7 @@ public class McpMiddlewareFactory
                 $"HTTP transport requires 'url' or 'endpoint' property for client '{clientId}'");
         }
 
-        var options = new SseClientTransportOptions
+        var options = new HttpClientTransportOptions
         {
             Name = clientId,
             Endpoint = new Uri(url),
@@ -435,7 +435,7 @@ public class McpMiddlewareFactory
             options.ConnectionTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         }
 
-        return new SseClientTransport(options);
+        return new HttpClientTransport(options);
     }
 
     /// <summary>
@@ -567,7 +567,7 @@ public class McpMiddlewareFactory
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
     public async Task<IStreamingMiddleware> CreateFromClientsAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         CancellationToken cancellationToken = default
     )
     {

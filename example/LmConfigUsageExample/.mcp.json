@@ -2,14 +2,20 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem"
+      ],
       "env": {
         "ALLOWED_PATHS": "D:/Source/repos/LmDotnetTools/example/LmConfigUsageExample"
       }
     },
     "fetch": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ],
       "env": {}
     }
   }

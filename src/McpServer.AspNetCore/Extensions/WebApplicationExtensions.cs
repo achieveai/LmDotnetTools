@@ -1,3 +1,5 @@
+#pragma warning disable IDE0005 // Using directive is unnecessary - IEndpointRouteBuilder requires this
+
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using ModelContextProtocol.AspNetCore;

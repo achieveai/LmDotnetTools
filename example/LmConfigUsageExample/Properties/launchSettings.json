@@ -5,6 +5,14 @@
       "commandName": "Project",
       "commandLineArgs": "--claude -p \"Hello! What MCP tools are available to you?\""
     },
+    "ClaudeAgentSDK Background Loop": {
+      "commandName": "Project",
+      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 5"
+    },
+    "ClaudeAgentSDK Background Loop (verbose)": {
+      "commandName": "Project",
+      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 5 -v"
+    },
     "Grok Agentic Loop": {
       "commandName": "Project",
       "commandLineArgs": "--grok -p \"What's the weather in San Francisco and what time is it in PST?\""

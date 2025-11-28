@@ -27,12 +27,12 @@ public class McpTransportIntegrationTests
             }
         );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
 
         try
         {
             // Create middleware with the transport client
-            var clients = new Dictionary<string, IMcpClient> { ["test-client"] = client, ["GreetingTool"] = client };
+            var clients = new Dictionary<string, McpClient> { ["test-client"] = client, ["GreetingTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 
@@ -80,12 +80,12 @@ public class McpTransportIntegrationTests
             }
         );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
 
         try
         {
             // Create middleware with the transport client
-            var clients = new Dictionary<string, IMcpClient> { ["test-client"] = client, ["CalculatorTool"] = client };
+            var clients = new Dictionary<string, McpClient> { ["test-client"] = client, ["CalculatorTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 

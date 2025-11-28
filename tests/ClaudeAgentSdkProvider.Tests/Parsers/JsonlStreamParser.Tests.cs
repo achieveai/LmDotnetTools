@@ -22,7 +22,6 @@ public class JsonlStreamParserTests
         // Arrange
         var assistantEvent = new AssistantMessageEvent
         {
-            Type = "assistant",
             Uuid = "test-uuid",
             SessionId = "test-session",
             Timestamp = DateTime.UtcNow,
@@ -53,7 +52,6 @@ public class JsonlStreamParserTests
         // Arrange
         var assistantEvent = new AssistantMessageEvent
         {
-            Type = "assistant",
             Uuid = "test-uuid",
             SessionId = "test-session",
             Timestamp = DateTime.UtcNow,
@@ -82,7 +80,6 @@ public class JsonlStreamParserTests
         // Arrange
         var assistantEvent = new AssistantMessageEvent
         {
-            Type = "assistant",
             Uuid = "test-uuid",
             SessionId = "test-session",
             Timestamp = DateTime.UtcNow,
@@ -123,7 +120,6 @@ public class JsonlStreamParserTests
 
         var userEvent = new UserMessageEvent
         {
-            Type = "user",
             Uuid = "user-uuid-123",
             SessionId = "session-123",
             Message = new UserMessage
@@ -155,7 +151,6 @@ public class JsonlStreamParserTests
         // Arrange - user message with simple text content
         var userEvent = new UserMessageEvent
         {
-            Type = "user",
             Uuid = "user-uuid-456",
             SessionId = "session-456",
             Message = new UserMessage
@@ -197,7 +192,6 @@ public class JsonlStreamParserTests
 
         var userEvent = new UserMessageEvent
         {
-            Type = "user",
             Uuid = "user-uuid-789",
             SessionId = "session-789",
             Message = new UserMessage

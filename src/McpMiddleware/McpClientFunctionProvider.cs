@@ -19,13 +19,13 @@ public partial class McpClientFunctionProvider : IFunctionProvider
 {
     private readonly List<FunctionDescriptor> _functions;
     private readonly ILogger<McpClientFunctionProvider> _logger;
-    private readonly Dictionary<string, IMcpClient> _mcpClients;
+    private readonly Dictionary<string, McpClient> _mcpClients;
 
     /// <summary>
     ///     Private constructor for async factory pattern
     /// </summary>
     private McpClientFunctionProvider(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         List<FunctionDescriptor> functions,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null
@@ -58,7 +58,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpClientFunctionProvider</returns>
     public static async Task<McpClientFunctionProvider> CreateAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
@@ -115,14 +115,14 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpClientFunctionProvider</returns>
     public static async Task<McpClientFunctionProvider> CreateAsync(
-        IMcpClient mcpClient,
+        McpClient mcpClient,
         string clientId,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
     )
     {
-        var clients = new Dictionary<string, IMcpClient> { { clientId, mcpClient } };
+        var clients = new Dictionary<string, McpClient> { { clientId, mcpClient } };
         return await CreateAsync(clients, providerName, logger, cancellationToken);
     }
 
@@ -137,7 +137,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpClientFunctionProvider</returns>
     public static async Task<McpClientFunctionProvider> CreateAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         FunctionFilterConfig? toolFilterConfig,
         Dictionary<string, ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
@@ -280,7 +280,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     (Reused from McpMiddleware with minor adaptations)
     /// </summary>
     private static async Task<IEnumerable<FunctionContract>> ExtractFunctionContractsAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
     )
@@ -334,7 +334,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     (Reused from McpMiddleware with minor adaptations)
     /// </summary>
     private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
     )
@@ -673,7 +673,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Extracts function contracts using the naming map from collision detection
     /// </summary>
     private static Task<IEnumerable<FunctionContract>> ExtractFunctionContractsWithNamingMapAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
         FunctionFilter? toolFilter,
@@ -756,7 +756,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Creates function delegates using the naming map from collision detection
     /// </summary>
     private static Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapWithNamingMapAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
         FunctionFilter? toolFilter,

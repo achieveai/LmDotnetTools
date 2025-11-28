@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.DependencyInjection;
-using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 
