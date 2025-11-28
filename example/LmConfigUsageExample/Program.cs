@@ -7,15 +7,12 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.McpMiddleware;
-using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using CommandLine;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using ModelContextProtocol.Client;
 
 namespace LmConfigUsageExample;
 
@@ -87,6 +84,13 @@ internal class Program
             {
                 Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
                 await RunClaudeAgentSdkOneShotExample(options.Prompt, options.Temperature);
+                return 0;
+            }
+
+            if (options.RunClaudeBackground)
+            {
+                Console.WriteLine("=== ClaudeAgentSDK Background Loop Example ===\n");
+                await RunClaudeAgentSdkBackgroundLoopExample(options.Prompt, options.Temperature, options.MaxTurns, options.Verbose);
                 return 0;
             }
 
@@ -816,55 +820,7 @@ internal class Program
                 providerName: "Demo"
             );
 
-            // Load MCP tools from .mcp.json if it exists
-            var mcpConfigPath = ".mcp.json";
-            var mcpLogger = serviceProvider.GetRequiredService<ILogger<McpConfigLoader>>();
-            var mcpProviderLogger = serviceProvider.GetService<ILogger<McpClientFunctionProvider>>();
-            await using var mcpLoader = new McpConfigLoader(mcpLogger);
-
-            if (File.Exists(mcpConfigPath))
-            {
-                Console.WriteLine("Loading MCP tools from .mcp.json...");
-                var mcpClients = await mcpLoader.LoadFromFileAsync(mcpConfigPath);
-
-                if (mcpClients.Count > 0)
-                {
-                    // Collect tool names from all MCP clients for display
-                    var allMcpTools = new List<string>();
-                    foreach (var (serverName, client) in mcpClients)
-                    {
-                        try
-                        {
-                            var tools = await client.ListToolsAsync();
-                            allMcpTools.AddRange(tools.Select(t => $"{serverName}-{t.Name}"));
-                        }
-                        catch
-                        {
-                            // Ignore errors listing tools - they'll be logged by the provider
-                        }
-                    }
-
-                    // Add MCP tools to the function registry
-                    _ = await registry.AddMcpClientsAsync(
-                        new Dictionary<string, IMcpClient>(mcpClients),
-                        providerName: "MCP",
-                        logger: mcpProviderLogger);
-
-                    Console.WriteLine($"✓ Loaded {mcpClients.Count} MCP server(s) with {allMcpTools.Count} tool(s)");
-                    if (allMcpTools.Count > 0)
-                    {
-                        Console.WriteLine($"  MCP tools: [{string.Join(", ", allMcpTools)}]\n");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("  No MCP servers could be started\n");
-                }
-            }
-            else
-            {
-                Console.WriteLine($"Note: No .mcp.json found at {mcpConfigPath}, running with built-in tools only\n");
-            }
+            Console.WriteLine("Note: Using built-in demo tools. For MCP integration, use --claude-background mode.\n");
 
             // Create the base provider agent (no middleware - BackgroundAgenticLoop owns the stack)
             var providerAgent = agentFactory.CreateStreamingAgent(resolution);
@@ -1047,6 +1003,228 @@ internal class Program
         catch (Exception ex)
         {
             Console.WriteLine($"✗ Background agentic loop example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// ClaudeAgentSDK Background Loop Example
+    /// Demonstrates the same interface as BackgroundAgenticLoop using ClaudeAgentSdkAgent
+    /// with MCP servers for tool access via config
+    /// </summary>
+    private static async Task RunClaudeAgentSdkBackgroundLoopExample(
+        string prompt,
+        float temperature,
+        int maxTurns,
+        bool verbose)
+    {
+        try
+        {
+            var services = new ServiceCollection();
+            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+
+            // Load configuration
+            _ = services.AddLmConfigFromFile("models.json");
+
+            var serviceProvider = services.BuildServiceProvider();
+            var logger = serviceProvider.GetRequiredService<ILogger<ClaudeAgentSdkBackgroundLoop>>();
+
+            // Configure ClaudeAgentSdkOptions
+            var claudeOptions = new ClaudeAgentSdkOptions
+            {
+                ProjectRoot = Directory.GetCurrentDirectory(),
+                McpConfigPath = ".mcp.json",
+                Mode = ClaudeAgentSdkMode.OneShot,
+            };
+
+            // Load MCP servers from .mcp.json
+            var mcpServers = new Dictionary<string, AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.McpServerConfig>();
+            var mcpConfigPath = ".mcp.json";
+
+            if (File.Exists(mcpConfigPath))
+            {
+                Console.WriteLine("Loading MCP server configuration from .mcp.json...");
+                try
+                {
+                    var mcpJson = await File.ReadAllTextAsync(mcpConfigPath);
+                    var mcpConfig = System.Text.Json.JsonSerializer.Deserialize<AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.McpConfiguration>(mcpJson);
+
+                    if (mcpConfig?.McpServers != null)
+                    {
+                        foreach (var (name, config) in mcpConfig.McpServers)
+                        {
+                            mcpServers[name] = config;
+                        }
+
+                        Console.WriteLine($"✓ Loaded {mcpServers.Count} MCP server(s) from config");
+                        foreach (var (name, config) in mcpServers)
+                        {
+                            var serverType = config.Type ?? "stdio";
+                            if (serverType == "http")
+                            {
+                                Console.WriteLine($"  - {name}: HTTP endpoint at {config.Url}");
+                            }
+                            else
+                            {
+                                Console.WriteLine($"  - {name}: {config.Command} {string.Join(" ", config.Args ?? [])}");
+                            }
+                        }
+
+                        Console.WriteLine();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to load MCP config: {ex.Message}\n");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Note: No .mcp.json found at {mcpConfigPath}, running without MCP tools\n");
+            }
+
+            // Create default options
+            var defaultOptions = new GenerateReplyOptions
+            {
+                ModelId = "claude-sonnet-4-5",
+                Temperature = temperature,
+            };
+
+            // Create the ClaudeAgentSdk background loop
+            var threadId = Guid.NewGuid().ToString("N");
+            await using var loop = new ClaudeAgentSdkBackgroundLoop(
+                claudeOptions,
+                mcpServers,
+                threadId,
+                defaultOptions: defaultOptions,
+                maxTurnsPerRun: maxTurns,
+                logger: logger);
+
+            using var cts = new CancellationTokenSource();
+
+            // Track run completions
+            var runCompletions = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<bool>>();
+
+            // Start UI subscriber
+            var uiTask = Task.Run(async () =>
+            {
+                Console.WriteLine("[UI Subscriber] Connected\n");
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                {
+                    switch (msg)
+                    {
+                        case RunAssignmentMessage assignment:
+                            Console.WriteLine($"\n[Run Started] RunId: {assignment.Assignment.RunId}");
+                            break;
+                        case RunCompletedMessage completed:
+                            Console.WriteLine($"\n[Run Completed] RunId: {completed.CompletedRunId}");
+                            if (runCompletions.TryRemove(completed.CompletedRunId, out var tcs))
+                            {
+                                _ = tcs.TrySetResult(true);
+                            }
+
+                            break;
+                        case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                            Console.Write(textMsg.Text);
+                            break;
+                        case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
+                            Console.Write(textUpdate.Text);
+                            break;
+                        case ToolCallMessage toolCall:
+                            Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
+                            break;
+                        case ToolCallResultMessage toolResult:
+                            var resultPreview = toolResult.Result.Length > 100
+                                ? toolResult.Result[..100] + "..."
+                                : toolResult.Result;
+                            Console.WriteLine($"[Tool Result] {resultPreview}");
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }, cts.Token);
+
+            // Start the background loop
+            var loopTask = loop.RunAsync(cts.Token);
+
+            Console.WriteLine("ClaudeAgentSdk background loop started. Type messages to send, or 'exit' to quit.\n");
+
+            // Helper to send and wait
+            async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
+            {
+                var assignment = await loop.SendAsync(
+                    [new TextMessage { Text = text, Role = Role.User }],
+                    inputId: inputId);
+
+                if (waitForCompletion && !assignment.WasInjected)
+                {
+                    var completionTcs = new TaskCompletionSource<bool>();
+                    runCompletions[assignment.RunId] = completionTcs;
+
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
+
+                    try
+                    {
+                        _ = await completionTcs.Task.WaitAsync(linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        Console.WriteLine("\n[Timeout] Run did not complete within 5 minutes");
+                    }
+                }
+
+                return assignment;
+            }
+
+            // Send initial prompt
+            Console.WriteLine($"Sending initial prompt: \"{prompt}\"\n");
+            var assignment1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
+            Console.WriteLine($"[Client] Message assigned to run: {assignment1.RunId}\n");
+
+            // Interactive loop
+            var isInteractive = !Console.IsInputRedirected;
+
+            if (isInteractive)
+            {
+                while (true)
+                {
+                    Console.Write("\n> ");
+                    var input = Console.ReadLine();
+                    if (string.IsNullOrEmpty(input) || input.Equals("exit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    var assignment = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+                    Console.WriteLine($"[Client] Message assigned to run: {assignment.RunId}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("\n[Non-interactive mode] Initial prompt completed, exiting.");
+            }
+
+            // Stop the loop
+            Console.WriteLine("\nStopping ClaudeAgentSdk background loop...");
+            await cts.CancelAsync();
+
+            try
+            {
+                await Task.WhenAll(loopTask, uiTask).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+
+            Console.WriteLine("\n✓ ClaudeAgentSdk background loop example completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ ClaudeAgentSdk background loop example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }

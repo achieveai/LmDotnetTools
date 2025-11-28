@@ -109,7 +109,7 @@ public static class FunctionProviderMcpAdapter
                             logger?.LogError("[McpAdapter] Tool '{ToolName}' not found", toolName);
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = $"Tool '{toolName}' not found", Type = "text" }],
+                                Content = [new TextContentBlock { Text = $"Tool '{toolName}' not found" }],
                                 IsError = true
                             };
                         }
@@ -131,7 +131,7 @@ public static class FunctionProviderMcpAdapter
                             // Return the result as text content
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = resultJson, Type = "text" }],
+                                Content = [new TextContentBlock { Text = resultJson }],
                                 IsError = false
                             };
                         }
@@ -145,7 +145,7 @@ public static class FunctionProviderMcpAdapter
 
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = $"Error: {ex.Message}", Type = "text" }],
+                                Content = [new TextContentBlock { Text = $"Error: {ex.Message}" }],
                                 IsError = true
                             };
                         }

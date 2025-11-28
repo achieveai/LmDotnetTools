@@ -12,13 +12,13 @@ namespace LmConfigUsageExample;
 public class McpJsonConfig
 {
     [JsonPropertyName("mcpServers")]
-    public Dictionary<string, McpServerConfig>? McpServers { get; set; }
+    public Dictionary<string, LocalMcpServerConfig>? McpServers { get; set; }
 }
 
 /// <summary>
-/// Configuration for a single MCP server
+/// Configuration for a single MCP server (local definition for .mcp.json parsing)
 /// </summary>
-public class McpServerConfig
+public class LocalMcpServerConfig
 {
     [JsonPropertyName("command")]
     public string Command { get; set; } = string.Empty;
@@ -105,7 +105,7 @@ public sealed class McpConfigLoader : IAsyncDisposable
 
     private async Task<IMcpClient> CreateClientAsync(
         string serverName,
-        McpServerConfig config,
+        LocalMcpServerConfig config,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(config.Command))

@@ -28,6 +28,10 @@ public class CommandLineOptions
         HelpText = "Run the ClaudeAgentSDK one-shot example.")]
     public bool RunClaude { get; set; }
 
+    [Option("claude-background", Required = false, Default = false,
+        HelpText = "Run the ClaudeAgentSDK background loop example (same interface as BackgroundAgenticLoop).")]
+    public bool RunClaudeBackground { get; set; }
+
     [Option("all", Required = false, Default = false,
         HelpText = "Run all configuration examples (excludes interactive modes).")]
     public bool RunAll { get; set; }
