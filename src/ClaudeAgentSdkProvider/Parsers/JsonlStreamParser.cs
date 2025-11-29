@@ -185,34 +185,26 @@ public class JsonlStreamParser
                 Visibility = ReasoningVisibility.Plain,
             },
 
-            "tool_use" when contentBlock.Id != null && contentBlock.Name != null => new ToolsCallMessage
+            "tool_use" when contentBlock.Id != null && contentBlock.Name != null => new ToolCallMessage
             {
+                FunctionName = contentBlock.Name,
+                FunctionArgs = contentBlock.Input?.GetRawText() ?? "{}",
+                ToolCallId = contentBlock.Id,
                 Role = role,
                 GenerationId = generationId,
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                ToolCalls =
-                [
-                    new ToolCall
-                    {
-                        FunctionName = contentBlock.Name,
-                        FunctionArgs = contentBlock.Input?.GetRawText() ?? "{}",
-                        ToolCallId = contentBlock.Id,
-                    },
-                ],
             },
 
-            "tool_result" when contentBlock.ToolUseId != null => new ToolsCallResultMessage
+            "tool_result" when contentBlock.ToolUseId != null => new ToolCallResultMessage
             {
+                ToolCallId = contentBlock.ToolUseId,
+                Result = contentBlock.Content?.GetRawText() ?? "",
                 Role = Role.User, // Tool results are from user/system
                 GenerationId = generationId,
                 RunId = runId,
                 ThreadId = threadId,
-                ToolCallResults =
-                [
-                    new ToolCallResult(contentBlock.ToolUseId, contentBlock.Content?.GetRawText() ?? ""),
-                ],
             },
 
             "image" when contentBlock.Source != null => ConvertImageContentBlock(

@@ -87,6 +87,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory(),
+            // Use UTF-8 encoding for reading from Node.js process
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
 
         // 6. Start process
@@ -96,7 +99,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             throw new InvalidOperationException("Failed to start claude-agent-sdk process");
         }
 
-        _stdinWriter = _process.StandardInput;
+        // Use UTF-8 WITHOUT BOM for writing to Node.js process
+        // BOM would corrupt the first JSON line and cause parsing failures
+        _stdinWriter = new StreamWriter(
+            _process.StandardInput.BaseStream,
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+        {
+            AutoFlush = false, // We manually flush after writing
+        };
         _stdoutReader = _process.StandardOutput;
         _stderrReader = _process.StandardError;
 

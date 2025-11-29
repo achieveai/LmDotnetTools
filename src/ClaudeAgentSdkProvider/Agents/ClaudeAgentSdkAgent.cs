@@ -209,7 +209,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
 
         // Build allowed tools list
         // Note: FunctionContract[] is NOT supported - claude-agent-sdk only supports MCP tools
-        var allowedTools = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task";
+        var allowedTools = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
         if (options?.Functions != null && options.Functions.Length > 0)
         {
             _logger?.LogWarning(

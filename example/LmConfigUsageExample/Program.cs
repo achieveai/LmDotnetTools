@@ -1061,7 +1061,7 @@ internal class Program
             {
                 ProjectRoot = Directory.GetCurrentDirectory(),
                 McpConfigPath = ".mcp.json",
-                Mode = ClaudeAgentSdkMode.OneShot,
+                Mode = ClaudeAgentSdkMode.Interactive, // Also works with OneShot
                 MaxThinkingTokens = 8092
             };
 
@@ -1173,6 +1173,9 @@ internal class Program
                             break;
                         case TextUpdateMessage textUpdate when !string.IsNullOrEmpty(textUpdate.Text):
                             Console.Write(textUpdate.Text);
+                            break;
+                        case ReasoningMessage reasoning:
+                            Console.WriteLine($"\n[Thinking] {reasoning.Reasoning}");
                             break;
                         case ToolCallMessage toolCall:
                             Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
