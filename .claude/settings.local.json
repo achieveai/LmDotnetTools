@@ -30,7 +30,10 @@
       "Bash(tee:*)",
       "Bash(timeout 180 pwsh:*)",
       "Skill(:*)",
-      "Bash(Select-Object -First 30)"
+      "Bash(Select-Object -First 30)",
+      "Bash(cd:*)",
+      "Bash(xargs cat:*)",
+      "Bash(dotnet tool install:*)"
     ],
     "deny": [],
     "ask": [],

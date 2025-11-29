@@ -13,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Serilog;
 
 namespace LmConfigUsageExample;
 
@@ -24,11 +25,37 @@ internal class Program
         // Searches current directory and parent directories
         _ = Env.TraversePath().Load();
 
-        return await Parser.Default.ParseArguments<CommandLineOptions>(args)
-            .MapResult(
-                async options => await RunWithOptionsAsync(options),
-                _ => Task.FromResult(1)
-            );
+        // Load configuration for Serilog
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+            .Build();
+
+        // Configure Serilog from configuration
+        Log.Logger = new LoggerConfiguration()
+            .ReadFrom.Configuration(configuration)
+            .CreateLogger();
+
+        try
+        {
+            Log.Information("LmConfigUsageExample starting up");
+
+            return await Parser.Default.ParseArguments<CommandLineOptions>(args)
+                .MapResult(
+                    async options => await RunWithOptionsAsync(options),
+                    _ => Task.FromResult(1)
+                );
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "Application terminated unexpectedly");
+            return 1;
+        }
+        finally
+        {
+            Log.Information("LmConfigUsageExample shutting down");
+            await Log.CloseAndFlushAsync();
+        }
     }
 
     private static async Task<int> RunWithOptionsAsync(CommandLineOptions options)
@@ -128,8 +155,7 @@ internal class Program
         Console.WriteLine("=== Available Models ===\n");
 
         var services = new ServiceCollection();
-        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
-        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
@@ -177,8 +203,7 @@ internal class Program
         Console.WriteLine("=== Available Providers ===\n");
 
         var services = new ServiceCollection();
-        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
-        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+        _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
         var serviceProvider = services.BuildServiceProvider();
@@ -281,7 +306,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Create configuration from models.json file
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
@@ -312,7 +337,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Try to load from embedded resource (will fallback to file if not embedded)
             try
@@ -353,7 +378,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration using stream factory
             _ = services.AddLmConfigFromStream(() =>
@@ -387,7 +412,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Create configuration using .NET's configuration system
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, true).Build();
@@ -418,7 +443,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
@@ -482,7 +507,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             var configuration = new ConfigurationBuilder().AddJsonFile("models.json", false, false).Build();
 
@@ -584,7 +609,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Configure ClaudeAgentSdkOptions with OneShot mode
             _ = services.AddSingleton(
@@ -738,8 +763,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
@@ -769,8 +793,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");
@@ -1021,8 +1044,7 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
-            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(logLevel));
+            _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
             _ = services.AddLmConfigFromFile("models.json");

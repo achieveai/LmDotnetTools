@@ -14,6 +14,7 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 [JsonDerivedType(typeof(ResultEvent), "result")]
 public abstract record JsonlEventBase
 {
-    [JsonPropertyName("type")]
-    public string Type { get; init; } = string.Empty;
+    // Note: The 'type' property is handled by JsonPolymorphic discriminator,
+    // so we don't need an explicit property here. The discriminator will
+    // automatically read/write the type during serialization/deserialization.
 }
