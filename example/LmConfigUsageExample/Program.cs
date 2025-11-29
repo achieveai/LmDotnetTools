@@ -17,7 +17,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
-using Serilog.Events;
 
 namespace LmConfigUsageExample;
 
@@ -29,38 +28,35 @@ internal class Program
         // Searches current directory and parent directories
         _ = Env.TraversePath().Load();
 
-        // Configure Serilog with Seq sink (Console fallback if SEQ_API_KEY not set)
-        var seqApiKey = Environment.GetEnvironmentVariable("SEQ_API_KEY");
-        var loggerConfig = new LoggerConfiguration()
-            .MinimumLevel.Debug()
-            .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
-            .MinimumLevel.Override("System", LogEventLevel.Warning)
-            .Enrich.FromLogContext()
-            .Enrich.WithProperty("Application", "LmConfigUsageExample");
+        // Load configuration for Serilog
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+            .Build();
 
-        if (!string.IsNullOrEmpty(seqApiKey))
-        {
-            loggerConfig = loggerConfig.WriteTo.Seq("http://localhost:5341", apiKey: seqApiKey);
-        }
-        else
-        {
-            // Fallback to console if Seq is not configured
-            loggerConfig = loggerConfig.WriteTo.Console(
-                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
-        }
-
-        Log.Logger = loggerConfig.CreateLogger();
+        // Configure Serilog from configuration
+        Log.Logger = new LoggerConfiguration()
+            .ReadFrom.Configuration(configuration)
+            .CreateLogger();
 
         try
         {
+            Log.Information("LmConfigUsageExample starting up");
+
             return await Parser.Default.ParseArguments<CommandLineOptions>(args)
                 .MapResult(
                     async options => await RunWithOptionsAsync(options),
                     _ => Task.FromResult(1)
                 );
         }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "Application terminated unexpectedly");
+            return 1;
+        }
         finally
         {
+            Log.Information("LmConfigUsageExample shutting down");
             await Log.CloseAndFlushAsync();
         }
     }
@@ -162,7 +158,6 @@ internal class Program
         Console.WriteLine("=== Available Models ===\n");
 
         var services = new ServiceCollection();
-        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
         _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
@@ -211,7 +206,6 @@ internal class Program
         Console.WriteLine("=== Available Providers ===\n");
 
         var services = new ServiceCollection();
-        var logLevel = verbose ? LogLevel.Debug : LogLevel.Warning;
         _ = services.AddLogging(builder => builder.AddSerilog());
         _ = services.AddLmConfigFromFile("models.json");
 
@@ -772,7 +766,6 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
             _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
@@ -803,7 +796,6 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
             _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration
@@ -1055,7 +1047,6 @@ internal class Program
         try
         {
             var services = new ServiceCollection();
-            var logLevel = verbose ? LogLevel.Debug : LogLevel.Information;
             _ = services.AddLogging(builder => builder.AddSerilog());
 
             // Load configuration

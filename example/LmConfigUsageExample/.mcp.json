@@ -17,6 +17,14 @@
         "@modelcontextprotocol/server-fetch"
       ],
       "env": {}
+    },
+    "seq": {
+      "command": "seq-mcp-server",
+      "args": [],
+      "env": {
+        "SEQ_SERVER_URL": "http://localhost:5431",
+        "SEQ_API_KEY": "5IEliULeQn3amJ4xa1qY"
+      }
     }
   }
 }
