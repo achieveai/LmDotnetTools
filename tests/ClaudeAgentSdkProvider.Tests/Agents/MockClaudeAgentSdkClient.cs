@@ -13,19 +13,36 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
 {
     private readonly List<IMessage> _messagesToReplay;
     private readonly Action<ClaudeAgentSdkRequest>? _validateRequest;
+    private readonly bool _simulateOneShotMode;
+
+    /// <summary>
+    ///     Number of times StartAsync has been called
+    /// </summary>
+    public int StartCallCount { get; private set; }
+
+    /// <summary>
+    ///     History of all requests received by StartAsync
+    /// </summary>
+    public List<ClaudeAgentSdkRequest> RequestHistory { get; } = [];
 
     public MockClaudeAgentSdkClient(
         List<IMessage> messagesToReplay,
-        Action<ClaudeAgentSdkRequest>? validateRequest = null
+        Action<ClaudeAgentSdkRequest>? validateRequest = null,
+        bool simulateOneShotMode = false
     )
     {
         _messagesToReplay = messagesToReplay ?? throw new ArgumentNullException(nameof(messagesToReplay));
         _validateRequest = validateRequest;
+        _simulateOneShotMode = simulateOneShotMode;
     }
 
     public async Task StartAsync(ClaudeAgentSdkRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // Track call count and history
+        StartCallCount++;
+        RequestHistory.Add(request);
 
         // Validate launch parameters
         _validateRequest?.Invoke(request);
@@ -42,9 +59,14 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
 
         IsRunning = true;
+
+        // Generate a consistent sessionId for session continuity testing
+        // On first call, use provided sessionId or generate new one
+        // On subsequent calls with --resume, the same sessionId should be passed
+        var sessionId = request.SessionId ?? $"session-{Guid.NewGuid():N}";
         CurrentSession = new SessionInfo
         {
-            SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
+            SessionId = sessionId,
             CreatedAt = DateTime.UtcNow,
             ProjectRoot = "test-project-root",
         };
@@ -72,6 +94,13 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             await Task.Delay(5, cancellationToken); // Simulate streaming delay
             yield return message;
+        }
+
+        // In OneShot mode, the process exits after sending all messages
+        // This simulates the CLI exiting after ResultEvent
+        if (_simulateOneShotMode)
+        {
+            IsRunning = false;
         }
     }
 

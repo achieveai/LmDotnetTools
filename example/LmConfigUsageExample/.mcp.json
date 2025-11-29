@@ -18,6 +18,17 @@
       ],
       "env": {}
     },
+    "neetpg_reference_query": {
+      "command": "npx",
+      "args": [
+        "mcp-remote@latest",
+        "http://localhost:5113/mcp",
+        "--allow-http",
+        "--header",
+        "X-Exam-Type:NeetPG"
+      ],
+      "env": {}
+    },
     "seq": {
       "command": "seq-mcp-server",
       "args": [],

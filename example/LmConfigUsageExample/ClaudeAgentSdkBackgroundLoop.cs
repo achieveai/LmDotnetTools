@@ -28,6 +28,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
     private readonly ClaudeAgentSdkOptions _claudeOptions;
     private readonly Dictionary<string, McpServerConfig> _mcpServers;
     private readonly string _threadId;
+    private readonly string? _systemPrompt;
     private readonly int _maxTurnsPerRun;
     private readonly GenerateReplyOptions _defaultOptions;
     private readonly ILogger<ClaudeAgentSdkBackgroundLoop> _logger;
@@ -103,6 +104,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
     /// <param name="claudeOptions">Options for the ClaudeAgentSdk client</param>
     /// <param name="mcpServers">MCP server configurations for tools</param>
     /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
     /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
     /// <param name="maxTurnsPerRun">Maximum turns per run (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
@@ -113,6 +115,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
         string threadId,
+        string? systemPrompt = null,
         GenerateReplyOptions? defaultOptions = null,
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
@@ -126,6 +129,7 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
         _claudeOptions = claudeOptions;
         _mcpServers = mcpServers ?? [];
         _threadId = threadId;
+        _systemPrompt = systemPrompt;
         _maxTurnsPerRun = maxTurnsPerRun;
         _outputChannelCapacity = outputChannelCapacity;
         _defaultOptions = defaultOptions ?? new GenerateReplyOptions();
@@ -538,13 +542,21 @@ public sealed class ClaudeAgentSdkBackgroundLoop : IAsyncDisposable
         {
             RunId = runId,
             ThreadId = _threadId,
-            MaxToken = _maxTurnsPerRun,
+            MaxToken = 16192,
             ExtraProperties = extraPropertiesBuilder.ToImmutable(),
         };
 
+        // Build messages list with system prompt prepended (if configured)
+        IEnumerable<IMessage> messagesToSend = _conversationHistory;
+        if (!string.IsNullOrEmpty(_systemPrompt))
+        {
+            var systemMessage = new TextMessage { Text = _systemPrompt, Role = Role.System };
+            messagesToSend = new IMessage[] { systemMessage }.Concat(_conversationHistory);
+        }
+
         // Stream responses from ClaudeAgentSdk
         // Note: The CLI handles tool execution via MCP - we just publish all messages
-        var stream = await _agent.GenerateReplyStreamingAsync(_conversationHistory, options, ct);
+        var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
 
         await foreach (var msg in stream.WithCancellation(ct))
         {

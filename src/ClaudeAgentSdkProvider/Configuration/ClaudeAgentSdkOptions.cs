@@ -50,4 +50,10 @@ public record ClaudeAgentSdkOptions
     ///     Execution mode (default: Interactive)
     /// </summary>
     public ClaudeAgentSdkMode Mode { get; init; } = ClaudeAgentSdkMode.Interactive;
+
+    /// <summary>
+    ///     Maximum thinking tokens for extended thinking (default: 0 = disabled)
+    ///     Can be overridden per-request via ExtraProperties["maxThinkingTokens"]
+    /// </summary>
+    public int MaxThinkingTokens { get; init; } = 0;
 }

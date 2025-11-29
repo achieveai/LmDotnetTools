@@ -7,11 +7,11 @@
     },
     "ClaudeAgentSDK Background Loop": {
       "commandName": "Project",
-      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 5"
+      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 25"
     },
     "ClaudeAgentSDK Background Loop (verbose)": {
       "commandName": "Project",
-      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 5 -v"
+      "commandLineArgs": "--claude-background -p \"Hello! What MCP tools are available to you?\" --max-turns 25 -v"
     },
     "Grok Agentic Loop": {
       "commandName": "Project",
@@ -19,11 +19,11 @@
     },
     "Background Agentic Loop": {
       "commandName": "Project",
-      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 5"
+      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 25"
     },
     "Background Agentic Loop (verbose)": {
       "commandName": "Project",
-      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 5 -v"
+      "commandLineArgs": "--background -p \"List all the files in the current directory\" --max-turns 25 -v"
     },
     "Custom Model: gpt-4.1": {
       "commandName": "Project",

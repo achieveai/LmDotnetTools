@@ -1062,10 +1062,11 @@ internal class Program
                 ProjectRoot = Directory.GetCurrentDirectory(),
                 McpConfigPath = ".mcp.json",
                 Mode = ClaudeAgentSdkMode.OneShot,
+                MaxThinkingTokens = 8092
             };
 
             // Load MCP servers from .mcp.json
-            var mcpServers = new Dictionary<string, AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.McpServerConfig>();
+            var mcpServers = new Dictionary<string, McpServerConfig>();
             var mcpConfigPath = ".mcp.json";
 
             if (File.Exists(mcpConfigPath))
@@ -1137,6 +1138,7 @@ internal class Program
                 claudeOptions,
                 mcpServers,
                 threadId,
+                systemPrompt: @"You're a medical doctor, acting  as professor in medical college. When student asks question you'll first check the NeetPG books for references and finally check the web for answers. Once you've collected the information then answer student's question.",
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
                 logger: logger,

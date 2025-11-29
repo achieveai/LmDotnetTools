@@ -19,6 +19,11 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     private readonly ClaudeAgentSdkOptions _options;
     private bool _disposed;
 
+    /// <summary>
+    ///     Tracks the session ID across process restarts (for OneShot mode)
+    /// </summary>
+    private string? _lastSessionId;
+
     public ClaudeAgentSdkAgent(
         string name,
         IClaudeAgentSdkClient client,
@@ -96,12 +101,23 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         CancellationToken cancellationToken
     )
     {
+        // Capture sessionId from previous run (for OneShot mode session continuity)
+        // If the client had a session, preserve it for the next process
+        if (_client.CurrentSession?.SessionId != null)
+        {
+            _lastSessionId = _client.CurrentSession.SessionId;
+            _logger?.LogDebug(
+                "Preserved sessionId from previous run: {SessionId}",
+                _lastSessionId);
+        }
+
         var request = BuildClaudeAgentSdkRequest(messages, options);
 
         _logger?.LogInformation(
-            "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}",
+            "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}, sessionId {SessionId}",
             request.ModelId,
-            request.MaxTurns
+            request.MaxTurns,
+            request.SessionId ?? "(new session)"
         );
 
         await _client.StartAsync(request, cancellationToken);
@@ -117,19 +133,30 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     {
         var modelId = options?.ModelId ?? "claude-sonnet-4-5-20250929";
         var maxTurns = options?.MaxToken ?? 40; // MaxToken is repurposed for max turns
-        var maxThinkingTokens = 0; // Default: no extended thinking
+
+        // Max thinking tokens: priority is ExtraProperties > ClaudeAgentSdkOptions
+        var maxThinkingTokens = _options.MaxThinkingTokens;
+        if (options?.ExtraProperties?.TryGetValue("maxThinkingTokens", out var thinkingObj) == true
+            && thinkingObj != null)
+        {
+            maxThinkingTokens = Convert.ToInt32(thinkingObj);
+        }
 
         // Extract system message from messages (we only use the first one)
         var systemMessage = messages.OfType<TextMessage>().FirstOrDefault(m => m.Role == Role.System);
 
         var systemPrompt = systemMessage?.Text;
 
-        // Extract session ID from options if provided
+        // Extract session ID: priority is explicit options > preserved from previous run
         string? sessionId = null;
         if (options?.ExtraProperties?.TryGetValue("sessionId", out var sessionIdObj) == true)
         {
             sessionId = sessionIdObj?.ToString();
         }
+
+        // Use preserved sessionId from previous run if not explicitly provided
+        // This enables session continuity in OneShot mode across process restarts
+        sessionId ??= _lastSessionId;
 
         // Build MCP server configuration
         // Priority: ExtraProperties > file-based config (merged, ExtraProperties wins on conflict)

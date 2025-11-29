@@ -234,13 +234,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     );
                 }
 
-                // In OneShot mode, ResultEvent signals the end of execution
-                // Break out of the loop so the program can exit
-                if (_options.Mode == ClaudeAgentSdkMode.OneShot)
-                {
-                    _logger?.LogDebug("OneShot mode: ResultEvent received, stopping output stream");
-                    yield break;
-                }
+                // ResultEvent signals the end of current turn in BOTH modes
+                // In OneShot mode: stdin is already closed, process will exit
+                // In Interactive mode: stdin remains open for next SendMessagesAsync call
+                _logger?.LogDebug(
+                    "{Mode} mode: ResultEvent received, ending current turn",
+                    _options.Mode
+                );
+                yield break;
             }
         }
 

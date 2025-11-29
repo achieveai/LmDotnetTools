@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -199,5 +200,101 @@ public class ClaudeAgentSdkAgentTests
 
         // Assert
         Assert.Equal("my-custom-agent", agent.Name);
+    }
+
+    [Fact]
+    public async Task InteractiveMode_ClientStaysRunningAcrossMultipleCalls()
+    {
+        // Arrange - Interactive mode: client stays running (default behavior)
+        var mockClient = new MockClaudeAgentSdkClient(
+            [new TextMessage { Text = "Response", Role = Role.Assistant }],
+            simulateOneShotMode: false // Interactive mode
+        );
+
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive };
+        var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
+
+        // Act - Make multiple calls
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 1", Role = Role.User }]);
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 2", Role = Role.User }]);
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 3", Role = Role.User }]);
+
+        // Assert - Client should be started only once
+        Assert.Equal(1, mockClient.StartCallCount);
+        Assert.True(mockClient.IsRunning);
+    }
+
+    [Fact]
+    public async Task OneShotMode_PreservesSessionIdAcrossProcessRestarts()
+    {
+        // Arrange - OneShot mode: process exits after each call, must preserve sessionId
+        var mockClient = new MockClaudeAgentSdkClient(
+            [new TextMessage { Text = "Response", Role = Role.Assistant }],
+            simulateOneShotMode: true // Process exits after each call
+        );
+
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot };
+        var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
+
+        // Act - Make multiple calls (each should restart the process)
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 1", Role = Role.User }]);
+
+        // Capture the sessionId from first run
+        var firstSessionId = mockClient.CurrentSession?.SessionId;
+        Assert.NotNull(firstSessionId);
+
+        // Second call should restart the client but use the same sessionId
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 2", Role = Role.User }]);
+
+        // Third call
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 3", Role = Role.User }]);
+
+        // Assert
+        // Client should be started 3 times (once per call in OneShot mode)
+        Assert.Equal(3, mockClient.StartCallCount);
+
+        // Second and third requests should include the sessionId from first run
+        Assert.Equal(3, mockClient.RequestHistory.Count);
+
+        // First request has no sessionId (new session)
+        Assert.Null(mockClient.RequestHistory[0].SessionId);
+
+        // Second request should have the sessionId from first run (--resume)
+        Assert.Equal(firstSessionId, mockClient.RequestHistory[1].SessionId);
+
+        // Third request should also have the same sessionId
+        Assert.Equal(firstSessionId, mockClient.RequestHistory[2].SessionId);
+    }
+
+    [Fact]
+    public async Task OneShotMode_ExplicitSessionIdTakesPrecedence()
+    {
+        // Arrange
+        var mockClient = new MockClaudeAgentSdkClient(
+            [new TextMessage { Text = "Response", Role = Role.Assistant }],
+            simulateOneShotMode: true
+        );
+
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot };
+        var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
+
+        // Act - First call without explicit sessionId
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 1", Role = Role.User }]);
+
+        // Second call with explicit sessionId in options
+        var explicitSessionId = "explicit-session-123";
+        var optionsWithSession = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-5-20250929",
+            ExtraProperties = new Dictionary<string, object?> { ["sessionId"] = explicitSessionId }.ToImmutableDictionary(),
+        };
+        _ = await agent.GenerateReplyAsync(
+            [new TextMessage { Text = "Input 2", Role = Role.User }],
+            optionsWithSession
+        );
+
+        // Assert - Explicit sessionId should take precedence
+        Assert.Equal(2, mockClient.RequestHistory.Count);
+        Assert.Equal(explicitSessionId, mockClient.RequestHistory[1].SessionId);
     }
 }
