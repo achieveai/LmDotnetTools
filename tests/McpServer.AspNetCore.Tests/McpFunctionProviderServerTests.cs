@@ -17,7 +17,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
 {
     private readonly ITestOutputHelper _output;
     private McpFunctionProviderServer? _server;
-    private IMcpClient? _client;
+    private McpClient? _client;
 
     public McpFunctionProviderServerTests(ITestOutputHelper output)
     {
@@ -67,7 +67,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         };
 
         var transport = new HttpClientTransport(transportOptions);
-        _client = await McpClientFactory.CreateAsync(transport);
+        _client = await McpClient.CreateAsync(transport);
 
         _output.WriteLine("MCP Client connected successfully");
     }

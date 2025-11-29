@@ -22,7 +22,7 @@ public static class FunctionRegistryExtensions
     /// <returns>The function registry for chaining</returns>
     public static async Task<FunctionRegistry> AddMcpClientAsync(
         this FunctionRegistry registry,
-        IMcpClient mcpClient,
+        McpClient mcpClient,
         string clientId,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
@@ -53,7 +53,7 @@ public static class FunctionRegistryExtensions
     /// <returns>The function registry for chaining</returns>
     public static async Task<FunctionRegistry> AddMcpClientsAsync(
         this FunctionRegistry registry,
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
@@ -80,7 +80,7 @@ public static class FunctionRegistryExtensions
     /// <returns>The function registry for chaining</returns>
     public static async Task<FunctionRegistry> AddMcpClientsAsync(
         this FunctionRegistry registry,
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         FunctionFilterConfig? toolFilterConfig,
         Dictionary<string, ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
@@ -114,7 +114,7 @@ public static class FunctionRegistryExtensions
     /// <returns>The function registry for chaining</returns>
     public static async Task<FunctionRegistry> AddMcpClientAsync(
         this FunctionRegistry registry,
-        IMcpClient mcpClient,
+        McpClient mcpClient,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default

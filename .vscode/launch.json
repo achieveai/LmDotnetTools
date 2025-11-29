@@ -15,6 +15,26 @@
       "console": "integratedTerminal"
     },
     {
+      "name": "LmConfig: ClaudeAgentSDK Background Loop",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "ClaudeAgentSDK Background Loop",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "LmConfig: ClaudeAgentSDK Background Loop (verbose)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/example/LmConfigUsageExample/bin/Debug/net9.0/LmConfigUsageExample.dll",
+      "cwd": "${workspaceFolder}/example/LmConfigUsageExample",
+      "launchSettingsProfile": "ClaudeAgentSDK Background Loop (verbose)",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "LmConfig: Grok Agentic Loop",
       "type": "coreclr",
       "request": "launch",

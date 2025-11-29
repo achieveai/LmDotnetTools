@@ -14,7 +14,7 @@ public class FunctionRegistryMcpExample
     /// Shows how to add MCP clients to FunctionRegistry using the new extension methods
     /// </summary>
     public static async Task<FunctionCallMiddleware> CreateMiddlewareWithMcpClientsAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         ILogger? logger = null
     )
     {
@@ -37,7 +37,7 @@ public class FunctionRegistryMcpExample
     /// Example of mixing MCP clients with other function providers
     /// </summary>
     public static async Task<FunctionCallMiddleware> CreateMixedMiddlewareAsync(
-        Dictionary<string, IMcpClient> mcpClients,
+        Dictionary<string, McpClient> mcpClients,
         IFunctionProvider otherProvider,
         ILogger? logger = null
     )

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -92,6 +91,16 @@ public static class FunctionProviderMcpAdapter
 
                     CallToolHandler = async (request, cancellationToken) =>
                     {
+                        if (request.Params is null)
+                        {
+                            logger?.LogError("[McpAdapter] CallTool request has null Params");
+                            return new CallToolResult
+                            {
+                                Content = [new TextContentBlock { Text = "Invalid request: missing parameters" }],
+                                IsError = true
+                            };
+                        }
+
                         var toolName = request.Params.Name;
 
                         // Convert arguments dictionary to JSON string
@@ -109,7 +118,7 @@ public static class FunctionProviderMcpAdapter
                             logger?.LogError("[McpAdapter] Tool '{ToolName}' not found", toolName);
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = $"Tool '{toolName}' not found", Type = "text" }],
+                                Content = [new TextContentBlock { Text = $"Tool '{toolName}' not found" }],
                                 IsError = true
                             };
                         }
@@ -131,7 +140,7 @@ public static class FunctionProviderMcpAdapter
                             // Return the result as text content
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = resultJson, Type = "text" }],
+                                Content = [new TextContentBlock { Text = resultJson }],
                                 IsError = false
                             };
                         }
@@ -145,7 +154,7 @@ public static class FunctionProviderMcpAdapter
 
                             return new CallToolResult
                             {
-                                Content = [new TextContentBlock { Text = $"Error: {ex.Message}", Type = "text" }],
+                                Content = [new TextContentBlock { Text = $"Error: {ex.Message}" }],
                                 IsError = true
                             };
                         }

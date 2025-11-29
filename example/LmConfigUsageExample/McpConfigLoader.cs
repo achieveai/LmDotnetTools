@@ -12,13 +12,13 @@ namespace LmConfigUsageExample;
 public class McpJsonConfig
 {
     [JsonPropertyName("mcpServers")]
-    public Dictionary<string, McpServerConfig>? McpServers { get; set; }
+    public Dictionary<string, LocalMcpServerConfig>? McpServers { get; set; }
 }
 
 /// <summary>
-/// Configuration for a single MCP server
+/// Configuration for a single MCP server (local definition for .mcp.json parsing)
 /// </summary>
-public class McpServerConfig
+public class LocalMcpServerConfig
 {
     [JsonPropertyName("command")]
     public string Command { get; set; } = string.Empty;
@@ -35,7 +35,7 @@ public class McpServerConfig
 /// </summary>
 public sealed class McpConfigLoader : IAsyncDisposable
 {
-    private readonly Dictionary<string, IMcpClient> _clients = [];
+    private readonly Dictionary<string, McpClient> _clients = [];
     private readonly ILogger<McpConfigLoader> _logger;
     private bool _disposed;
 
@@ -47,7 +47,7 @@ public sealed class McpConfigLoader : IAsyncDisposable
     /// <summary>
     /// Gets the loaded MCP clients
     /// </summary>
-    public IReadOnlyDictionary<string, IMcpClient> Clients => _clients;
+    public IReadOnlyDictionary<string, McpClient> Clients => _clients;
 
     /// <summary>
     /// Loads MCP servers from the specified config file
@@ -55,7 +55,7 @@ public sealed class McpConfigLoader : IAsyncDisposable
     /// <param name="configPath">Path to .mcp.json file</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of server name to MCP client</returns>
-    public async Task<Dictionary<string, IMcpClient>> LoadFromFileAsync(
+    public async Task<Dictionary<string, McpClient>> LoadFromFileAsync(
         string configPath,
         CancellationToken cancellationToken = default)
     {
@@ -103,9 +103,9 @@ public sealed class McpConfigLoader : IAsyncDisposable
         return _clients;
     }
 
-    private async Task<IMcpClient> CreateClientAsync(
+    private async Task<McpClient> CreateClientAsync(
         string serverName,
-        McpServerConfig config,
+        LocalMcpServerConfig config,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(config.Command))
@@ -133,7 +133,7 @@ public sealed class McpConfigLoader : IAsyncDisposable
         }
 
         var transport = new StdioClientTransport(transportOptions);
-        var client = await McpClientFactory.CreateAsync(transport, cancellationToken: cancellationToken);
+        var client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
 
         // Log available tools
         try

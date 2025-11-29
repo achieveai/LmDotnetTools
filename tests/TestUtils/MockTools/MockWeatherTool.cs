@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.TestUtils.MockTools;
 ///     Mock weather tool for testing
 /// </summary>
 [McpServerToolType]
-public static class MockWeatherTool
+public static partial class MockWeatherTool
 {
     /// <summary>
     ///     Gets the current weather for a specified location
@@ -16,7 +16,7 @@ public static class MockWeatherTool
     /// <returns>Weather information as a string</returns>
     [McpServerTool(Name = "getWeather")]
     [Description("Get current weather for a location")]
-    public static string GetWeather(string location)
+    public static partial string GetWeather(string location)
     {
         throw new NotImplementedException("Mock tool call - implement using callback override");
     }

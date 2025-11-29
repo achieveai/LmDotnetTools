@@ -13,9 +13,9 @@ public class SingleToolCallExample
 {
     private readonly IStreamingAgent _agentWithMcp;
     private readonly IAgent _llmAgent;
-    private readonly IMcpClient _mcpClient;
+    private readonly McpClient _mcpClient;
 
-    public SingleToolCallExample(IMcpClient mcpClient, IAgent llmAgent, IStreamingAgent agentWithMcp)
+    public SingleToolCallExample(McpClient mcpClient, IAgent llmAgent, IStreamingAgent agentWithMcp)
     {
         _mcpClient = mcpClient;
         _llmAgent = llmAgent;

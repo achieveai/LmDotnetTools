@@ -23,9 +23,6 @@
       "command": "cmd",
       "args": [
         "/c",
-        "dotnet",
-        "tool",
-        "run",
         "seq-mcp-server"
       ],
       "env": {
@@ -40,6 +37,15 @@
         "npx",
         "-y",
         "@playwright/mcp@latest"
+      ]
+    },
+    "debugger": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "mcp-remote@latest",
+        "http://localhost:4711/sse"
       ]
     }
   }

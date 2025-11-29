@@ -29,11 +29,11 @@ public class McpServerTests
             }
         );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
         try
         {
             // Create middleware with the mock client
-            var clients = new Dictionary<string, IMcpClient> { ["test_client"] = client, ["GreetingTool"] = client };
+            var clients = new Dictionary<string, McpClient> { ["test_client"] = client, ["GreetingTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 
@@ -105,7 +105,7 @@ public class McpServerTests
             }
         );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
         try
         {
             // Prepare arguments for the Add operation

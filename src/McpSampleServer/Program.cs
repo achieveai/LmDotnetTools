@@ -26,7 +26,7 @@ internal class Program
 ///     Greeting tool that says hello to a name
 /// </summary>
 [McpServerToolType]
-public static class GreetingTool
+public static partial class GreetingTool
 {
     /// <summary>
     ///     Says hello to the provided name
@@ -35,7 +35,7 @@ public static class GreetingTool
     /// <returns>A greeting message</returns>
     [McpServerTool]
     [Description("Greets a person by name")]
-    public static string SayHello(string name)
+    public static partial string SayHello(string name)
     {
         return $"Hello, {name}! Nice to meet you.";
     }
@@ -47,7 +47,7 @@ public static class GreetingTool
     /// <returns>A goodbye message</returns>
     [McpServerTool]
     [Description("Says goodbye to a person by name")]
-    public static string SayGoodbye(string name)
+    public static partial string SayGoodbye(string name)
     {
         return $"Goodbye, {name}! Have a great day.";
     }

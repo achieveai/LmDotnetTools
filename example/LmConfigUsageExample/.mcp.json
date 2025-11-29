@@ -2,15 +2,29 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem"
+      ],
       "env": {
         "ALLOWED_PATHS": "D:/Source/repos/LmDotnetTools/example/LmConfigUsageExample"
       }
     },
     "fetch": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ],
       "env": {}
+    },
+    "seq": {
+      "command": "seq-mcp-server",
+      "args": [],
+      "env": {
+        "SEQ_SERVER_URL": "http://localhost:5431",
+        "SEQ_API_KEY": "5IEliULeQn3amJ4xa1qY"
+      }
     }
   }
 }
