@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -10,6 +11,26 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 {
     [JsonPropertyName("image_data")]
     public required BinaryData ImageData { get; init; }
+
+    /// <summary>
+    ///     Gets the media type of the image (e.g., "image/jpeg", "image/png").
+    ///     This property is used for JSON serialization since BinaryData.MediaType is not serialized.
+    /// </summary>
+    [JsonPropertyName("media_type")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MediaType
+    {
+        get => ImageData.MediaType;
+        init
+        {
+            // This setter is used during deserialization to reconstruct BinaryData with MediaType
+            // The actual setting happens in the JsonConverter
+        }
+    }
+
+    [JsonPropertyName("parent_run_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; set; }
 
     public BinaryData? GetBinary()
     {
@@ -60,9 +81,96 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 
 public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMessage>
 {
+    private string? _pendingMediaType;
+    private byte[]? _pendingImageData;
+
     protected override ImageMessage CreateInstance()
     {
+        // Create with empty data; will be replaced if image_data is read
         return new ImageMessage { ImageData = BinaryData.FromString("") };
+    }
+
+    protected override (bool handled, ImageMessage instance) ReadProperty(
+        ref Utf8JsonReader reader,
+        ImageMessage instance,
+        string propertyName,
+        JsonSerializerOptions options
+    )
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        switch (propertyName)
+        {
+            case "image_data":
+                // Read base64 bytes
+                _pendingImageData = reader.GetBytesFromBase64();
+                // If we already have a media type, create the BinaryData now
+                if (_pendingMediaType != null)
+                {
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData, _pendingMediaType));
+                    _pendingImageData = null;
+                    _pendingMediaType = null;
+                }
+                else
+                {
+                    // Create with default media type, may be updated when media_type is read
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData));
+                }
+
+                return (true, instance);
+
+            case "media_type":
+                _pendingMediaType = reader.GetString();
+                // If we already have image data, recreate BinaryData with the media type
+                if (_pendingImageData != null && _pendingMediaType != null)
+                {
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData, _pendingMediaType));
+                    _pendingImageData = null;
+                    _pendingMediaType = null;
+                }
+                else if (instance.ImageData.Length > 0 && _pendingMediaType != null)
+                {
+                    // Recreate with media type if image_data was already processed
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(instance.ImageData.ToArray(), _pendingMediaType));
+                    _pendingMediaType = null;
+                }
+
+                return (true, instance);
+
+            default:
+                return base.ReadProperty(ref reader, instance, propertyName, options);
+        }
+    }
+
+    protected override void WriteProperties(Utf8JsonWriter writer, ImageMessage value, JsonSerializerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
+        // Write image_data as base64
+        writer.WriteBase64String("image_data", value.ImageData.ToMemory().Span);
+
+        // Write media_type if available
+        if (value.ImageData.MediaType != null)
+        {
+            writer.WriteString("media_type", value.ImageData.MediaType);
+        }
+    }
+
+    private static ImageMessage CreateNewInstance(ImageMessage source, BinaryData newImageData)
+    {
+        return new ImageMessage
+        {
+            ImageData = newImageData,
+            FromAgent = source.FromAgent,
+            Role = source.Role,
+            Metadata = source.Metadata,
+            GenerationId = source.GenerationId,
+            ThreadId = source.ThreadId,
+            RunId = source.RunId,
+            ParentRunId = source.ParentRunId,
+            MessageOrderIdx = source.MessageOrderIdx,
+        };
     }
 }
 

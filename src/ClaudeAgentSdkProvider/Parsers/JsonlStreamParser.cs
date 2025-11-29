@@ -215,8 +215,77 @@ public class JsonlStreamParser
                 ],
             },
 
+            "image" when contentBlock.Source != null => ConvertImageContentBlock(
+                contentBlock.Source,
+                role,
+                generationId,
+                runId,
+                parentRunId,
+                threadId
+            ),
+
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     Convert an image source block to an ImageMessage
+    /// </summary>
+    private static ImageMessage? ConvertImageContentBlock(
+        ImageSourceBlock source,
+        Role role,
+        string generationId,
+        string runId,
+        string? parentRunId,
+        string threadId
+    )
+    {
+        // Handle base64 encoded images
+        if (source.Type == "base64" && !string.IsNullOrEmpty(source.Data))
+        {
+            try
+            {
+                var imageBytes = Convert.FromBase64String(source.Data);
+                var mediaType = source.MediaType ?? "application/octet-stream";
+                var binaryData = BinaryData.FromBytes(imageBytes, mediaType);
+
+                return new ImageMessage
+                {
+                    ImageData = binaryData,
+                    Role = role,
+                    GenerationId = generationId,
+                    RunId = runId,
+                    ParentRunId = parentRunId,
+                    ThreadId = threadId,
+                };
+            }
+            catch (FormatException)
+            {
+                // Invalid base64 data
+                return null;
+            }
+        }
+
+        // Handle URL-based images - store URL as data URI placeholder
+        if (source.Type == "url" && !string.IsNullOrEmpty(source.Url))
+        {
+            // For URL sources, we create a BinaryData with the URL as content
+            // The consumer can then fetch the image if needed
+            var mediaType = source.MediaType ?? "text/uri-list";
+            var binaryData = BinaryData.FromString(source.Url, mediaType);
+
+            return new ImageMessage
+            {
+                ImageData = binaryData,
+                Role = role,
+                GenerationId = generationId,
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+            };
+        }
+
+        return null;
     }
 
     /// <summary>

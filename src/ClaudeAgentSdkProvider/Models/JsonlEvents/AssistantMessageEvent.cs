@@ -70,12 +70,12 @@ public record AssistantMessage
 }
 
 /// <summary>
-///     Content block can be text, thinking, tool_use, or tool_result
+///     Content block can be text, thinking, tool_use, tool_result, or image
 /// </summary>
 public record ContentBlock
 {
     [JsonPropertyName("type")]
-    public required string Type { get; init; } // "text", "thinking", "tool_use", "tool_result"
+    public required string Type { get; init; } // "text", "thinking", "tool_use", "tool_result", "image"
 
     // For text blocks
     [JsonPropertyName("text")]
@@ -107,6 +107,28 @@ public record ContentBlock
 
     [JsonPropertyName("is_error")]
     public bool? IsError { get; init; }
+
+    // For image blocks
+    [JsonPropertyName("source")]
+    public ImageSourceBlock? Source { get; init; }
+}
+
+/// <summary>
+///     Image source block containing base64 encoded image data
+/// </summary>
+public record ImageSourceBlock
+{
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "base64"; // "base64" or "url"
+
+    [JsonPropertyName("media_type")]
+    public string? MediaType { get; init; } // e.g., "image/jpeg", "image/png", "image/gif", "image/webp"
+
+    [JsonPropertyName("data")]
+    public string? Data { get; init; } // Base64 encoded image data
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; } // URL for url-type sources
 }
 
 /// <summary>

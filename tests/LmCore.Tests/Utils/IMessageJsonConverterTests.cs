@@ -453,4 +453,189 @@ public class IMessageJsonConverterTests
         Assert.NotNull(message);
         Assert.IsType(expectedType, message);
     }
+
+    [Fact]
+    public void RoundTrip_ImageMessage_WithMediaType_PreservesMediaType()
+    {
+        // Arrange
+        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }; // PNG header
+        var binaryData = BinaryData.FromBytes(imageBytes, "image/png");
+
+        IMessage originalMessage = new ImageMessage
+        {
+            ImageData = binaryData,
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = "gen-123",
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        Console.WriteLine($"Serialized ImageMessage with media_type: {json}");
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        var imageMessage = Assert.IsType<ImageMessage>(deserializedMessage);
+        Assert.Equal("image/png", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+        Assert.Equal(Role.Assistant, imageMessage.Role);
+        Assert.Equal("test-agent", imageMessage.FromAgent);
+        Assert.Equal("gen-123", imageMessage.GenerationId);
+    }
+
+    [Fact]
+    public void Serialize_ImageMessage_OutputsMediaTypeProperty()
+    {
+        // Arrange
+        var imageBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }; // JPEG header
+        var binaryData = BinaryData.FromBytes(imageBytes, "image/jpeg");
+
+        IMessage message = new ImageMessage
+        {
+            ImageData = binaryData,
+            Role = Role.User,
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(message, options);
+        Console.WriteLine($"Serialized ImageMessage: {json}");
+
+        // Assert
+        var jsonDocument = JsonDocument.Parse(json);
+        var root = jsonDocument.RootElement;
+
+        Assert.True(root.TryGetProperty("media_type", out var mediaTypeProperty));
+        Assert.Equal("image/jpeg", mediaTypeProperty.GetString());
+        Assert.True(root.TryGetProperty("image_data", out var imageDataProperty));
+        Assert.Equal(Convert.ToBase64String(imageBytes), imageDataProperty.GetString());
+    }
+
+    [Fact]
+    public void Deserialize_ImageMessage_WithMediaTypeBeforeImageData_PreservesMediaType()
+    {
+        // Arrange - media_type comes before image_data in JSON
+        var imageBytes = new byte[] { 0x47, 0x49, 0x46, 0x38 }; // GIF header
+        var base64Data = Convert.ToBase64String(imageBytes);
+        var json =
+            $@"{{
+            ""$type"": ""image"",
+            ""media_type"": ""image/gif"",
+            ""image_data"": ""{base64Data}"",
+            ""role"": ""assistant""
+        }}";
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(message);
+        var imageMessage = Assert.IsType<ImageMessage>(message);
+        Assert.Equal("image/gif", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void Deserialize_ImageMessage_WithImageDataBeforeMediaType_PreservesMediaType()
+    {
+        // Arrange - image_data comes before media_type in JSON
+        var imageBytes = new byte[] { 0x52, 0x49, 0x46, 0x46 }; // WebP header
+        var base64Data = Convert.ToBase64String(imageBytes);
+        var json =
+            $@"{{
+            ""$type"": ""image"",
+            ""image_data"": ""{base64Data}"",
+            ""media_type"": ""image/webp"",
+            ""role"": ""user""
+        }}";
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(message);
+        var imageMessage = Assert.IsType<ImageMessage>(message);
+        Assert.Equal("image/webp", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void Deserialize_ImageMessage_WithoutMediaType_DefaultsToNoMediaType()
+    {
+        // Arrange - no media_type in JSON (backward compatibility)
+        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
+        var base64Data = Convert.ToBase64String(imageBytes);
+        var json =
+            $@"{{
+            ""$type"": ""image"",
+            ""image_data"": ""{base64Data}"",
+            ""role"": ""assistant""
+        }}";
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(message);
+        var imageMessage = Assert.IsType<ImageMessage>(message);
+        Assert.Null(imageMessage.ImageData.MediaType); // No media type when not specified
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void RoundTrip_ImageMessage_WithAllProperties_PreservesAllData()
+    {
+        // Arrange
+        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        var binaryData = BinaryData.FromBytes(imageBytes, "image/png");
+
+        IMessage originalMessage = new ImageMessage
+        {
+            ImageData = binaryData,
+            Role = Role.Assistant,
+            FromAgent = "vision-agent",
+            GenerationId = "gen-456",
+            ThreadId = "thread-789",
+            RunId = "run-abc",
+            ParentRunId = "parent-run-xyz",
+            MessageOrderIdx = 5,
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "screenshot"),
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        Console.WriteLine($"Full ImageMessage JSON: {json}");
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        var imageMessage = Assert.IsType<ImageMessage>(deserializedMessage);
+
+        Assert.Equal("image/png", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+        Assert.Equal(Role.Assistant, imageMessage.Role);
+        Assert.Equal("vision-agent", imageMessage.FromAgent);
+        Assert.Equal("gen-456", imageMessage.GenerationId);
+        Assert.Equal("thread-789", imageMessage.ThreadId);
+        Assert.Equal("run-abc", imageMessage.RunId);
+        Assert.Equal("parent-run-xyz", imageMessage.ParentRunId);
+        Assert.Equal(5, imageMessage.MessageOrderIdx);
+        Assert.NotNull(imageMessage.Metadata);
+        Assert.True(imageMessage.Metadata.ContainsKey("source"));
+        Assert.Equal("screenshot", imageMessage.Metadata["source"]);
+    }
 }

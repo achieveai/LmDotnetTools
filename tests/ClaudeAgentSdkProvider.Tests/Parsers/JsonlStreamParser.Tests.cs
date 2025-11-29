@@ -215,4 +215,309 @@ public class JsonlStreamParserTests
         Assert.Equal("toolu_002", secondResult.ToolCallResults[0].ToolCallId);
         Assert.Contains("Second result", secondResult.ToolCallResults[0].Result);
     }
+
+    [Fact]
+    public void ConvertToMessages_ImageContentBlock_CreatesImageMessage()
+    {
+        // Arrange - PNG header bytes
+        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        var base64Data = Convert.ToBase64String(imageBytes);
+
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-id",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "base64",
+                            MediaType = "image/png",
+                            Data = base64Data,
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var imageMessage = Assert.IsType<ImageMessage>(messages[0]);
+        Assert.Equal("image/png", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+        Assert.Equal("test-uuid", imageMessage.RunId);
+        Assert.Equal("test-session", imageMessage.ThreadId);
+        Assert.Equal("msg-id", imageMessage.GenerationId);
+        Assert.Equal(Role.Assistant, imageMessage.Role);
+    }
+
+    [Fact]
+    public void ConvertToMessages_ImageContentBlock_WithJpegMediaType_PreservesMediaType()
+    {
+        // Arrange - JPEG header bytes
+        var imageBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+        var base64Data = Convert.ToBase64String(imageBytes);
+
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid-jpeg",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-jpeg",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "base64",
+                            MediaType = "image/jpeg",
+                            Data = base64Data,
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var imageMessage = Assert.IsType<ImageMessage>(messages[0]);
+        Assert.Equal("image/jpeg", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void ConvertToMessages_ImageContentBlock_WithUrlSource_CreatesImageMessageWithUrl()
+    {
+        // Arrange - URL-based image source
+        var imageUrl = "https://example.com/image.png";
+
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid-url",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-url",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "url",
+                            MediaType = "image/png",
+                            Url = imageUrl,
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var imageMessage = Assert.IsType<ImageMessage>(messages[0]);
+        // URL is stored as the content of BinaryData
+        Assert.Equal(imageUrl, imageMessage.ImageData.ToString());
+        Assert.Equal("image/png", imageMessage.ImageData.MediaType);
+    }
+
+    [Fact]
+    public void ConvertToMessages_MixedContent_TextAndImage_CreatesBothMessages()
+    {
+        // Arrange
+        var imageBytes = new byte[] { 0x47, 0x49, 0x46, 0x38 }; // GIF header
+        var base64Data = Convert.ToBase64String(imageBytes);
+
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid-mixed",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-mixed",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock { Type = "text", Text = "Here is an image:" },
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "base64",
+                            MediaType = "image/gif",
+                            Data = base64Data,
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert
+        Assert.Equal(2, messages.Count);
+
+        var textMessage = Assert.IsType<TextMessage>(messages[0]);
+        Assert.Equal("Here is an image:", textMessage.Text);
+
+        var imageMessage = Assert.IsType<ImageMessage>(messages[1]);
+        Assert.Equal("image/gif", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void ConvertToMessages_ImageContentBlock_WithoutMediaType_UsesDefaultMediaType()
+    {
+        // Arrange - Image without media type specified
+        var imageBytes = new byte[] { 0x52, 0x49, 0x46, 0x46 }; // WebP header
+        var base64Data = Convert.ToBase64String(imageBytes);
+
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid-no-media",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-no-media",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "base64",
+                            MediaType = null, // No media type
+                            Data = base64Data,
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var imageMessage = Assert.IsType<ImageMessage>(messages[0]);
+        Assert.Equal("application/octet-stream", imageMessage.ImageData.MediaType); // Default
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+    }
+
+    [Fact]
+    public void ConvertToMessages_ImageContentBlock_InvalidBase64_ReturnsNull()
+    {
+        // Arrange - Invalid base64 data
+        var assistantEvent = new AssistantMessageEvent
+        {
+            Uuid = "test-uuid-invalid",
+            SessionId = "test-session",
+            Timestamp = DateTime.UtcNow,
+            Message = new AssistantMessage
+            {
+                Model = "claude-sonnet-4-5",
+                Id = "msg-invalid",
+                Role = "assistant",
+                Content =
+                [
+                    new ContentBlock
+                    {
+                        Type = "image",
+                        Source = new ImageSourceBlock
+                        {
+                            Type = "base64",
+                            MediaType = "image/png",
+                            Data = "not-valid-base64!@#$%",
+                        },
+                    },
+                ],
+            },
+        };
+
+        // Act
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+
+        // Assert - Invalid base64 should be gracefully ignored
+        Assert.Empty(messages);
+    }
+
+    [Fact]
+    public void ConvertToMessages_UserMessageWithImageContent_CreatesImageMessage()
+    {
+        // Arrange - User message containing an image content block
+        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 }; // PNG header
+        var base64Data = Convert.ToBase64String(imageBytes);
+
+        var imageContentJson = $$"""
+            [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "{{base64Data}}"
+                    }
+                }
+            ]
+            """;
+
+        var userEvent = new UserMessageEvent
+        {
+            Uuid = "user-uuid-image",
+            SessionId = "session-image",
+            Message = new UserMessage
+            {
+                Role = "user",
+                Content = JsonDocument.Parse(imageContentJson).RootElement,
+            },
+        };
+
+        // Act
+        var messages = _parser.ConvertToMessages(userEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var imageMessage = Assert.IsType<ImageMessage>(messages[0]);
+        Assert.Equal("image/png", imageMessage.ImageData.MediaType);
+        Assert.Equal(imageBytes, imageMessage.ImageData.ToArray());
+        Assert.Equal("user-uuid-image", imageMessage.RunId);
+        Assert.Equal("session-image", imageMessage.ThreadId);
+        Assert.Equal(Role.User, imageMessage.Role);
+    }
 }
