@@ -520,7 +520,7 @@ public class IMessageJsonConverterTests
     public void Deserialize_ImageMessage_WithMediaTypeBeforeImageData_PreservesMediaType()
     {
         // Arrange - media_type comes before image_data in JSON
-        var imageBytes = new byte[] { 0x47, 0x49, 0x46, 0x38 }; // GIF header
+        var imageBytes = "GIF8"u8.ToArray(); // GIF header
         var base64Data = Convert.ToBase64String(imageBytes);
         var json =
             $@"{{
@@ -546,7 +546,7 @@ public class IMessageJsonConverterTests
     public void Deserialize_ImageMessage_WithImageDataBeforeMediaType_PreservesMediaType()
     {
         // Arrange - image_data comes before media_type in JSON
-        var imageBytes = new byte[] { 0x52, 0x49, 0x46, 0x46 }; // WebP header
+        var imageBytes = "RIFF"u8.ToArray(); // WebP header
         var base64Data = Convert.ToBase64String(imageBytes);
         var json =
             $@"{{

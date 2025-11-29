@@ -353,7 +353,7 @@ public class JsonlStreamParserTests
     public void ConvertToMessages_MixedContent_TextAndImage_CreatesBothMessages()
     {
         // Arrange
-        var imageBytes = new byte[] { 0x47, 0x49, 0x46, 0x38 }; // GIF header
+        var imageBytes = "GIF8"u8.ToArray(); // GIF header
         var base64Data = Convert.ToBase64String(imageBytes);
 
         var assistantEvent = new AssistantMessageEvent
@@ -401,7 +401,7 @@ public class JsonlStreamParserTests
     public void ConvertToMessages_ImageContentBlock_WithoutMediaType_UsesDefaultMediaType()
     {
         // Arrange - Image without media type specified
-        var imageBytes = new byte[] { 0x52, 0x49, 0x46, 0x46 }; // WebP header
+        var imageBytes = "RIFF"u8.ToArray(); // WebP header
         var base64Data = Convert.ToBase64String(imageBytes);
 
         var assistantEvent = new AssistantMessageEvent
