@@ -1236,7 +1236,7 @@ list references from above tool calls with book name, chapter, page number
             // Create default options
             var defaultOptions = new GenerateReplyOptions
             {
-                ModelId = "claude-sonnet-4-5",
+                ModelId = "claude-haiku-4-5",
                 Temperature = temperature,
             };
 

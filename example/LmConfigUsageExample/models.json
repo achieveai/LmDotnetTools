@@ -146,6 +146,164 @@
       ]
     },
     {
+      "id": "claude-haiku-4-5",
+      "is_reasoning": true,
+      "capabilities": {
+        "thinking": {
+          "type": "Anthropic",
+          "supports_budget_tokens": true,
+          "supports_thinking_type": true,
+          "max_thinking_tokens": 16000,
+          "is_built_in": true,
+          "is_exposed": true,
+          "parameter_name": "thinking"
+        },
+        "multimodal": {
+          "supports_images": true,
+          "supports_audio": false,
+          "supports_video": false,
+          "supported_image_formats": [
+            "jpeg",
+            "png",
+            "webp",
+            "gif"
+          ],
+          "max_image_size": 5242880,
+          "max_images_per_message": 20
+        },
+        "function_calling": {
+          "supports_tools": true,
+          "supports_parallel_calls": true,
+          "supports_tool_choice": true,
+          "max_tools_per_request": 128,
+          "supported_tool_types": [
+            "mcp"
+          ]
+        },
+        "token_limits": {
+          "max_context_tokens": 200000,
+          "max_output_tokens": 8192,
+          "recommended_max_prompt_tokens": 190000
+        },
+        "response_formats": {
+          "supports_json_mode": false,
+          "supports_structured_output": false,
+          "supports_json_schema": false
+        },
+        "supports_streaming": true,
+        "supported_features": [
+          "thinking",
+          "multimodal",
+          "mcp-tools",
+          "long-context",
+          "agent-sdk"
+        ],
+        "performance": {
+          "typical_latency": "00:00:04",
+          "max_latency": "00:00:30",
+          "tokens_per_second": 60.0,
+          "quality_tier": "very-high"
+        }
+      },
+      "providers": [
+        {
+          "name": "ClaudeAgentSDK",
+          "model_name": "haiku",
+          "priority": 1,
+          "pricing": {
+            "prompt_per_million": 3.0,
+            "completion_per_million": 15.0
+          },
+          "tags": [
+            "high-quality",
+            "thinking",
+            "multimodal",
+            "mcp-tools",
+            "agent-sdk"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "claude-opus-4-5",
+      "is_reasoning": true,
+      "capabilities": {
+        "thinking": {
+          "type": "Anthropic",
+          "supports_budget_tokens": true,
+          "supports_thinking_type": true,
+          "max_thinking_tokens": 16000,
+          "is_built_in": true,
+          "is_exposed": true,
+          "parameter_name": "thinking"
+        },
+        "multimodal": {
+          "supports_images": true,
+          "supports_audio": false,
+          "supports_video": false,
+          "supported_image_formats": [
+            "jpeg",
+            "png",
+            "webp",
+            "gif"
+          ],
+          "max_image_size": 5242880,
+          "max_images_per_message": 20
+        },
+        "function_calling": {
+          "supports_tools": true,
+          "supports_parallel_calls": true,
+          "supports_tool_choice": true,
+          "max_tools_per_request": 128,
+          "supported_tool_types": [
+            "mcp"
+          ]
+        },
+        "token_limits": {
+          "max_context_tokens": 200000,
+          "max_output_tokens": 8192,
+          "recommended_max_prompt_tokens": 190000
+        },
+        "response_formats": {
+          "supports_json_mode": false,
+          "supports_structured_output": false,
+          "supports_json_schema": false
+        },
+        "supports_streaming": true,
+        "supported_features": [
+          "thinking",
+          "multimodal",
+          "mcp-tools",
+          "long-context",
+          "agent-sdk"
+        ],
+        "performance": {
+          "typical_latency": "00:00:04",
+          "max_latency": "00:00:30",
+          "tokens_per_second": 60.0,
+          "quality_tier": "very-high"
+        }
+      },
+      "providers": [
+        {
+          "name": "ClaudeAgentSDK",
+          "model_name": "opus",
+          "priority": 1,
+          "pricing": {
+            "prompt_per_million": 3.0,
+            "completion_per_million": 15.0
+          },
+          "tags": [
+            "high-quality",
+            "thinking",
+            "multimodal",
+            "mcp-tools",
+            "agent-sdk"
+          ]
+        }
+      ]
+    },
+    {
       "id": "claude-sonnet-4-5",
       "is_reasoning": true,
       "capabilities": {
@@ -208,7 +366,7 @@
       "providers": [
         {
           "name": "ClaudeAgentSDK",
-          "model_name": "claude-sonnet-4-5-20250929",
+          "model_name": "sonnet",
           "priority": 1,
           "pricing": {
             "prompt_per_million": 3.0,

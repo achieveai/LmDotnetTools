@@ -1,0 +1,9 @@
+{
+  "enabledMcpjsonServers": [
+    "sequential-thinking-tools",
+    "playwright",
+    "seq",
+    "clarify-doubt",
+    "debugger"
+  ]
+}

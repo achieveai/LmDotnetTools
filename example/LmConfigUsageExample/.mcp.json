@@ -10,31 +10,11 @@
         "ALLOWED_PATHS": "D:/Source/repos/LmDotnetTools/example/LmConfigUsageExample"
       }
     },
-    "fetch": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-fetch"
-      ],
-      "env": {}
-    },
     "neetpg_reference_query": {
-      "command": "npx",
-      "args": [
-        "mcp-remote@latest",
-        "http://localhost:5113/mcp",
-        "--allow-http",
-        "--header",
-        "X-Exam-Type:NeetPG"
-      ],
-      "env": {}
-    },
-    "seq": {
-      "command": "seq-mcp-server",
-      "args": [],
-      "env": {
-        "SEQ_SERVER_URL": "http://localhost:5431",
-        "SEQ_API_KEY": "5IEliULeQn3amJ4xa1qY"
+      "type": "http",
+      "url": "http://localhost:5113/mcp",
+      "headers": {
+        "X-Exam-Type": "NeetPG"
       }
     }
   }
