@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
@@ -9,6 +10,9 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore;
 using CommandLine;
 using DotNetEnv;
@@ -22,6 +26,65 @@ namespace LmConfigUsageExample;
 
 internal class Program
 {
+    /// <summary>
+    /// Shared system prompt used by both BackgroundAgenticLoop and ClaudeAgentSdkBackgroundLoop examples.
+    /// </summary>
+    private const string DefaultSystemPrompt =
+        @"You're a medical doctor, acting as professor in medical college.
+
+When student asks question, you'll query using query and match tool for
+references using provided tools. But before you use tools, you'll analyze
+(think) about what exactly student is asking, and what kind of information is
+relevant to answer the question, also understand if there are any ambiguities
+that need to be clarified.
+
+You will prefer to use tools in parallel to get information faster, and you
+keep trying (up to 5 times) to collect relevant information if initial attempts
+don't yield useful results. Find references about all the options provided in
+the question, so that each option can be evaluated and explained properly.
+
+It's extremely important to gather accurate and comprehensive information about
+each option that students can cross validate.
+
+Once you've collected the information then answer student's question. in
+following format:
+---
+
+### Question Analysis (Optional, only if there are ambiguities)
+Analyze the question and outline key points to focus on.
+
+### Per Option Explanation (If applicable)
+#### Option A:
+What the option means.
+How is it relevant to the question.
+Is it likely to be correct or incorrect.
+
+#### Option B:
+...
+
+### Detailed Explanation
+Provide a through explanation (usually 2-3 paragraph) why the correct option is correct and why the other options are incorrect. Use references gathered from tools to support your explanation.
+
+### Any pearls (if applicable)
+
+Pearls are concise, high-yield facts or mnemonics that help in recalling important information related to the question.
+Provide any additional relevant information or mnemonics to help remember the concept.
+
+Tabular pearls are especially useful for comparing different options or classifications.
+
+### Short Explanation
+Explaination on why correct option is correct (2-3 sentences).
+
+Key Points: List of 2-4 bullet points summarizing the main takeaways (use bold or italics for highlighting keywords)
+
+### Final Answer
+Final answer: <Option Letter>
+
+### References Used
+
+list references from above tool calls with book name, chapter, page number
+";
+
     private static async Task<int> Main(string[] args)
     {
         // Load environment variables from .env file if it exists
@@ -96,7 +159,7 @@ internal class Program
 
             if (options.RunGrok)
             {
-                var model = options.Model ?? "x-ai/grok-4-fast"; // "openai/gpt-5.1-codex-mini""x-ai/grok-4-fast";
+                var model = options.Model ?? "openrouter/bert-nebulon-alpha"; // "openai/gpt-5.1-codex-mini""x-ai/grok-4.1-fast";
                 Console.WriteLine($"=== Agentic Loop Example with {model} ===\n");
                 await RunAgenticExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
                 return 0;
@@ -104,7 +167,7 @@ internal class Program
 
             if (options.RunBackground)
             {
-                var model = options.Model ?? "x-ai/grok-4-fast";
+                var model = options.Model ?? "openai/gpt-5.1-codex-mini"; // "qwen/qwen3-235b-a22b-thinking-2507"; // "x-ai/grok-4.1-fast"; // "openrouter/bert-nebulon-alpha";
                 Console.WriteLine($"=== Background Agentic Loop Example with {model} ===\n");
                 await RunBackgroundAgenticLoopExample(options.Prompt, model, options.Temperature, options.MaxTurns, options.Verbose);
                 return 0;
@@ -795,6 +858,12 @@ internal class Program
     {
         try
         {
+            prompt = @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
+    A. 6 drugs for 9 months and 4 drugs for 18 months
+    B. 7 drugs for 4-6 months and 4 drugs for 5 months
+    C. 5 drugs for 6 months and 4 drugs for 14-16 months
+    D. 5 drugs for 2 months, 4 drugs for one month and 3 drugs for 5 months";
+
             var services = new ServiceCollection();
             _ = services.AddLogging(builder => builder.AddSerilog());
 
@@ -804,7 +873,7 @@ internal class Program
             var serviceProvider = services.BuildServiceProvider();
             var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
             var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
-            var logger = serviceProvider.GetRequiredService<ILogger<BackgroundAgenticLoop>>();
+            var logger = serviceProvider.GetRequiredService<ILogger<MultiTurnAgentLoop>>();
 
             // Resolve the model
             var resolution = await modelResolver.ResolveProviderAsync(modelId);
@@ -821,50 +890,63 @@ internal class Program
             // Create function registry with tools
             var registry = new FunctionRegistry();
 
-            // Add built-in demo tool
-            _ = registry.AddFunction(
-                new FunctionContract
-                {
-                    Name = "get_weather",
-                    Description = "Get the current weather for a location",
-                    Parameters =
-                    [
-                        new FunctionParameterContract
-                        {
-                            Name = "location",
-                            Description = "The city name",
-                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                            IsRequired = true,
-                        },
-                    ],
-                },
-                async (args) =>
-                {
-                    await Task.Delay(100);
-                    return System.Text.Json.JsonSerializer.Serialize(new { location = args, temperature = 72, condition = "sunny" });
-                },
-                providerName: "Demo"
-            );
+            // Add WeatherTool via IFunctionProvider (same tool used by ClaudeAgentSdkBackgroundLoop)
+            var weatherTool = new WeatherTool();
+            _ = registry.AddProvider(weatherTool);
 
-            Console.WriteLine("Note: Using built-in demo tools. For MCP integration, use --claude-background mode.\n");
+            // Load MCP servers from .mcp.json and add their tools to the registry
+            var mcpConfigLoaderLogger = serviceProvider.GetRequiredService<ILogger<McpConfigLoader>>();
+            await using var mcpConfigLoader = new McpConfigLoader(mcpConfigLoaderLogger);
+            var mcpClients = await mcpConfigLoader.LoadFromFileAsync(".mcp.json");
+
+            if (mcpClients.Count > 0)
+            {
+                Console.WriteLine($"✓ Loaded {mcpClients.Count} MCP server(s) from .mcp.json");
+                var mcpProviderLogger = serviceProvider.GetService<ILogger<AchieveAi.LmDotnetTools.McpMiddleware.McpClientFunctionProvider>>();
+                _ = await registry.AddMcpClientsAsync(
+                    new Dictionary<string, ModelContextProtocol.Client.McpClient>(mcpClients),
+                    providerName: "McpServers",
+                    logger: mcpProviderLogger);
+            }
+
+            // Build and display registered functions for debugging
+            var (contracts, handlers) = registry.Build();
+            Console.WriteLine($"✓ Registered {contracts.Count()} function(s) via FunctionRegistry:");
+            foreach (var contract in contracts)
+            {
+                Console.WriteLine($"    - {contract.Name}: {contract.Description}");
+            }
+
+            Console.WriteLine();
 
             // Create the base provider agent (no middleware - BackgroundAgenticLoop owns the stack)
             var providerAgent = agentFactory.CreateStreamingAgent(resolution);
 
             // Create default options with resolved model configuration
+            // Enable thinking/reasoning with temperature=1.0 (required for reasoning models)
             var defaultOptions = new GenerateReplyOptions
             {
                 ModelId = resolution.EffectiveModelName,
-                Temperature = temperature,
+                Temperature = 1.0f, // Required for thinking models
+                ExtraProperties = new Dictionary<string, object?>
+                {
+                    ["reasoning"] = new Dictionary<string, object?>
+                    {
+                        ["effort"] = "medium",
+                        ["max_tokens"] = 4096,
+                    },
+                    ["parallel_tool_calls"] = true,
+                }.ToImmutableDictionary(),
             };
 
-            // Create the background loop - it builds the full middleware stack internally:
+            // Create the multi-turn agent loop - it builds the full middleware stack internally:
             // MessageTransformation -> JsonFragmentUpdate -> MessageUpdateJoiner -> ToolCallInjection
             var threadId = Guid.NewGuid().ToString("N");
-            await using var loop = new BackgroundAgenticLoop(
+            await using var loop = new MultiTurnAgentLoop(
                 providerAgent,
                 registry,
                 threadId,
+                systemPrompt: DefaultSystemPrompt,
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
                 logger: logger);
@@ -911,8 +993,28 @@ internal class Program
                         case ToolCallMessage toolCall:
                             Console.WriteLine($"\n[Tool Call] {toolCall.FunctionName}({toolCall.FunctionArgs})");
                             break;
+                        case ToolCallUpdateMessage toolCall:
+                            if (string.IsNullOrWhiteSpace(toolCall.FunctionArgs))
+                            {
+                                Console.Write($"\n[Tool Call] {toolCall.FunctionName} - ");
+                            }
+                            else
+                            {
+                                Console.Write(toolCall.FunctionArgs);
+                            }
+                            break;
                         case ToolCallResultMessage toolResult:
                             Console.WriteLine($"[Tool Result] {toolResult.Result[..Math.Min(100, toolResult.Result.Length)]}...");
+                            break;
+                        case ReasoningMessage reasoningMsg when !string.IsNullOrEmpty(reasoningMsg.Reasoning):
+                            Console.ForegroundColor = ConsoleColor.DarkYellow;
+                            Console.WriteLine($"\n[Thinking] {reasoningMsg.Reasoning}");
+                            Console.ResetColor();
+                            break;
+                        case ReasoningUpdateMessage reasoningUpdate when !string.IsNullOrEmpty(reasoningUpdate.Reasoning):
+                            Console.ForegroundColor = ConsoleColor.DarkYellow;
+                            Console.Write(reasoningUpdate.Reasoning);
+                            Console.ResetColor();
                             break;
 
                         default:
@@ -1046,6 +1148,12 @@ internal class Program
     {
         try
         {
+            prompt = @"Which of the following is the most appropriate treatment for a patient with tuberculosis in which mycobacterium is resistant to both isoniazid and rifampicin?
+    A. 6 drugs for 9 months and 4 drugs for 18 months
+    B. 7 drugs for 4-6 months and 4 drugs for 5 months
+    C. 5 drugs for 6 months and 4 drugs for 14-16 months
+    D. 5 drugs for 2 months, 4 drugs for one month and 3 drugs for 5 months";
+
             var services = new ServiceCollection();
             _ = services.AddLogging(builder => builder.AddSerilog());
 
@@ -1054,7 +1162,7 @@ internal class Program
 
             var serviceProvider = services.BuildServiceProvider();
             var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-            var logger = loggerFactory.CreateLogger<ClaudeAgentSdkBackgroundLoop>();
+            var logger = loggerFactory.CreateLogger<ClaudeAgentLoop>();
 
             // Configure ClaudeAgentSdkOptions
             var claudeOptions = new ClaudeAgentSdkOptions
@@ -1075,7 +1183,7 @@ internal class Program
                 try
                 {
                     var mcpJson = await File.ReadAllTextAsync(mcpConfigPath);
-                    var mcpConfig = System.Text.Json.JsonSerializer.Deserialize<AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.McpConfiguration>(mcpJson);
+                    var mcpConfig = JsonSerializer.Deserialize<McpConfiguration>(mcpJson);
 
                     if (mcpConfig?.McpServers != null)
                     {
@@ -1132,13 +1240,13 @@ internal class Program
                 Temperature = temperature,
             };
 
-            // Create the ClaudeAgentSdk background loop
+            // Create the ClaudeAgentLoop
             var threadId = Guid.NewGuid().ToString("N");
-            await using var loop = new ClaudeAgentSdkBackgroundLoop(
+            await using var loop = new ClaudeAgentLoop(
                 claudeOptions,
                 mcpServers,
                 threadId,
-                systemPrompt: @"You're a medical doctor, acting  as professor in medical college. When student asks question you'll first check the NeetPG books for references and finally check the web for answers. Once you've collected the information then answer student's question.",
+                systemPrompt: DefaultSystemPrompt,
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: maxTurns,
                 logger: logger,
@@ -1195,7 +1303,7 @@ internal class Program
             // Start the background loop
             var loopTask = loop.RunAsync(cts.Token);
 
-            Console.WriteLine("ClaudeAgentSdk background loop started. Type messages to send, or 'exit' to quit.\n");
+            Console.WriteLine("ClaudeAgentLoop started. Type messages to send, or 'exit' to quit.\n");
 
             // Helper to send and wait
             async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
@@ -1254,7 +1362,7 @@ internal class Program
             }
 
             // Stop the loop
-            Console.WriteLine("\nStopping ClaudeAgentSdk background loop...");
+            Console.WriteLine("\nStopping ClaudeAgentLoop...");
             await cts.CancelAsync();
 
             try
@@ -1270,11 +1378,11 @@ internal class Program
             Console.WriteLine("Stopping .NET MCP server...");
             await mcpServer.DisposeAsync();
 
-            Console.WriteLine("\n✓ ClaudeAgentSdk background loop example completed");
+            Console.WriteLine("\n✓ ClaudeAgentLoop example completed");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"✗ ClaudeAgentSdk background loop example failed: {ex.Message}");
+            Console.WriteLine($"✗ ClaudeAgentLoop example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }

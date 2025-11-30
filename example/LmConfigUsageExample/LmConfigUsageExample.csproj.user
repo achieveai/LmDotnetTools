@@ -4,6 +4,6 @@
     <DebuggerFlavor>ProjectDebugger</DebuggerFlavor>
   </PropertyGroup>
   <PropertyGroup>
-    <ActiveDebugProfile>Background Agentic Loop</ActiveDebugProfile>
+    <ActiveDebugProfile>ClaudeAgentSDK Background Loop</ActiveDebugProfile>
   </PropertyGroup>
 </Project>
