@@ -272,17 +272,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             // Yield messages until run completes
             await foreach (var msg in outputChannel.Reader.ReadAllAsync(ct))
             {
-                // Filter to only messages for this run (or null RunId for backwards compatibility)
-                if (msg.RunId == targetRunId || msg.RunId == null)
-                {
-                    yield return msg;
+                yield return msg;
 
-                    // Check for run completion
-                    if (msg is RunCompletedMessage completed && completed.CompletedRunId == targetRunId)
-                    {
-                        Logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
-                        yield break;
-                    }
+                // Check for run completion
+                if (msg is RunCompletedMessage completed)
+                {
+                    Logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
+                    yield break;
                 }
             }
         }

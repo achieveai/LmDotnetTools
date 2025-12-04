@@ -140,11 +140,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             throw new InvalidOperationException("Client is not running. Call StartAsync first.");
         }
 
-        // Extract the last user message (claude-agent-sdk maintains its own conversation history)
-        // We only send the latest user input, ignoring previous messages
-        var lastUserMessage = messages.LastOrDefault(m => m.Role == Role.User);
+        // Get all user messages to combine text + images in a single turn
+        // (claude-agent-sdk maintains its own conversation history, so we only send current user input)
+        var userMessages = messages.Where(m => m.Role == Role.User).ToList();
 
-        if (lastUserMessage == null)
+        if (userMessages.Count == 0)
         {
             _logger?.LogWarning("No user message found in the message collection");
             yield break;
@@ -153,7 +153,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Convert to JSONL input format and send to stdin
         if (_stdinWriter != null)
         {
-            var inputWrapper = ConvertToInputMessage(lastUserMessage);
+            // Combine all user messages into a single InputMessage with multiple content blocks
+            var inputWrapper = ConvertToInputMessage(userMessages);
             var jsonLine = JsonSerializer.Serialize(inputWrapper, _jsonOptions);
 
             _logger?.LogDebug(
@@ -514,52 +515,55 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     }
 
     /// <summary>
-    ///     Convert IMessage to InputMessageWrapper for JSONL stdin format
-    ///     Supports both TextMessage and ImageMessage with base64 encoding
+    ///     Convert multiple IMessage instances to a single InputMessageWrapper for JSONL stdin format.
+    ///     Combines all messages into one InputMessage with multiple content blocks (text + images).
     /// </summary>
-    private static InputMessageWrapper ConvertToInputMessage(IMessage message)
+    internal static InputMessageWrapper ConvertToInputMessage(IEnumerable<IMessage> messages)
     {
         var contentBlocks = new List<InputContentBlock>();
 
-        switch (message)
+        foreach (var message in messages)
         {
-            case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
-                contentBlocks.Add(new InputTextContentBlock { Text = textMsg.Text });
-                break;
+            switch (message)
+            {
+                case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                    contentBlocks.Add(new InputTextContentBlock { Text = textMsg.Text });
+                    break;
 
-            case ImageMessage imageMsg:
-                // Convert BinaryData to base64 with proper media type
-                var imageBytes = imageMsg.ImageData.ToArray();
-                var base64Data = Convert.ToBase64String(imageBytes);
-                var mediaType = imageMsg.ImageData.MediaType ?? "image/jpeg";
+                case ImageMessage imageMsg:
+                    // Convert BinaryData to base64 with proper media type
+                    var imageBytes = imageMsg.ImageData.ToArray();
+                    var base64Data = Convert.ToBase64String(imageBytes);
+                    var mediaType = imageMsg.ImageData.MediaType ?? "image/jpeg";
 
-                contentBlocks.Add(
-                    new InputImageContentBlock
-                    {
-                        Source = new ImageSource
+                    contentBlocks.Add(
+                        new InputImageContentBlock
                         {
-                            Type = "base64",
-                            MediaType = mediaType,
-                            Data = base64Data,
-                        },
+                            Source = new ImageSource
+                            {
+                                Type = "base64",
+                                MediaType = mediaType,
+                                Data = base64Data,
+                            },
+                        }
+                    );
+                    break;
+
+                case ICanGetText textProvider:
+                    // Fallback for other message types that can provide text
+                    var text = textProvider.GetText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        contentBlocks.Add(new InputTextContentBlock { Text = text });
                     }
-                );
-                break;
 
-            case ICanGetText textProvider:
-                // Fallback for other message types that can provide text
-                var text = textProvider.GetText();
-                if (!string.IsNullOrEmpty(text))
-                {
-                    contentBlocks.Add(new InputTextContentBlock { Text = text });
-                }
+                    break;
 
-                break;
-
-            default:
-                throw new NotSupportedException(
-                    $"Message type {message.GetType().Name} is not supported for claude-agent-sdk input"
-                );
+                default:
+                    // Skip unsupported message types (e.g., assistant messages in multi-turn history)
+                    // This allows the caller to pass all messages without pre-filtering
+                    break;
+            }
         }
 
         return new InputMessageWrapper

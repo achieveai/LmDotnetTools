@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
@@ -507,7 +508,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     private class OpenAIEmbeddingData
     {
         public string Object { get; set; } = "";
-        public object Embedding { get; } = new();
+        public JsonElement Embedding { get; init; }
         public int Index { get; set; }
     }
 
