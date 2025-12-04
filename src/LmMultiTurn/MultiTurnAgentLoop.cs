@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -38,6 +39,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <param name="maxTurnsPerRun">Maximum turns per run before stopping (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
@@ -48,8 +50,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
+        IConversationStore? store = null,
         ILogger<MultiTurnAgentLoop>? logger = null)
-        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, logger)
+        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);

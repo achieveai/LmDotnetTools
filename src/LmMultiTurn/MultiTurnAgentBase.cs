@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,9 +19,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #region Fields
 
     private readonly int _outputChannelCapacity;
+    private readonly int _inputChannelCapacity;
 
-    // Channels
-    private readonly Channel<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> _inputChannel;
+    // Channels - _inputChannel is recreatable to support restart
+    private Channel<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> _inputChannel;
+    private readonly object _channelLock = new();
     private readonly ConcurrentDictionary<string, Channel<IMessage>> _outputSubscribers = new();
 
     // State
@@ -68,6 +71,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// </summary>
     protected ConcurrentQueue<(UserInput Input, RunAssignment Assignment)> PendingInjections { get; } = new();
 
+    /// <summary>
+    /// Optional persistence store for conversation state.
+    /// </summary>
+    protected IConversationStore? Store { get; }
+
     #endregion
 
     #region Public Properties
@@ -103,6 +111,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="maxTurnsPerRun">Maximum turns per run (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
     protected MultiTurnAgentBase(
         string threadId,
@@ -111,6 +120,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
+        IConversationStore? store = null,
         ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(threadId);
@@ -118,17 +128,43 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ThreadId = threadId;
         SystemPrompt = systemPrompt;
         MaxTurnsPerRun = maxTurnsPerRun;
+        _inputChannelCapacity = inputChannelCapacity;
         _outputChannelCapacity = outputChannelCapacity;
         DefaultOptions = defaultOptions ?? new GenerateReplyOptions();
+        Store = store;
         Logger = logger ?? NullLogger.Instance;
 
-        _inputChannel = Channel.CreateBounded<(UserInput, TaskCompletionSource<RunAssignment>)>(
-            new BoundedChannelOptions(inputChannelCapacity)
+        // Create initial channel
+        _inputChannel = CreateInputChannel();
+    }
+
+    /// <summary>
+    /// Creates a new input channel with the configured capacity.
+    /// </summary>
+    private Channel<(UserInput, TaskCompletionSource<RunAssignment>)> CreateInputChannel()
+    {
+        return Channel.CreateBounded<(UserInput, TaskCompletionSource<RunAssignment>)>(
+            new BoundedChannelOptions(_inputChannelCapacity)
             {
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
                 SingleWriter = false,
             });
+    }
+
+    /// <summary>
+    /// Ensures the input channel exists and is usable. Recreates if completed/closed.
+    /// </summary>
+    private void EnsureChannelExists()
+    {
+        lock (_channelLock)
+        {
+            if (_inputChannel.Reader.Completion.IsCompleted)
+            {
+                Logger.LogDebug("Recreating input channel (previous was completed)");
+                _inputChannel = CreateInputChannel();
+            }
+        }
     }
 
     #endregion
@@ -137,6 +173,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     /// <summary>
     /// Adds a message to the conversation history in a thread-safe manner.
+    /// If a persistence store is configured, the message is also persisted (fire-and-forget).
     /// </summary>
     /// <param name="message">The message to add</param>
     protected void AddToHistory(IMessage message)
@@ -144,6 +181,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         lock (_historyLock)
         {
             ConversationHistory.Add(message);
+        }
+
+        // Fire-and-forget persistence
+        if (Store != null)
+        {
+            string? runId;
+            lock (_stateLock)
+            {
+                runId = _currentRunId;
+            }
+
+            if (runId != null)
+            {
+                _ = PersistMessageAsync(message, runId, CancellationToken.None);
+            }
         }
     }
 
@@ -175,6 +227,132 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         }
 
         return history;
+    }
+
+    /// <summary>
+    /// Restores conversation history from the store by appending loaded messages.
+    /// </summary>
+    protected void RestoreHistory(IReadOnlyList<IMessage> messages)
+    {
+        lock (_historyLock)
+        {
+            ConversationHistory.AddRange(messages);
+        }
+    }
+
+    #endregion
+
+    #region Persistence
+
+    /// <summary>
+    /// Persists a message to the store. Called by AddToHistory when a store is configured.
+    /// Override to customize persistence behavior.
+    /// </summary>
+    /// <param name="message">The message to persist</param>
+    /// <param name="runId">The current run ID</param>
+    /// <param name="ct">Cancellation token</param>
+    protected virtual async Task PersistMessageAsync(IMessage message, string runId, CancellationToken ct)
+    {
+        if (Store == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+            await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist message");
+        }
+    }
+
+    /// <summary>
+    /// Updates thread metadata in the store. Called after each run completes.
+    /// Override to include additional metadata (e.g., session mappings).
+    /// </summary>
+    /// <param name="ct">Cancellation token</param>
+    protected virtual async Task UpdateMetadataAsync(CancellationToken ct)
+    {
+        if (Store == null)
+        {
+            return;
+        }
+
+        try
+        {
+            string? latestRun;
+            lock (_stateLock)
+            {
+                latestRun = _latestRunId;
+            }
+
+            var metadata = new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                CurrentRunId = null, // Only save when run is complete
+                LatestRunId = latestRun,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+
+            await Store.SaveMetadataAsync(ThreadId, metadata, ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to update thread metadata");
+        }
+    }
+
+    /// <summary>
+    /// Recovers conversation state from the persistence store.
+    /// Call this before starting the agent to restore previous conversation.
+    /// </summary>
+    /// <param name="ct">Cancellation token</param>
+    /// <returns>True if state was recovered, false if no stored state exists</returns>
+    public virtual async Task<bool> RecoverAsync(CancellationToken ct = default)
+    {
+        if (Store == null)
+        {
+            throw new InvalidOperationException("No persistence store configured");
+        }
+
+        // Load metadata first
+        var metadata = await Store.LoadMetadataAsync(ThreadId, ct);
+        if (metadata == null)
+        {
+            Logger.LogDebug("No stored metadata found for thread {ThreadId}", ThreadId);
+            return false;
+        }
+
+        // Load messages
+        var persistedMessages = await Store.LoadMessagesAsync(ThreadId, ct);
+        if (persistedMessages.Count == 0)
+        {
+            Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
+            return false;
+        }
+
+        // Convert persisted messages back to IMessages
+        var messages = MessagePersistenceConverter.FromPersistedMessages(persistedMessages);
+
+        // Restore history
+        RestoreHistory(messages);
+
+        // Restore state
+        lock (_stateLock)
+        {
+            _latestRunId = metadata.LatestRunId;
+        }
+
+        Logger.LogInformation(
+            "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
+            messages.Count,
+            ThreadId,
+            metadata.LatestRunId);
+
+        return true;
     }
 
     #endregion
@@ -385,6 +563,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             throw new InvalidOperationException("Loop is already running");
         }
 
+        // Ensure channel exists (recreate if it was completed by previous stop)
+        EnsureChannelExists();
+
         OnBeforeRun();
 
         _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -408,8 +589,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // Signal cancellation
         await _internalCts.CancelAsync();
 
-        // Complete input channel
-        _ = _inputChannel.Writer.TryComplete();
+        // NOTE: We intentionally do NOT complete the input channel here
+        // to allow restart via RunAsync. The channel will be recreated if needed.
+        // The cancellation token signals the loop to exit cleanly.
 
         // Wait for loop to finish
         var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
@@ -426,7 +608,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             // Expected
         }
 
-        Logger.LogInformation("{AgentType} stopped", GetType().Name);
+        // Clean up for potential restart
+        _runTask = null;
+        _internalCts?.Dispose();
+        _internalCts = null;
+
+        Logger.LogInformation("{AgentType} stopped, ready for restart", GetType().Name);
     }
 
     /// <inheritdoc />
@@ -444,6 +631,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _internalCts?.Dispose();
 
         OnDispose();
+
+        // Complete input channel on disposal (final cleanup - no restart possible)
+        _ = _inputChannel.Writer.TryComplete();
 
         // Close all subscriber channels
         foreach (var (_, channel) in _outputSubscribers)
@@ -586,6 +776,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 _latestRunId = runId;
                 _currentRunId = null;
             }
+
+            // Persist metadata after run completes
+            await UpdateMetadataAsync(ct);
         }
     }
 

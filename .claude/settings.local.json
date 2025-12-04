@@ -34,7 +34,15 @@
       "Bash(dir:*)",
       "Bash(cd:*)",
       "Bash(xargs cat:*)",
-      "Bash(dotnet tool install:*)"
+      "Bash(dotnet tool install:*)",
+      "Bash(src/LmCore/Middleware/FunctionDescriptor.cs )",
+      "Bash(src/McpServer.AspNetCore/McpFunctionProviderServer.cs )",
+      "Bash(src/McpServer.AspNetCore/McpFunctionProviderServerOptions.cs )",
+      "Bash(src/McpServer.AspNetCore/StatelessFunctionProviderWrapper.cs )",
+      "Bash(src/McpServer.AspNetCore/Extensions/ServiceCollectionExtensions.cs )",
+      "Bash(src/McpServer.AspNetCore/README.md )",
+      "Bash(tests/McpServer.AspNetCore.Tests/McpFunctionProviderServerTests.cs )",
+      "Bash(example/LmConfigUsageExample/Program.cs)"
     ],
     "deny": [],
     "ask": [],

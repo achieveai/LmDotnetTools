@@ -3,6 +3,9 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -23,6 +26,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private readonly Dictionary<string, McpServerConfig> _mcpServers;
     private readonly ILoggerFactory? _loggerFactory;
     private readonly Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? _clientFactory;
+    private readonly SemaphoreSlim _restartLock = new(1, 1);
 
     private ClaudeAgentSdkAgent? _agent;
     private IClaudeAgentSdkClient? _client;
@@ -38,6 +42,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <param name="maxTurnsPerRun">Maximum turns per run (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
     /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
     /// <param name="clientFactory">Optional factory for creating ClaudeAgentSdkClient (for testing/mocking)</param>
@@ -50,10 +55,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
+        IConversationStore? store = null,
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? clientFactory = null)
-        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, logger)
+        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
@@ -106,6 +112,68 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     protected override void OnDispose()
     {
         _agent?.Dispose();
+        _restartLock.Dispose();
+    }
+
+    /// <summary>
+    /// Stop the current run AND the underlying claude-agent-sdk process.
+    /// Can restart via SendAsync which will trigger RunAsync.
+    /// </summary>
+    /// <param name="ct">Cancellation token</param>
+    public async Task StopProcessAsync(CancellationToken ct = default)
+    {
+        await _restartLock.WaitAsync(ct);
+        try
+        {
+            Logger.LogInformation("Stopping process and run loop...");
+
+            // First stop the run loop
+            await StopAsync();
+
+            // Then shutdown the client process gracefully
+            if (_client != null)
+            {
+                await _client.ShutdownAsync(TimeSpan.FromSeconds(10), ct);
+            }
+
+            Logger.LogInformation("Process stopped, ready for restart via SendAsync");
+        }
+        finally
+        {
+            _restartLock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask<RunAssignment> SendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default)
+    {
+        await _restartLock.WaitAsync(ct);
+        try
+        {
+            // Auto-restart if client was stopped but we have a previous request
+            if (_client is { IsRunning: false, LastRequest: not null })
+            {
+                Logger.LogInformation("Client not running, restarting process...");
+                await _client.StartAsync(_client.LastRequest, ct);
+
+                // Also restart the run loop if needed
+                if (!IsRunning)
+                {
+                    Logger.LogInformation("Restarting run loop...");
+                    _ = RunAsync(ct);
+                }
+            }
+
+            return await base.SendAsync(messages, inputId, parentRunId, ct);
+        }
+        finally
+        {
+            _restartLock.Release();
+        }
     }
 
     /// <inheritdoc />
