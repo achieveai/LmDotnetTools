@@ -1,7 +1,12 @@
+using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using FluentAssertions;
 using McpServer.AspNetCore.Sample.Tools;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -24,6 +29,29 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         _output = output;
     }
 
+    /// <summary>
+    /// Creates an MCP server using DI pattern with the specified function providers.
+    /// </summary>
+    private static McpFunctionProviderServer CreateServer(
+        IEnumerable<IFunctionProvider> providers,
+        Action<McpFunctionProviderServerOptions>? configure = null)
+    {
+        var services = new ServiceCollection();
+
+        // Register function providers
+        foreach (var provider in providers)
+        {
+            _ = services.AddFunctionProvider(provider);
+        }
+
+        // Add the MCP server
+        _ = services.AddMcpFunctionProviderServer(configure);
+
+        // Build service provider and get the server
+        var sp = services.BuildServiceProvider();
+        return sp.GetRequiredService<McpFunctionProviderServer>();
+    }
+
     private static string ExtractTextContent(CallToolResult result)
     {
         if (result.Content == null || result.Content.Count == 0)
@@ -40,18 +68,13 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Create server with sample tools
-        _server = McpFunctionProviderServer.Create(
-            new IFunctionProvider[] {
+        // Create server with sample tools using DI
+        _server = CreateServer(
+            [
                 new WeatherTool(),
                 new CalculatorTool(),
                 new FileInfoTool()
-            },
-            configureLogging: logging =>
-            {
-                // Enable Information logging to debug tool execution
-                logging.AddConsole().SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information);
-            });
+            ]);
 
         // Start the server
         await _server.StartAsync();
@@ -59,7 +82,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         _output.WriteLine($"MCP Server started on port: {_server.Port}");
         _output.WriteLine($"MCP Endpoint: {_server.McpEndpointUrl}");
 
-        // Create MCP client using HTTP transport (renamed from SSE in ModelContextProtocol 0.4.0)
+        // Create MCP client using HTTP transport
         var transportOptions = new HttpClientTransportOptions
         {
             Endpoint = new Uri(_server.McpEndpointUrl!),
@@ -95,6 +118,8 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         _server.McpEndpointUrl.Should().NotBeNullOrEmpty();
 
         _output.WriteLine($"✓ Server started on dynamic port: {_server.Port}");
+
+        await Task.CompletedTask;
     }
 
     [Fact]
@@ -255,7 +280,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task Server_Should_Dispose_Cleanly()
     {
         // Arrange
-        var server = McpFunctionProviderServer.Create(new[] { new WeatherTool() });
+        var server = CreateServer([new WeatherTool()]);
         await server.StartAsync();
         var port = server.Port;
 
@@ -294,10 +319,10 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task Multiple_Servers_Should_Get_Different_Ports()
     {
         // Arrange & Act
-        var server1 = McpFunctionProviderServer.Create(new[] { new WeatherTool() });
+        var server1 = CreateServer([new WeatherTool()]);
         await server1.StartAsync();
 
-        var server2 = McpFunctionProviderServer.Create(new[] { new CalculatorTool() });
+        var server2 = CreateServer([new CalculatorTool()]);
         await server2.StartAsync();
 
         try

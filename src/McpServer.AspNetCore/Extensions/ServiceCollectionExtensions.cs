@@ -1,5 +1,11 @@
+using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 
@@ -60,6 +66,60 @@ public static class ServiceCollectionExtensions
         IFunctionProvider provider)
     {
         services.AddSingleton(provider);
+        return services;
+    }
+
+    /// <summary>
+    /// Adds MCP server as a singleton IHostedService integrated with the host's DI container.
+    /// The server lifecycle is managed by the AspNetCore host.
+    /// The server instance can be injected into any service via DI.
+    /// </summary>
+    /// <param name="services">The service collection</param>
+    /// <param name="configure">Optional configuration action</param>
+    /// <returns>The service collection for chaining</returns>
+    public static IServiceCollection AddMcpFunctionProviderServer(
+        this IServiceCollection services,
+        Action<McpFunctionProviderServerOptions>? configure = null)
+    {
+        // Register options
+        _ = services.Configure(configure ?? (_ => { }));
+
+        // Register McpFunctionProviderServer as SINGLETON - injectable across all scopes
+        _ = services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<McpFunctionProviderServerOptions>>().Value;
+            var providers = sp.GetServices<IFunctionProvider>();
+
+            // Filter stateful functions if configured
+            if (!options.IncludeStatefulFunctions)
+            {
+                providers = providers.Select(p => new StatelessFunctionProviderWrapper(p));
+            }
+
+            // Build WebApplication
+            var builder = WebApplication.CreateBuilder();
+            _ = builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, options.Port));
+            _ = builder.Logging.AddConsole().SetMinimumLevel(LogLevel.Warning);
+
+            foreach (var provider in providers)
+            {
+                _ = builder.Services.AddFunctionProvider(provider);
+            }
+
+            _ = builder.Services.AddMcpServerFromFunctionProviders();
+            _ = builder.Services.AddCors(c => c.AddDefaultPolicy(p =>
+                p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+
+            var app = builder.Build();
+            _ = app.UseCors();
+            _ = app.MapMcpFunctionProviders();
+
+            return new McpFunctionProviderServer(app);
+        });
+
+        // Register as hosted service (reuses the singleton instance)
+        _ = services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<McpFunctionProviderServer>());
+
         return services;
     }
 }

@@ -1,20 +1,17 @@
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.McpServer.AspNetCore;
 
 /// <summary>
-/// Disposable wrapper for an AspNetCore MCP server that exposes IFunctionProvider instances as MCP tools.
-/// Supports dynamic port allocation and proper cleanup.
+/// MCP server that exposes IFunctionProvider instances as MCP tools.
+/// Implements IHostedService for integration with AspNetCore host lifecycle.
+/// Register as singleton via AddMcpFunctionProviderServer() for injection across all scopes.
 /// </summary>
-public sealed class McpFunctionProviderServer : IAsyncDisposable
+public sealed class McpFunctionProviderServer : IHostedService, IAsyncDisposable
 {
     private readonly WebApplication _app;
     private readonly CancellationTokenSource _shutdownCts = new();
@@ -37,88 +34,28 @@ public sealed class McpFunctionProviderServer : IAsyncDisposable
     /// </summary>
     public string? McpEndpointUrl => BaseUrl != null ? $"{BaseUrl}/mcp" : null;
 
-    private McpFunctionProviderServer(WebApplication app)
+    /// <summary>
+    /// Creates a new MCP server with the specified WebApplication.
+    /// Use AddMcpFunctionProviderServer() extension method for DI registration.
+    /// </summary>
+    /// <param name="app">The configured WebApplication instance</param>
+    public McpFunctionProviderServer(WebApplication app)
     {
         _app = app ?? throw new ArgumentNullException(nameof(app));
     }
 
     /// <summary>
-    /// Creates a new MCP server with the specified function providers.
-    /// The server will use a dynamically allocated port.
-    /// </summary>
-    /// <param name="functionProviders">The function providers to register</param>
-    /// <param name="configureLogging">Optional action to configure logging</param>
-    /// <param name="configureServices">Optional action to configure additional services</param>
-    /// <returns>A new MCP server instance</returns>
-    public static McpFunctionProviderServer Create(
-        IEnumerable<IFunctionProvider> functionProviders,
-        Action<ILoggingBuilder>? configureLogging = null,
-        Action<IServiceCollection>? configureServices = null)
-    {
-        ArgumentNullException.ThrowIfNull(functionProviders);
-
-        var builder = WebApplication.CreateBuilder();
-
-        // Configure Kestrel to listen on a dynamic port (0 = OS will assign a free port)
-        builder.WebHost.ConfigureKestrel(options =>
-        {
-            options.Listen(System.Net.IPAddress.Loopback, 0); // Port 0 = dynamic allocation
-        });
-
-        // Configure logging
-        if (configureLogging != null)
-        {
-            builder.Logging.ClearProviders();
-            configureLogging(builder.Logging);
-        }
-        else
-        {
-            // Default: console logging with Warning level to reduce noise
-            builder.Logging.AddConsole().SetMinimumLevel(LogLevel.Warning);
-        }
-
-        // Register function providers
-        foreach (var provider in functionProviders)
-        {
-            builder.Services.AddFunctionProvider(provider);
-        }
-
-        // Add MCP server with function provider support
-        builder.Services.AddMcpServerFromFunctionProviders();
-
-        // Add CORS for development/testing
-        builder.Services.AddCors(options =>
-        {
-            options.AddDefaultPolicy(policy =>
-            {
-                policy.AllowAnyOrigin()
-                      .AllowAnyMethod()
-                      .AllowAnyHeader();
-            });
-        });
-
-        // Allow additional service configuration
-        configureServices?.Invoke(builder.Services);
-
-        var app = builder.Build();
-
-        // Enable CORS
-        app.UseCors();
-
-        // Map MCP endpoints
-        app.MapMcpFunctionProviders();
-
-        return new McpFunctionProviderServer(app);
-    }
-
-    /// <summary>
     /// Starts the MCP server asynchronously.
-    /// The server will run in the background until disposed.
+    /// The server will run in the background until stopped or disposed.
     /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A task that completes when the server has started</returns>
-    public async Task StartAsync()
+    public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // Link the provided cancellation token with our shutdown token
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
 
         // Start the server in the background
         _runTask = _app.RunAsync(_shutdownCts.Token);
@@ -133,12 +70,14 @@ public sealed class McpFunctionProviderServer : IAsyncDisposable
 
         while (addresses?.Addresses == null || addresses.Addresses.Count == 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (DateTime.UtcNow - startTime > timeout)
             {
                 throw new TimeoutException("Server failed to start within the timeout period");
             }
 
-            await Task.Delay(100);
+            await Task.Delay(100, cancellationToken);
             addresses = server.Features.Get<IServerAddressesFeature>();
         }
 
@@ -153,14 +92,15 @@ public sealed class McpFunctionProviderServer : IAsyncDisposable
     /// <summary>
     /// Stops the MCP server gracefully.
     /// </summary>
-    public async Task StopAsync()
+    /// <param name="cancellationToken">Cancellation token</param>
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (!_disposed && _runTask != null)
         {
-            _shutdownCts.Cancel();
+            await _shutdownCts.CancelAsync();
             try
             {
-                await _runTask;
+                await _runTask.WaitAsync(cancellationToken);
             }
             catch (OperationCanceledException)
             {

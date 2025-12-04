@@ -30,4 +30,11 @@ public record FunctionDescriptor
     ///     Provider name for debugging and conflict resolution
     /// </summary>
     public string ProviderName { get; init; } = "Unknown";
+
+    /// <summary>
+    ///     Indicates whether this function is stateful (requires per-call instance).
+    ///     Stateless functions can be safely reused across multiple LLM invocations.
+    ///     Default is false (stateless).
+    /// </summary>
+    public bool IsStateful { get; init; }
 }

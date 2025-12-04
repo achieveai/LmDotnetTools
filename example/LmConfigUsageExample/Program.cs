@@ -14,6 +14,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using CommandLine;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
@@ -1222,9 +1223,11 @@ list references from above tool calls with book name, chapter, page number
             // Start .NET MCP server hosting our weather tool
             // This demonstrates how Claude can call back into our .NET function via MCP HTTP protocol
             var weatherTool = new WeatherTool();
-            var mcpServer = McpFunctionProviderServer.Create(
-                [weatherTool],
-                configureLogging: logging => logging.AddSerilog());
+            var mcpServices = new ServiceCollection();
+            _ = mcpServices.AddFunctionProvider(weatherTool);
+            _ = mcpServices.AddMcpFunctionProviderServer();
+            var mcpServiceProvider = mcpServices.BuildServiceProvider();
+            var mcpServer = mcpServiceProvider.GetRequiredService<McpFunctionProviderServer>();
 
             await mcpServer.StartAsync();
             Console.WriteLine($"✓ Started .NET MCP server at: {mcpServer.McpEndpointUrl}");
