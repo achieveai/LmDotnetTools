@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 ///     Client interface for interacting with claude-agent-sdk CLI
 ///     Manages long-lived Node.js process for continuous agent interaction
 /// </summary>
-public interface IClaudeAgentSdkClient : IDisposable
+public interface IClaudeAgentSdkClient : IAsyncDisposable, IDisposable
 {
     /// <summary>
     ///     Whether the underlying process is currently running
@@ -18,6 +18,11 @@ public interface IClaudeAgentSdkClient : IDisposable
     ///     Information about the current session
     /// </summary>
     SessionInfo? CurrentSession { get; }
+
+    /// <summary>
+    ///     The last request used to start the client. Can be used for restart.
+    /// </summary>
+    ClaudeAgentSdkRequest? LastRequest { get; }
 
     /// <summary>
     ///     Start the long-lived Node.js process with initial configuration
@@ -37,4 +42,20 @@ public interface IClaudeAgentSdkClient : IDisposable
         IEnumerable<IMessage> messages,
         CancellationToken cancellationToken = default
     );
+
+    /// <summary>
+    ///     Send /exit command to gracefully terminate the interactive session.
+    ///     Only applicable in Interactive mode.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>True if exit command was sent successfully</returns>
+    Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    ///     Initiates graceful shutdown of the underlying process.
+    ///     Sends /exit command first, then closes stdin, waits for exit, then force kills if needed.
+    /// </summary>
+    /// <param name="timeout">Timeout for graceful shutdown. Defaults to 10 seconds.</param>
+    /// <param name="cancellationToken">Cancellation token to abort shutdown early</param>
+    Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default);
 }

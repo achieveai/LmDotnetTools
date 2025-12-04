@@ -29,11 +29,18 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     private readonly JsonlStreamParser _parser;
     private bool _disposed;
 
+    // Process and stream management
     private Process? _process;
     private StreamReader? _stderrReader;
     private StreamWriter? _stdinWriter;
     private StreamReader? _stdoutReader;
     private string? _systemPromptTempFile;
+
+    // Shutdown and lifecycle management
+    private Task? _stderrMonitorTask;
+    private CancellationTokenSource? _shutdownCts;
+    private volatile int _state; // 0=NotStarted, 1=Starting, 2=Running, 3=ShuttingDown, 4=Stopped
+    private readonly SemaphoreSlim _operationLock = new(1, 1);
 
     public ClaudeAgentSdkClient(ClaudeAgentSdkOptions options, ILogger<ClaudeAgentSdkClient>? logger = null)
     {
@@ -45,87 +52,120 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     public bool IsRunning => _process != null && !_process.HasExited;
     public SessionInfo? CurrentSession { get; private set; }
 
+    /// <summary>
+    ///     The last request used to start the client. Can be used for restart.
+    /// </summary>
+    public ClaudeAgentSdkRequest? LastRequest { get; private set; }
+
     public async Task StartAsync(ClaudeAgentSdkRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (IsRunning)
+        // Store the request for potential restart
+        LastRequest = request;
+
+        // State transition: NotStarted/Stopped -> Starting
+        var currentState = Interlocked.CompareExchange(ref _state, 1, 0);
+        if (currentState != 0)
         {
-            throw new InvalidOperationException("Client is already running");
+            // Try from Stopped state (allows restart)
+            currentState = Interlocked.CompareExchange(ref _state, 1, 4);
+            if (currentState != 4)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot start: invalid state {currentState}. Expected NotStarted(0) or Stopped(4).");
+            }
         }
 
-        _logger?.LogInformation("Starting claude-agent-sdk CLI process with model {Model}", request.ModelId);
-
-        // 1. Locate Node.js
-        var nodePath = _options.NodeJsPath ?? FindNodeJs();
-        _logger?.LogDebug("Using Node.js at: {NodePath}", nodePath);
-
-        // 2. Locate CLI
-        var cliPath = _options.CliPath ?? FindClaudeAgentSdkCli();
-        _logger?.LogDebug("Using claude-agent-sdk CLI at: {CliPath}", cliPath);
-
-        // 3. Create system prompt temp file if provided
-        if (!string.IsNullOrEmpty(request.SystemPrompt))
+        try
         {
-            _systemPromptTempFile = Path.GetTempFileName();
-            await File.WriteAllTextAsync(_systemPromptTempFile, request.SystemPrompt, cancellationToken);
-            _logger?.LogDebug("Created system prompt temp file: {File}", _systemPromptTempFile);
+            _logger?.LogInformation("Starting claude-agent-sdk CLI process with model {Model}", request.ModelId);
+
+            // 1. Locate Node.js
+            var nodePath = _options.NodeJsPath ?? FindNodeJs();
+            _logger?.LogDebug("Using Node.js at: {NodePath}", nodePath);
+
+            // 2. Locate CLI
+            var cliPath = _options.CliPath ?? FindClaudeAgentSdkCli();
+            _logger?.LogDebug("Using claude-agent-sdk CLI at: {CliPath}", cliPath);
+
+            // 3. Create system prompt temp file if provided
+            if (!string.IsNullOrEmpty(request.SystemPrompt))
+            {
+                _systemPromptTempFile = Path.GetTempFileName();
+                await File.WriteAllTextAsync(_systemPromptTempFile, request.SystemPrompt, cancellationToken);
+                _logger?.LogDebug("Created system prompt temp file: {File}", _systemPromptTempFile);
+            }
+
+            // 4. Build CLI arguments
+            var args = BuildCliArguments(request);
+            _logger?.LogDebug("CLI arguments: node \"{CliPath}\" {Args}", cliPath, args);
+
+            // 5. Configure process
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = nodePath,
+                Arguments = $"\"{cliPath}\" {args}",
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory(),
+                // Use UTF-8 encoding for reading from Node.js process
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
+            };
+
+            // 6. Start process
+            _process = Process.Start(startInfo);
+            if (_process == null)
+            {
+                throw new InvalidOperationException("Failed to start claude-agent-sdk process");
+            }
+
+            // Use UTF-8 WITHOUT BOM for writing to Node.js process
+            // BOM would corrupt the first JSON line and cause parsing failures
+            _stdinWriter = new StreamWriter(
+                _process.StandardInput.BaseStream,
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+            {
+                AutoFlush = false, // We manually flush after writing
+            };
+            _stdoutReader = _process.StandardOutput;
+            _stderrReader = _process.StandardError;
+
+            // 7. Create shutdown CTS and start stderr monitor in background (tracked)
+            _shutdownCts = new CancellationTokenSource();
+            _stderrMonitorTask = Task.Run(() => MonitorStdErrWithPolling(_shutdownCts.Token));
+
+            // 8. Create session info
+            CurrentSession = new SessionInfo
+            {
+                SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
+                CreatedAt = DateTime.UtcNow,
+                ProjectRoot = _options.ProjectRoot,
+            };
+
+            _logger?.LogInformation(
+                "claude-agent-sdk CLI started successfully. SessionId: {SessionId}, PID: {ProcessId}",
+                CurrentSession.SessionId,
+                _process.Id
+            );
+
+            // Transition to Running state
+            var startState = Interlocked.CompareExchange(ref _state, 2, 1);
+            if (startState != 1)
+            {
+                throw new InvalidOperationException($"State changed during startup from 1 to {startState}");
+            }
         }
-
-        // 4. Build CLI arguments
-        var args = BuildCliArguments(request);
-        _logger?.LogDebug("CLI arguments: node \"{CliPath}\" {Args}", cliPath, args);
-
-        // 5. Configure process
-        var startInfo = new ProcessStartInfo
+        catch
         {
-            FileName = nodePath,
-            Arguments = $"\"{cliPath}\" {args}",
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory(),
-            // Use UTF-8 encoding for reading from Node.js process
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8,
-        };
-
-        // 6. Start process
-        _process = Process.Start(startInfo);
-        if (_process == null)
-        {
-            throw new InvalidOperationException("Failed to start claude-agent-sdk process");
+            // Reset to NotStarted on failure
+            _ = Interlocked.Exchange(ref _state, 0);
+            throw;
         }
-
-        // Use UTF-8 WITHOUT BOM for writing to Node.js process
-        // BOM would corrupt the first JSON line and cause parsing failures
-        _stdinWriter = new StreamWriter(
-            _process.StandardInput.BaseStream,
-            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
-        {
-            AutoFlush = false, // We manually flush after writing
-        };
-        _stdoutReader = _process.StandardOutput;
-        _stderrReader = _process.StandardError;
-
-        // 7. Start stderr monitor in background
-        _ = Task.Run(() => MonitorStdErr(cancellationToken), cancellationToken);
-
-        // 8. Create session info
-        CurrentSession = new SessionInfo
-        {
-            SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
-            CreatedAt = DateTime.UtcNow,
-            ProjectRoot = _options.ProjectRoot,
-        };
-
-        _logger?.LogInformation(
-            "claude-agent-sdk CLI started successfully. SessionId: {SessionId}, PID: {ProcessId}",
-            CurrentSession.SessionId,
-            _process.Id
-        );
     }
 
     public async IAsyncEnumerable<IMessage> SendMessagesAsync(
@@ -317,6 +357,186 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         GC.SuppressFinalize(this);
     }
 
+    /// <summary>
+    ///     Send /exit command to gracefully terminate the interactive session.
+    ///     Only applicable in Interactive mode.
+    /// </summary>
+    public async Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsRunning || _stdinWriter == null)
+        {
+            return false;
+        }
+
+        if (_options.Mode != ClaudeAgentSdkMode.Interactive)
+        {
+            _logger?.LogDebug("SendExitCommandAsync: Not in interactive mode, skipping");
+            return false;
+        }
+
+        try
+        {
+            _logger?.LogInformation("Sending /exit command to claude-agent-sdk");
+
+            var exitMsg = new InputMessageWrapper
+            {
+                Type = "user",
+                Message = new InputMessage
+                {
+                    Role = "user",
+                    Content = [new InputTextContentBlock { Text = "/exit" }],
+                },
+            };
+
+            var json = JsonSerializer.Serialize(exitMsg, _jsonOptions);
+            await _stdinWriter.WriteLineAsync(json);
+            await _stdinWriter.FlushAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to send /exit command");
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     Initiates graceful shutdown of the underlying process using layered approach:
+    ///     1. Send /exit command (graceful)
+    ///     2. Close stdin (signal EOF)
+    ///     3. Wait for process exit with timeout
+    ///     4. Force kill if still running
+    ///     5. Wait for stderr monitor task
+    /// </summary>
+    public async Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+        // State transition: Running -> ShuttingDown
+        var currentState = Interlocked.CompareExchange(ref _state, 3, 2);
+        if (currentState != 2)
+        {
+            _logger?.LogDebug("ShutdownAsync: Not in Running state (current: {State}), skipping", currentState);
+            return; // Not running or already shutting down
+        }
+
+        var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(10);
+        _logger?.LogInformation("Initiating graceful shutdown (timeout: {Timeout})", effectiveTimeout);
+
+        try
+        {
+            // Step 1: Send /exit command (graceful)
+            var exitSent = await SendExitCommandAsync(cancellationToken);
+            if (exitSent)
+            {
+                // Wait briefly for graceful exit
+                await Task.Delay(500, cancellationToken);
+                if (_process?.HasExited == true)
+                {
+                    _logger?.LogInformation("Process exited gracefully after /exit command");
+                    goto cleanup;
+                }
+            }
+
+            // Step 2: Cancel shutdown CTS + Close stdin
+            _shutdownCts?.Cancel();
+            _stdinWriter?.Close();
+            _stdinWriter = null;
+
+            // Step 3: Wait for process exit with timeout
+            if (_process != null && !_process.HasExited)
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(effectiveTimeout);
+
+                try
+                {
+                    await _process.WaitForExitAsync(timeoutCts.Token);
+                    _logger?.LogInformation("Process exited with code: {Code}", _process.ExitCode);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger?.LogWarning("Graceful shutdown timed out, force killing");
+                }
+            }
+
+            // Step 4: Force kill if still running
+            if (_process != null && !_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+                await Task.Delay(100, CancellationToken.None); // Brief wait for kill
+            }
+
+        cleanup:
+            // Step 5: Wait for stderr monitor task
+            if (_stderrMonitorTask != null)
+            {
+                try
+                {
+                    await _stderrMonitorTask.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Timeout or cancelled - acceptable
+                }
+            }
+
+            // Clean up temp file
+            if (_systemPromptTempFile != null && File.Exists(_systemPromptTempFile))
+            {
+                try
+                {
+                    File.Delete(_systemPromptTempFile);
+                    _logger?.LogDebug("Deleted system prompt temp file: {File}", _systemPromptTempFile);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Failed to delete temp file: {File}", _systemPromptTempFile);
+                }
+
+                _systemPromptTempFile = null;
+            }
+        }
+        finally
+        {
+            // Transition to Stopped state (allows restart)
+            _state = 4;
+            _logger?.LogInformation("Shutdown complete, state: Stopped");
+        }
+    }
+
+    /// <summary>
+    ///     Async disposal that performs graceful shutdown before cleanup.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            // Perform graceful shutdown first
+            await ShutdownAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Error during async shutdown");
+        }
+        finally
+        {
+            // Clean up resources
+            _shutdownCts?.Dispose();
+            _operationLock.Dispose();
+            _process?.Dispose();
+            _stdinWriter?.Dispose();
+            _stdoutReader?.Dispose();
+            _stderrReader?.Dispose();
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private string BuildCliArguments(ClaudeAgentSdkRequest request)
     {
         var args = new List<string>
@@ -487,7 +707,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
     }
 
-    private async Task MonitorStdErr(CancellationToken cancellationToken)
+    /// <summary>
+    ///     Polling-based stderr monitor that handles ReadLineAsync not respecting cancellation.
+    ///     Uses Task.WhenAny with timeout to allow periodic cancellation checks.
+    /// </summary>
+    private async Task MonitorStdErrWithPolling(CancellationToken cancellationToken)
     {
         if (_stderrReader == null)
         {
@@ -498,19 +722,39 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var line = await _stderrReader.ReadLineAsync(cancellationToken);
-                if (line == null)
-                {
-                    break;
-                }
+                // Use Task.WhenAny with timeout to handle ReadLineAsync not respecting cancellation
+                // This is a known .NET issue (dotnet/runtime#28583)
+                // ReadLineAsync returns ValueTask, convert to Task for WhenAny
+                var readTask = _stderrReader.ReadLineAsync(CancellationToken.None).AsTask();
+                var completedTask = await Task.WhenAny(
+                    readTask,
+                    Task.Delay(500, cancellationToken) // 500ms polling interval
+                );
 
-                // Log stderr output as warnings
-                _logger?.LogWarning("claude-agent-sdk stderr: {Line}", line);
+                if (completedTask == readTask)
+                {
+                    var line = await readTask;
+                    if (line == null)
+                    {
+                        break; // Stream ended
+                    }
+
+                    _logger?.LogWarning("claude-agent-sdk stderr: {Line}", line);
+                }
+                // If timeout, loop continues and checks cancellation token
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException and not TaskCanceledException)
+        catch (OperationCanceledException)
         {
-            _logger?.LogError(ex, "Error reading stderr");
+            // Expected during shutdown
+        }
+        catch (ObjectDisposedException)
+        {
+            // Stream closed during shutdown
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error in stderr monitor");
         }
     }
 

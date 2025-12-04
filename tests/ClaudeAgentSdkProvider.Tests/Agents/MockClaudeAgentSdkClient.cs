@@ -44,6 +44,9 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         StartCallCount++;
         RequestHistory.Add(request);
 
+        // Store the request for potential restart
+        LastRequest = request;
+
         // Validate launch parameters
         _validateRequest?.Invoke(request);
 
@@ -107,6 +110,38 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
     public bool IsRunning { get; private set; }
 
     public SessionInfo? CurrentSession { get; private set; }
+
+    public ClaudeAgentSdkRequest? LastRequest { get; private set; }
+
+    /// <summary>
+    ///     Number of times SendExitCommandAsync has been called
+    /// </summary>
+    public int ExitCommandCallCount { get; private set; }
+
+    /// <summary>
+    ///     Number of times ShutdownAsync has been called
+    /// </summary>
+    public int ShutdownCallCount { get; private set; }
+
+    public Task<bool> SendExitCommandAsync(CancellationToken cancellationToken = default)
+    {
+        ExitCommandCallCount++;
+        return Task.FromResult(IsRunning);
+    }
+
+    public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+        ShutdownCallCount++;
+        IsRunning = false;
+        return Task.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        IsRunning = false;
+        GC.SuppressFinalize(this);
+        return ValueTask.CompletedTask;
+    }
 
     public void Dispose()
     {
