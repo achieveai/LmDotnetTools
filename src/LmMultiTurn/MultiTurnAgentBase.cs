@@ -687,6 +687,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             Logger.LogError(ex, "Unexpected error in loop");
             throw;
         }
+        finally
+        {
+            OnAfterRun();
+        }
     }
 
     private async Task ProcessInputAsync(
@@ -803,6 +807,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// Called during disposal. Override to clean up implementation-specific resources.
     /// </summary>
     protected virtual void OnDispose()
+    {
+    }
+
+    /// <summary>
+    /// Called after the run loop stops. Override to perform cleanup after each run cycle.
+    /// </summary>
+    protected virtual void OnAfterRun()
     {
     }
 

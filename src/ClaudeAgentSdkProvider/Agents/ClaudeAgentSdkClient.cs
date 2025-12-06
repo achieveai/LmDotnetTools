@@ -72,8 +72,25 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             currentState = Interlocked.CompareExchange(ref _state, 1, 4);
             if (currentState != 4)
             {
-                throw new InvalidOperationException(
-                    $"Cannot start: invalid state {currentState}. Expected NotStarted(0) or Stopped(4).");
+                // Handle state desync - process exited but _state still Running
+                if (currentState == 2 && !IsRunning)
+                {
+                    _logger?.LogWarning(
+                        "State desync detected: _state=Running but process exited. Resetting to allow restart.");
+                    // Force state to Stopped, then try again
+                    _ = Interlocked.Exchange(ref _state, 4);
+                    currentState = Interlocked.CompareExchange(ref _state, 1, 4);
+                    if (currentState != 4)
+                    {
+                        throw new InvalidOperationException(
+                            $"Cannot start after state reset: state is {currentState}.");
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Cannot start: invalid state {currentState}. Expected NotStarted(0) or Stopped(4).");
+                }
             }
         }
 
@@ -720,20 +737,27 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         try
         {
+            // Track pending read task to avoid concurrent ReadLineAsync calls
+            // StreamReader doesn't support concurrent reads
+            Task<string?>? pendingReadTask = null;
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 // Use Task.WhenAny with timeout to handle ReadLineAsync not respecting cancellation
                 // This is a known .NET issue (dotnet/runtime#28583)
-                // ReadLineAsync returns ValueTask, convert to Task for WhenAny
-                var readTask = _stderrReader.ReadLineAsync(CancellationToken.None).AsTask();
+                // Reuse pending read task, or start a new one if none pending
+                pendingReadTask ??= _stderrReader.ReadLineAsync(CancellationToken.None).AsTask();
+
                 var completedTask = await Task.WhenAny(
-                    readTask,
+                    pendingReadTask,
                     Task.Delay(500, cancellationToken) // 500ms polling interval
                 );
 
-                if (completedTask == readTask)
+                if (completedTask == pendingReadTask)
                 {
-                    var line = await readTask;
+                    var line = await pendingReadTask;
+                    pendingReadTask = null; // Clear so next iteration starts fresh
+
                     if (line == null)
                     {
                         break; // Stream ended
@@ -741,7 +765,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                     _logger?.LogWarning("claude-agent-sdk stderr: {Line}", line);
                 }
-                // If timeout, loop continues and checks cancellation token
+                // If timeout, loop continues - pendingReadTask stays set for reuse
             }
         }
         catch (OperationCanceledException)

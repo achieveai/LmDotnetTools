@@ -78,6 +78,23 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <inheritdoc />
     protected override void OnBeforeRun()
     {
+        // In Interactive mode, reuse existing running client
+        if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive && _client?.IsRunning == true)
+        {
+            Logger.LogDebug("Interactive mode: Reusing existing running client");
+            return;
+        }
+
+        // Clean up existing client if present but not usable
+        if (_client != null)
+        {
+            Logger.LogInformation(
+                "Cleaning up existing client. Mode: {Mode}, IsRunning: {IsRunning}",
+                _claudeOptions.Mode,
+                _client.IsRunning);
+            DisposeClientResources();
+        }
+
         Logger.LogInformation(
             "Initializing ClaudeAgentSdk with {Count} MCP servers",
             _mcpServers.Count);
@@ -92,11 +109,47 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 config.Url);
         }
 
-        // Create loggers for internal components
+        CreateClientResources();
+    }
+
+    /// <inheritdoc />
+    protected override void OnDispose()
+    {
+        Logger.LogDebug("Disposing ClaudeAgentLoop resources");
+        DisposeClientResources();
+        _restartLock.Dispose();
+    }
+
+    /// <inheritdoc />
+    protected override void OnAfterRun()
+    {
+        // In OneShot mode, clean up client after run completes
+        if (_claudeOptions.Mode == ClaudeAgentSdkMode.OneShot)
+        {
+            Logger.LogDebug("OneShot mode: Cleaning up client after run");
+            DisposeClientResources();
+        }
+        // In Interactive mode, keep client alive for next run
+    }
+
+    /// <summary>
+    /// Disposes the agent and clears client references.
+    /// </summary>
+    private void DisposeClientResources()
+    {
+        _agent?.Dispose();
+        _agent = null;
+        _client = null;
+    }
+
+    /// <summary>
+    /// Creates new client and agent instances.
+    /// </summary>
+    private void CreateClientResources()
+    {
         var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
         var agentLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkAgent>();
 
-        // Create client using factory if provided, otherwise create directly
         _client = _clientFactory != null
             ? _clientFactory(_claudeOptions, clientLogger)
             : new ClaudeAgentSdkClient(_claudeOptions, clientLogger);
@@ -106,13 +159,6 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             client: _client,
             options: _claudeOptions,
             logger: agentLogger);
-    }
-
-    /// <inheritdoc />
-    protected override void OnDispose()
-    {
-        _agent?.Dispose();
-        _restartLock.Dispose();
     }
 
     /// <summary>
@@ -154,18 +200,20 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         await _restartLock.WaitAsync(ct);
         try
         {
-            // Auto-restart if client was stopped but we have a previous request
-            if (_client is { IsRunning: false, LastRequest: not null })
+            // Auto-restart only in Interactive mode when client died unexpectedly
+            if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive
+                && _client is { IsRunning: false, LastRequest: not null })
             {
-                Logger.LogInformation("Client not running, restarting process...");
+                Logger.LogInformation(
+                    "Interactive mode: Client stopped unexpectedly, restarting process...");
                 await _client.StartAsync(_client.LastRequest, ct);
+            }
 
-                // Also restart the run loop if needed
-                if (!IsRunning)
-                {
-                    Logger.LogInformation("Restarting run loop...");
-                    _ = RunAsync(ct);
-                }
+            // Start run loop if not running
+            if (!IsRunning)
+            {
+                Logger.LogInformation("Run loop not active, starting...");
+                _ = RunAsync(ct);
             }
 
             return await base.SendAsync(messages, inputId, parentRunId, ct);
