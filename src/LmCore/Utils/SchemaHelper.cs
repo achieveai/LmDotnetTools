@@ -84,9 +84,14 @@ public static class SchemaHelper
         // Transform the Items schema recursively if it exists (for array types)
         var transformedItems = schema.Items != null ? TransformSchemaUnions(schema.Items) : null;
 
+        // Fix enum type at root level: OpenAI requires type "string" for enums
+        var schemaType = schema.Enum?.Count > 0
+            ? JsonSchemaTypeHelper.ToType("string")
+            : TransformUnionType(schema.Type);
+
         return new JsonSchemaObject
         {
-            Type = TransformUnionType(schema.Type),
+            Type = schemaType,
             Description = schema.Description,
             Properties = transformedProperties,
             Required = requiredPropertyNames, // All properties are required after transformation
@@ -121,9 +126,16 @@ public static class SchemaHelper
         foreach (var kvp in properties)
         {
             var originalProperty = kvp.Value;
+
+            // Fix enum properties: OpenAI requires type "string" for enums
+            // .NET's GetJsonSchemaAsNode incorrectly generates type "object" for enums
+            var propertyType = originalProperty.Enum?.Count > 0
+                ? JsonSchemaTypeHelper.ToType("string")
+                : TransformUnionType(originalProperty.Type);
+
             var transformedProperty = originalProperty with
             {
-                Type = TransformUnionType(originalProperty.Type),
+                Type = propertyType,
                 Properties = TransformPropertiesDictionary(originalProperty.Properties),
                 Items = originalProperty.Items != null ? TransformSchemaUnions(originalProperty.Items) : null,
                 // Always set AdditionalProperties = false for OpenAI structured outputs
