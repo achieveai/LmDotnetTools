@@ -253,8 +253,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             ExtraProperties = extraPropertiesBuilder.ToImmutable(),
         };
 
-        // Build messages list with system prompt prepended (if configured)
-        var messagesToSend = GetMessagesWithSystemPrompt();
+        // Claude SDK CLI maintains its own conversation history internally,
+        // so we only send new messages from current input (not full history)
+        var messagesToSend = GetMessagesForClaudeSdk();
 
         // Stream responses from ClaudeAgentSdk
         // Note: The CLI handles tool execution via MCP - we just publish all messages
@@ -271,5 +272,24 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         // ClaudeAgentLoop doesn't support forking
         return false;
+    }
+
+    /// <summary>
+    /// Gets messages to send to Claude SDK CLI (only new user messages, not full history).
+    /// Claude SDK CLI maintains its own conversation history internally.
+    /// </summary>
+    private IEnumerable<IMessage> GetMessagesForClaudeSdk()
+    {
+        // System prompt goes first (if configured)
+        if (!string.IsNullOrEmpty(SystemPrompt))
+        {
+            yield return new TextMessage { Text = SystemPrompt, Role = Role.System };
+        }
+
+        // Only send new messages from current input (not full history)
+        foreach (var msg in CurrentInputMessages)
+        {
+            yield return msg;
+        }
     }
 }

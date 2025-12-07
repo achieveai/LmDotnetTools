@@ -72,6 +72,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected ConcurrentQueue<(UserInput Input, RunAssignment Assignment)> PendingInjections { get; } = new();
 
     /// <summary>
+    /// The messages from the current input being processed.
+    /// Available during ExecuteAgenticLoopAsync execution.
+    /// Returns empty list when not processing an input.
+    /// </summary>
+    protected IReadOnlyList<IMessage> CurrentInputMessages { get; private set; } = [];
+
+    /// <summary>
     /// Optional persistence store for conversation state.
     /// </summary>
     protected IConversationStore? Store { get; }
@@ -656,21 +663,42 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
-            await foreach (var (input, tcs) in _inputChannel.Reader.ReadAllAsync(ct))
+            while (!ct.IsCancellationRequested)
             {
+                // Wait for at least one input
+                if (!await _inputChannel.Reader.WaitToReadAsync(ct))
+                {
+                    break; // Channel completed
+                }
+
+                // Drain all pending inputs into a batch
+                var batch = DrainPendingInputs();
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
                 try
                 {
-                    await ProcessInputAsync(input, tcs, ct);
+                    await ProcessBatchedInputAsync(batch, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    _ = tcs.TrySetCanceled(ct);
+                    // Cancel all pending TCS
+                    foreach (var (_, tcs) in batch)
+                    {
+                        _ = tcs.TrySetCanceled(ct);
+                    }
+
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    Logger.LogError(ex, "Error processing input");
-                    _ = tcs.TrySetException(ex);
+                    Logger.LogError(ex, "Error processing batched input");
+                    foreach (var (_, tcs) in batch)
+                    {
+                        _ = tcs.TrySetException(ex);
+                    }
                 }
             }
         }
@@ -690,6 +718,66 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         finally
         {
             OnAfterRun();
+        }
+    }
+
+    /// <summary>
+    /// Drains all currently available inputs from the channel into a batch.
+    /// </summary>
+    private List<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> DrainPendingInputs()
+    {
+        var batch = new List<(UserInput, TaskCompletionSource<RunAssignment>)>();
+
+        while (_inputChannel.Reader.TryRead(out var item))
+        {
+            batch.Add(item);
+        }
+
+        if (batch.Count > 1)
+        {
+            Logger.LogInformation(
+                "Batched {Count} pending inputs into single run",
+                batch.Count);
+        }
+
+        return batch;
+    }
+
+    /// <summary>
+    /// Processes a batch of inputs as a single run.
+    /// All inputs share the same RunAssignment.
+    /// </summary>
+    private async Task ProcessBatchedInputAsync(
+        List<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> batch,
+        CancellationToken ct)
+    {
+        // Combine all messages from all inputs
+        var combinedMessages = new List<IMessage>();
+        string? firstInputId = null;
+        string? parentRunId = null;
+
+        foreach (var (input, _) in batch)
+        {
+            combinedMessages.AddRange(input.Messages);
+            firstInputId ??= input.InputId;
+            parentRunId ??= input.ParentRunId;
+        }
+
+        // Create a combined UserInput
+        var combinedInput = new UserInput(combinedMessages, firstInputId, parentRunId);
+
+        // Create a single TCS that will complete all batch TCS objects
+        var masterTcs = new TaskCompletionSource<RunAssignment>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Process the combined input
+        await ProcessInputAsync(combinedInput, masterTcs, ct);
+
+        // Get the assignment and complete all TCS objects with the same assignment
+        var assignment = await masterTcs.Task;
+        foreach (var (_, tcs) in batch)
+        {
+            _ = tcs.TrySetResult(assignment);
         }
     }
 
@@ -738,6 +826,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 AddToHistory(msg);
             }
 
+            // Set current input messages for subclasses that need only new messages
+            // (e.g., ClaudeAgentLoop where the CLI maintains its own history)
+            CurrentInputMessages = input.Messages.ToList().AsReadOnly();
+
             // Execute agentic turns (implementation-specific)
             var wasForked = await ExecuteAgenticLoopAsync(runId, generationId, ct);
 
@@ -775,6 +867,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         }
         finally
         {
+            // Clear current input messages
+            CurrentInputMessages = [];
+
             lock (_stateLock)
             {
                 _latestRunId = runId;
