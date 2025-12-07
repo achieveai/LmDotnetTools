@@ -134,6 +134,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 StandardErrorEncoding = System.Text.Encoding.UTF8,
             };
 
+            // Set environment variable for stream close timeout (in seconds)
+            startInfo.Environment["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300";
+
             // 6. Start process
             _process = Process.Start(startInfo);
             if (_process == null)
@@ -232,6 +235,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             }
         }
 
+        bool isWorking = false;
+
         // Read and parse stdout for the response
         await foreach (var line in ReadStdoutLinesAsync(cancellationToken))
         {
@@ -249,6 +254,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
                 foreach (var msg in eventMessages)
                 {
+                    isWorking = true;
                     yield return msg;
                 }
             }
@@ -286,13 +292,39 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Result events contain final execution summary with usage and cost info
             else if (jsonlEvent is ResultEvent resultEvent)
             {
-                _logger?.LogInformation(
-                    "Execution completed - Status: {Subtype}, Turns: {NumTurns}, Duration: {DurationMs}ms, Cost: ${TotalCostUsd:F4}",
-                    resultEvent.Subtype,
-                    resultEvent.NumTurns,
-                    resultEvent.DurationMs,
-                    resultEvent.TotalCostUsd
-                );
+                if (resultEvent.IsError)
+                {
+                    if (isWorking && _stdinWriter != null)
+                    {
+                        // Send "retry...." message to the agent
+                        _logger?.LogWarning(
+                            "Error encountered during agent execution: {Error}. Sending retry message to agent.",
+                            resultEvent.Result ?? "Unknown error"
+                        );
+
+                        isWorking = false;
+                        var jsonLine = JsonSerializer.Serialize(
+                            new InputMessageWrapper {
+                                Type = "user",
+                                Message = new InputMessage {
+                                    Role = "user",
+                                    Content = [new InputTextContentBlock {
+                                        Text = "retry...."
+                                    }]
+                                }
+                            }, _jsonOptions);
+
+                        _logger?.LogDebug(
+                            "Sending JSONL message to claude-agent-sdk: {Message}",
+                            jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine
+                        );
+
+                        await _stdinWriter.WriteLineAsync(jsonLine);
+                        await _stdinWriter.FlushAsync(cancellationToken);
+
+                        continue;
+                    }
+                }
 
                 if (resultEvent.PermissionDenials?.Count > 0)
                 {
