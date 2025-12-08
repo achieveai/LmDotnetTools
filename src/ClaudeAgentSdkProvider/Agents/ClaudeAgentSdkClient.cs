@@ -61,6 +61,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        _logger?.LogDebug(
+            "StartAsync called. Current state: {State}, IsRunning: {IsRunning}, HasProcess: {HasProcess}",
+            _state,
+            IsRunning,
+            _process != null);
+
         // Store the request for potential restart
         LastRequest = request;
 
@@ -76,7 +82,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 if (currentState == 2 && !IsRunning)
                 {
                     _logger?.LogWarning(
-                        "State desync detected: _state=Running but process exited. Resetting to allow restart.");
+                        "State desync detected: _state={State}, IsRunning={IsRunning}, HasExited={HasExited}. Resetting to allow restart.",
+                        currentState,
+                        IsRunning,
+                        _process?.HasExited);
                     // Force state to Stopped, then try again
                     _ = Interlocked.Exchange(ref _state, 4);
                     currentState = Interlocked.CompareExchange(ref _state, 1, 4);
@@ -194,6 +203,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     )
     {
         ArgumentNullException.ThrowIfNull(messages);
+
+        _logger?.LogDebug(
+            "SendMessagesAsync called. State: {State}, IsRunning: {IsRunning}, Mode: {Mode}",
+            _state,
+            IsRunning,
+            _options.Mode);
 
         if (!IsRunning)
         {
@@ -341,14 +356,15 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     "{Mode} mode: ResultEvent received, ending current turn",
                     _options.Mode
                 );
+
+                // In OneShot mode, clean up BEFORE returning from the iterator
+                if (_options.Mode == ClaudeAgentSdkMode.OneShot)
+                {
+                    await WaitForOneShotCompletionAsync(cancellationToken);
+                }
+
                 yield break;
             }
-        }
-
-        // In OneShot mode, when stdout ends, the process has exited
-        if (_options.Mode == ClaudeAgentSdkMode.OneShot)
-        {
-            _logger?.LogInformation("OneShot mode: Process completed and exited");
         }
     }
 
@@ -631,47 +647,16 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         return string.Join(" ", args);
     }
 
+    /// <summary>
+    ///     Returns the Node.js executable name. The OS will resolve it via PATH.
+    ///     If Node.js is not in PATH, Process.Start will throw a clear error.
+    /// </summary>
     private static string FindNodeJs()
     {
-        var nodeExe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "node.exe" : "node";
-
-        // Check PATH environment variable
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        foreach (var dir in pathDirs)
-        {
-            var nodePath = Path.Combine(dir, nodeExe);
-            if (File.Exists(nodePath))
-            {
-                return nodePath;
-            }
-        }
-
-        // Check common installation locations on Windows
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var possiblePaths = new[]
-            {
-                Path.Combine(programFiles, "nodejs", "node.exe"),
-                Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                    "nodejs",
-                    "node.exe"
-                ),
-            };
-
-            foreach (var path in possiblePaths)
-            {
-                if (File.Exists(path))
-                {
-                    return path;
-                }
-            }
-        }
-
-        throw new FileNotFoundException(
-            "Node.js not found. Please install Node.js or specify NodeJsPath in ClaudeAgentSdkOptions."
-        );
+        // Just return "node" and let the OS resolve it via PATH.
+        // On Windows, both "node" and "node.exe" work when the OS searches PATH.
+        // This is simpler and more reliable than manually searching directories.
+        return "node";
     }
 
     private static string FindClaudeAgentSdkCli()
@@ -812,6 +797,101 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             _logger?.LogError(ex, "Error in stderr monitor");
         }
+    }
+
+    /// <summary>
+    ///     Wait for the OneShot process to complete and clean up resources.
+    ///     Called after SendMessagesAsync completes in OneShot mode to ensure
+    ///     the process has terminated before returning control to the caller.
+    /// </summary>
+    private async Task WaitForOneShotCompletionAsync(CancellationToken cancellationToken)
+    {
+        if (_process == null || _options.Mode != ClaudeAgentSdkMode.OneShot)
+        {
+            return;
+        }
+
+        _logger?.LogDebug("OneShot mode: Waiting for process to terminate");
+
+        // Cancel stderr monitoring
+        _shutdownCts?.Cancel();
+
+        // Wait for process to exit (with reasonable timeout)
+        if (!_process.HasExited)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+
+            try
+            {
+                await _process.WaitForExitAsync(timeoutCts.Token);
+                _logger?.LogDebug("OneShot process exited with code: {Code}", _process.ExitCode);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Timeout occurred, not external cancellation
+                _logger?.LogWarning("OneShot process did not exit within timeout, force killing");
+                _process.Kill(entireProcessTree: true);
+            }
+        }
+        else
+        {
+            _logger?.LogDebug("OneShot process already exited with code: {Code}", _process.ExitCode);
+        }
+
+        // Wait for stderr monitor task
+        if (_stderrMonitorTask != null)
+        {
+            try
+            {
+                await _stderrMonitorTask.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None);
+            }
+            catch (TimeoutException)
+            {
+                // Timeout waiting for stderr monitor - acceptable
+            }
+            catch (OperationCanceledException)
+            {
+                // Task was cancelled - acceptable
+            }
+        }
+
+        // Clean up temp file
+        if (_systemPromptTempFile != null && File.Exists(_systemPromptTempFile))
+        {
+            try
+            {
+                File.Delete(_systemPromptTempFile);
+                _logger?.LogDebug("Deleted system prompt temp file: {File}", _systemPromptTempFile);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to delete temp file: {File}", _systemPromptTempFile);
+            }
+
+            _systemPromptTempFile = null;
+        }
+
+        // Reset all resource fields to allow clean restart
+        _logger?.LogDebug(
+            "WaitForOneShotCompletionAsync: Cleaning up resources. ProcessId: {Pid}, HasExited: {HasExited}",
+            _process?.Id,
+            _process?.HasExited);
+
+        _shutdownCts?.Dispose();
+        _shutdownCts = null;
+        _stderrMonitorTask = null;
+        _process?.Dispose();
+        _process = null;
+        _stdinWriter = null;
+        _stdoutReader = null;
+        _stderrReader = null;
+
+        _logger?.LogDebug("WaitForOneShotCompletionAsync: Resources cleaned. _process=null, _shutdownCts=null");
+
+        // Transition to Stopped state (allows restart)
+        _ = Interlocked.Exchange(ref _state, 4);
+        _logger?.LogInformation("OneShot mode: Process terminated, state: Stopped");
     }
 
     /// <summary>
