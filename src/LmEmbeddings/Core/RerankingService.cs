@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
@@ -226,7 +227,7 @@ public class RerankingService : IRerankService, IDisposable
             {
                 return await operation(attempt);
             }
-            catch (HttpRequestException ex) when (IsRetryableError(ex) && attempt <= _maxRetries)
+            catch (HttpRequestException ex) when (HttpRetryHelper.IsRetryableError(ex) && attempt <= _maxRetries)
             {
                 lastException = ex;
                 attempt++;
@@ -337,18 +338,4 @@ public class RerankingService : IRerankService, IDisposable
                 HttpStatusCode.RequestTimeout; // 408
     }
 
-    /// <summary>
-    ///     Determines if an HTTP error is retryable
-    /// </summary>
-    /// <param name="exception">The HTTP exception</param>
-    /// <returns>True if the error is retryable</returns>
-    private static bool IsRetryableError(HttpRequestException exception)
-    {
-        var message = exception.Message.ToLowerInvariant();
-        return message.Contains("timeout")
-            || message.Contains("network")
-            || message.Contains('5')
-            || // 5xx errors
-            message.Contains("429"); // Rate limiting
-    }
 }

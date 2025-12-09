@@ -179,7 +179,7 @@ public static class HttpRetryHelper
     public static bool IsRetryableError(HttpRequestException exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        // Retry on network errors, timeouts, and server errors (5xx)
+        // Retry on network errors, timeouts, connection errors, and server errors (5xx)
         var message = exception.Message;
 
         // Check for network/timeout errors
@@ -189,6 +189,32 @@ public static class HttpRetryHelper
         )
         {
             return true;
+        }
+
+        // Check for connection errors (often wrapped in HttpRequestException)
+        // These include "response ended prematurely", "connection was closed", etc.
+        if (
+            message.Contains("response ended prematurely", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("ResponseEnded", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection was closed", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("An error occurred while sending the request", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return true;
+        }
+
+        // Check inner exception for HttpIOException or similar connection errors
+        if (exception.InnerException != null)
+        {
+            var innerMessage = exception.InnerException.Message;
+            if (
+                innerMessage.Contains("response ended prematurely", StringComparison.OrdinalIgnoreCase)
+                || innerMessage.Contains("ResponseEnded", StringComparison.OrdinalIgnoreCase)
+                || innerMessage.Contains("connection was closed", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return true;
+            }
         }
 
         // Check for HTTP 5xx status codes in the exception message
