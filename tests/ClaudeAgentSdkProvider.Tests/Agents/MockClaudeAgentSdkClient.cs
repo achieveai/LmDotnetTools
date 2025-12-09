@@ -148,4 +148,41 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         IsRunning = false;
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>
+    ///     Subscribe to all messages from the mock client.
+    ///     In Interactive mode, this reads continuously until cancellation or process exit.
+    /// </summary>
+    public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("Client must be started before subscribing to messages");
+        }
+
+        // Replay recorded messages
+        foreach (var message in _messagesToReplay)
+        {
+            await Task.Delay(5, cancellationToken); // Simulate streaming delay
+            yield return message;
+        }
+    }
+
+    /// <summary>
+    ///     Send messages to the mock client (fire-and-forget).
+    /// </summary>
+    public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("Client must be started before sending messages");
+        }
+
+        ArgumentNullException.ThrowIfNull(messages);
+
+        // In a real implementation, this writes to stdin
+        // For mock, we just validate and return
+        return Task.CompletedTask;
+    }
 }

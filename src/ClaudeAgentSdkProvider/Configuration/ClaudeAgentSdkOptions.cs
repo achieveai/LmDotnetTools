@@ -56,4 +56,11 @@ public record ClaudeAgentSdkOptions
     ///     Can be overridden per-request via ExtraProperties["maxThinkingTokens"]
     /// </summary>
     public int MaxThinkingTokens { get; init; } = 0;
+
+    /// <summary>
+    ///     Keepalive interval for Interactive mode (default: 12 seconds).
+    ///     Sends empty lines to stdin to keep the connection alive.
+    ///     Only applies in Interactive mode.
+    /// </summary>
+    public TimeSpan KeepAliveInterval { get; init; } = TimeSpan.FromSeconds(12);
 }

@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
+#pragma warning disable IDE0058 // Expression value is never used
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
@@ -16,8 +17,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Supports multiple independent output subscribers via SubscribeAsync.
 /// </summary>
 /// <remarks>
-/// This class provides the same interface as MultiTurnAgentLoop but uses ClaudeAgentSdkAgent
-/// (which wraps the claude-agent-sdk CLI) instead of a provider agent with middleware stack.
+/// This class works directly with ClaudeAgentSdkClient (no intermediate agent layer).
 /// Tools are exposed via MCP servers configured externally.
 /// </remarks>
 public sealed class ClaudeAgentLoop : MultiTurnAgentBase
@@ -28,8 +28,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private readonly Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? _clientFactory;
     private readonly SemaphoreSlim _restartLock = new(1, 1);
 
-    private ClaudeAgentSdkAgent? _agent;
     private IClaudeAgentSdkClient? _client;
+
+    /// <summary>
+    /// Tracks the session ID across process restarts (for OneShot mode session continuity).
+    /// </summary>
+    private string? _lastSessionId;
+
+    /// <summary>
+    /// The active subscription to stdout messages (Interactive mode).
+    /// </summary>
+    private IAsyncEnumerator<IMessage>? _activeSubscription;
 
     /// <summary>
     /// Creates a new ClaudeAgentLoop.
@@ -133,32 +142,30 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
-    /// Disposes the agent and clears client references.
+    /// Disposes the client and clears references.
     /// </summary>
     private void DisposeClientResources()
     {
-        _agent?.Dispose();
-        _agent = null;
+        if (_activeSubscription != null)
+        {
+            _activeSubscription.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+            _activeSubscription = null;
+        }
+
+        (_client as IDisposable)?.Dispose();
         _client = null;
     }
 
     /// <summary>
-    /// Creates new client and agent instances.
+    /// Creates new client instance.
     /// </summary>
     private void CreateClientResources()
     {
         var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
-        var agentLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkAgent>();
 
         _client = _clientFactory != null
             ? _clientFactory(_claudeOptions, clientLogger)
             : new ClaudeAgentSdkClient(_claudeOptions, clientLogger);
-
-        _agent = new ClaudeAgentSdkAgent(
-            name: "ClaudeAgentLoop",
-            client: _client,
-            options: _claudeOptions,
-            logger: agentLogger);
     }
 
     /// <summary>
@@ -230,44 +237,73 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         string generationId,
         CancellationToken ct)
     {
-        if (_agent == null)
+        if (_client == null)
         {
-            throw new InvalidOperationException("Agent not initialized");
+            throw new InvalidOperationException("Client not initialized");
         }
 
-        // Build options with MCP servers config
-        var extraPropertiesBuilder = DefaultOptions.ExtraProperties?.ToBuilder()
-            ?? ImmutableDictionary.CreateBuilder<string, object?>();
-
-        // Add MCP servers to extra properties
-        if (_mcpServers.Count > 0)
+        // Ensure client is started
+        if (!_client.IsRunning)
         {
-            extraPropertiesBuilder["mcpServers"] = _mcpServers;
+            // Preserve session ID from previous run (for session continuity)
+            if (_client.CurrentSession?.SessionId != null)
+            {
+                _lastSessionId = _client.CurrentSession.SessionId;
+                Logger.LogDebug("Preserved sessionId from previous run: {SessionId}", _lastSessionId);
+            }
+
+            var request = BuildClaudeAgentSdkRequest();
+            Logger.LogInformation(
+                "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}, sessionId {SessionId}",
+                request.ModelId,
+                request.MaxTurns,
+                request.SessionId ?? "(new session)");
+
+            await _client.StartAsync(request, ct);
         }
 
-        var options = DefaultOptions with
+        // Get or create subscription (Interactive mode)
+        if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
         {
-            RunId = runId,
-            ThreadId = ThreadId,
-            MaxToken = 16192,
-            ExtraProperties = extraPropertiesBuilder.ToImmutable(),
-        };
+            _activeSubscription ??= _client.SubscribeToMessagesAsync(ct).GetAsyncEnumerator(ct);
 
-        // Claude SDK CLI maintains its own conversation history internally,
-        // so we only send new messages from current input (not full history)
-        var messagesToSend = GetMessagesForClaudeSdk();
+            // Send new messages
+            var messagesToSend = GetMessagesForClaudeSdk().ToList();
+            await _client.SendAsync(messagesToSend, ct);
 
-        // Stream responses from ClaudeAgentSdk
-        // Note: The CLI handles tool execution via MCP - we just publish all messages
-        var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+            // Read until ResultEvent
+            while (await _activeSubscription.MoveNextAsync())
+            {
+                var msg = _activeSubscription.Current;
 
-        await foreach (var msg in stream.WithCancellation(ct))
+                // Check for turn completion
+                if (msg is ResultEventMessage resultEvent)
+                {
+                    Logger.LogDebug("Turn complete. IsError: {IsError}", resultEvent.IsError);
+                    break;
+                }
+
+                // Publish message to subscribers
+                await PublishToAllAsync(msg, ct);
+
+                // Add to conversation history
+                AddToHistory(msg);
+            }
+        }
+        else
         {
-            // Publish message to subscribers
-            await PublishToAllAsync(msg, ct);
+            // OneShot mode: use SendMessagesAsync (existing behavior)
+            var messagesToSend = GetMessagesForClaudeSdk().ToList();
+            var stream = _client.SendMessagesAsync(messagesToSend, ct);
 
-            // Add to conversation history
-            AddToHistory(msg);
+            await foreach (var msg in stream.WithCancellation(ct))
+            {
+                // Publish message to subscribers
+                await PublishToAllAsync(msg, ct);
+
+                // Add to conversation history
+                AddToHistory(msg);
+            }
         }
 
         // ClaudeAgentLoop doesn't support forking
@@ -291,5 +327,79 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         {
             yield return msg;
         }
+    }
+
+    /// <summary>
+    /// Build ClaudeAgentSdkRequest from current configuration and options.
+    /// Moved from ClaudeAgentSdkAgent.
+    /// </summary>
+    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
+    {
+        var modelId = DefaultOptions.ModelId ?? "claude-sonnet-4-5-20250929";
+        var maxTurns = DefaultOptions.MaxToken ?? 40; // MaxToken is repurposed for max turns
+
+        // Max thinking tokens from options
+        var maxThinkingTokens = _claudeOptions.MaxThinkingTokens;
+
+        // Extract session ID: use preserved from previous run if available
+        var sessionId = _lastSessionId;
+
+        // Build MCP server configuration
+        Dictionary<string, McpServerConfig>? mcpServers = null;
+
+        // First, try to load from file
+        if (!string.IsNullOrEmpty(_claudeOptions.McpConfigPath) && File.Exists(_claudeOptions.McpConfigPath))
+        {
+            try
+            {
+                var json = File.ReadAllText(_claudeOptions.McpConfigPath);
+                var mcpConfig = JsonSerializer.Deserialize<McpConfiguration>(json);
+                mcpServers = mcpConfig?.McpServers;
+                Logger.LogDebug(
+                    "Loaded {Count} MCP servers from file: {Path}",
+                    mcpServers?.Count ?? 0,
+                    _claudeOptions.McpConfigPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Failed to load MCP configuration from {Path}", _claudeOptions.McpConfigPath);
+            }
+        }
+
+        // Use provided MCP servers (take precedence over file)
+        if (_mcpServers.Count > 0)
+        {
+            if (mcpServers == null)
+            {
+                mcpServers = _mcpServers;
+            }
+            else
+            {
+                // Merge: provided servers override file-based ones
+                foreach (var (name, config) in _mcpServers)
+                {
+                    mcpServers[name] = config;
+                }
+            }
+        }
+
+        Logger.LogInformation(
+            "Final MCP server configuration: {Count} servers configured",
+            mcpServers?.Count ?? 0);
+
+        // Build allowed tools list
+        var allowedTools = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
+
+        return new ClaudeAgentSdkRequest
+        {
+            ModelId = modelId,
+            MaxTurns = maxTurns,
+            MaxThinkingTokens = maxThinkingTokens,
+            SessionId = sessionId,
+            SystemPrompt = SystemPrompt,
+            AllowedTools = allowedTools,
+            McpServers = mcpServers,
+            Verbose = true,
+        };
     }
 }

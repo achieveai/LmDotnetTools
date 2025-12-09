@@ -1,6 +1,4 @@
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
-using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -262,47 +260,13 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     private IAgent CreateClaudeAgentSdkAgent(ProviderResolution resolution)
     {
-        try
-        {
-            // Try to get ClaudeAgentSdkOptions from DI, otherwise use defaults
-            var options =
-                _serviceProvider.GetService<ClaudeAgentSdkOptions>()
-                ?? new ClaudeAgentSdkOptions
-                {
-                    ProjectRoot = Directory.GetCurrentDirectory(),
-                    McpConfigPath = ".mcp.json",
-                };
-
-            _logger.LogDebug("Creating ClaudeAgentSDK agent with mode: {Mode}", options.Mode);
-
-            // Create client and agent
-            var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
-            var client = new ClaudeAgentSdkClient(options, clientLogger);
-
-            var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
-            var agentLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkAgent>();
-
-            _logger.LogDebug(
-                "Creating ClaudeAgentSDK agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
-                resolution.EffectiveProviderName,
-                resolution.EffectiveModelName,
-                "ClaudeAgentSdkAgent"
-            );
-
-            return new ClaudeAgentSdkAgent(agentName, client, options, agentLogger);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Failed to create ClaudeAgentSDK agent for {Provider}",
-                resolution.EffectiveProviderName
-            );
-            throw new InvalidOperationException(
-                $"Failed to create ClaudeAgentSDK agent for provider '{resolution.EffectiveProviderName}': {ex.Message}",
-                ex
-            );
-        }
+        // ClaudeAgentSDK is not compatible with the IAgent interface.
+        // It requires using ClaudeAgentLoop (MultiTurnAgentBase) directly for multi-turn agentic workflows.
+        throw new NotSupportedException(
+            $"ClaudeAgentSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. " +
+            "ClaudeAgentSDK is designed for multi-turn agentic workflows and requires using ClaudeAgentLoop directly. " +
+            "See LmMultiTurn.ClaudeAgentLoop for the correct usage pattern."
+        );
     }
 
     /// <summary>

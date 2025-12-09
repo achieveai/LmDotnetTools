@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
+#pragma warning disable IDE0058 // Expression value is never used
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
@@ -41,6 +42,16 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     private CancellationTokenSource? _shutdownCts;
     private volatile int _state; // 0=NotStarted, 1=Starting, 2=Running, 3=ShuttingDown, 4=Stopped
     private readonly SemaphoreSlim _operationLock = new(1, 1);
+
+    // Keepalive for Interactive mode
+    private Task? _keepaliveTask;
+    private CancellationTokenSource? _keepaliveCts;
+
+    // Thread-safe stdin writing
+    private readonly SemaphoreSlim _stdinSemaphore = new(1, 1);
+
+    // Subscription tracking (single subscriber only)
+    private volatile bool _subscriptionActive;
 
     public ClaudeAgentSdkClient(ClaudeAgentSdkOptions options, ILogger<ClaudeAgentSdkClient>? logger = null)
     {
@@ -168,7 +179,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             _shutdownCts = new CancellationTokenSource();
             _stderrMonitorTask = Task.Run(() => MonitorStdErrWithPolling(_shutdownCts.Token));
 
-            // 8. Create session info
+            // 8. Start keepalive task (Interactive mode only)
+            if (_options.Mode == ClaudeAgentSdkMode.Interactive)
+            {
+                _keepaliveCts = new CancellationTokenSource();
+                _keepaliveTask = Task.Run(() => RunKeepaliveAsync(_keepaliveCts.Token));
+            }
+
+            // 9. Create session info
             CurrentSession = new SessionInfo
             {
                 SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
@@ -209,6 +227,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             _state,
             IsRunning,
             _options.Mode);
+
+        // In Interactive mode, throw to guide users to the new API
+        if (_options.Mode == ClaudeAgentSdkMode.Interactive)
+        {
+            throw new InvalidOperationException(
+                "SendMessagesAsync is not supported in Interactive mode. " +
+                "Use SendAsync() to write messages and SubscribeToMessagesAsync() to read responses.");
+        }
 
         if (!IsRunning)
         {
@@ -368,6 +394,188 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
     }
 
+    /// <inheritdoc />
+    public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!IsRunning)
+        {
+            throw new InvalidOperationException("Client is not running. Call StartAsync first.");
+        }
+
+        if (_subscriptionActive)
+        {
+            throw new InvalidOperationException(
+                "A subscription is already active. Only one subscriber is allowed at a time.");
+        }
+
+        _subscriptionActive = true;
+        _logger?.LogDebug("Subscription started for stdout messages");
+
+        try
+        {
+            await foreach (var line in ReadStdoutLinesAsync(cancellationToken))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                _logger?.LogTrace("Received JSONL line: {Line}", line.Length > 200 ? line[..200] + "..." : line);
+
+                var jsonlEvent = _parser.ParseLine(line);
+
+                if (jsonlEvent is AssistantMessageEvent assistantEvent)
+                {
+                    var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
+                    foreach (var msg in eventMessages)
+                    {
+                        yield return msg;
+                    }
+                }
+                else if (jsonlEvent is UserMessageEvent userEvent)
+                {
+                    var eventMessages = _parser.ConvertToMessages(userEvent);
+                    foreach (var msg in eventMessages)
+                    {
+                        yield return msg;
+                    }
+                }
+                else if (jsonlEvent is SummaryEvent summaryEvent)
+                {
+                    _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
+                }
+                else if (jsonlEvent is SystemInitEvent systemInitEvent)
+                {
+                    _logger?.LogInformation(
+                        "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}",
+                        systemInitEvent.SessionId,
+                        systemInitEvent.Model,
+                        systemInitEvent.Tools?.Count ?? 0);
+
+                    if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
+                    {
+                        CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
+                    }
+                }
+                else if (jsonlEvent is ResultEvent resultEvent)
+                {
+                    _logger?.LogDebug(
+                        "ResultEvent received - IsError: {IsError}",
+                        resultEvent.IsError);
+
+                    // Yield a marker message so caller knows turn is complete
+                    yield return new ResultEventMessage
+                    {
+                        IsError = resultEvent.IsError,
+                        Result = resultEvent.Result,
+                    };
+                }
+            }
+        }
+        finally
+        {
+            _subscriptionActive = false;
+            _logger?.LogDebug("Subscription ended for stdout messages");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (!IsRunning || _stdinWriter == null)
+        {
+            throw new InvalidOperationException("Client is not running. Call StartAsync first.");
+        }
+
+        var userMessages = messages.Where(m => m.Role == Role.User).ToList();
+        if (userMessages.Count == 0)
+        {
+            _logger?.LogWarning("No user message found in the message collection");
+            return;
+        }
+
+        await _stdinSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var inputWrapper = ConvertToInputMessage(userMessages);
+            var jsonLine = JsonSerializer.Serialize(inputWrapper, _jsonOptions);
+
+            _logger?.LogDebug(
+                "Sending JSONL message to claude-agent-sdk: {Message}",
+                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
+
+            await _stdinWriter.WriteLineAsync(jsonLine);
+            await _stdinWriter.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            _stdinSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    ///     Write an empty line to stdin for keepalive.
+    ///     Thread-safe: uses semaphore.
+    /// </summary>
+    private async Task WriteEmptyLineAsync(CancellationToken cancellationToken)
+    {
+        if (_stdinWriter == null)
+        {
+            return;
+        }
+
+        await _stdinSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            await _stdinWriter.WriteLineAsync(string.Empty);
+            await _stdinWriter.FlushAsync(cancellationToken);
+            _logger?.LogTrace("Keepalive: sent empty line");
+        }
+        finally
+        {
+            _stdinSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    ///     Run keepalive loop for Interactive mode.
+    ///     Sends empty lines periodically to keep the connection alive.
+    /// </summary>
+    private async Task RunKeepaliveAsync(CancellationToken cancellationToken)
+    {
+        if (_options.Mode != ClaudeAgentSdkMode.Interactive)
+        {
+            return;
+        }
+
+        _logger?.LogDebug("Keepalive task started with interval: {Interval}", _options.KeepAliveInterval);
+
+        using var timer = new PeriodicTimer(_options.KeepAliveInterval);
+
+        while (!cancellationToken.IsCancellationRequested && IsRunning)
+        {
+            try
+            {
+                await timer.WaitForNextTickAsync(cancellationToken);
+                await WriteEmptyLineAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Keepalive failed");
+                break; // Let next operation detect dead process
+            }
+        }
+
+        _logger?.LogDebug("Keepalive task stopped");
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -412,10 +620,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
         finally
         {
+            _keepaliveCts?.Cancel();
+            _keepaliveCts?.Dispose();
             _process?.Dispose();
             _stdinWriter?.Dispose();
             _stdoutReader?.Dispose();
             _stderrReader?.Dispose();
+            _stdinSemaphore.Dispose();
             _disposed = true;
         }
 
@@ -501,7 +712,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
             }
 
-            // Step 2: Cancel shutdown CTS + Close stdin
+            // Step 2: Cancel keepalive + shutdown CTS + Close stdin
+            _keepaliveCts?.Cancel();
             _shutdownCts?.Cancel();
             _stdinWriter?.Close();
             _stdinWriter = null;
@@ -542,6 +754,23 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 {
                     // Timeout or cancelled - acceptable
                 }
+            }
+
+            // Step 6: Wait for keepalive task
+            if (_keepaliveTask != null)
+            {
+                try
+                {
+                    await _keepaliveTask.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Timeout or cancelled - acceptable
+                }
+
+                _keepaliveCts?.Dispose();
+                _keepaliveCts = null;
+                _keepaliveTask = null;
             }
 
             // Clean up temp file
@@ -590,8 +819,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         finally
         {
             // Clean up resources
+            _keepaliveCts?.Dispose();
             _shutdownCts?.Dispose();
             _operationLock.Dispose();
+            _stdinSemaphore.Dispose();
             _process?.Dispose();
             _stdinWriter?.Dispose();
             _stdoutReader?.Dispose();
