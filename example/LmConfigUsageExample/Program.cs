@@ -1050,17 +1050,20 @@ list references from above tool calls with book name, chapter, page number
             Console.WriteLine("Background loop started. Type messages to send, or 'exit' to quit.\n");
 
             // Helper to send and optionally wait for completion
-            async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
+            // Note: SendAsync now returns SendReceipt (fire-and-forget). The RunAssignment
+            // comes via RunAssignmentMessage to subscribers when the run actually starts.
+            async Task<SendReceipt> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
             {
-                var assignment = await loop.SendAsync(
+                var receipt = await loop.SendAsync(
                     [new TextMessage { Text = text, Role = Role.User }],
                     inputId: inputId);
 
-                if (waitForCompletion && !assignment.WasInjected)
+                if (waitForCompletion)
                 {
-                    // Register completion waiter before the run might complete
+                    // Register completion waiter using the receipt ID
+                    // The subscriber will match RunAssignmentMessage.InputIds to find associated runs
                     var completionTcs = new TaskCompletionSource<bool>();
-                    runCompletions[assignment.RunId] = completionTcs;
+                    runCompletions[receipt.ReceiptId] = completionTcs;
 
                     // Wait for run to complete (with timeout)
                     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -1076,13 +1079,13 @@ list references from above tool calls with book name, chapter, page number
                     }
                 }
 
-                return assignment;
+                return receipt;
             }
 
             // Send initial prompt and wait for completion
             Console.WriteLine($"Sending initial prompt: \"{prompt}\"\n");
-            var assignment1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
-            Console.WriteLine($"[Client] Message assigned to run: {assignment1.RunId}\n");
+            var receipt1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
+            Console.WriteLine($"[Client] Message queued with receipt: {receipt1.ReceiptId}\n");
 
             // Check if we should go interactive (stdin available) or exit
             var isInteractive = !Console.IsInputRedirected;
@@ -1100,13 +1103,10 @@ list references from above tool calls with book name, chapter, page number
                     }
 
                     // Send the message and wait for completion
-                    var assignment = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+                    // Note: SendAsync returns SendReceipt (fire-and-forget). RunAssignment comes via subscriber.
+                    var receipt = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
 
-                    Console.WriteLine($"[Client] Message assigned to run: {assignment.RunId}");
-                    if (assignment.WasInjected)
-                    {
-                        Console.WriteLine($"         (Injected, will fork from: {assignment.ParentRunId})");
-                    }
+                    Console.WriteLine($"[Client] Message queued with receipt: {receipt.ReceiptId}");
                 }
             }
             else
@@ -1309,16 +1309,18 @@ list references from above tool calls with book name, chapter, page number
             Console.WriteLine("ClaudeAgentLoop started. Type messages to send, or 'exit' to quit.\n");
 
             // Helper to send and wait
-            async Task<RunAssignment> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
+            // Note: SendAsync now returns SendReceipt (fire-and-forget). The RunAssignment
+            // comes via RunAssignmentMessage to subscribers when the run actually starts.
+            async Task<SendReceipt> SendAndWaitAsync(string text, string inputId, bool waitForCompletion = false)
             {
-                var assignment = await loop.SendAsync(
+                var receipt = await loop.SendAsync(
                     [new TextMessage { Text = text, Role = Role.User }],
                     inputId: inputId);
 
-                if (waitForCompletion && !assignment.WasInjected)
+                if (waitForCompletion)
                 {
                     var completionTcs = new TaskCompletionSource<bool>();
-                    runCompletions[assignment.RunId] = completionTcs;
+                    runCompletions[receipt.ReceiptId] = completionTcs;
 
                     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
                     using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
@@ -1333,13 +1335,13 @@ list references from above tool calls with book name, chapter, page number
                     }
                 }
 
-                return assignment;
+                return receipt;
             }
 
             // Send initial prompt
             Console.WriteLine($"Sending initial prompt: \"{prompt}\"\n");
-            var assignment1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
-            Console.WriteLine($"[Client] Message assigned to run: {assignment1.RunId}\n");
+            var receipt1 = await SendAndWaitAsync(prompt, "initial-prompt", waitForCompletion: true);
+            Console.WriteLine($"[Client] Message queued with receipt: {receipt1.ReceiptId}\n");
 
             // Interactive loop
             var isInteractive = !Console.IsInputRedirected;
@@ -1355,8 +1357,8 @@ list references from above tool calls with book name, chapter, page number
                         break;
                     }
 
-                    var assignment = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
-                    Console.WriteLine($"[Client] Message assigned to run: {assignment.RunId}");
+                    var receipt = await SendAndWaitAsync(input, Guid.NewGuid().ToString("N")[..8], waitForCompletion: true);
+                    Console.WriteLine($"[Client] Message queued with receipt: {receipt.ReceiptId}");
                 }
             }
             else

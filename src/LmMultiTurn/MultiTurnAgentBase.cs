@@ -22,7 +22,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private readonly int _inputChannelCapacity;
 
     // Channels - _inputChannel is recreatable to support restart
-    private Channel<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> _inputChannel;
+    private Channel<QueuedInput> _inputChannel;
     private readonly object _channelLock = new();
     private readonly ConcurrentDictionary<string, Channel<IMessage>> _outputSubscribers = new();
 
@@ -148,9 +148,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// Creates a new input channel with the configured capacity.
     /// </summary>
-    private Channel<(UserInput, TaskCompletionSource<RunAssignment>)> CreateInputChannel()
+    private Channel<QueuedInput> CreateInputChannel()
     {
-        return Channel.CreateBounded<(UserInput, TaskCompletionSource<RunAssignment>)>(
+        return Channel.CreateBounded<QueuedInput>(
             new BoundedChannelOptions(_inputChannelCapacity)
             {
                 FullMode = BoundedChannelFullMode.Wait,
@@ -366,8 +366,35 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     #region Input API
 
+    /// <summary>
+    /// Direct access to the input channel reader for implementations that need push-based notification.
+    /// </summary>
+    protected ChannelReader<QueuedInput> InputReader => _inputChannel.Reader;
+
+    /// <summary>
+    /// Convenience method to drain all currently available inputs from the queue.
+    /// Non-blocking - returns immediately with whatever is currently available.
+    /// </summary>
+    /// <param name="inputs">The drained inputs</param>
+    /// <returns>True if any inputs were drained, false if queue was empty</returns>
+    protected bool TryDrainInputs(out List<QueuedInput> inputs)
+    {
+        inputs = [];
+        while (_inputChannel.Reader.TryRead(out var item))
+        {
+            inputs.Add(item);
+        }
+
+        if (inputs.Count > 1)
+        {
+            Logger.LogInformation("Drained {Count} inputs from queue", inputs.Count);
+        }
+
+        return inputs.Count > 0;
+    }
+
     /// <inheritdoc />
-    public virtual async ValueTask<RunAssignment> SendAsync(
+    public virtual ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
@@ -375,53 +402,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+        var queuedAt = DateTimeOffset.UtcNow;
         var input = new UserInput(messages, inputId, parentRunId);
-        var tcs = new TaskCompletionSource<RunAssignment>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queued = new QueuedInput(input, receiptId, queuedAt);
 
-        // Check if we should inject into current run
-        string? currentRun;
-        lock (_stateLock)
+        // Fire-and-forget write to channel (non-blocking if not full)
+        if (!_inputChannel.Writer.TryWrite(queued))
         {
-            currentRun = _currentRunId;
-        }
+            // Channel is full - this shouldn't happen often with Wait mode
+            // but we use TryWrite to avoid blocking the caller
+            Logger.LogWarning("Input channel full, message queued with backpressure");
+            return new ValueTask<SendReceipt>(WriteWithBackpressureAsync());
 
-        if (currentRun != null && SupportsInjection)
-        {
-            // A run is in progress - inject into pending queue
-            var runId = Guid.NewGuid().ToString("N");
-            var generationId = Guid.NewGuid().ToString("N");
-            var effectiveParentRunId = parentRunId ?? currentRun;
-
-            var assignment = new RunAssignment(
-                runId,
-                generationId,
-                inputId,
-                effectiveParentRunId,
-                WasInjected: true);
-
-            PendingInjections.Enqueue((input, assignment));
-
-            Logger.LogInformation(
-                "Messages injected into pending queue. Will fork from run {ParentRunId} to new run {RunId}",
-                effectiveParentRunId,
-                runId);
-
-            // Publish assignment event immediately
-            await PublishToAllAsync(new RunAssignmentMessage
+            async Task<SendReceipt> WriteWithBackpressureAsync()
             {
-                Assignment = assignment,
-                ThreadId = ThreadId,
-            }, ct);
-
-            return assignment;
+                await _inputChannel.Writer.WriteAsync(queued, ct);
+                return new SendReceipt(receiptId, inputId, queuedAt);
+            }
         }
 
-        // No run in progress - queue normally
-        await _inputChannel.Writer.WriteAsync((input, tcs), ct);
+        Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        Logger.LogDebug("Message queued for processing. InputId: {InputId}", inputId);
-
-        return await tcs.Task;
+        return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt));
     }
 
     /// <inheritdoc />
@@ -448,19 +451,30 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
-            // Send the input and get the run assignment
-            var assignment = await SendAsync(userInput.Messages, userInput.InputId, userInput.ParentRunId, ct);
-            var targetRunId = assignment.RunId;
+            // Send the input and get receipt (non-blocking)
+            var receipt = await SendAsync(userInput.Messages, userInput.InputId, userInput.ParentRunId, ct);
+            var receiptId = receipt.ReceiptId;
 
-            Logger.LogDebug("ExecuteRun started for RunId: {RunId}", targetRunId);
+            Logger.LogDebug("ExecuteRun queued. ReceiptId: {ReceiptId}", receiptId);
+
+            string? targetRunId = null;
 
             // Yield messages until run completes
             await foreach (var msg in outputChannel.Reader.ReadAllAsync(ct))
             {
                 yield return msg;
 
+                // Track run assignment for our receipt
+                if (msg is RunAssignmentMessage assignment &&
+                    assignment.Assignment.InputIds?.Contains(receiptId) == true)
+                {
+                    targetRunId = assignment.Assignment.RunId;
+                    Logger.LogDebug("ExecuteRun assigned to RunId: {RunId}", targetRunId);
+                }
+
                 // Check for run completion
-                if (msg is RunCompletedMessage completed)
+                if (msg is RunCompletedMessage completed &&
+                    completed.CompletedRunId == targetRunId)
                 {
                     Logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
                     yield break;
@@ -561,7 +575,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #region Lifecycle API
 
     /// <inheritdoc />
-    public Task RunAsync(CancellationToken ct = default)
+    public async Task RunAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -573,14 +587,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // Ensure channel exists (recreate if it was completed by previous stop)
         EnsureChannelExists();
 
-        OnBeforeRun();
+        await OnBeforeRunAsync();
 
         _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _runTask = RunLoopAsync(_internalCts.Token);
 
         Logger.LogInformation("{AgentType} started. ThreadId: {ThreadId}", GetType().Name, ThreadId);
 
-        return _runTask;
+        await _runTask;
     }
 
     /// <inheritdoc />
@@ -637,7 +651,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         _internalCts?.Dispose();
 
-        OnDispose();
+        await OnDisposeAsync();
 
         // Complete input channel on disposal (final cleanup - no restart possible)
         _ = _inputChannel.Writer.TryComplete();
@@ -655,230 +669,70 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     #endregion
 
-    #region Core Loop Implementation
-
-    private async Task RunLoopAsync(CancellationToken ct)
-    {
-        Logger.LogDebug("Loop started processing");
-
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                // Wait for at least one input
-                if (!await _inputChannel.Reader.WaitToReadAsync(ct))
-                {
-                    break; // Channel completed
-                }
-
-                // Drain all pending inputs into a batch
-                var batch = DrainPendingInputs();
-                if (batch.Count == 0)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    await ProcessBatchedInputAsync(batch, ct);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    // Cancel all pending TCS
-                    foreach (var (_, tcs) in batch)
-                    {
-                        _ = tcs.TrySetCanceled(ct);
-                    }
-
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    Logger.LogError(ex, "Error processing batched input");
-                    foreach (var (_, tcs) in batch)
-                    {
-                        _ = tcs.TrySetException(ex);
-                    }
-                }
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            Logger.LogDebug("Loop cancelled");
-        }
-        catch (ChannelClosedException)
-        {
-            Logger.LogDebug("Input channel closed");
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Unexpected error in loop");
-            throw;
-        }
-        finally
-        {
-            OnAfterRun();
-        }
-    }
+    #region Run Lifecycle Helpers
 
     /// <summary>
-    /// Drains all currently available inputs from the channel into a batch.
+    /// Start a new run for the given inputs. Call this from RunLoopAsync when ready to process.
     /// </summary>
-    private List<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> DrainPendingInputs()
+    /// <param name="inputs">The queued inputs to process in this run</param>
+    /// <param name="parentRunId">Optional parent run ID (defaults to latest run)</param>
+    /// <returns>The run assignment</returns>
+    protected RunAssignment StartRun(IReadOnlyList<QueuedInput> inputs, string? parentRunId = null)
     {
-        var batch = new List<(UserInput, TaskCompletionSource<RunAssignment>)>();
-
-        while (_inputChannel.Reader.TryRead(out var item))
-        {
-            batch.Add(item);
-        }
-
-        if (batch.Count > 1)
-        {
-            Logger.LogInformation(
-                "Batched {Count} pending inputs into single run",
-                batch.Count);
-        }
-
-        return batch;
-    }
-
-    /// <summary>
-    /// Processes a batch of inputs as a single run.
-    /// All inputs share the same RunAssignment.
-    /// </summary>
-    private async Task ProcessBatchedInputAsync(
-        List<(UserInput Input, TaskCompletionSource<RunAssignment> Tcs)> batch,
-        CancellationToken ct)
-    {
-        // Combine all messages from all inputs
-        var combinedMessages = new List<IMessage>();
-        string? firstInputId = null;
-        string? parentRunId = null;
-
-        foreach (var (input, _) in batch)
-        {
-            combinedMessages.AddRange(input.Messages);
-            firstInputId ??= input.InputId;
-            parentRunId ??= input.ParentRunId;
-        }
-
-        // Create a combined UserInput
-        var combinedInput = new UserInput(combinedMessages, firstInputId, parentRunId);
-
-        // Create a single TCS that will complete all batch TCS objects
-        var masterTcs = new TaskCompletionSource<RunAssignment>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        // Process the combined input
-        await ProcessInputAsync(combinedInput, masterTcs, ct);
-
-        // Get the assignment and complete all TCS objects with the same assignment
-        var assignment = await masterTcs.Task;
-        foreach (var (_, tcs) in batch)
-        {
-            _ = tcs.TrySetResult(assignment);
-        }
-    }
-
-    private async Task ProcessInputAsync(
-        UserInput input,
-        TaskCompletionSource<RunAssignment> tcs,
-        CancellationToken ct)
-    {
-        // Create run, determine parent
         var runId = Guid.NewGuid().ToString("N");
         var generationId = Guid.NewGuid().ToString("N");
-        string? parentRunId;
+        var inputIds = inputs.Select(i => i.ReceiptId).ToList();
+
         lock (_stateLock)
         {
-            parentRunId = input.ParentRunId ?? _latestRunId;
-        }
-
-        // Complete assignment immediately
-        var assignment = new RunAssignment(runId, generationId, input.InputId, parentRunId);
-        tcs.SetResult(assignment);
-
-        // Set current run
-        lock (_stateLock)
-        {
+            parentRunId ??= _latestRunId;
             _currentRunId = runId;
         }
 
         Logger.LogInformation(
-            "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId})",
+            "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
             runId,
             parentRunId ?? "none",
-            generationId);
+            generationId,
+            inputs.Count);
 
-        try
+        return new RunAssignment(runId, generationId, inputIds, parentRunId);
+    }
+
+    /// <summary>
+    /// Complete a run and publish the completion message.
+    /// </summary>
+    /// <param name="runId">The run ID that completed</param>
+    /// <param name="generationId">The generation ID</param>
+    /// <param name="wasForked">Whether the run was forked due to new input</param>
+    /// <param name="forkedToRunId">The run ID that was forked to (if applicable)</param>
+    /// <param name="ct">Cancellation token</param>
+    protected async Task CompleteRunAsync(
+        string runId,
+        string generationId,
+        bool wasForked = false,
+        string? forkedToRunId = null,
+        CancellationToken ct = default)
+    {
+        await PublishToAllAsync(new RunCompletedMessage
         {
-            // Publish assignment event
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            CompletedRunId = runId,
+            WasForked = wasForked,
+            ForkedToRunId = forkedToRunId,
+            ThreadId = ThreadId,
+            GenerationId = generationId,
+        }, ct);
 
-            // Add user messages to history with proper IDs
-            foreach (var msg in input.Messages)
-            {
-                AddToHistory(msg);
-            }
-
-            // Set current input messages for subclasses that need only new messages
-            // (e.g., ClaudeAgentLoop where the CLI maintains its own history)
-            CurrentInputMessages = input.Messages.ToList().AsReadOnly();
-
-            // Execute agentic turns (implementation-specific)
-            var wasForked = await ExecuteAgenticLoopAsync(runId, generationId, ct);
-
-            // Publish completion
-            string? forkedToRunId = null;
-            if (wasForked && PendingInjections.TryPeek(out var pending))
-            {
-                forkedToRunId = pending.Assignment.RunId;
-            }
-
-            await PublishToAllAsync(new RunCompletedMessage
-            {
-                CompletedRunId = runId,
-                WasForked = wasForked,
-                ForkedToRunId = forkedToRunId,
-                ThreadId = ThreadId,
-                GenerationId = generationId,
-            }, ct);
-
-            Logger.LogInformation(
-                "Run {RunId} completed. WasForked: {WasForked}",
-                runId,
-                wasForked);
-
-            // Process any pending injections
-            if (wasForked && PendingInjections.TryDequeue(out var injection))
-            {
-                // Requeue the injection as a new input
-                var injectionTcs = new TaskCompletionSource<RunAssignment>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                injectionTcs.SetResult(injection.Assignment); // Already assigned
-
-                await ProcessInputAsync(injection.Input, injectionTcs, ct);
-            }
-        }
-        finally
+        lock (_stateLock)
         {
-            // Clear current input messages
-            CurrentInputMessages = [];
-
-            lock (_stateLock)
-            {
-                _latestRunId = runId;
-                _currentRunId = null;
-            }
-
-            // Persist metadata after run completes
-            await UpdateMetadataAsync(ct);
+            _latestRunId = runId;
+            _currentRunId = null;
         }
+
+        Logger.LogInformation("Run {RunId} completed. WasForked: {WasForked}", runId, wasForked);
+
+        // Persist metadata after run completes
+        await UpdateMetadataAsync(ct);
     }
 
     #endregion
@@ -886,43 +740,38 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #region Abstract/Virtual Members
 
     /// <summary>
-    /// Whether this agent supports injection of messages into an ongoing run.
-    /// Default is true. Override to disable injection behavior.
+    /// Called before the run loop starts. Override to perform async initialization.
     /// </summary>
-    protected virtual bool SupportsInjection => true;
-
-    /// <summary>
-    /// Called before the run loop starts. Override to perform initialization.
-    /// </summary>
-    protected virtual void OnBeforeRun()
+    protected virtual Task OnBeforeRunAsync()
     {
+        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Called during disposal. Override to clean up implementation-specific resources.
+    /// Called during disposal. Override to clean up implementation-specific resources asynchronously.
     /// </summary>
-    protected virtual void OnDispose()
+    protected virtual Task OnDisposeAsync()
     {
+        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Called after the run loop stops. Override to perform cleanup after each run cycle.
+    /// Called after the run loop stops. Override to perform async cleanup after each run cycle.
     /// </summary>
-    protected virtual void OnAfterRun()
+    protected virtual Task OnAfterRunAsync()
     {
+        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Execute the agentic loop for a single run.
+    /// The main run loop. Implementation owns this entirely and decides:
+    /// - When to drain inputs from the queue (TryDrainInputs or InputReader.WaitToReadAsync)
+    /// - When to start runs (StartRun)
+    /// - How to handle mid-run input (poll between turns vs concurrent watching)
+    /// - When to complete runs (CompleteRunAsync)
     /// </summary>
-    /// <param name="runId">The run ID for this execution</param>
-    /// <param name="generationId">The generation ID for this execution</param>
     /// <param name="ct">Cancellation token</param>
-    /// <returns>True if the run was forked (due to injection), false otherwise</returns>
-    protected abstract Task<bool> ExecuteAgenticLoopAsync(
-        string runId,
-        string generationId,
-        CancellationToken ct);
+    protected abstract Task RunLoopAsync(CancellationToken ct);
 
     #endregion
 }

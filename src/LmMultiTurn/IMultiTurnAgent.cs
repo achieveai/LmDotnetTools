@@ -32,15 +32,16 @@ public interface IMultiTurnAgent : IAsyncDisposable
     bool IsRunning { get; }
 
     /// <summary>
-    /// Enqueue messages for processing. Returns immediately with run assignment.
-    /// If a run is in progress, behavior depends on implementation (may inject or queue).
+    /// Enqueue messages for processing. Returns immediately with a receipt (non-blocking).
+    /// The actual run assignment is published to subscribers via RunAssignmentMessage
+    /// when the implementation decides to start processing.
     /// </summary>
     /// <param name="messages">The messages to submit (user messages, possibly with images)</param>
-    /// <param name="inputId">Client-provided correlation ID (optional) - echoed back in assignment</param>
+    /// <param name="inputId">Client-provided correlation ID (optional) - echoed back in receipt and assignment</param>
     /// <param name="parentRunId">Parent run ID to fork from. If null, continues from latest run</param>
     /// <param name="ct">Cancellation token</param>
-    /// <returns>The run assignment containing the assigned run ID and generation ID</returns>
-    ValueTask<RunAssignment> SendAsync(
+    /// <returns>Receipt confirming the input was queued (does not wait for run assignment)</returns>
+    ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,

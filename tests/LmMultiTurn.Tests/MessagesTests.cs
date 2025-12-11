@@ -63,7 +63,7 @@ public class MessagesTests
         // Assert
         assignment.RunId.Should().Be("run-id");
         assignment.GenerationId.Should().Be("gen-id");
-        assignment.InputId.Should().BeNull();
+        assignment.InputIds.Should().BeNull();
         assignment.ParentRunId.Should().BeNull();
         assignment.WasInjected.Should().BeFalse();
     }
@@ -75,14 +75,14 @@ public class MessagesTests
         var assignment = new RunAssignment(
             "run-id",
             "gen-id",
-            "input-id",
+            ["input-id"],
             "parent-run-id",
             WasInjected: true);
 
         // Assert
         assignment.RunId.Should().Be("run-id");
         assignment.GenerationId.Should().Be("gen-id");
-        assignment.InputId.Should().Be("input-id");
+        assignment.InputIds.Should().Contain("input-id");
         assignment.ParentRunId.Should().Be("parent-run-id");
         assignment.WasInjected.Should().BeTrue();
     }
@@ -112,7 +112,7 @@ public class MessagesTests
     public void RunAssignmentMessage_ExposesAssignmentProperties()
     {
         // Arrange
-        var assignment = new RunAssignment("run-123", "gen-456", "input-789", "parent-000");
+        var assignment = new RunAssignment("run-123", "gen-456", ["input-789"], "parent-000");
 
         // Act
         var message = new RunAssignmentMessage

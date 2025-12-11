@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
@@ -78,14 +79,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _clientFactory = clientFactory;
     }
 
-    /// <summary>
-    /// ClaudeAgentLoop does not support injection into ongoing runs.
-    /// Messages sent during an active run will be queued for the next run.
-    /// </summary>
-    protected override bool SupportsInjection => false;
-
     /// <inheritdoc />
-    protected override void OnBeforeRun()
+    protected override async Task OnBeforeRunAsync()
     {
         // In Interactive mode, reuse existing running client
         if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive && _client?.IsRunning == true)
@@ -101,7 +96,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 "Cleaning up existing client. Mode: {Mode}, IsRunning: {IsRunning}",
                 _claudeOptions.Mode,
                 _client.IsRunning);
-            DisposeClientResources();
+            await DisposeClientResourcesAsync();
         }
 
         Logger.LogInformation(
@@ -122,33 +117,42 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
-    protected override void OnDispose()
+    protected override async Task OnDisposeAsync()
     {
         Logger.LogDebug("Disposing ClaudeAgentLoop resources");
-        DisposeClientResources();
+        await DisposeClientResourcesAsync();
         _restartLock.Dispose();
     }
 
     /// <inheritdoc />
-    protected override void OnAfterRun()
+    protected override async Task OnAfterRunAsync()
     {
         // In OneShot mode, clean up client after run completes
         if (_claudeOptions.Mode == ClaudeAgentSdkMode.OneShot)
         {
             Logger.LogDebug("OneShot mode: Cleaning up client after run");
-            DisposeClientResources();
+            await DisposeClientResourcesAsync();
         }
         // In Interactive mode, keep client alive for next run
     }
 
     /// <summary>
-    /// Disposes the client and clears references.
+    /// Disposes the client and clears references asynchronously.
     /// </summary>
-    private void DisposeClientResources()
+    private async Task DisposeClientResourcesAsync()
     {
         if (_activeSubscription != null)
         {
-            _activeSubscription.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+            try
+            {
+                await _activeSubscription.DisposeAsync().AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (TimeoutException)
+            {
+                Logger.LogWarning("Subscription dispose timed out after 2s");
+            }
+
             _activeSubscription = null;
         }
 
@@ -198,7 +202,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
-    public override async ValueTask<RunAssignment> SendAsync(
+    public override async ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
@@ -232,45 +236,107 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
-    protected override async Task<bool> ExecuteAgenticLoopAsync(
-        string runId,
-        string generationId,
+    protected override async Task RunLoopAsync(CancellationToken ct)
+    {
+        Logger.LogDebug("ClaudeAgentLoop run loop started");
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Wait for at least one input
+                if (!await InputReader.WaitToReadAsync(ct))
+                {
+                    break; // Channel completed
+                }
+
+                // Drain all available inputs
+                TryDrainInputs(out var batch);
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
+                // Start run
+                var assignment = StartRun(batch);
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = assignment,
+                    ThreadId = ThreadId,
+                }, ct);
+
+                // Collect messages from all inputs
+                var messagesToSend = GetMessagesForClaudeSdk(batch).ToList();
+
+                // Add messages to history
+                foreach (var input in batch)
+                {
+                    foreach (var msg in input.Input.Messages)
+                    {
+                        AddToHistory(msg);
+                    }
+                }
+
+                try
+                {
+                    if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
+                    {
+                        await ExecuteInteractiveModeAsync(assignment, messagesToSend, ct);
+                    }
+                    else
+                    {
+                        await ExecuteOneShotModeAsync(assignment, messagesToSend, ct);
+                    }
+                }
+                finally
+                {
+                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Logger.LogDebug("ClaudeAgentLoop run loop cancelled");
+        }
+        catch (ChannelClosedException)
+        {
+            Logger.LogDebug("Input channel closed");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in run loop");
+            throw;
+        }
+        finally
+        {
+            await OnAfterRunAsync();
+        }
+    }
+
+    /// <summary>
+    /// Execute in Interactive mode: concurrent input watching with push notification.
+    /// </summary>
+    private async Task ExecuteInteractiveModeAsync(
+        RunAssignment assignment,
+        List<IMessage> initialMessages,
         CancellationToken ct)
     {
-        if (_client == null)
+        await EnsureClientStartedAsync(ct);
+
+        // Get or create subscription
+        _activeSubscription ??= _client!.SubscribeToMessagesAsync(ct).GetAsyncEnumerator(ct);
+
+        // Send initial messages
+        await _client!.SendAsync(initialMessages, ct);
+
+        // Create linked cancellation for concurrent tasks
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        // Start concurrent input watcher
+        var inputWatchTask = WatchAndInjectInputsAsync(linkedCts.Token);
+
+        try
         {
-            throw new InvalidOperationException("Client not initialized");
-        }
-
-        // Ensure client is started
-        if (!_client.IsRunning)
-        {
-            // Preserve session ID from previous run (for session continuity)
-            if (_client.CurrentSession?.SessionId != null)
-            {
-                _lastSessionId = _client.CurrentSession.SessionId;
-                Logger.LogDebug("Preserved sessionId from previous run: {SessionId}", _lastSessionId);
-            }
-
-            var request = BuildClaudeAgentSdkRequest();
-            Logger.LogInformation(
-                "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}, sessionId {SessionId}",
-                request.ModelId,
-                request.MaxTurns,
-                request.SessionId ?? "(new session)");
-
-            await _client.StartAsync(request, ct);
-        }
-
-        // Get or create subscription (Interactive mode)
-        if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
-        {
-            _activeSubscription ??= _client.SubscribeToMessagesAsync(ct).GetAsyncEnumerator(ct);
-
-            // Send new messages
-            var messagesToSend = GetMessagesForClaudeSdk().ToList();
-            await _client.SendAsync(messagesToSend, ct);
-
             // Read until ResultEvent
             while (await _activeSubscription.MoveNextAsync())
             {
@@ -290,31 +356,109 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 AddToHistory(msg);
             }
         }
-        else
+        finally
         {
-            // OneShot mode: use SendMessagesAsync (existing behavior)
-            var messagesToSend = GetMessagesForClaudeSdk().ToList();
-            var stream = _client.SendMessagesAsync(messagesToSend, ct);
-
-            await foreach (var msg in stream.WithCancellation(ct))
-            {
-                // Publish message to subscribers
-                await PublishToAllAsync(msg, ct);
-
-                // Add to conversation history
-                AddToHistory(msg);
-            }
+            // Stop input watcher
+            await linkedCts.CancelAsync();
         }
-
-        // ClaudeAgentLoop doesn't support forking
-        return false;
     }
 
     /// <summary>
-    /// Gets messages to send to Claude SDK CLI (only new user messages, not full history).
+    /// Watch for new inputs and inject them to CLI immediately (Interactive mode only).
+    /// </summary>
+    private async Task WatchAndInjectInputsAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await InputReader.WaitToReadAsync(ct);
+
+                if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
+                {
+                    // Collect messages and send to CLI immediately
+                    var messagesToSend = GetMessagesForClaudeSdk(newInputs).ToList();
+                    await _client!.SendAsync(messagesToSend, ct);
+
+                    // Add to history
+                    foreach (var input in newInputs)
+                    {
+                        foreach (var msg in input.Input.Messages)
+                        {
+                            AddToHistory(msg);
+                        }
+                    }
+
+                    Logger.LogInformation("Injected {Count} inputs to CLI mid-run", newInputs.Count);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Expected when run completes
+        }
+    }
+
+    /// <summary>
+    /// Execute in OneShot mode: no mid-run injection, inputs queue for next run.
+    /// </summary>
+    private async Task ExecuteOneShotModeAsync(
+        RunAssignment assignment,
+        List<IMessage> messagesToSend,
+        CancellationToken ct)
+    {
+        await EnsureClientStartedAsync(ct);
+
+        // Send all messages - process completes when done
+        var stream = _client!.SendMessagesAsync(messagesToSend, ct);
+
+        await foreach (var msg in stream.WithCancellation(ct))
+        {
+            // Publish message to subscribers
+            await PublishToAllAsync(msg, ct);
+
+            // Add to conversation history
+            AddToHistory(msg);
+        }
+
+        // OneShot: any inputs that arrived during run stay in queue for next iteration
+    }
+
+    /// <summary>
+    /// Ensures the client is started, creating it if needed.
+    /// </summary>
+    private async Task EnsureClientStartedAsync(CancellationToken ct)
+    {
+        if (_client == null)
+        {
+            throw new InvalidOperationException("Client not initialized");
+        }
+
+        if (!_client.IsRunning)
+        {
+            // Preserve session ID from previous run (for session continuity)
+            if (_client.CurrentSession?.SessionId != null)
+            {
+                _lastSessionId = _client.CurrentSession.SessionId;
+                Logger.LogDebug("Preserved sessionId from previous run: {SessionId}", _lastSessionId);
+            }
+
+            var request = BuildClaudeAgentSdkRequest();
+            Logger.LogInformation(
+                "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}, sessionId {SessionId}",
+                request.ModelId,
+                request.MaxTurns,
+                request.SessionId ?? "(new session)");
+
+            await _client.StartAsync(request, ct);
+        }
+    }
+
+    /// <summary>
+    /// Gets messages to send to Claude SDK CLI from queued inputs.
     /// Claude SDK CLI maintains its own conversation history internally.
     /// </summary>
-    private IEnumerable<IMessage> GetMessagesForClaudeSdk()
+    private IEnumerable<IMessage> GetMessagesForClaudeSdk(IReadOnlyList<QueuedInput> inputs)
     {
         // System prompt goes first (if configured)
         if (!string.IsNullOrEmpty(SystemPrompt))
@@ -322,10 +466,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             yield return new TextMessage { Text = SystemPrompt, Role = Role.System };
         }
 
-        // Only send new messages from current input (not full history)
-        foreach (var msg in CurrentInputMessages)
+        // Only send new messages from inputs (not full history)
+        foreach (var input in inputs)
         {
-            yield return msg;
+            foreach (var msg in input.Input.Messages)
+            {
+                yield return msg;
+            }
         }
     }
 

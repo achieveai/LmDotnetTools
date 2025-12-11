@@ -202,13 +202,12 @@ public class MultiTurnAgentLoopTests
         {
             new TextMessage { Text = "Hello", Role = Role.User },
         };
-        var assignment = await loop.SendAsync(messages, "my-input-id");
+        var receipt = await loop.SendAsync(messages, "my-input-id");
 
-        // Assert
-        assignment.Should().NotBeNull();
-        assignment.RunId.Should().NotBeNullOrEmpty();
-        assignment.GenerationId.Should().NotBeNullOrEmpty();
-        assignment.InputId.Should().Be("my-input-id");
+        // Assert - SendAsync returns SendReceipt (fire-and-forget), not RunAssignment
+        receipt.Should().NotBeNull();
+        receipt.ReceiptId.Should().NotBeNullOrEmpty();
+        receipt.InputId.Should().Be("my-input-id");
 
         // Wait for processing
         await Task.Delay(200);

@@ -519,25 +519,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     /// <summary>
     ///     Write an empty line to stdin for keepalive.
     ///     Thread-safe: uses semaphore.
+    ///     NOTE: Disabled because the claude-agent-sdk CLI expects JSONL input.
+    ///     Empty lines cause "SyntaxError: Unexpected end of JSON input" and crash the CLI.
+    ///     The CLI stays alive as long as stdin is open, so keepalive is not needed.
     /// </summary>
-    private async Task WriteEmptyLineAsync(CancellationToken cancellationToken)
+    private Task WriteEmptyLineAsync(CancellationToken cancellationToken)
     {
-        if (_stdinWriter == null)
-        {
-            return;
-        }
-
-        await _stdinSemaphore.WaitAsync(cancellationToken);
-        try
-        {
-            await _stdinWriter.WriteLineAsync(string.Empty);
-            await _stdinWriter.FlushAsync(cancellationToken);
-            _logger?.LogTrace("Keepalive: sent empty line");
-        }
-        finally
-        {
-            _stdinSemaphore.Release();
-        }
+        _ = cancellationToken; // Unused - keepalive disabled
+        // The claude-agent-sdk CLI expects JSONL input - empty lines cause parse errors.
+        // Keepalive is not needed as the CLI process stays alive as long as stdin is open.
+        _logger?.LogTrace("Keepalive: skipped (empty lines crash CLI)");
+        return Task.CompletedTask;
     }
 
     /// <summary>

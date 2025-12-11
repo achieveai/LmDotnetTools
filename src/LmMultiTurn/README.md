@@ -1,16 +1,131 @@
 # LmMultiTurn
 
-Multi-turn agent infrastructure for building conversational AI agents with support for streaming, persistence, and graceful lifecycle management.
+Multi-turn agent infrastructure for building conversational AI agents with support for **fully duplex non-blocking communication**, streaming, persistence, and graceful lifecycle management.
 
 ## Overview
 
 This project provides:
 
-- **MultiTurnAgentBase**: Abstract base class with channel management, subscription handling, and lifecycle management
-- **ClaudeAgentLoop**: Concrete implementation using Claude Agent SDK CLI with MCP tools
+- **MultiTurnAgentBase**: Abstract base class with duplex channel management, subscription handling, and lifecycle management
+- **MultiTurnAgentLoop**: Concrete implementation using raw LLM APIs with middleware pipeline (poll-based input consumption)
+- **ClaudeAgentLoop**: Concrete implementation using Claude Agent SDK CLI with MCP tools (push-based for Interactive mode)
 - **Persistence**: SQLite-based conversation state persistence
 
 ## Key Features
+
+### Fully Duplex Non-Blocking Communication
+
+The multi-turn agent system implements a **fire-and-forget input pattern** with decoupled output streaming:
+
+```
+                    ┌─────────────────┐
+   SendAsync() ──▶  │   Input Queue   │  (fire-and-forget, returns SendReceipt immediately)
+                    │   (Channel)     │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  Implementation │  (owns RunLoopAsync, decides when to start runs)
+                    │  Run Loop       │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+   SubscribeAsync()◀│ Output Channel  │  (streams RunAssignmentMessage, responses, RunCompletedMessage)
+                    │   (per-sub)     │
+                    └─────────────────┘
+```
+
+#### Key Types
+
+- **`SendReceipt`**: Returned immediately by `SendAsync`. Contains `ReceiptId`, `InputId`, and `QueuedAt`.
+- **`RunAssignment`**: Published via `RunAssignmentMessage` when the implementation starts processing. Contains `RunId`, `GenerationId`, `InputIds` (list of receipts included in this run), `ParentRunId`, and `WasInjected`.
+- **`QueuedInput`**: Internal representation linking `UserInput` with `ReceiptId`.
+
+#### Correlation Pattern
+
+```csharp
+// Caller sends and gets immediate receipt
+var receipt = await agent.SendAsync(messages, inputId: "my-input");
+Console.WriteLine($"Queued: {receipt.ReceiptId}");
+
+// Later, subscriber receives RunAssignmentMessage when run starts
+await foreach (var msg in agent.SubscribeAsync(ct))
+{
+    if (msg is RunAssignmentMessage assignment)
+    {
+        // Match receipt to run via InputIds
+        if (assignment.Assignment.InputIds?.Contains(receipt.ReceiptId) == true)
+        {
+            Console.WriteLine($"Run {assignment.RunId} started for our input!");
+        }
+    }
+}
+```
+
+### Implementation Patterns
+
+The base class provides two consumption patterns for implementations:
+
+#### Poll-Based (MultiTurnAgentLoop)
+Implementations call `TryDrainInputs()` between LLM turns to check for new input:
+
+```csharp
+protected override async Task RunLoopAsync(CancellationToken ct)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        // Wait for input
+        await InputReader.WaitToReadAsync(ct);
+        TryDrainInputs(out var batch);
+
+        var assignment = StartRun(batch);
+        await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
+
+        try
+        {
+            // Execute turns, poll between each turn
+            while (hasPendingToolCalls)
+            {
+                // POLL: Check for new inputs that can be injected
+                if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
+                {
+                    // Inject into current run
+                }
+                await ExecuteTurnAsync(...);
+            }
+        }
+        finally
+        {
+            await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+        }
+    }
+}
+```
+
+#### Push-Based (ClaudeAgentLoop Interactive Mode)
+Implementations watch `InputReader` concurrently while the agent runs:
+
+```csharp
+protected override async Task RunLoopAsync(CancellationToken ct)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        await InputReader.WaitToReadAsync(ct);
+        TryDrainInputs(out var batch);
+
+        var assignment = StartRun(batch);
+        await PublishToAllAsync(new RunAssignmentMessage { ... }, ct);
+
+        // Watch for new inputs concurrently while agent processes
+        var watchTask = WatchAndInjectInputsAsync(ct);
+        var agentTask = ExecuteAgentAsync(ct);
+
+        await Task.WhenAll(watchTask, agentTask);
+        await CompleteRunAsync(...);
+    }
+}
+```
 
 ### Lifecycle Management
 
@@ -76,7 +191,7 @@ await agent.SendAsync(new List<IMessage> { new TextMessage { Text = "Hello again
 
 ## Usage
 
-### Basic Usage
+### Basic Usage with Fire-and-Forget Pattern
 
 ```csharp
 var options = new ClaudeAgentSdkOptions
@@ -102,12 +217,39 @@ await using var agent = new ClaudeAgentLoop(
     systemPrompt: "You are a helpful assistant."
 );
 
-// Start the agent
+// Start the agent background loop
 _ = agent.RunAsync();
 
-// Send messages and receive responses
+// Subscribe to output (should happen before sending for real-time updates)
+_ = Task.Run(async () =>
+{
+    await foreach (var msg in agent.SubscribeAsync())
+    {
+        if (msg is RunAssignmentMessage ram)
+            Console.WriteLine($"[Run Started] {ram.RunId}");
+        else if (msg is TextMessage tm)
+            Console.WriteLine($"[Response] {tm.Text}");
+        else if (msg is RunCompletedMessage rcm)
+            Console.WriteLine($"[Run Completed] {rcm.CompletedRunId}");
+    }
+});
+
+// Send message (fire-and-forget, returns immediately)
+var receipt = await agent.SendAsync(
+    [new TextMessage { Text = "Hello!", Role = Role.User }],
+    inputId: "greeting"
+);
+Console.WriteLine($"Queued with receipt: {receipt.ReceiptId}");
+```
+
+### Simpler Usage with ExecuteRunAsync
+
+For simpler cases where you don't need the full duplex pattern:
+
+```csharp
+// ExecuteRunAsync provides a simpler API that sends and waits for the run to complete
 await foreach (var msg in agent.ExecuteRunAsync(new UserInput(
-    new List<IMessage> { new TextMessage { Text = "Hello!", Role = Role.User } }
+    [new TextMessage { Text = "Hello!", Role = Role.User }]
 )))
 {
     Console.WriteLine(msg);

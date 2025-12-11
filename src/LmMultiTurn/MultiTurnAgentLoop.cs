@@ -1,8 +1,10 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -76,10 +78,79 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
-    protected override async Task<bool> ExecuteAgenticLoopAsync(
-        string runId,
-        string generationId,
-        CancellationToken ct)
+    protected override async Task RunLoopAsync(CancellationToken ct)
+    {
+        Logger.LogDebug("MultiTurnAgentLoop run loop started");
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Wait for at least one input
+                if (!await InputReader.WaitToReadAsync(ct))
+                {
+                    break; // Channel completed
+                }
+
+                // Drain all available inputs
+                TryDrainInputs(out var batch);
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
+                // Start run with initial batch
+                var assignment = StartRun(batch);
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = assignment,
+                    ThreadId = ThreadId,
+                }, ct);
+
+                // Add initial messages to history
+                foreach (var input in batch)
+                {
+                    foreach (var msg in input.Input.Messages)
+                    {
+                        AddToHistory(msg);
+                    }
+                }
+
+                try
+                {
+                    // Execute turns - poll for new input between turns
+                    await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
+                }
+                finally
+                {
+                    // Complete run
+                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Logger.LogDebug("MultiTurnAgentLoop run loop cancelled");
+        }
+        catch (ChannelClosedException)
+        {
+            Logger.LogDebug("Input channel closed");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in run loop");
+            throw;
+        }
+        finally
+        {
+            await OnAfterRunAsync();
+        }
+    }
+
+    /// <summary>
+    /// Execute the agentic turns for a run, polling for new input between turns.
+    /// </summary>
+    private async Task ExecuteRunTurnsAsync(string runId, string generationId, CancellationToken ct)
     {
         var turnCount = 0;
 
@@ -87,13 +158,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             ct.ThrowIfCancellationRequested();
 
-            // Check for pending injections (fork case)
-            if (!PendingInjections.IsEmpty)
+            // POLL: Check for new inputs before each turn
+            if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
             {
+                // Add new messages to current run (injection)
+                foreach (var input in newInputs)
+                {
+                    foreach (var msg in input.Input.Messages)
+                    {
+                        AddToHistory(msg);
+                    }
+                }
+
                 Logger.LogInformation(
-                    "Injection detected during run {RunId}, will fork after this turn",
+                    "Injected {Count} new inputs into run {RunId}",
+                    newInputs.Count,
                     runId);
-                return true; // Signal fork
             }
 
             turnCount++;
@@ -112,8 +192,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             Logger.LogWarning("Max turns ({MaxTurns}) reached for run {RunId}", MaxTurnsPerRun, runId);
         }
-
-        return false; // No fork
     }
 
     private async Task<bool> ExecuteTurnAsync(

@@ -21,7 +21,6 @@ public class MultiTurnAgentBaseTests
     private class TestMultiTurnAgent : MultiTurnAgentBase
     {
         private readonly List<IMessage> _messagesToReturn;
-        private readonly bool _shouldFork;
 
         public int ExecuteCallCount { get; private set; }
         public string? LastRunId { get; private set; }
@@ -36,25 +35,51 @@ public class MultiTurnAgentBaseTests
             : base(threadId, systemPrompt, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
-            _shouldFork = shouldFork;
+            _ = shouldFork; // No longer used but kept for API compatibility
         }
 
-        protected override Task<bool> ExecuteAgenticLoopAsync(
-            string runId,
-            string generationId,
-            CancellationToken ct)
+        protected override async Task RunLoopAsync(CancellationToken ct)
         {
-            ExecuteCallCount++;
-            LastRunId = runId;
-            LastGenerationId = generationId;
-
-            // Publish the test messages
-            foreach (var msg in _messagesToReturn)
+            while (!ct.IsCancellationRequested)
             {
-                PublishToAllAsync(msg, ct).AsTask().Wait(ct);
-            }
+                // Wait for at least one input
+                if (!await InputReader.WaitToReadAsync(ct))
+                {
+                    break; // Channel completed
+                }
 
-            return Task.FromResult(_shouldFork);
+                // Drain all available inputs
+                TryDrainInputs(out var batch);
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
+                // Start run
+                var assignment = StartRun(batch);
+                ExecuteCallCount++;
+                LastRunId = assignment.RunId;
+                LastGenerationId = assignment.GenerationId;
+
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = assignment,
+                    ThreadId = ThreadId,
+                }, ct);
+
+                try
+                {
+                    // Publish the test messages
+                    foreach (var msg in _messagesToReturn)
+                    {
+                        await PublishToAllAsync(msg, ct);
+                    }
+                }
+                finally
+                {
+                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                }
+            }
         }
     }
 
@@ -86,14 +111,13 @@ public class MultiTurnAgentBaseTests
         var runTask = agent.RunAsync(cts.Token);
 
         // Act
-        var assignment = await agent.SendAsync(messages, "input-1");
+        var receipt = await agent.SendAsync(messages, "input-1");
 
-        // Assert
-        assignment.Should().NotBeNull();
-        assignment.RunId.Should().NotBeNullOrEmpty();
-        assignment.GenerationId.Should().NotBeNullOrEmpty();
-        assignment.InputId.Should().Be("input-1");
-        assignment.WasInjected.Should().BeFalse();
+        // Assert - SendAsync now returns SendReceipt (fire-and-forget)
+        receipt.Should().NotBeNull();
+        receipt.ReceiptId.Should().NotBeNullOrEmpty();
+        receipt.InputId.Should().Be("input-1");
+        receipt.QueuedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5));
 
         // Cleanup
         await cts.CancelAsync();
@@ -279,4 +303,163 @@ public class MultiTurnAgentBaseTests
         await cts.CancelAsync();
         await agent.DisposeAsync();
     }
+
+    #region Fire-and-Forget Behavior Tests
+
+    [Fact]
+    public async Task SendAsync_ReturnsImmediately_BeforeProcessingCompletes()
+    {
+        // Arrange
+        var agent = new TestMultiTurnAgent("test-thread");
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Act - send multiple messages quickly
+        var startTime = DateTimeOffset.UtcNow;
+        var receipt1 = await agent.SendAsync([new TextMessage { Text = "Hello 1", Role = Role.User }], "input-1");
+        var receipt2 = await agent.SendAsync([new TextMessage { Text = "Hello 2", Role = Role.User }], "input-2");
+        var receipt3 = await agent.SendAsync([new TextMessage { Text = "Hello 3", Role = Role.User }], "input-3");
+        var endTime = DateTimeOffset.UtcNow;
+
+        // Assert - all receipts should be returned almost immediately (non-blocking)
+        (endTime - startTime).Should().BeLessThan(TimeSpan.FromMilliseconds(100),
+            "SendAsync should return immediately without waiting for processing");
+
+        receipt1.ReceiptId.Should().NotBe(receipt2.ReceiptId);
+        receipt2.ReceiptId.Should().NotBe(receipt3.ReceiptId);
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SendReceipt_CanBeCorrelatedToRunAssignment_ViaInputIds()
+    {
+        // Arrange
+        var agent = new TestMultiTurnAgent("test-thread");
+        var receivedMessages = new List<IMessage>();
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Subscribe to output
+        var subscribeTask = Task.Run(async () =>
+        {
+            await foreach (var msg in agent.SubscribeAsync(cts.Token))
+            {
+                receivedMessages.Add(msg);
+            }
+        });
+
+        await Task.Delay(100); // Give time for subscription
+
+        // Act
+        var receipt = await agent.SendAsync(
+            [new TextMessage { Text = "Hello", Role = Role.User }],
+            "correlation-test-input");
+
+        // Wait for processing
+        await Task.Delay(500);
+
+        // Assert - RunAssignmentMessage should contain our receipt ID
+        var runAssignments = receivedMessages.OfType<RunAssignmentMessage>().ToList();
+        runAssignments.Should().NotBeEmpty();
+
+        var assignment = runAssignments.First();
+        assignment.Assignment.InputIds.Should().NotBeNull();
+        assignment.Assignment.InputIds.Should().Contain(receipt.ReceiptId,
+            "RunAssignment.InputIds should include the ReceiptId from SendReceipt");
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task MultipleSendsBeforeProcessing_AreBatchedIntoSingleRun()
+    {
+        // Arrange - Create agent that doesn't start immediately
+        var agent = new TestMultiTurnAgent("test-thread");
+        var receivedMessages = new List<IMessage>();
+
+        using var cts = new CancellationTokenSource();
+
+        // Queue multiple messages BEFORE starting the loop
+        var receipt1 = await agent.SendAsync([new TextMessage { Text = "First", Role = Role.User }], "batch-1");
+        var receipt2 = await agent.SendAsync([new TextMessage { Text = "Second", Role = Role.User }], "batch-2");
+
+        // Now subscribe and start
+        var subscribeTask = Task.Run(async () =>
+        {
+            await foreach (var msg in agent.SubscribeAsync(cts.Token))
+            {
+                receivedMessages.Add(msg);
+            }
+        });
+
+        await Task.Delay(50);
+
+        // Start the loop - it should batch all queued inputs
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Wait for processing
+        await Task.Delay(500);
+
+        // Assert - Should have exactly one run with both receipts
+        var runAssignments = receivedMessages.OfType<RunAssignmentMessage>().ToList();
+        runAssignments.Should().HaveCount(1, "Multiple queued inputs should be batched into a single run");
+
+        var assignment = runAssignments.First();
+        assignment.Assignment.InputIds.Should().Contain(receipt1.ReceiptId);
+        assignment.Assignment.InputIds.Should().Contain(receipt2.ReceiptId);
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SendReceipt_InputId_IsPreserved()
+    {
+        // Arrange
+        var agent = new TestMultiTurnAgent("test-thread");
+
+        // Act
+        var receipt1 = await agent.SendAsync(
+            [new TextMessage { Text = "Test", Role = Role.User }],
+            inputId: "my-custom-id");
+
+        var receipt2 = await agent.SendAsync(
+            [new TextMessage { Text = "Test", Role = Role.User }],
+            inputId: null);
+
+        // Assert
+        receipt1.InputId.Should().Be("my-custom-id");
+        receipt2.InputId.Should().BeNull();
+
+        // Cleanup
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SendReceipt_QueuedAt_IsSetCorrectly()
+    {
+        // Arrange
+        var agent = new TestMultiTurnAgent("test-thread");
+        var beforeSend = DateTimeOffset.UtcNow;
+
+        // Act
+        var receipt = await agent.SendAsync([new TextMessage { Text = "Test", Role = Role.User }]);
+        var afterSend = DateTimeOffset.UtcNow;
+
+        // Assert
+        receipt.QueuedAt.Should().BeOnOrAfter(beforeSend);
+        receipt.QueuedAt.Should().BeOnOrBefore(afterSend);
+
+        // Cleanup
+        await agent.DisposeAsync();
+    }
+
+    #endregion
 }
