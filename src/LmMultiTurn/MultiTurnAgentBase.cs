@@ -679,6 +679,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <returns>The run assignment</returns>
     protected RunAssignment StartRun(IReadOnlyList<QueuedInput> inputs, string? parentRunId = null)
     {
+        ArgumentNullException.ThrowIfNull(inputs);
+
         var runId = Guid.NewGuid().ToString("N");
         var generationId = Guid.NewGuid().ToString("N");
         var inputIds = inputs.Select(i => i.ReceiptId).ToList();
