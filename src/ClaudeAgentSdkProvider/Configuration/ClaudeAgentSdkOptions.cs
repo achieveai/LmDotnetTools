@@ -47,6 +47,11 @@ public record ClaudeAgentSdkOptions
     public string? McpConfigPath { get; init; }
 
     /// <summary>
+    ///     Maximum turns per run
+    /// </summary>
+    public int MaxTurnsPerRun { get; init; } = 50;
+
+    /// <summary>
     ///     Execution mode (default: Interactive)
     /// </summary>
     public ClaudeAgentSdkMode Mode { get; init; } = ClaudeAgentSdkMode.Interactive;

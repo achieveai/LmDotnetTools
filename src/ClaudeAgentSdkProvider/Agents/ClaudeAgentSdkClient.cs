@@ -286,12 +286,19 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 continue;
             }
 
-            _logger?.LogTrace("Received JSONL line: {Line}", line.Length > 200 ? line[..200] + "..." : line);
-
             var jsonlEvent = _parser.ParseLine(line);
+
+            if (jsonlEvent == null)
+            {
+                _logger?.LogWarning("Failed to parse JSONL line (length={Length}): {Line}",
+                    line.Length, line.Length > 200 ? line[..200] + "..." : line);
+                continue;
+            }
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
+                _logger?.LogTrace("Received AssistantMessageEvent: MessageId={MessageId}, ContentBlocks={BlockCount}",
+                    assistantEvent.Message?.Id, assistantEvent.Message?.Content?.Count ?? 0);
                 var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
                 foreach (var msg in eventMessages)
                 {
@@ -302,6 +309,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // User messages contain tool results and other user inputs
             else if (jsonlEvent is UserMessageEvent userEvent)
             {
+                _logger?.LogTrace("Received UserMessageEvent: Uuid={Uuid}, Role={Role}",
+                    userEvent.Uuid, userEvent.Message?.Role);
                 var eventMessages = _parser.ConvertToMessages(userEvent);
                 foreach (var msg in eventMessages)
                 {
@@ -312,6 +321,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             else if (jsonlEvent is SummaryEvent summaryEvent)
             {
                 _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
+            }
+            // Queue operation events represent user message submission/acceptance
+            else if (jsonlEvent is QueueOperationEvent queueEvent)
+            {
+                _logger?.LogTrace("Received QueueOperationEvent: Operation={Operation}, SessionId={SessionId}",
+                    queueEvent.Operation, queueEvent.SessionId);
+                var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent);
+                foreach (var msg in eventMessages)
+                {
+                    yield return msg;
+                }
             }
             // System init events contain session info and available tools
             else if (jsonlEvent is SystemInitEvent systemInitEvent)
@@ -333,6 +353,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Result events contain final execution summary with usage and cost info
             else if (jsonlEvent is ResultEvent resultEvent)
             {
+                _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
+                    resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
                 if (resultEvent.IsError)
                 {
                     if (isWorking && _stdinWriter != null)
@@ -391,6 +413,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 yield break;
             }
+            else
+            {
+                _logger?.LogWarning("Unhandled JSONL event type: {EventType}. Line was not processed.",
+                    jsonlEvent.GetType().Name);
+            }
         }
     }
 
@@ -421,12 +448,19 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     continue;
                 }
 
-                _logger?.LogTrace("Received JSONL line: {Line}", line.Length > 200 ? line[..200] + "..." : line);
-
                 var jsonlEvent = _parser.ParseLine(line);
+
+                if (jsonlEvent == null)
+                {
+                    _logger?.LogWarning("Failed to parse JSONL line (length={Length}): {Line}",
+                        line.Length, line.Length > 200 ? line[..200] + "..." : line);
+                    continue;
+                }
 
                 if (jsonlEvent is AssistantMessageEvent assistantEvent)
                 {
+                    _logger?.LogTrace("Received AssistantMessageEvent: MessageId={MessageId}, ContentBlocks={BlockCount}",
+                        assistantEvent.Message?.Id, assistantEvent.Message?.Content?.Count ?? 0);
                     var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
                     foreach (var msg in eventMessages)
                     {
@@ -435,6 +469,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
                 else if (jsonlEvent is UserMessageEvent userEvent)
                 {
+                    _logger?.LogTrace("Received UserMessageEvent: Uuid={Uuid}, Role={Role}",
+                        userEvent.Uuid, userEvent.Message?.Role);
                     var eventMessages = _parser.ConvertToMessages(userEvent);
                     foreach (var msg in eventMessages)
                     {
@@ -444,6 +480,16 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 else if (jsonlEvent is SummaryEvent summaryEvent)
                 {
                     _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
+                }
+                else if (jsonlEvent is QueueOperationEvent queueEvent)
+                {
+                    _logger?.LogTrace("Received QueueOperationEvent: Operation={Operation}, SessionId={SessionId}",
+                        queueEvent.Operation, queueEvent.SessionId);
+                    var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent);
+                    foreach (var msg in eventMessages)
+                    {
+                        yield return msg;
+                    }
                 }
                 else if (jsonlEvent is SystemInitEvent systemInitEvent)
                 {
@@ -460,9 +506,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
                 else if (jsonlEvent is ResultEvent resultEvent)
                 {
-                    _logger?.LogDebug(
-                        "ResultEvent received - IsError: {IsError}",
-                        resultEvent.IsError);
+                    _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
+                        resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
 
                     // Yield a marker message so caller knows turn is complete
                     yield return new ResultEventMessage
@@ -470,6 +515,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                         IsError = resultEvent.IsError,
                         Result = resultEvent.Result,
                     };
+                }
+                else
+                {
+                    _logger?.LogWarning("Unhandled JSONL event type: {EventType}. Line was not processed.",
+                        jsonlEvent.GetType().Name);
                 }
             }
         }

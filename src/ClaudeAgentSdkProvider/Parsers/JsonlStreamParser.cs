@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
@@ -147,6 +148,50 @@ public class JsonlStreamParser
         }
 
         return messages;
+    }
+
+    /// <summary>
+    ///     Convert a QueueOperationEvent to IMessage instances.
+    ///     Returns a QueueOperationMessage wrapper for ClaudeAgentLoop to process.
+    /// </summary>
+    public static IEnumerable<IMessage> ConvertToMessages(QueueOperationEvent queueEvent)
+    {
+        ArgumentNullException.ThrowIfNull(queueEvent);
+        return ConvertToMessagesCore(queueEvent);
+    }
+
+    private static IEnumerable<IMessage> ConvertToMessagesCore(QueueOperationEvent queueEvent)
+    {
+        var contentMessages = new List<IMessage>();
+
+        // For enqueue, parse content blocks into messages
+        if (queueEvent.Operation == "enqueue" && queueEvent.Content != null)
+        {
+            foreach (var block in queueEvent.Content)
+            {
+                var msg = ConvertContentBlock(
+                    block,
+                    Role.User,
+                    generationId: null!,
+                    runId: null!,
+                    parentRunId: null,
+                    threadId: queueEvent.SessionId);
+                if (msg != null)
+                {
+                    contentMessages.Add(msg);
+                }
+            }
+        }
+
+        // Return wrapper message for ClaudeAgentLoop to process
+        yield return new QueueOperationMessage
+        {
+            Operation = queueEvent.Operation,
+            Timestamp = queueEvent.Timestamp,
+            SessionId = queueEvent.SessionId,
+            ContentMessages = contentMessages.Count > 0 ? contentMessages : null,
+            ThreadId = queueEvent.SessionId,
+        };
     }
 
     /// <summary>

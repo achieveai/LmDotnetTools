@@ -37,9 +37,27 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private string? _lastSessionId;
 
     /// <summary>
+    /// Tracks inputs sent to CLI, awaiting enqueue/dequeue confirmation.
+    /// Used for correlating queue-operation events with original user inputs.
+    /// </summary>
+    private readonly Queue<(QueuedInput Input, RunAssignment Assignment)> _pendingCliInputs = new();
+
+    /// <summary>
     /// The active subscription to stdout messages (Interactive mode).
     /// </summary>
     private IAsyncEnumerator<IMessage>? _activeSubscription;
+
+    /// <summary>
+    /// Track if we're waiting for a dequeue (previous send not yet assigned).
+    /// When true, new messages should be queued locally instead of sent to CLI.
+    /// </summary>
+    private bool _awaitingDequeue;
+
+    /// <summary>
+    /// Local queue for messages that arrive while we're waiting for dequeue.
+    /// Stores both messages AND their source inputs for correlation with RunAssignment.
+    /// </summary>
+    private readonly Queue<(List<IMessage> Messages, List<QueuedInput> Inputs)> _localMessageQueue = new();
 
     /// <summary>
     /// Creates a new ClaudeAgentLoop.
@@ -49,7 +67,6 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <param name="threadId">Unique identifier for this conversation thread</param>
     /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
     /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
-    /// <param name="maxTurnsPerRun">Maximum turns per run (default: 50)</param>
     /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
     /// <param name="store">Optional persistence store for conversation state</param>
@@ -62,14 +79,21 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         string threadId,
         string? systemPrompt = null,
         GenerateReplyOptions? defaultOptions = null,
-        int maxTurnsPerRun = 50,
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
         IConversationStore? store = null,
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? clientFactory = null)
-        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
+        : base(
+            threadId,
+            systemPrompt,
+            defaultOptions,
+            claudeOptions?.MaxTurnsPerRun ?? 50,
+            inputChannelCapacity,
+            outputChannelCapacity,
+            store,
+            logger)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
@@ -257,13 +281,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     continue;
                 }
 
-                // Start run
+                // Start run and track for correlation with queue-operation events
                 var assignment = StartRun(batch);
-                await PublishToAllAsync(new RunAssignmentMessage
+
+                // Track each input for correlation with enqueue/dequeue events
+                foreach (var input in batch)
                 {
-                    Assignment = assignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                    _pendingCliInputs.Enqueue((input, assignment));
+                }
+
+                // Note: RunAssignmentMessage will be published when dequeue is received
+                // This ensures we only confirm assignment after CLI accepts the input
 
                 // Collect messages from all inputs
                 var messagesToSend = GetMessagesForClaudeSdk(batch).ToList();
@@ -328,6 +356,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         // Send initial messages
         await _client!.SendAsync(initialMessages, ct);
+        _awaitingDequeue = true; // Now waiting for dequeue before sending more
 
         // Create linked cancellation for concurrent tasks
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -347,6 +376,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 {
                     Logger.LogDebug("Turn complete. IsError: {IsError}", resultEvent.IsError);
                     break;
+                }
+
+                // Handle queue operation events for input correlation
+                if (msg is QueueOperationMessage queueOp)
+                {
+                    await HandleQueueOperationAsync(queueOp, ct);
+                    continue; // Don't publish QueueOperationMessage to subscribers
                 }
 
                 // Publish message to subscribers
@@ -376,20 +412,42 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
                 if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
                 {
-                    // Collect messages and send to CLI immediately
+                    // Collect messages
                     var messagesToSend = GetMessagesForClaudeSdk(newInputs).ToList();
-                    await _client!.SendAsync(messagesToSend, ct);
 
-                    // Add to history
-                    foreach (var input in newInputs)
+                    if (_awaitingDequeue)
                     {
-                        foreach (var msg in input.Input.Messages)
-                        {
-                            AddToHistory(msg);
-                        }
+                        // Queue locally instead of sending to CLI - will be sent after current batch is dequeued
+                        _localMessageQueue.Enqueue((messagesToSend, newInputs));
+                        Logger.LogDebug(
+                            "Queued {MessageCount} messages locally (awaiting previous dequeue). InputCount: {InputCount}",
+                            messagesToSend.Count,
+                            newInputs.Count);
                     }
+                    else
+                    {
+                        // Safe to send directly
+                        // Track inputs for dequeue correlation
+                        var assignment = StartRun(newInputs);
+                        foreach (var input in newInputs)
+                        {
+                            _pendingCliInputs.Enqueue((input, assignment));
+                        }
 
-                    Logger.LogInformation("Injected {Count} inputs to CLI mid-run", newInputs.Count);
+                        // Add to history
+                        foreach (var input in newInputs)
+                        {
+                            foreach (var msg in input.Input.Messages)
+                            {
+                                AddToHistory(msg);
+                            }
+                        }
+
+                        await _client!.SendAsync(messagesToSend, ct);
+                        _awaitingDequeue = true;
+
+                        Logger.LogInformation("Injected {Count} inputs to CLI mid-run", newInputs.Count);
+                    }
                 }
             }
         }
@@ -397,6 +455,171 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         {
             // Expected when run completes
         }
+    }
+
+    /// <summary>
+    /// Handle queue operation events for input correlation.
+    /// - enqueue: CLI received the user input
+    /// - dequeue: CLI accepted the input for processing, publish RunAssignmentMessage
+    /// - remove: CLI removed the input because a new input arrived before dequeue
+    /// </summary>
+    private async Task HandleQueueOperationAsync(QueueOperationMessage queueOp, CancellationToken ct)
+    {
+        if (queueOp.Operation == "enqueue")
+        {
+            // CLI received our input - log for tracking
+            Logger.LogDebug(
+                "Queue enqueue received - SessionId: {SessionId}, Timestamp: {Timestamp}, ContentCount: {ContentCount}",
+                queueOp.SessionId,
+                queueOp.Timestamp,
+                queueOp.ContentMessages?.Count ?? 0);
+        }
+        else if (queueOp.Operation == "dequeue")
+        {
+            // CLI accepted input for processing - no longer awaiting dequeue
+            _awaitingDequeue = false;
+
+            Logger.LogDebug(
+                "Queue dequeue received - SessionId: {SessionId}, Timestamp: {Timestamp}",
+                queueOp.SessionId,
+                queueOp.Timestamp);
+
+            if (_pendingCliInputs.TryDequeue(out var pending))
+            {
+                Logger.LogInformation(
+                    "Publishing RunAssignmentMessage - RunId: {RunId}, InputId: {InputId}",
+                    pending.Assignment.RunId,
+                    pending.Input.ReceiptId);
+
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = pending.Assignment,
+                    ThreadId = ThreadId,
+                }, ct);
+            }
+            else
+            {
+                Logger.LogWarning("Received dequeue but no pending inputs to correlate");
+            }
+
+            // Check if we have queued messages to send now
+            if (_localMessageQueue.TryDequeue(out var nextBatch))
+            {
+                Logger.LogInformation(
+                    "Sending queued messages after dequeue. MessageCount: {MessageCount}, InputCount: {InputCount}",
+                    nextBatch.Messages.Count,
+                    nextBatch.Inputs.Count);
+
+                // Track inputs for dequeue correlation
+                var assignment = StartRun(nextBatch.Inputs);
+                foreach (var input in nextBatch.Inputs)
+                {
+                    _pendingCliInputs.Enqueue((input, assignment));
+                }
+
+                // Add to history
+                foreach (var input in nextBatch.Inputs)
+                {
+                    foreach (var msg in input.Input.Messages)
+                    {
+                        AddToHistory(msg);
+                    }
+                }
+
+                await _client!.SendAsync(nextBatch.Messages, ct);
+                _awaitingDequeue = true;
+            }
+        }
+        else if (queueOp.Operation == "remove")
+        {
+            // CLI removed input because a new input arrived before dequeue
+            // This is an error condition - we should have waited for dequeue before sending more
+            Logger.LogError(
+                "Queue remove received - SessionId: {SessionId}. Messages were removed before dequeue. ContentCount: {Count}",
+                queueOp.SessionId,
+                queueOp.ContentMessages?.Count ?? 0);
+
+            // Match removed content with pending inputs and re-queue them
+            if (queueOp.ContentMessages != null && queueOp.ContentMessages.Count > 0)
+            {
+                var matchedInput = FindPendingInputByContent(queueOp.ContentMessages);
+                if (matchedInput != null)
+                {
+                    // Re-queue to send after current batch is dequeued
+                    _localMessageQueue.Enqueue((queueOp.ContentMessages, matchedInput.Value.Inputs));
+                    Logger.LogInformation(
+                        "Re-queued {Count} removed messages for later send",
+                        queueOp.ContentMessages.Count);
+                }
+                else
+                {
+                    Logger.LogError("Could not match removed messages with any pending input");
+                }
+            }
+        }
+        else
+        {
+            Logger.LogWarning("Unknown queue operation: {Operation}", queueOp.Operation);
+        }
+    }
+
+    /// <summary>
+    /// Find pending input that matches the removed content by comparing message content.
+    /// </summary>
+    private (List<IMessage> Messages, List<QueuedInput> Inputs)? FindPendingInputByContent(List<IMessage> removedContent)
+    {
+        // Look through pending inputs to find one that matches
+        var pendingList = _pendingCliInputs.ToList();
+        foreach (var pending in pendingList)
+        {
+            var pendingMessages = pending.Input.Input.Messages;
+            if (MessagesMatchByContent(pendingMessages, removedContent))
+            {
+                return (pendingMessages.ToList(), [pending.Input]);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Compare two message collections by their content.
+    /// </summary>
+    private static bool MessagesMatchByContent(IEnumerable<IMessage> a, IEnumerable<IMessage> b)
+    {
+        var aList = a.ToList();
+        var bList = b.ToList();
+
+        if (aList.Count != bList.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < aList.Count; i++)
+        {
+            if (aList[i] is TextMessage ta && bList[i] is TextMessage tb)
+            {
+                if (ta.Text != tb.Text)
+                {
+                    return false;
+                }
+            }
+            else if (aList[i] is ImageMessage ia && bList[i] is ImageMessage ib)
+            {
+                // Compare image messages by comparing ImageData bytes
+                if (!ia.ImageData.ToMemory().Span.SequenceEqual(ib.ImageData.ToMemory().Span))
+                {
+                    return false;
+                }
+            }
+            // Different types don't match
+            else if (aList[i].GetType() != bList[i].GetType())
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -414,6 +637,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         await foreach (var msg in stream.WithCancellation(ct))
         {
+            // Handle queue operation events for input correlation
+            if (msg is QueueOperationMessage queueOp)
+            {
+                await HandleQueueOperationAsync(queueOp, ct);
+                continue; // Don't publish QueueOperationMessage to subscribers
+            }
+
             // Publish message to subscribers
             await PublishToAllAsync(msg, ct);
 
@@ -483,7 +713,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
     {
         var modelId = DefaultOptions.ModelId ?? "claude-sonnet-4-5-20250929";
-        var maxTurns = DefaultOptions.MaxToken ?? 40; // MaxToken is repurposed for max turns
+        var maxTurns = _claudeOptions.MaxTurnsPerRun;
 
         // Max thinking tokens from options
         var maxThinkingTokens = _claudeOptions.MaxThinkingTokens;
