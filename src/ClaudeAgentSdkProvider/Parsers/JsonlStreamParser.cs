@@ -348,6 +348,27 @@ public class JsonlStreamParser
                     : null,
         };
 
+        // Store additional cache info in ExtraProperties
+        if (usageInfo.CacheCreationInputTokens > 0)
+        {
+            usage = usage.SetExtraProperty("cache_creation_input_tokens", usageInfo.CacheCreationInputTokens);
+        }
+
+        if (usageInfo.CacheCreation?.Ephemeral5mInputTokens > 0)
+        {
+            usage = usage.SetExtraProperty("ephemeral_5m_input_tokens", usageInfo.CacheCreation.Ephemeral5mInputTokens);
+        }
+
+        if (usageInfo.CacheCreation?.Ephemeral1hInputTokens > 0)
+        {
+            usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", usageInfo.CacheCreation.Ephemeral1hInputTokens);
+        }
+
+        if (!string.IsNullOrEmpty(usageInfo.ServiceTier))
+        {
+            usage = usage.SetExtraProperty("service_tier", usageInfo.ServiceTier);
+        }
+
         return new UsageMessage
         {
             Usage = usage,

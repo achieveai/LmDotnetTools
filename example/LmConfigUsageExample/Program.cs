@@ -1171,7 +1171,8 @@ list references from above tool calls with book name, chapter, page number
                 ProjectRoot = Directory.GetCurrentDirectory(),
                 McpConfigPath = ".mcp.json",
                 Mode = ClaudeAgentSdkMode.Interactive, // Also works with OneShot
-                MaxThinkingTokens = 8092
+                MaxThinkingTokens = 8092,
+                MaxTurnsPerRun = maxTurns
             };
 
             // Load MCP servers from .mcp.json
@@ -1251,7 +1252,6 @@ list references from above tool calls with book name, chapter, page number
                 threadId,
                 systemPrompt: DefaultSystemPrompt,
                 defaultOptions: defaultOptions,
-                maxTurnsPerRun: maxTurns,
                 logger: logger,
                 loggerFactory: loggerFactory);
 

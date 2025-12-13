@@ -297,9 +297,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
-                _logger?.LogTrace("Received AssistantMessageEvent: MessageId={MessageId}, ContentBlocks={BlockCount}",
-                    assistantEvent.Message?.Id, assistantEvent.Message?.Content?.Count ?? 0);
-                var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
+                var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+                _logger?.LogTrace(
+                    "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
+                    assistantEvent.Message?.Id,
+                    assistantEvent.Message?.Content?.Count ?? 0,
+                    string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
                 foreach (var msg in eventMessages)
                 {
                     isWorking = true;
@@ -309,9 +312,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // User messages contain tool results and other user inputs
             else if (jsonlEvent is UserMessageEvent userEvent)
             {
-                _logger?.LogTrace("Received UserMessageEvent: Uuid={Uuid}, Role={Role}",
-                    userEvent.Uuid, userEvent.Message?.Role);
-                var eventMessages = _parser.ConvertToMessages(userEvent);
+                var eventMessages = _parser.ConvertToMessages(userEvent).ToList();
+                _logger?.LogTrace(
+                    "UserMessageEvent: Uuid={Uuid}, Role={Role}, Messages=[{Messages}]",
+                    userEvent.Uuid,
+                    userEvent.Message?.Role,
+                    string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
                 foreach (var msg in eventMessages)
                 {
                     yield return msg;
@@ -325,9 +331,23 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Queue operation events represent user message submission/acceptance
             else if (jsonlEvent is QueueOperationEvent queueEvent)
             {
-                _logger?.LogTrace("Received QueueOperationEvent: Operation={Operation}, SessionId={SessionId}",
-                    queueEvent.Operation, queueEvent.SessionId);
-                var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent);
+                var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent).ToList();
+                var queueOpMsg = eventMessages.OfType<QueueOperationMessage>().FirstOrDefault();
+
+                // Log using multiline format helper
+                if (queueOpMsg != null)
+                {
+                    var logMessage = FormatQueueOperationForLog(queueOpMsg);
+                    if (queueEvent.Operation == "remove")
+                    {
+                        _logger?.LogError("QueueOperationEvent:{Message}", logMessage);
+                    }
+                    else
+                    {
+                        _logger?.LogTrace("QueueOperationEvent:{Message}", logMessage);
+                    }
+                }
+
                 foreach (var msg in eventMessages)
                 {
                     yield return msg;
@@ -452,16 +472,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 if (jsonlEvent == null)
                 {
-                    _logger?.LogWarning("Failed to parse JSONL line (length={Length}): {Line}",
-                        line.Length, line.Length > 200 ? line[..200] + "..." : line);
+                    _logger?.LogWarning(
+                        "Failed to parse JSONL line (length={Length}): {Line}",
+                        line.Length,
+                        line.Length > 200 ? line[..200] + "..." : line);
                     continue;
                 }
 
                 if (jsonlEvent is AssistantMessageEvent assistantEvent)
                 {
-                    _logger?.LogTrace("Received AssistantMessageEvent: MessageId={MessageId}, ContentBlocks={BlockCount}",
-                        assistantEvent.Message?.Id, assistantEvent.Message?.Content?.Count ?? 0);
-                    var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
+                    var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+                    _logger?.LogTrace(
+                        "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
+                        assistantEvent.Message?.Id,
+                        assistantEvent.Message?.Content?.Count ?? 0,
+                        string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
+
                     foreach (var msg in eventMessages)
                     {
                         yield return msg;
@@ -469,9 +495,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
                 else if (jsonlEvent is UserMessageEvent userEvent)
                 {
-                    _logger?.LogTrace("Received UserMessageEvent: Uuid={Uuid}, Role={Role}",
-                        userEvent.Uuid, userEvent.Message?.Role);
-                    var eventMessages = _parser.ConvertToMessages(userEvent);
+                    var eventMessages = _parser.ConvertToMessages(userEvent).ToList();
+                    _logger?.LogTrace(
+                        "UserMessageEvent: Uuid={Uuid}, Role={Role}, Messages=[{Messages}]",
+                        userEvent.Uuid,
+                        userEvent.Message?.Role,
+                        string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
+
                     foreach (var msg in eventMessages)
                     {
                         yield return msg;
@@ -483,9 +513,23 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
                 else if (jsonlEvent is QueueOperationEvent queueEvent)
                 {
-                    _logger?.LogTrace("Received QueueOperationEvent: Operation={Operation}, SessionId={SessionId}",
-                        queueEvent.Operation, queueEvent.SessionId);
-                    var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent);
+                    var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent).ToList();
+                    var queueOpMsg = eventMessages.OfType<QueueOperationMessage>().FirstOrDefault();
+
+                    // Log using multiline format helper
+                    if (queueOpMsg != null)
+                    {
+                        var logMessage = FormatQueueOperationForLog(queueOpMsg);
+                        if (queueEvent.Operation == "remove")
+                        {
+                            _logger?.LogError("QueueOperationEvent:{Message}", logMessage);
+                        }
+                        else
+                        {
+                            _logger?.LogTrace("QueueOperationEvent:{Message}", logMessage);
+                        }
+                    }
+
                     foreach (var msg in eventMessages)
                     {
                         yield return msg;
@@ -1268,5 +1312,82 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         // Default to image/png as a safe fallback (most providers accept PNG)
         return "image/png";
+    }
+
+    /// <summary>
+    ///     Format a message for trace logging, including content preview.
+    ///     Uses multiline format for readability.
+    /// </summary>
+    private static string FormatMessageForLog(IMessage msg, int maxContentLength = 80)
+    {
+        return msg switch
+        {
+            TextMessage text => $"\n  [Text] ({text.Text?.Length ?? 0} chars)\n    {TruncateForLog(text.Text, maxContentLength)}",
+            ReasoningMessage reasoning => $"\n  [Thinking] ({reasoning.Reasoning?.Length ?? 0} chars)\n    {TruncateForLog(reasoning.Reasoning, maxContentLength)}",
+            ToolCallMessage toolCall => $"\n  [ToolCall] {toolCall.FunctionName}\n    args={TruncateForLog(toolCall.FunctionArgs, 80)}",
+            ToolCallResultMessage toolResult => $"\n  [ToolResult] id={toolResult.ToolCallId}\n    result={TruncateForLog(toolResult.Result, maxContentLength)}",
+            ImageMessage image => $"\n  [Image]\n    mediaType={image.ImageData.MediaType}\n    size={image.ImageData.ToMemory().Length} bytes",
+            UsageMessage usage => $"\n  [Usage] prompt={usage.Usage?.PromptTokens}, completion={usage.Usage?.CompletionTokens}, total={usage.Usage?.TotalTokens}, cacheRead={usage.Usage?.TotalCachedTokens}",
+            QueueOperationMessage queueOp => FormatQueueOperationForLog(queueOp),
+            _ => $"\n  [{msg.GetType().Name}]",
+        };
+    }
+
+    /// <summary>
+    ///     Truncate a string for logging, adding ellipsis if truncated.
+    /// </summary>
+    private static string TruncateForLog(string? text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return "(empty)";
+        }
+
+        // Collapse all whitespace and newlines to single spaces for preview
+        var preview = text.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+
+        // Trim leading/trailing whitespace
+        preview = preview.Trim();
+
+        if (string.IsNullOrEmpty(preview))
+        {
+            return "(whitespace only)";
+        }
+
+        if (preview.Length <= maxLength)
+        {
+            return preview;
+        }
+
+        return preview[..maxLength] + "...";
+    }
+
+    /// <summary>
+    ///     Format a QueueOperationMessage for trace logging with multiline format.
+    /// </summary>
+    private static string FormatQueueOperationForLog(QueueOperationMessage queueOp)
+    {
+        var result = $"\n  [QueueOp] {queueOp.Operation}";
+        result += $"\n    sessionId={queueOp.SessionId}";
+        if (queueOp.Timestamp.HasValue)
+        {
+            result += $"\n    timestamp={queueOp.Timestamp:HH:mm:ss.fff}";
+        }
+
+        if (queueOp.ContentMessages?.Count > 0)
+        {
+            result += $"\n    contentCount={queueOp.ContentMessages.Count}";
+            foreach (var msg in queueOp.ContentMessages.Take(2))
+            {
+                result += FormatMessageForLog(msg, 60).Replace("\n  ", "\n      ");
+            }
+
+            if (queueOp.ContentMessages.Count > 2)
+            {
+                result += $"\n      ... and {queueOp.ContentMessages.Count - 2} more";
+            }
+        }
+
+        return result;
     }
 }
