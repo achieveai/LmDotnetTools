@@ -1137,7 +1137,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     // Convert BinaryData to base64 with proper media type
                     var imageBytes = imageMsg.ImageData.ToArray();
                     var base64Data = Convert.ToBase64String(imageBytes);
-                    var mediaType = imageMsg.ImageData.MediaType ?? "image/jpeg";
+
+                    // Ensure MediaType is set - if null, detect from bytes
+                    var mediaType = imageMsg.ImageData.MediaType;
+                    if (string.IsNullOrEmpty(mediaType))
+                    {
+                        mediaType = DetectImageMimeTypeFromBytes(imageBytes);
+                    }
 
                     contentBlocks.Add(
                         new InputImageContentBlock
@@ -1174,5 +1180,43 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             Type = "user",
             Message = new InputMessage { Role = "user", Content = contentBlocks },
         };
+    }
+
+    /// <summary>
+    ///     Detects image MIME type from byte signature (magic bytes).
+    ///     Supports PNG, JPEG, GIF, and WebP formats.
+    /// </summary>
+    private static string DetectImageMimeTypeFromBytes(byte[] bytes)
+    {
+        if (bytes.Length >= 8)
+        {
+            // PNG: 89 50 4E 47
+            if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            {
+                return "image/png";
+            }
+
+            // JPEG: FF D8 FF
+            if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+            {
+                return "image/jpeg";
+            }
+
+            // GIF: 47 49 46 38
+            if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38)
+            {
+                return "image/gif";
+            }
+
+            // WebP: 52 49 46 46 ... 57 45 42 50
+            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            {
+                return "image/webp";
+            }
+        }
+
+        // Default to image/png as a safe fallback (most providers accept PNG)
+        return "image/png";
     }
 }
