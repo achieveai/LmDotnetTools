@@ -263,6 +263,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine
             );
 
+            var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
+            _logger?.LogInformation(
+                "Submitting to LLM - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                userMessages.Count,
+                firstText ?? "(none)",
+                lastText ?? "(same as first)");
+
             await _stdinWriter.WriteLineAsync(jsonLine);
             await _stdinWriter.FlushAsync(cancellationToken);
 
@@ -600,6 +607,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             _logger?.LogDebug(
                 "Sending JSONL message to claude-agent-sdk: {Message}",
                 jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
+
+            var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
+            _logger?.LogInformation(
+                "Submitting to LLM (Interactive) - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                userMessages.Count,
+                firstText ?? "(none)",
+                lastText ?? "(same as first)");
 
             await _stdinWriter.WriteLineAsync(jsonLine);
             await _stdinWriter.FlushAsync(cancellationToken);
@@ -1360,6 +1374,26 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
 
         return preview[..maxLength] + "...";
+    }
+
+    /// <summary>
+    ///     Extract first and last text messages from a collection for logging.
+    /// </summary>
+    private static (string? First, string? Last) GetFirstLastTextMessages(
+        IEnumerable<IMessage> messages,
+        int maxLength = 100)
+    {
+        var textMessages = messages.OfType<TextMessage>().ToList();
+        if (textMessages.Count == 0)
+        {
+            return (null, null);
+        }
+
+        var first = TruncateForLog(textMessages[0].Text, maxLength);
+        var last = textMessages.Count > 1
+            ? TruncateForLog(textMessages[^1].Text, maxLength)
+            : null;
+        return (first, last);
     }
 
     /// <summary>

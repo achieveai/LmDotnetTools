@@ -468,11 +468,16 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         if (queueOp.Operation == "enqueue")
         {
             // CLI received our input - log for tracking
+            var (enqFirstText, enqLastText) = queueOp.ContentMessages != null
+                ? GetFirstLastTextMessages(queueOp.ContentMessages)
+                : (null, null);
             Logger.LogDebug(
-                "Queue enqueue received - SessionId: {SessionId}, Timestamp: {Timestamp}, ContentCount: {ContentCount}",
+                "Queue enqueue received - SessionId: {SessionId}, Timestamp: {Timestamp}, ContentCount: {ContentCount}, FirstText: {First}, LastText: {Last}",
                 queueOp.SessionId,
                 queueOp.Timestamp,
-                queueOp.ContentMessages?.Count ?? 0);
+                queueOp.ContentMessages?.Count ?? 0,
+                enqFirstText ?? "(none)",
+                enqLastText ?? "(same as first)");
         }
         else if (queueOp.Operation == "dequeue")
         {
@@ -486,10 +491,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             if (_pendingCliInputs.TryDequeue(out var pending))
             {
+                var (firstText, lastText) = GetFirstLastTextMessages(pending.Input.Input.Messages);
                 Logger.LogInformation(
-                    "Publishing RunAssignmentMessage - RunId: {RunId}, InputId: {InputId}",
+                    "Publishing RunAssignmentMessage - RunId: {RunId}, InputId: {InputId}, FirstText: {First}, LastText: {Last}",
                     pending.Assignment.RunId,
-                    pending.Input.ReceiptId);
+                    pending.Input.ReceiptId,
+                    firstText ?? "(none)",
+                    lastText ?? "(same as first)");
 
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
@@ -620,6 +628,44 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Extract first and last text messages from a collection for logging.
+    /// </summary>
+    private static (string? First, string? Last) GetFirstLastTextMessages(
+        IEnumerable<IMessage> messages,
+        int maxLength = 100)
+    {
+        var textMessages = messages.OfType<TextMessage>().ToList();
+        if (textMessages.Count == 0)
+        {
+            return (null, null);
+        }
+
+        var first = TruncateForLog(textMessages[0].Text, maxLength);
+        var last = textMessages.Count > 1
+            ? TruncateForLog(textMessages[^1].Text, maxLength)
+            : null;
+        return (first, last);
+    }
+
+    /// <summary>
+    /// Truncate a string for logging, adding ellipsis if truncated.
+    /// </summary>
+    private static string TruncateForLog(string? text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return "(empty)";
+        }
+
+        // Collapse all whitespace and newlines to single spaces for preview
+        var preview = text.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ").Trim();
+
+        return string.IsNullOrEmpty(preview)
+            ? "(whitespace only)"
+            : preview.Length <= maxLength ? preview : preview[..maxLength] + "...";
     }
 
     /// <summary>
