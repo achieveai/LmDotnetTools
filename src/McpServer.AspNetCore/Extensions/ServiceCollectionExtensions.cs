@@ -25,18 +25,16 @@ public static class ServiceCollectionExtensions
         int? port = null)
     {
         // First, configure the MCP server options with handlers from function providers
-        services.AddMcpServerHandlers();
+        _ = services.AddMcpServerHandlers();
 
         // Then add the MCP server with HTTP transport
-        services.AddMcpServer().WithHttpTransport();
+        _ = services.AddMcpServer().WithHttpTransport();
 
         // Configure port if specified
         if (port.HasValue)
         {
-            services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
-            {
-                options.Listen(System.Net.IPAddress.Loopback, port.Value);
-            });
+            _ = services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(
+                options => options.Listen(IPAddress.Loopback, port.Value));
         }
 
         return services;
@@ -51,7 +49,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddFunctionProvider<TProvider>(this IServiceCollection services)
         where TProvider : class, IFunctionProvider
     {
-        services.AddSingleton<IFunctionProvider, TProvider>();
+        _ = services.AddSingleton<IFunctionProvider, TProvider>();
         return services;
     }
 
@@ -65,7 +63,7 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         IFunctionProvider provider)
     {
-        services.AddSingleton(provider);
+        _ = services.AddSingleton(provider);
         return services;
     }
 

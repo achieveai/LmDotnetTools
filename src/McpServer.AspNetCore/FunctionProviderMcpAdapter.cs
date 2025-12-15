@@ -22,7 +22,7 @@ public static class FunctionProviderMcpAdapter
         this IServiceCollection services)
     {
         // Configure MCP server options with dynamic handlers using AddOptions pattern
-        services.AddOptions<McpServerOptions>()
+        _ = services.AddOptions<McpServerOptions>()
             .Configure<IServiceProvider>((options, sp) =>
             {
                 var functionProviders = sp.GetServices<IFunctionProvider>();
@@ -275,11 +275,8 @@ public static class FunctionProviderMcpAdapter
     private static string GetToolName(FunctionContract contract)
     {
         // Use MCP convention: ClassName-FunctionName if ClassName is present
-        if (!string.IsNullOrWhiteSpace(contract.ClassName))
-        {
-            return $"{contract.ClassName}-{contract.Name}";
-        }
-
-        return contract.Name;
+        return string.IsNullOrWhiteSpace(contract.ClassName)
+            ? contract.Name
+            : $"{contract.ClassName}-{contract.Name}";
     }
 }
