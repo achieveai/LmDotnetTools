@@ -708,12 +708,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="generationId">The generation ID</param>
     /// <param name="wasForked">Whether the run was forked due to new input</param>
     /// <param name="forkedToRunId">The run ID that was forked to (if applicable)</param>
+    /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
     /// <param name="ct">Cancellation token</param>
     protected async Task CompleteRunAsync(
         string runId,
         string generationId,
         bool wasForked = false,
         string? forkedToRunId = null,
+        int pendingMessageCount = 0,
         CancellationToken ct = default)
     {
         await PublishToAllAsync(new RunCompletedMessage
@@ -723,6 +725,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             ForkedToRunId = forkedToRunId,
             ThreadId = ThreadId,
             GenerationId = generationId,
+            HasPendingMessages = pendingMessageCount > 0,
+            PendingMessageCount = pendingMessageCount,
         }, ct);
 
         lock (_stateLock)

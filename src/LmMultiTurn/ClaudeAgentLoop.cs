@@ -52,12 +52,28 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// When true, new messages should be queued locally instead of sent to CLI.
     /// </summary>
     private bool _awaitingDequeue;
+    private string? _lastObservedGenerationId;
 
     /// <summary>
     /// Local queue for messages that arrive while we're waiting for dequeue.
     /// Stores both messages AND their source inputs for correlation with RunAssignment.
     /// </summary>
     private readonly Queue<(List<IMessage> Messages, List<QueuedInput> Inputs)> _localMessageQueue = new();
+
+    /// <summary>
+    /// Track pending tool calls to prevent message loss.
+    /// When pendingToolCalls > 0, messages should be queued locally instead of sent to CLI
+    /// because the SDK queue will REMOVE them when a new message arrives during tool execution.
+    /// </summary>
+    private int _pendingToolCalls;
+
+    /// <summary>
+    /// Track whether a run is in progress (generation + tool execution).
+    /// When true, the SDK queue may REMOVE messages, so we queue locally.
+    /// Only reset to false when ResultEventMessage is received (run complete).
+    /// This is more robust than _awaitingDequeue which can be reset by heuristics mid-run.
+    /// </summary>
+    private bool _runInProgress;
 
     /// <summary>
     /// Creates a new ClaudeAgentLoop.
@@ -268,6 +284,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         {
             while (!ct.IsCancellationRequested)
             {
+                // Before waiting for new input, send any queued messages from previous run
+                // This ensures queued messages are fully processed before new input arrives
+                await SendQueuedMessagesBeforeNewInputAsync(ct);
+
                 // Wait for at least one input
                 if (!await InputReader.WaitToReadAsync(ct))
                 {
@@ -318,7 +338,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 }
                 finally
                 {
-                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                    // Pass pending message count so workflows know if more runs will follow
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        wasForked: false,
+                        forkedToRunId: null,
+                        pendingMessageCount: _localMessageQueue.Count,
+                        ct);
                 }
             }
         }
@@ -355,8 +382,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _activeSubscription ??= _client!.SubscribeToMessagesAsync(ct).GetAsyncEnumerator(ct);
 
         // Send initial messages
-        await _client!.SendAsync(initialMessages, ct);
+        // IMPORTANT: Set _runInProgress BEFORE SendAsync to prevent race condition.
+        // If we set it after, WatchAndInjectInputsAsync can check _runInProgress (still false)
+        // while SendAsync is yielding, and send another message that gets removed from SDK queue.
+        _runInProgress = true;
         _awaitingDequeue = true; // Now waiting for dequeue before sending more
+        await _client!.SendAsync(initialMessages, ct);
 
         // Create linked cancellation for concurrent tasks
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -366,23 +397,90 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         try
         {
+            _lastObservedGenerationId = assignment.GenerationId;
+
             // Read until ResultEvent
             while (await _activeSubscription.MoveNextAsync())
             {
                 var msg = _activeSubscription.Current;
 
+                // HEURISTIC 1: If we get SystemInit (RunStarted), previous enqueue likely processed or reset
+                if (msg is SystemInitMessage)
+                {
+                    await OnDequeueDetectedAsync("SystemInitMessage", ct);
+                    // Don't publish this message to subscribers
+                    continue;
+                }
+
                 // Check for turn completion
                 if (msg is ResultEventMessage resultEvent)
                 {
-                    Logger.LogDebug("Turn complete. IsError: {IsError}", resultEvent.IsError);
+                    // HEURISTIC 2: Run completion implies dequeue happened
+                    Logger.LogDebug("Turn complete (ResultEvent). IsError: {IsError}", resultEvent.IsError);
+
+                    // Reset run state on turn completion
+                    if (_pendingToolCalls > 0)
+                    {
+                        Logger.LogDebug(
+                            "Resetting pendingToolCalls from {Count} to 0 on turn complete",
+                            _pendingToolCalls);
+                        _pendingToolCalls = 0;
+                    }
+
+                    _runInProgress = false; // Run is complete - safe to send messages now
+                    _awaitingDequeue = false; // Ready to send more
+                    Logger.LogDebug("Run complete - runInProgress = false, awaitingDequeue = false");
+
+                    await OnDequeueDetectedAsync("ResultEvent", ct);
+
+                    // Note: Queued messages will be sent in RunLoopAsync before new input is processed
+                    // This prevents rapid double-enqueue race condition
+
                     break;
                 }
 
-                // Handle queue operation events for input correlation
-                if (msg is QueueOperationMessage queueOp)
+                // HEURISTIC 3: If generationId changes unexpectedly, assume dequeue happened
+                if (!string.IsNullOrEmpty(msg.GenerationId) &&
+                    msg.GenerationId != _lastObservedGenerationId)
                 {
-                    await HandleQueueOperationAsync(queueOp, ct);
-                    continue; // Don't publish QueueOperationMessage to subscribers
+                    // Only trigger if we were actually waiting
+                    if (_awaitingDequeue)
+                    {
+                        Logger.LogInformation(
+                            "GenerationId changed from {Old} to {New} while awaiting dequeue.",
+                            _lastObservedGenerationId,
+                            msg.GenerationId);
+                        await OnDequeueDetectedAsync("GenerationId change", ct);
+                    }
+
+                    _lastObservedGenerationId = msg.GenerationId;
+                }
+
+                // Track pending tool calls to know when safe to inject messages
+                // This prevents message loss - SDK removes queued messages during tool execution
+                if (msg is ToolCallMessage toolCall)
+                {
+                    _pendingToolCalls++;
+                    Logger.LogDebug(
+                        "Tool call started: {ToolName}, pending: {Count}",
+                        toolCall.FunctionName,
+                        _pendingToolCalls);
+                }
+                else if (msg is ToolCallResultMessage toolResult)
+                {
+                    _pendingToolCalls--;
+                    if (_pendingToolCalls < 0)
+                    {
+                        _pendingToolCalls = 0; // Safety clamp
+                    }
+
+                    Logger.LogDebug(
+                        "Tool call completed: {ToolId}, pending: {Count}",
+                        toolResult.ToolCallId,
+                        _pendingToolCalls);
+
+                    // Note: We don't try to send queued messages here because _runInProgress
+                    // is still true. Messages will be sent when the run completes (ResultEventMessage).
                 }
 
                 // Publish message to subscribers
@@ -415,13 +513,21 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     // Collect messages
                     var messagesToSend = GetMessagesForClaudeSdk(newInputs).ToList();
 
-                    if (_awaitingDequeue)
+                    // Check if we should queue locally:
+                    // _runInProgress covers the entire run (generation + tool calls) and only resets
+                    // on ResultEventMessage. When true, SDK will REMOVE messages, so we queue locally.
+                    //
+                    // Note: _awaitingDequeue is no longer needed here because _runInProgress is set
+                    // BEFORE SendAsync and only reset on ResultEventMessage, so it covers the entire
+                    // period when messages would be removed.
+                    if (_runInProgress)
                     {
-                        // Queue locally instead of sending to CLI - will be sent after current batch is dequeued
+                        // Queue locally - run is in progress (would get removed)
                         _localMessageQueue.Enqueue((messagesToSend, newInputs));
                         Logger.LogDebug(
-                            "Queued {MessageCount} messages locally (awaiting previous dequeue). InputCount: {InputCount}",
+                            "Queued {MessageCount} messages locally (run in progress, tools pending: {PendingTools}). InputCount: {InputCount}",
                             messagesToSend.Count,
+                            _pendingToolCalls,
                             newInputs.Count);
                     }
                     else
@@ -443,8 +549,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                             }
                         }
 
-                        await _client!.SendAsync(messagesToSend, ct);
+                        // Set flags BEFORE SendAsync to prevent race condition
+                        _runInProgress = true;
                         _awaitingDequeue = true;
+                        await _client!.SendAsync(messagesToSend, ct);
 
                         Logger.LogInformation("Injected {Count} inputs to CLI mid-run", newInputs.Count);
                     }
@@ -458,176 +566,131 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
-    /// Handle queue operation events for input correlation.
-    /// - enqueue: CLI received the user input
-    /// - dequeue: CLI accepted the input for processing, publish RunAssignmentMessage
-    /// - remove: CLI removed the input because a new input arrived before dequeue
+    /// Send queued messages before processing new input.
+    /// MERGES all queued batches into a SINGLE run to ensure all pending input IDs
+    /// are included in one RunAssignmentMessage.
     /// </summary>
-    private async Task HandleQueueOperationAsync(QueueOperationMessage queueOp, CancellationToken ct)
+    private async Task SendQueuedMessagesBeforeNewInputAsync(CancellationToken ct)
     {
-        if (queueOp.Operation == "enqueue")
+        // Check if there are any queued messages
+        if (_localMessageQueue.Count == 0)
         {
-            // CLI received our input - log for tracking
-            var (enqFirstText, enqLastText) = queueOp.ContentMessages != null
-                ? GetFirstLastTextMessages(queueOp.ContentMessages)
-                : (null, null);
-            Logger.LogDebug(
-                "Queue enqueue received - SessionId: {SessionId}, Timestamp: {Timestamp}, ContentCount: {ContentCount}, FirstText: {First}, LastText: {Last}",
-                queueOp.SessionId,
-                queueOp.Timestamp,
-                queueOp.ContentMessages?.Count ?? 0,
-                enqFirstText ?? "(none)",
-                enqLastText ?? "(same as first)");
+            return;
         }
-        else if (queueOp.Operation == "dequeue")
+
+        // Merge ALL queued batches into a single batch
+        var mergedMessages = new List<IMessage>();
+        var mergedInputs = new List<QueuedInput>();
+
+        while (_localMessageQueue.TryDequeue(out var nextBatch))
         {
-            // CLI accepted input for processing - no longer awaiting dequeue
-            _awaitingDequeue = false;
+            mergedMessages.AddRange(nextBatch.Messages);
+            mergedInputs.AddRange(nextBatch.Inputs);
+        }
 
-            Logger.LogDebug(
-                "Queue dequeue received - SessionId: {SessionId}, Timestamp: {Timestamp}",
-                queueOp.SessionId,
-                queueOp.Timestamp);
+        Logger.LogInformation(
+            "Merged {BatchCount} queued batches into single run. Total messages: {MessageCount}, Total inputs: {InputCount}",
+            mergedInputs.Count,
+            mergedMessages.Count,
+            mergedInputs.Count);
 
-            if (_pendingCliInputs.TryDequeue(out var pending))
+        // Start a SINGLE run for ALL merged inputs
+        var assignment = StartRun(mergedInputs);
+
+        // Track ALL inputs for dequeue correlation with the SAME assignment
+        foreach (var input in mergedInputs)
+        {
+            _pendingCliInputs.Enqueue((input, assignment));
+        }
+
+        // Add ALL messages to history
+        foreach (var input in mergedInputs)
+        {
+            foreach (var msg in input.Input.Messages)
             {
-                var (firstText, lastText) = GetFirstLastTextMessages(pending.Input.Input.Messages);
-                Logger.LogInformation(
-                    "Publishing RunAssignmentMessage - RunId: {RunId}, InputId: {InputId}, FirstText: {First}, LastText: {Last}",
-                    pending.Assignment.RunId,
-                    pending.Input.ReceiptId,
-                    firstText ?? "(none)",
-                    lastText ?? "(same as first)");
-
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = pending.Assignment,
-                    ThreadId = ThreadId,
-                }, ct);
-            }
-            else
-            {
-                Logger.LogWarning("Received dequeue but no pending inputs to correlate");
-            }
-
-            // Check if we have queued messages to send now
-            if (_localMessageQueue.TryDequeue(out var nextBatch))
-            {
-                Logger.LogInformation(
-                    "Sending queued messages after dequeue. MessageCount: {MessageCount}, InputCount: {InputCount}",
-                    nextBatch.Messages.Count,
-                    nextBatch.Inputs.Count);
-
-                // Track inputs for dequeue correlation
-                var assignment = StartRun(nextBatch.Inputs);
-                foreach (var input in nextBatch.Inputs)
-                {
-                    _pendingCliInputs.Enqueue((input, assignment));
-                }
-
-                // Add to history
-                foreach (var input in nextBatch.Inputs)
-                {
-                    foreach (var msg in input.Input.Messages)
-                    {
-                        AddToHistory(msg);
-                    }
-                }
-
-                await _client!.SendAsync(nextBatch.Messages, ct);
-                _awaitingDequeue = true;
+                AddToHistory(msg);
             }
         }
-        else if (queueOp.Operation == "remove")
-        {
-            // CLI removed input because a new input arrived before dequeue
-            // This is an error condition - we should have waited for dequeue before sending more
-            Logger.LogError(
-                "Queue remove received - SessionId: {SessionId}. Messages were removed before dequeue. ContentCount: {Count}",
-                queueOp.SessionId,
-                queueOp.ContentMessages?.Count ?? 0);
 
-            // Match removed content with pending inputs and re-queue them
-            if (queueOp.ContentMessages != null && queueOp.ContentMessages.Count > 0)
-            {
-                var matchedInput = FindPendingInputByContent(queueOp.ContentMessages);
-                if (matchedInput != null)
-                {
-                    // Re-queue to send after current batch is dequeued
-                    _localMessageQueue.Enqueue((queueOp.ContentMessages, matchedInput.Value.Inputs));
-                    Logger.LogInformation(
-                        "Re-queued {Count} removed messages for later send",
-                        queueOp.ContentMessages.Count);
-                }
-                else
-                {
-                    Logger.LogError("Could not match removed messages with any pending input");
-                }
-            }
-        }
-        else
+        try
         {
-            Logger.LogWarning("Unknown queue operation: {Operation}", queueOp.Operation);
+            // Execute the merged batch as a full interactive run (waits for ResultEvent)
+            await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
+        }
+        finally
+        {
+            // No pending messages after merge (we processed all of them)
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: false,
+                forkedToRunId: null,
+                pendingMessageCount: 0,
+                ct);
         }
     }
 
     /// <summary>
-    /// Find pending input that matches the removed content by comparing message content.
+    /// Called when dequeue is detected via heuristics.
+    /// Sets _awaitingDequeue = false and publishes RunAssignmentMessage.
+    /// Note: Local queue is now drained in RunLoopAsync via SendQueuedMessagesBeforeNewInputAsync
+    /// to prevent rapid double-enqueue race conditions.
     /// </summary>
-    private (List<IMessage> Messages, List<QueuedInput> Inputs)? FindPendingInputByContent(List<IMessage> removedContent)
+    /// <param name="trigger">Description of what triggered this (for logging)</param>
+    /// <param name="ct">Cancellation token</param>
+    private async Task OnDequeueDetectedAsync(string trigger, CancellationToken ct)
     {
-        // Look through pending inputs to find one that matches
-        var pendingList = _pendingCliInputs.ToList();
-        foreach (var pending in pendingList)
+        // Early exit if not actually waiting
+        if (!_awaitingDequeue)
         {
-            var pendingMessages = pending.Input.Input.Messages;
-            if (MessagesMatchByContent(pendingMessages, removedContent))
-            {
-                return (pendingMessages.ToList(), [pending.Input]);
-            }
+            return;
         }
 
-        return null;
-    }
+        _awaitingDequeue = false;
+        Logger.LogDebug("Dequeue detected via {Trigger} - resetting awaitingDequeue", trigger);
 
-    /// <summary>
-    /// Compare two message collections by their content.
-    /// </summary>
-    private static bool MessagesMatchByContent(IEnumerable<IMessage> a, IEnumerable<IMessage> b)
-    {
-        var aList = a.ToList();
-        var bList = b.ToList();
-
-        if (aList.Count != bList.Count)
+        // Publish RunAssignmentMessage for ALL pending inputs with the same assignment
+        // (inputs in the same batch share the same assignment and are accepted together)
+        RunAssignment? currentAssignment = null;
+        while (_pendingCliInputs.TryPeek(out var peeked))
         {
-            return false;
+            // If this is a different assignment, stop - it belongs to a different batch
+            if (currentAssignment != null && peeked.Assignment.RunId != currentAssignment.RunId)
+            {
+                break;
+            }
+
+            // Dequeue and process this input
+            if (!_pendingCliInputs.TryDequeue(out var pending))
+            {
+                break;
+            }
+
+            currentAssignment = pending.Assignment;
+
+            var (firstText, lastText) = GetFirstLastTextMessages(pending.Input.Input.Messages);
+            Logger.LogInformation(
+                "Publishing RunAssignmentMessage - RunId: {RunId}, InputId: {InputId}, FirstText: {First}, LastText: {Last}",
+                pending.Assignment.RunId,
+                pending.Input.ReceiptId,
+                firstText ?? "(none)",
+                lastText ?? "(same as first)");
+
+            await PublishToAllAsync(new RunAssignmentMessage
+            {
+                Assignment = pending.Assignment,
+                ThreadId = ThreadId,
+            }, ct);
         }
 
-        for (int i = 0; i < aList.Count; i++)
+        // Note: Local queue draining is now handled in RunLoopAsync via SendQueuedMessagesBeforeNewInputAsync
+        // This ensures each batch gets a full ExecuteInteractiveModeAsync run, preventing rapid double-enqueue
+        if (_localMessageQueue.Count > 0)
         {
-            if (aList[i] is TextMessage ta && bList[i] is TextMessage tb)
-            {
-                if (ta.Text != tb.Text)
-                {
-                    return false;
-                }
-            }
-            else if (aList[i] is ImageMessage ia && bList[i] is ImageMessage ib)
-            {
-                // Compare image messages by comparing ImageData bytes
-                if (!ia.ImageData.ToMemory().Span.SequenceEqual(ib.ImageData.ToMemory().Span))
-                {
-                    return false;
-                }
-            }
-            // Different types don't match
-            else if (aList[i].GetType() != bList[i].GetType())
-            {
-                return false;
-            }
+            Logger.LogDebug(
+                "OnDequeueDetected: {QueueSize} messages in local queue, will be processed in RunLoopAsync",
+                _localMessageQueue.Count);
         }
-
-        return true;
     }
 
     /// <summary>
@@ -683,13 +746,6 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         await foreach (var msg in stream.WithCancellation(ct))
         {
-            // Handle queue operation events for input correlation
-            if (msg is QueueOperationMessage queueOp)
-            {
-                await HandleQueueOperationAsync(queueOp, ct);
-                continue; // Don't publish QueueOperationMessage to subscribers
-            }
-
             // Publish message to subscribers
             await PublishToAllAsync(msg, ct);
 

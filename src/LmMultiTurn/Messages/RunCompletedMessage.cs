@@ -12,6 +12,18 @@ public record RunCompletedMessage : IMessage
     public bool WasForked { get; init; }
     public string? ForkedToRunId { get; init; }
 
+    /// <summary>
+    /// Indicates there are pending messages queued that haven't been assigned to a run yet.
+    /// When true, workflows should NOT transition state - another run will follow to process
+    /// the pending messages. Only transition when HasPendingMessages is false.
+    /// </summary>
+    public bool HasPendingMessages { get; init; }
+
+    /// <summary>
+    /// Number of pending message batches waiting to be processed.
+    /// </summary>
+    public int PendingMessageCount { get; init; }
+
     public string? FromAgent { get; init; }
     public Role Role => Role.System;
     public ImmutableDictionary<string, object>? Metadata { get; init; }

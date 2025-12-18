@@ -335,31 +335,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             {
                 _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
             }
-            // Queue operation events represent user message submission/acceptance
-            else if (jsonlEvent is QueueOperationEvent queueEvent)
-            {
-                var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent).ToList();
-                var queueOpMsg = eventMessages.OfType<QueueOperationMessage>().FirstOrDefault();
-
-                // Log using multiline format helper
-                if (queueOpMsg != null)
-                {
-                    var logMessage = FormatQueueOperationForLog(queueOpMsg);
-                    if (queueEvent.Operation == "remove")
-                    {
-                        _logger?.LogError("QueueOperationEvent:{Message}", logMessage);
-                    }
-                    else
-                    {
-                        _logger?.LogTrace("QueueOperationEvent:{Message}", logMessage);
-                    }
-                }
-
-                foreach (var msg in eventMessages)
-                {
-                    yield return msg;
-                }
-            }
             // System init events contain session info and available tools
             else if (jsonlEvent is SystemInitEvent systemInitEvent)
             {
@@ -518,30 +493,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 {
                     _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
                 }
-                else if (jsonlEvent is QueueOperationEvent queueEvent)
-                {
-                    var eventMessages = JsonlStreamParser.ConvertToMessages(queueEvent).ToList();
-                    var queueOpMsg = eventMessages.OfType<QueueOperationMessage>().FirstOrDefault();
-
-                    // Log using multiline format helper
-                    if (queueOpMsg != null)
-                    {
-                        var logMessage = FormatQueueOperationForLog(queueOpMsg);
-                        if (queueEvent.Operation == "remove")
-                        {
-                            _logger?.LogError("QueueOperationEvent:{Message}", logMessage);
-                        }
-                        else
-                        {
-                            _logger?.LogTrace("QueueOperationEvent:{Message}", logMessage);
-                        }
-                    }
-
-                    foreach (var msg in eventMessages)
-                    {
-                        yield return msg;
-                    }
-                }
                 else if (jsonlEvent is SystemInitEvent systemInitEvent)
                 {
                     _logger?.LogInformation(
@@ -554,6 +505,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     {
                         CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
                     }
+
+                    // Yield SystemInitMessage to signal run start
+                    yield return new SystemInitMessage
+                    {
+                        SessionId = systemInitEvent.SessionId,
+                        Model = systemInitEvent.Model,
+                    };
                 }
                 else if (jsonlEvent is ResultEvent resultEvent)
                 {
@@ -1342,7 +1300,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             ToolCallResultMessage toolResult => $"\n  [ToolResult] id={toolResult.ToolCallId}\n    result={TruncateForLog(toolResult.Result, maxContentLength)}",
             ImageMessage image => $"\n  [Image]\n    mediaType={image.ImageData.MediaType}\n    size={image.ImageData.ToMemory().Length} bytes",
             UsageMessage usage => $"\n  [Usage] prompt={usage.Usage?.PromptTokens}, completion={usage.Usage?.CompletionTokens}, total={usage.Usage?.TotalTokens}, cacheRead={usage.Usage?.TotalCachedTokens}",
-            QueueOperationMessage queueOp => FormatQueueOperationForLog(queueOp),
             _ => $"\n  [{msg.GetType().Name}]",
         };
     }
@@ -1394,34 +1351,5 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             ? TruncateForLog(textMessages[^1].Text, maxLength)
             : null;
         return (first, last);
-    }
-
-    /// <summary>
-    ///     Format a QueueOperationMessage for trace logging with multiline format.
-    /// </summary>
-    private static string FormatQueueOperationForLog(QueueOperationMessage queueOp)
-    {
-        var result = $"\n  [QueueOp] {queueOp.Operation}";
-        result += $"\n    sessionId={queueOp.SessionId}";
-        if (queueOp.Timestamp.HasValue)
-        {
-            result += $"\n    timestamp={queueOp.Timestamp:HH:mm:ss.fff}";
-        }
-
-        if (queueOp.ContentMessages?.Count > 0)
-        {
-            result += $"\n    contentCount={queueOp.ContentMessages.Count}";
-            foreach (var msg in queueOp.ContentMessages.Take(2))
-            {
-                result += FormatMessageForLog(msg, 60).Replace("\n  ", "\n      ");
-            }
-
-            if (queueOp.ContentMessages.Count > 2)
-            {
-                result += $"\n      ... and {queueOp.ContentMessages.Count - 2} more";
-            }
-        }
-
-        return result;
     }
 }

@@ -123,8 +123,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 }
                 finally
                 {
-                    // Complete run
-                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                    // Complete run - simple loop has no pending messages
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        wasForked: false,
+                        forkedToRunId: null,
+                        pendingMessageCount: 0,
+                        ct);
                 }
             }
         }
