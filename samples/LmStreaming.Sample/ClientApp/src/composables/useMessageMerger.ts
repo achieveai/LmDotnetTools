@@ -5,6 +5,8 @@ import {
   type TextUpdateMessage,
   type ToolsCallMessage,
   type ToolsCallUpdateMessage,
+  type ToolCallMessage,
+  type ToolCallUpdateMessage,
   type ToolCall,
   type ReasoningMessage,
   type ReasoningUpdateMessage,
@@ -13,6 +15,9 @@ import {
   MessageType,
   isTextUpdateMessage,
   isToolsCallUpdateMessage,
+  isToolCallUpdateMessage,
+  isToolCallMessage,
+  isToolCallResultMessage,
   isReasoningUpdateMessage,
 } from '@/types';
 
@@ -20,7 +25,7 @@ import {
  * Represents a message being accumulated from streaming updates
  */
 interface AccumulatingMessage {
-  type: 'text' | 'tools_call' | 'reasoning';
+  type: 'text' | 'tools_call' | 'tool_call' | 'reasoning';
   generationId?: string | null;
   text?: string;
   isThinking?: boolean;
@@ -29,6 +34,10 @@ interface AccumulatingMessage {
   currentToolCall?: Partial<ToolCall>;
   reasoning?: string;
   visibility?: ReasoningVisibility;
+  // For individual tool call accumulation
+  toolCallId?: string | null;
+  functionName?: string | null;
+  functionArgs?: string;
 }
 
 /**
@@ -58,8 +67,18 @@ export function useMessageMerger() {
       return processToolsCallUpdate(genId, message);
     }
 
+    if (isToolCallUpdateMessage(message)) {
+      return processToolCallUpdate(genId, message);
+    }
+
     if (isReasoningUpdateMessage(message)) {
       return processReasoningUpdate(genId, message);
+    }
+
+    // Tool call messages and tool call result messages pass through directly
+    // but could be used to display tool state in UI
+    if (isToolCallMessage(message) || isToolCallResultMessage(message)) {
+      return message;
     }
 
     // Non-update messages pass through directly
@@ -161,6 +180,49 @@ export function useMessageMerger() {
     return {
       $type: MessageType.ToolsCall,
       tool_calls: allToolCalls,
+      role: acc.role,
+      generationId: acc.generationId,
+    };
+  }
+
+  /**
+   * Process a ToolCallUpdateMessage (individual tool call streaming) and return accumulated ToolCallMessage
+   */
+  function processToolCallUpdate(
+    genId: string,
+    update: ToolCallUpdateMessage
+  ): ToolCallMessage {
+    // Use tool_call_id as key to support multiple concurrent tool calls
+    const toolCallKey = `${genId}-${update.tool_call_id || 'tc'}`;
+    let acc = accumulators.value.get(toolCallKey);
+
+    if (!acc || acc.type !== 'tool_call') {
+      acc = {
+        type: 'tool_call',
+        generationId: update.generationId,
+        role: update.role,
+        toolCallId: update.tool_call_id,
+        functionName: update.function_name,
+        functionArgs: '',
+      };
+      accumulators.value.set(toolCallKey, acc);
+    }
+
+    // Set function name if provided (usually first chunk)
+    if (update.function_name && !acc.functionName) {
+      acc.functionName = update.function_name;
+    }
+
+    // Accumulate function arguments
+    if (update.function_args) {
+      acc.functionArgs = (acc.functionArgs || '') + update.function_args;
+    }
+
+    return {
+      $type: MessageType.ToolCall,
+      tool_call_id: acc.toolCallId,
+      function_name: acc.functionName,
+      function_args: acc.functionArgs,
       role: acc.role,
       generationId: acc.generationId,
     };

@@ -15,6 +15,9 @@ export const MessageType = {
   Usage: 'usage',
   Reasoning: 'reasoning',
   ReasoningUpdate: 'reasoning_update',
+  // Lifecycle messages from MultiTurnAgentLoop
+  RunAssignment: 'run_assignment',
+  RunCompleted: 'run_completed',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -161,6 +164,57 @@ export interface ReasoningUpdateMessage extends IMessage {
 }
 
 /**
+ * RunAssignment matching C# RunAssignment record
+ */
+export interface RunAssignment {
+  runId: string;
+  inputIds: string[];
+  generationId: string;
+  parentRunId?: string | null;
+}
+
+/**
+ * RunAssignmentMessage matching C# RunAssignmentMessage.cs
+ */
+export interface RunAssignmentMessage extends IMessage {
+  $type: typeof MessageType.RunAssignment;
+  assignment: RunAssignment;
+}
+
+/**
+ * RunCompletedMessage matching C# RunCompletedMessage.cs
+ */
+export interface RunCompletedMessage extends IMessage {
+  $type: typeof MessageType.RunCompleted;
+  completedRunId: string;
+  wasForked: boolean;
+  forkedToRunId?: string | null;
+  hasPendingMessages: boolean;
+  pendingMessageCount: number;
+}
+
+/**
+ * ToolCallMessage matching C# ToolCallMessage.cs (individual tool call, not aggregate)
+ */
+export interface ToolCallMessage extends IMessage {
+  $type: typeof MessageType.ToolCall;
+  tool_call_id?: string | null;
+  function_name?: string | null;
+  function_args?: string | null;
+}
+
+/**
+ * ToolCallUpdateMessage matching C# ToolCallUpdateMessage.cs
+ */
+export interface ToolCallUpdateMessage extends IMessage {
+  $type: typeof MessageType.ToolCallUpdate;
+  tool_call_id?: string | null;
+  function_name?: string | null;
+  function_args?: string | null;
+  chunkIdx?: number | null;
+}
+
+/**
  * ImageMessage matching C# ImageMessage.cs
  */
 export interface ImageMessage extends IMessage {
@@ -178,11 +232,15 @@ export type Message =
   | ImageMessage
   | ToolsCallMessage
   | ToolsCallUpdateMessage
+  | ToolCallMessage
+  | ToolCallUpdateMessage
   | ToolCallResultMessage
   | ToolsCallResultMessage
   | UsageMessage
   | ReasoningMessage
-  | ReasoningUpdateMessage;
+  | ReasoningUpdateMessage
+  | RunAssignmentMessage
+  | RunCompletedMessage;
 
 // Type guard functions
 
@@ -222,6 +280,22 @@ export function isReasoningUpdateMessage(msg: IMessage): msg is ReasoningUpdateM
   return msg.$type === MessageType.ReasoningUpdate;
 }
 
+export function isRunAssignmentMessage(msg: IMessage): msg is RunAssignmentMessage {
+  return msg.$type === MessageType.RunAssignment;
+}
+
+export function isRunCompletedMessage(msg: IMessage): msg is RunCompletedMessage {
+  return msg.$type === MessageType.RunCompleted;
+}
+
+export function isToolCallMessage(msg: IMessage): msg is ToolCallMessage {
+  return msg.$type === MessageType.ToolCall;
+}
+
+export function isToolCallUpdateMessage(msg: IMessage): msg is ToolCallUpdateMessage {
+  return msg.$type === MessageType.ToolCallUpdate;
+}
+
 /**
  * Check if a message is a streaming update (not final)
  */
@@ -229,6 +303,14 @@ export function isUpdateMessage(msg: IMessage): boolean {
   return (
     isTextUpdateMessage(msg) ||
     isToolsCallUpdateMessage(msg) ||
+    isToolCallUpdateMessage(msg) ||
     isReasoningUpdateMessage(msg)
   );
+}
+
+/**
+ * Check if a message is a lifecycle message
+ */
+export function isLifecycleMessage(msg: IMessage): boolean {
+  return isRunAssignmentMessage(msg) || isRunCompletedMessage(msg);
 }
