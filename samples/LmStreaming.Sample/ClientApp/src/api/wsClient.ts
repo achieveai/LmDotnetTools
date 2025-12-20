@@ -18,6 +18,7 @@ export interface WebSocketClientCallbacks {
  */
 export interface WebSocketClientOptions extends WebSocketClientCallbacks {
   baseUrl?: string;
+  threadId?: string;
 }
 
 /**
@@ -26,6 +27,7 @@ export interface WebSocketClientOptions extends WebSocketClientCallbacks {
 export interface WebSocketConnection {
   socket: WebSocket;
   connectionId: string;
+  threadId: string;
   isConnected: boolean;
 }
 
@@ -36,23 +38,25 @@ export interface WebSocketConnection {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', onMessage, onDone, onError } = options;
+  const { baseUrl = '', threadId, onMessage, onDone, onError } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
+    const effectiveThreadId = threadId || generateThreadId();
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = baseUrl || window.location.host;
-    const wsUrl = `${wsProtocol}//${wsHost}/ws?connectionId=${connectionId}`;
+    const wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
 
-    log.info('Connecting to WebSocket', { url: wsUrl, connectionId });
+    log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
 
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-      log.info('WebSocket connected', { connectionId });
+      log.info('WebSocket connected', { connectionId, threadId: effectiveThreadId });
       resolve({
         socket,
         connectionId,
+        threadId: effectiveThreadId,
         isConnected: true,
       });
     };
@@ -134,6 +138,13 @@ export function closeWebSocketConnection(connection: WebSocketConnection): void 
  */
 function generateConnectionId(): string {
   return `ws-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
+ * Generate a unique thread ID for agent routing
+ */
+function generateThreadId(): string {
+  return `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
 /**

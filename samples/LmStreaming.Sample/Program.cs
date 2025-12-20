@@ -1,15 +1,16 @@
-using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
-using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.SSE;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using LmStreaming.Sample.Agents;
+using LmStreaming.Sample.Tools;
+using LmStreaming.Sample.WebSocket;
 using Serilog;
 using Serilog.Enrichers.CallerInfo;
 using Serilog.Events;
@@ -80,40 +81,71 @@ try
         options.Server.Port = 5173;
     });
 
-    // Register the mock LLM streaming agent using TestSseMessageHandler
-    _ = builder.Services.AddSingleton<IStreamingAgent>(sp =>
+    // Register the FunctionRegistry with sample tools
+    _ = builder.Services.AddSingleton<FunctionRegistry>(sp =>
+    {
+        var registry = new FunctionRegistry();
+        registry.AddFunctionsFromType(typeof(SampleTools));
+        return registry;
+    });
+
+    // Register the provider agent factory (creates OpenClientAgent with TestSseMessageHandler)
+    _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
+    {
+        return () =>
+        {
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
+
+            // Create the test handler that follows instruction chains
+            var testHandler = new TestSseMessageHandler(handlerLogger)
+            {
+                WordsPerChunk = 3,   // Stream 3 words at a time for visible streaming
+                ChunkDelayMs = 50,   // 50ms delay between chunks
+            };
+
+            // Create HttpClient with the test handler
+            var httpClient = new HttpClient(testHandler)
+            {
+                BaseAddress = new Uri("http://test-mode/v1"),
+            };
+
+            // Create OpenClient with the mock HttpClient
+            var openClient = new OpenClient(
+                httpClient,
+                "http://test-mode/v1",
+                logger: loggerFactory.CreateLogger<OpenClient>());
+
+            // Create the streaming agent (middleware stack is built by MultiTurnAgentLoop)
+            var agentLogger = loggerFactory.CreateLogger<OpenClientAgent>();
+            return new OpenClientAgent("MockLLM", openClient, agentLogger);
+        };
+    });
+
+    // Register the MultiTurnAgentPool
+    _ = builder.Services.AddSingleton<MultiTurnAgentPool>(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
+        var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
+        var agentFactory = sp.GetRequiredService<Func<IStreamingAgent>>();
 
-        // Create the test handler that follows instruction chains
-        var testHandler = new TestSseMessageHandler(handlerLogger)
-        {
-            WordsPerChunk = 3,   // Stream 3 words at a time for visible streaming
-            ChunkDelayMs = 50    // 50ms delay between chunks
-        };
-
-        // Create HttpClient with the test handler
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("http://test-mode/v1")
-        };
-
-        // Create OpenClient with the mock HttpClient
-        var openClient = new OpenClient(
-            httpClient,
-            "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>());
-
-        // Create the streaming agent
-        var agentLogger = loggerFactory.CreateLogger<OpenClientAgent>();
-        var agent = new OpenClientAgent("MockLLM", openClient, agentLogger);
-
-        // Wrap with MessageTransformationMiddleware to assign messageOrderIdx and chunkIdx
-        var middleware = new MessageTransformationMiddleware(
-            logger: loggerFactory.CreateLogger<MessageTransformationMiddleware>());
-        return agent.WithMiddleware(middleware);
+        return new MultiTurnAgentPool(
+            threadId =>
+            {
+                var providerAgent = agentFactory();
+                return new MultiTurnAgentLoop(
+                    providerAgent,
+                    functionRegistry,
+                    threadId,
+                    systemPrompt: "You are a helpful assistant with access to weather, calculator, and web search tools.",
+                    defaultOptions: new GenerateReplyOptions { ModelId = "test-model" },
+                    logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
+            },
+            loggerFactory.CreateLogger<MultiTurnAgentPool>());
     });
+
+    // Register the ChatWebSocketManager
+    _ = builder.Services.AddSingleton<ChatWebSocketManager>();
 
     var app = builder.Build();
 
@@ -143,11 +175,10 @@ try
     // Use LmStreaming middleware (enables WebSockets and CORS)
     _ = app.UseLmStreaming();
 
-    // Map custom WebSocket endpoint for chat
-    var jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
+    // Map custom WebSocket endpoint for chat using ChatWebSocketManager
     _ = app.Map("/ws", async (
         HttpContext context,
-        IStreamingAgent streamingAgent,
+        ChatWebSocketManager wsManager,
         ILogger<Program> wsLogger,
         CancellationToken cancellationToken) =>
     {
@@ -158,159 +189,31 @@ try
             return;
         }
 
-        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        var connectionId = context.Request.Query["connectionId"].FirstOrDefault() ?? Guid.NewGuid().ToString();
-        wsLogger.LogInformation("WebSocket connection established: {ConnectionId}", connectionId);
+        // Get threadId from query string (required for agent routing)
+        var threadId = context.Request.Query["threadId"].FirstOrDefault()
+            ?? context.Request.Query["connectionId"].FirstOrDefault()
+            ?? Guid.NewGuid().ToString();
 
-        var buffer = new byte[4096];
-        var messageBuilder = new StringBuilder();
+        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+        wsLogger.LogInformation("WebSocket connection established for thread {ThreadId}", threadId);
 
         try
         {
-            while (webSocket.State == WebSocketState.Open)
-            {
-                WebSocketReceiveResult result;
-                messageBuilder.Clear();
-
-                do
-                {
-                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
-
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        wsLogger.LogInformation("Client requested close for {ConnectionId}", connectionId);
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", cancellationToken);
-                        return;
-                    }
-
-                    if (result.MessageType == WebSocketMessageType.Text)
-                    {
-                        var chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        messageBuilder.Append(chunk);
-                    }
-                } while (!result.EndOfMessage);
-
-                if (messageBuilder.Length > 0)
-                {
-                    var json = messageBuilder.ToString();
-                    wsLogger.LogDebug("Received message from {ConnectionId}: {Json}", connectionId, json);
-
-                    // Try to parse as ChatRequest
-                    try
-                    {
-                        var chatRequest = JsonSerializer.Deserialize<ChatRequest>(json, jsonOptions);
-                        if (chatRequest?.Message != null)
-                        {
-                            wsLogger.LogInformation("Processing chat request: {Message}", chatRequest.Message);
-
-                            // Build conversation with user message
-                            var userMessage = new TextMessage
-                            {
-                                Role = Role.User,
-                                Text = chatRequest.Message
-                            };
-
-                            // Generate streaming response
-                            var options = new GenerateReplyOptions { ModelId = "test-model" };
-                            var streamingMessages = await streamingAgent.GenerateReplyStreamingAsync(
-                                [userMessage],
-                                options,
-                                cancellationToken);
-
-                            // Stream each message over WebSocket
-                            await foreach (var message in streamingMessages.WithCancellation(cancellationToken))
-                            {
-                                if (webSocket.State != WebSocketState.Open) break;
-
-                                var messageJson = JsonSerializer.Serialize(message, jsonOptions);
-                                var bytes = Encoding.UTF8.GetBytes(messageJson);
-                                await webSocket.SendAsync(
-                                    new ArraySegment<byte>(bytes),
-                                    WebSocketMessageType.Text,
-                                    true,
-                                    cancellationToken);
-
-                                wsLogger.LogDebug("Sent message type: {MessageType}", message.GetType().Name);
-                            }
-
-                            // Send done signal
-                            var doneJson = """{"$type":"done"}""";
-                            var doneBytes = Encoding.UTF8.GetBytes(doneJson);
-                            await webSocket.SendAsync(
-                                new ArraySegment<byte>(doneBytes),
-                                WebSocketMessageType.Text,
-                                true,
-                                cancellationToken);
-
-                            wsLogger.LogInformation("Chat response completed for {ConnectionId}", connectionId);
-                        }
-                    }
-                    catch (JsonException ex)
-                    {
-                        wsLogger.LogWarning(ex, "Invalid JSON from {ConnectionId}", connectionId);
-                        var errorJson = """{"$type":"error","message":"Invalid JSON"}""";
-                        var errorBytes = Encoding.UTF8.GetBytes(errorJson);
-                        await webSocket.SendAsync(
-                            new ArraySegment<byte>(errorBytes),
-                            WebSocketMessageType.Text,
-                            true,
-                            cancellationToken);
-                    }
-                }
-            }
-        }
-        catch (WebSocketException ex)
-        {
-            wsLogger.LogWarning(ex, "WebSocket error for {ConnectionId}", connectionId);
-        }
-        catch (OperationCanceledException)
-        {
-            wsLogger.LogInformation("WebSocket operation cancelled for {ConnectionId}", connectionId);
+            await wsManager.HandleConnectionAsync(webSocket, threadId, cancellationToken);
         }
         finally
         {
-            if (webSocket.State == WebSocketState.Open)
+            if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
             {
-                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server closing", CancellationToken.None);
+                await webSocket.CloseAsync(
+                    System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                    "Server closing",
+                    CancellationToken.None);
             }
+
             webSocket.Dispose();
-            wsLogger.LogInformation("WebSocket connection closed: {ConnectionId}", connectionId);
+            wsLogger.LogInformation("WebSocket connection closed for thread {ThreadId}", threadId);
         }
-    });
-
-    // SSE endpoint that streams messages using mock LLM
-    _ = app.MapPost("/api/chat", async (
-        ChatRequest request,
-        IMessageSseStreamer sseStreamer,
-        IStreamingAgent streamingAgent,
-        HttpResponse response,
-        ILogger<Program> endpointLogger,
-        CancellationToken cancellationToken) =>
-    {
-        endpointLogger.LogInformation(
-            "Chat request received. Message: {Message}, Length: {MessageLength}",
-            request.Message,
-            request.Message?.Length ?? 0);
-
-        // Build conversation with user message
-        var userMessage = new TextMessage
-        {
-            Role = Role.User,
-            Text = request.Message ?? string.Empty
-        };
-
-        // Generate streaming response from mock LLM
-        var options = new GenerateReplyOptions { ModelId = "test-model" };
-        var streamingMessages = await streamingAgent.GenerateReplyStreamingAsync(
-            [userMessage],
-            options,
-            cancellationToken);
-
-        // Stream as SSE
-        await sseStreamer.StreamAsync(response, streamingMessages, cancellationToken);
-        await sseStreamer.WriteDoneAsync(response, cancellationToken);
-
-        endpointLogger.LogInformation("Chat request completed successfully");
     });
 
     // Simple endpoint to test JSON serialization
@@ -404,8 +307,6 @@ finally
 public partial class Program
 {
 }
-
-public record ChatRequest(string Message);
 
 public record ClientLogEntry(
     string? Level,

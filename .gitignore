@@ -38,3 +38,6 @@ nul
 .playwright-mcp/
 .next/
 node_modules/
+
+# Vite build output
+**/wwwroot/dist/
