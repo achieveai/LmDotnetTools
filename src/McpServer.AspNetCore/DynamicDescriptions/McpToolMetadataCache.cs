@@ -142,15 +142,21 @@ public sealed class McpToolMetadataCache
     /// </summary>
     private static ToolMetadata CreateToolMetadata(Type declaringType, MethodInfo method)
     {
+        var toolAttr = method.GetCustomAttribute<McpServerToolAttribute>();
         var descriptionAttr = method.GetCustomAttribute<DescriptionAttribute>();
         var parameters = CreateParameterMetadata(method);
         var inputSchema = BuildInputSchema(parameters);
 
+        // Determine tool name:
+        // 1. If explicitly specified in attribute, use it as-is
+        // 2. Otherwise, convert PascalCase method name to snake_case
+        var toolName = !string.IsNullOrEmpty(toolAttr?.Name)
+            ? toolAttr.Name
+            : ToSnakeCase(method.Name);
+
         return new ToolMetadata
         {
-            // Convert PascalCase method name to snake_case for MCP tool name
-            // This matches the behavior of the standard ModelContextProtocol library
-            Name = ToSnakeCase(method.Name),
+            Name = toolName,
             DefaultDescription = descriptionAttr?.Description,
             DeclaringType = declaringType,
             Method = method,
