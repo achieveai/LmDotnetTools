@@ -70,6 +70,7 @@ export interface ToolCall {
   tool_call_id?: string | null;
   index?: number;
   toolCallIdx?: number;
+  result?: string | null; // Result from ToolCallResultMessage
 }
 
 /**
@@ -178,7 +179,7 @@ export interface RunAssignment {
  */
 export interface RunAssignmentMessage extends IMessage {
   $type: typeof MessageType.RunAssignment;
-  assignment: RunAssignment;
+  Assignment: RunAssignment;
 }
 
 /**
@@ -201,6 +202,7 @@ export interface ToolCallMessage extends IMessage {
   tool_call_id?: string | null;
   function_name?: string | null;
   function_args?: string | null;
+  result?: string | null; // Result from ToolCallResultMessage
 }
 
 /**
@@ -314,3 +316,16 @@ export function isUpdateMessage(msg: IMessage): boolean {
 export function isLifecycleMessage(msg: IMessage): boolean {
   return isRunAssignmentMessage(msg) || isRunCompletedMessage(msg);
 }
+
+/**
+ * Display item types for rendering the chat UI
+ */
+export type DisplayItem =
+  | { type: 'user-message'; id: string; content: TextMessage; status: 'pending' | 'active' | 'completed'; timestamp: number }
+  | { type: 'assistant-message'; id: string; content: TextMessage; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null }
+  | { type: 'pill'; id: string; items: Array<ReasoningMessage | ToolsCallMessage>; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null };
+
+/**
+ * Status for tracking message lifecycle
+ */
+export type MessageStatus = 'pending' | 'active' | 'completed';

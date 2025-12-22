@@ -104,11 +104,11 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 ? idEl.GetString() ?? string.Empty
                 : string.Empty;
 
-        // Extract id_message
+        // Extract id_message (used only for logging, not emitted as content)
         var idMessage =
             instructionEl.TryGetProperty("id_message", out var idMsgEl) && idMsgEl.ValueKind == JsonValueKind.String
                 ? idMsgEl.GetString() ?? string.Empty
-                : id; // Fall back to id if id_message not present
+                : string.Empty;
 
         // Extract reasoning length (optional)
         int? reasoningLen = null;
@@ -127,17 +127,19 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
         // Extract messages array
         var messages = ParseInstructionMessages(instructionEl);
 
-        if (messages.Count == 0)
+        // An instruction is valid if it has messages OR reasoning
+        if (messages.Count == 0 && reasoningLen is null)
         {
-            _logger.LogWarning("No valid messages found in instruction");
+            _logger.LogWarning("No valid messages or reasoning found in instruction");
             return null;
         }
 
         _logger.LogDebug(
-            "Parsed instruction: id={Id}, idMessage={IdMessage}, messageCount={Count}",
+            "Parsed instruction: id={Id}, idMessage={IdMessage}, messageCount={Count}, reasoningLength={ReasoningLength}",
             id,
             idMessage,
-            messages.Count
+            messages.Count,
+            reasoningLen
         );
 
         return new InstructionPlan(idMessage, reasoningLen, messages);
