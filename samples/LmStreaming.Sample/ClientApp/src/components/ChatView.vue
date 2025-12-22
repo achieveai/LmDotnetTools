@@ -2,9 +2,10 @@
 import { provide } from 'vue';
 import { useChat } from '@/composables/useChat';
 import MessageList from './MessageList.vue';
+import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 
-const { displayItems, isLoading, error, usage, sendMessage, clearMessages, getResultForToolCall } = useChat();
+const { displayItems, isLoading, isSending, error, usage, pendingMessages, sendMessage, clearMessages, getResultForToolCall } = useChat();
 
 // Provide getResultForToolCall to child components (MessageList -> MetadataPill)
 provide('getResultForToolCall', getResultForToolCall);
@@ -34,7 +35,9 @@ function handleSend(message: string) {
       {{ usage.usage.outputTokens ?? usage.usage.completion_tokens ?? 0 }} out
     </div>
 
-    <ChatInput :disabled="isLoading" @send="handleSend" />
+    <PendingMessageQueue :pending-messages="pendingMessages" />
+
+    <ChatInput :disabled="isSending" @send="handleSend" />
   </div>
 </template>
 
