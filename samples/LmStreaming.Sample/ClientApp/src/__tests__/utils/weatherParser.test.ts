@@ -5,7 +5,6 @@ import {
   getWeatherEmoji,
   formatTemperature,
   getRainForecast,
-  type WeatherData,
 } from '@/utils/weatherParser';
 
 describe('weatherParser', () => {
@@ -248,10 +247,13 @@ describe('weatherParser', () => {
 
   describe('Real-world weather data', () => {
     it('should parse actual backend response from ResponseSample.md', () => {
-      // This is the actual weather result from the ResponseSample.md file
-      const backendResult = `"{\r\n  \"location\": \"Seattle\",\r\n  \"temperature\": 64,\r\n  \"temperatureUnit\": \"F\",\r\n  \"condition\": \"Rainy\",\r\n  \"humidity\": 43,\r\n  \"windSpeed\": 10,\r\n  \"windUnit\": \"mph\"\r\n}"`;
+      // This is the actual weather result from the ResponseSample.md file (line 14)
+      // The backend sends it with Unicode escapes for quotes
+      const toolCallResultMessage = {
+        result: "\u0022{\\r\\n  \\u0022location\\u0022: \\u0022Seattle\\u0022,\\r\\n  \\u0022temperature\\u0022: 64,\\r\\n  \\u0022temperatureUnit\\u0022: \\u0022F\\u0022,\\r\\n  \\u0022condition\\u0022: \\u0022Rainy\\u0022,\\r\\n  \\u0022humidity\\u0022: 43,\\r\\n  \\u0022windSpeed\\u0022: 10,\\r\\n  \\u0022windUnit\\u0022: \\u0022mph\\u0022\\r\\n}\u0022"
+      };
 
-      const result = parseWeatherData(backendResult);
+      const result = parseWeatherData(toolCallResultMessage.result);
       
       expect(result).not.toBeNull();
       expect(result?.location).toBe('Seattle');
