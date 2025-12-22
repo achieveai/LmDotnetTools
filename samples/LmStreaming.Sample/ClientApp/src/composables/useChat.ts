@@ -26,7 +26,6 @@ import {
   isToolCallMessage,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
-import { sendChatMessageWs } from '@/api/wsClient';
 import { useMessageMerger } from './useMessageMerger';
 import { logger } from '@/utils';
 
@@ -110,7 +109,8 @@ export function useChat(options: UseChatOptions = {}) {
   const messageIndex = ref<Map<string, InternalChatMessage>>(new Map());
   const messageOrder = ref<string[]>([]); // Order of message IDs for display
   
-  const isLoading = ref(false);
+  const isLoading = ref(false); // Stream is active (receiving messages)
+  const isSending = ref(false); // Message send is in progress
   const error = ref<string | null>(null);
   const usage = ref<UsageMessage | null>(null);
   const transport = ref<TransportType>(initialTransport);
@@ -119,6 +119,9 @@ export function useChat(options: UseChatOptions = {}) {
 
   // Tool results map: tool_call_id -> ToolCallResultMessage
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
+  
+  // Persistent WebSocket connection for full-duplex communication
+  let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
 
   const { processUpdate, finalize, reset } = useMessageMerger();
 
@@ -468,12 +471,23 @@ export function useChat(options: UseChatOptions = {}) {
    * Send a message and stream the response
    */
   async function sendMessage(text: string): Promise<void> {
-    if (!text.trim() || isLoading.value) return;
+    if (!text.trim()) return;
+    
+    // Allow sending messages even while streaming (full-duplex)
+    if (isSending.value) {
+      log.warn('Already sending a message, queueing not yet implemented');
+      return;
+    }
 
-    log.info('User sending message', { textLength: text.length, transport: transport.value });
+    log.info('User sending message', { textLength: text.length, transport: transport.value, isStreaming: isLoading.value });
 
     error.value = null;
-    isLoading.value = true;
+    isSending.value = true;
+    
+    // Only set isLoading if not already streaming (backward compatibility)
+    if (!isLoading.value) {
+      isLoading.value = true;
+    }
 
     // Check if this is a test instruction
     const isTest = isTestInstruction(text);
@@ -525,14 +539,74 @@ export function useChat(options: UseChatOptions = {}) {
 
     try {
       if (transport.value === 'websocket') {
-        // Send original text (not display text) to server
-        await sendChatMessageWs(text, { ...callbacks, threadId: getOrCreateThreadId() });
+        // Use persistent connection or create new one
+        await sendMessageViaWebSocket(text, callbacks);
       } else {
         await sendChatMessage(text, callbacks);
       }
+      
+      isSending.value = false;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Unknown error';
       isLoading.value = false;
+      isSending.value = false;
+    }
+  }
+  
+  /**
+   * Send message via WebSocket (persistent or new connection)
+   */
+  async function sendMessageViaWebSocket(
+    text: string,
+    callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
+  ): Promise<void> {
+    const effectiveThreadId = getOrCreateThreadId();
+    
+    // Check if we have an open connection
+    if (wsConnection && wsConnection.isConnected && wsConnection.socket.readyState === WebSocket.OPEN) {
+      log.info('Reusing existing WebSocket connection', { 
+        connectionId: wsConnection.connectionId,
+        threadId: wsConnection.threadId 
+      });
+      
+      // Send message on existing connection
+      const { sendWebSocketMessage } = await import('@/api/wsClient');
+      sendWebSocketMessage(wsConnection, text);
+    } else {
+      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId });
+      
+      // Close old connection if exists
+      if (wsConnection) {
+        const { closeWebSocketConnection } = await import('@/api/wsClient');
+        closeWebSocketConnection(wsConnection);
+        wsConnection = null;
+      }
+      
+      // Create new persistent connection
+      const { createWebSocketConnection, sendWebSocketMessage } = await import('@/api/wsClient');
+      
+      wsConnection = await createWebSocketConnection({
+        threadId: effectiveThreadId,
+        ...callbacks,
+        onDone: () => {
+          log.debug('WebSocket stream done signal received');
+          callbacks.onDone();
+          // Keep connection open for next message (don't close)
+        },
+        onError: async (error) => {
+          log.error('WebSocket error', { error });
+          callbacks.onError(error);
+          // Close and cleanup on error
+          if (wsConnection) {
+            const { closeWebSocketConnection } = await import('@/api/wsClient');
+            closeWebSocketConnection(wsConnection);
+            wsConnection = null;
+          }
+        },
+      });
+      
+      // Send message on new connection
+      sendWebSocketMessage(wsConnection, text);
     }
   }
 
@@ -558,20 +632,47 @@ export function useChat(options: UseChatOptions = {}) {
     currentRunId.value = null;
     toolResults.value.clear();
     reset();
+    
+    // Close WebSocket connection
+    disconnectWebSocket();
   }
+  
+  /**
+   * Disconnect persistent WebSocket connection
+   */
+  async function disconnectWebSocket(): Promise<void> {
+    if (wsConnection) {
+      log.info('Disconnecting WebSocket', { connectionId: wsConnection.connectionId });
+      const { closeWebSocketConnection } = await import('@/api/wsClient');
+      closeWebSocketConnection(wsConnection);
+      wsConnection = null;
+    }
+  }
+
+  // Computed for exposing pending messages
+  const pendingMessagesForQueue = computed(() => {
+    return pendingMessages.value.map(msg => ({
+      id: msg.id,
+      content: msg.content as TextMessage,
+      timestamp: msg.timestamp,
+    }));
+  });
 
   return {
     displayItems,
     isLoading,
+    isSending,
     error,
     usage,
     transport,
     threadId,
     currentRunId,
     toolResults,
+    pendingMessages: pendingMessagesForQueue,
     sendMessage,
     clearMessages,
     setTransport,
+    disconnectWebSocket,
     getResultForToolCall,
   };
 }
