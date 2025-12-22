@@ -1,0 +1,55 @@
+# Multiturn example
+<|instruction_start|>
+{"instruction_chain": [
+    {
+        "id": "turn1_parallel_tools",
+        "reasoning": {"length": 100},
+        "messages": [
+            {"tool_call": [
+                {"name": "get_weather", "args": {"location": "Seattle"}},
+                {"name": "get_weather", "args": {"location": "San Francisco"}},
+                {"name": "get_time", "args": {"timezone": "PST"}}
+            ]}
+        ]
+    },
+    {
+        "id": "turn2_final",
+        "reasoning": {"length": 50},
+        "messages": [
+            {"tool_call": [{"name": "get_weather", "args": {"location": "Seattle"}}]},
+            {"text_message": {"length": 150}}
+        ]
+    }
+]}
+<|instruction_end|>
+
+
+
+# Calculator tool
+<|instruction_start|>
+{"instruction_chain":[{"id":"calculate","id_message":"Calculating result","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"+","b":5}}]}]}]}
+<|instruction_end|>
+
+# WebSearch tool
+<|instruction_start|>
+{"instruction_chain":[{"id":"search","id_message":"Searching the web","messages":[{"tool_call":[{"name":"web_search","args":{"query":"latest news", "numResults":3}}]}]}]}
+<|instruction_end|>
+
+# Weather tool
+
+<|instruction_start|>
+{"instruction_chain":[{"id":"weather-check","id_message":"Checking weather for you","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]}]}]}
+<|instruction_end|>
+
+# Normal message with reasongin
+
+Some text message
+Reason: Reason about somethign
+
+# Normal message
+
+Some text message
+
+# to combine many messages over many turns learn from
+
+src\LmTestUtils\TestMode\InstructionChainParser.cs

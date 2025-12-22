@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, computed } from 'vue';
+import { ref, inject, watch, nextTick } from 'vue';
 import type { ReasoningMessage, ToolsCallMessage, ToolCallResultMessage, ToolCall } from '@/types';
 import { isReasoningMessage, isToolsCallMessage } from '@/types';
 import { truncateText, parseWeatherData, isWeatherTool, getWeatherEmoji, formatTemperature, getRainForecast, type WeatherData } from '@/utils';
@@ -17,15 +17,29 @@ const getResultForToolCall = inject<(toolCallId: string | null | undefined) => T
 // Track which items are expanded
 const expandedItems = ref<Set<number>>(new Set());
 
-// Maximum items to show before scrolling
-const MAX_VISIBLE = 3;
+// Track if the entire pill is expanded
+const isPillExpanded = ref(false);
 
-// Show up to MAX_VISIBLE items, with scroll if more
-const visibleItems = computed(() => {
-  return props.items.slice(0, MAX_VISIBLE);
+// Reference to the scrollable container
+const pillItemsContainer = ref<HTMLElement | null>(null);
+
+// Auto-scroll to bottom when new items are added (only when collapsed)
+watch(() => props.items.length, async () => {
+  if (!isPillExpanded.value) {
+    await nextTick();
+    if (pillItemsContainer.value) {
+      pillItemsContainer.value.scrollTop = pillItemsContainer.value.scrollHeight;
+    }
+  }
 });
 
-const hasMore = computed(() => props.items.length > MAX_VISIBLE);
+/**
+ * Toggle expansion of the entire pill
+ */
+function togglePillExpansion(event: Event) {
+  event.stopPropagation();
+  isPillExpanded.value = !isPillExpanded.value;
+}
 
 /**
  * Toggle expansion of an item
@@ -73,13 +87,35 @@ function getToolCallSummary(toolCall: ToolCall): string {
 }
 
 /**
- * Get icon for message type
+ * Get icon for message type or tool-specific icon
  */
 function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
   if (isReasoningMessage(item)) {
     return '💭'; // Thinking emoji
   }
-  return '🔧'; // Tool emoji
+  
+  // For tool calls, try to get tool-specific icon
+  if (isToolsCallMessage(item) && item.tool_calls.length === 1) {
+    const toolCall = item.tool_calls[0];
+    if (isWeatherTool(toolCall.function_name)) {
+      // For weather tools, try to get weather-specific emoji
+      const weatherData = getWeatherData(toolCall);
+      if (weatherData) {
+        return getWeatherEmoji(weatherData.condition);
+      }
+      // Default weather icon if no result yet
+      return '🌤️';
+    }
+  }
+  
+  return '🔧'; // Generic tool emoji
+}
+
+/**
+ * Check if a tool call has a result
+ */
+function hasResult(toolCall: ToolCall): boolean {
+  return getResult(toolCall) !== null;
 }
 
 /**
@@ -116,12 +152,40 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
   
   return parseWeatherData(result.result);
 }
+
+/**
+ * Get location from weather tool call arguments (for immediate display)
+ */
+function getWeatherLocation(toolCall: ToolCall): string | null {
+  if (!isWeatherTool(toolCall.function_name)) {
+    return null;
+  }
+  
+  try {
+    const args = JSON.parse(toolCall.function_args || '{}');
+    return args.location || null;
+  } catch {
+    return null;
+  }
+}
 </script>
 
 <template>
   <div class="metadata-pill">
-    <div class="pill-items">
-      <template v-for="(item, index) in visibleItems" :key="index">
+    <!-- Pill header with expand/collapse button -->
+    <div v-if="props.items.length > 3" class="pill-header" @click="togglePillExpansion">
+      <span class="pill-expand-icon">{{ isPillExpanded ? '▼' : '▶' }}</span>
+      <span class="pill-header-text">
+        {{ isPillExpanded ? 'Collapse' : `Show all ${props.items.length} items` }}
+      </span>
+    </div>
+    
+    <div 
+      class="pill-items" 
+      :class="{ 'expanded': isPillExpanded }"
+      ref="pillItemsContainer"
+    >
+      <template v-for="(item, index) in props.items" :key="index">
         <!-- Skip encrypted-only reasoning -->
         <template v-if="!(isReasoningMessage(item) && item.visibility === 'Encrypted' && !item.reasoning)">
           <div 
@@ -130,7 +194,12 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
             @click="toggleExpand(index)"
           >
             <div class="item-header">
-              <span class="item-icon">{{ getIcon(item) }}</span>
+              <span 
+                class="item-icon" 
+                :class="{ 'pulsing': isToolsCallMessage(item) && item.tool_calls.length === 1 && !hasResult(item.tool_calls[0]) }"
+              >
+                {{ getIcon(item) }}
+              </span>
               
               <!-- Reasoning item -->
               <template v-if="isReasoningMessage(item)">
@@ -142,14 +211,16 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
               <template v-else-if="isToolsCallMessage(item)">
                 <template v-if="item.tool_calls.length === 1">
                   <!-- Special weather display -->
-                  <template v-if="getWeatherData(item.tool_calls[0])">
+                  <template v-if="getWeatherLocation(item.tool_calls[0])">
                     <span class="item-label weather-label">
-                      {{ getWeatherEmoji(getWeatherData(item.tool_calls[0])!.condition) }}
-                      {{ getWeatherData(item.tool_calls[0])!.location }}
+                      {{ getWeatherLocation(item.tool_calls[0]) }}
                     </span>
                     <span class="weather-summary">
-                      <span class="weather-temp">{{ formatTemperature(getWeatherData(item.tool_calls[0])!.temperature, getWeatherData(item.tool_calls[0])!.temperatureUnit) }}</span>
-                      <span class="weather-condition">{{ getRainForecast(getWeatherData(item.tool_calls[0])!.condition, getWeatherData(item.tool_calls[0])!.humidity) }}</span>
+                      <template v-if="getWeatherData(item.tool_calls[0])">
+                        <span class="weather-temp">{{ formatTemperature(getWeatherData(item.tool_calls[0])!.temperature, getWeatherData(item.tool_calls[0])!.temperatureUnit) }}</span>
+                        <span class="weather-condition">{{ getRainForecast(getWeatherData(item.tool_calls[0])!.condition, getWeatherData(item.tool_calls[0])!.humidity) }}</span>
+                      </template>
+                      <span v-else class="weather-loading">Loading...</span>
                     </span>
                   </template>
                   <!-- Regular tool display -->
@@ -194,10 +265,6 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
           </div>
         </template>
       </template>
-      
-      <div v-if="hasMore" class="more-items">
-        +{{ items.length - MAX_VISIBLE }} more items
-      </div>
     </div>
   </div>
 </template>
@@ -211,10 +278,66 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
   margin-bottom: 8px;
 }
 
+.pill-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: #e8e8e8;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+.pill-header:hover {
+  background: #d8d8d8;
+}
+
+.pill-expand-icon {
+  font-size: 10px;
+  color: #666;
+}
+
+.pill-header-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+}
+
 .pill-items {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 150px; /* Height for ~3 collapsed items (42px each + gaps) */
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.pill-items.expanded {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* Scrollbar styling for pill items */
+.pill-items::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pill-items::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 3px;
+}
+
+.pill-items::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 3px;
+}
+
+.pill-items::-webkit-scrollbar-thumb:hover {
+  background: #a0a0a0;
 }
 
 .pill-item {
@@ -246,6 +369,21 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
 .item-icon {
   font-size: 16px;
   flex-shrink: 0;
+}
+
+.item-icon.pulsing {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.95);
+  }
 }
 
 .item-label {
@@ -284,6 +422,22 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
 .weather-condition {
   color: #666;
   font-size: 14px;
+}
+
+.weather-loading {
+  color: #999;
+  font-size: 14px;
+  font-style: italic;
+  animation: fadeInOut 1.5s ease-in-out infinite;
+}
+
+@keyframes fadeInOut {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .expand-icon {
@@ -346,14 +500,6 @@ function getWeatherData(toolCall: ToolCall): WeatherData | null {
   font-size: 12px;
   line-height: 1.4;
   overflow-x: auto;
-}
-
-.more-items {
-  padding: 8px 12px;
-  text-align: center;
-  color: #999;
-  font-size: 12px;
-  font-style: italic;
 }
 </style>
 
