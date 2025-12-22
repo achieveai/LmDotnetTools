@@ -1,14 +1,29 @@
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import type {
   Message,
   TextMessage,
   UsageMessage,
+  ToolCallResultMessage,
+  DisplayItem,
+  MessageStatus,
+  ReasoningMessage,
+  ToolsCallMessage,
+  ToolCallMessage,
 } from '@/types';
 import {
   MessageType,
   isUsageMessage,
   isRunAssignmentMessage,
   isRunCompletedMessage,
+  isToolCallResultMessage,
+  isTextMessage,
+  isTextUpdateMessage,
+  isReasoningMessage,
+  isReasoningUpdateMessage,
+  isToolsCallMessage,
+  isToolsCallUpdateMessage,
+  isToolCallUpdateMessage,
+  isToolCallMessage,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
 import { sendChatMessageWs } from '@/api/wsClient';
@@ -23,7 +38,23 @@ const log = logger.forComponent('useChat');
 export type TransportType = 'sse' | 'websocket';
 
 /**
- * Represents a chat message in the UI
+ * Internal chat message structure for tracking
+ */
+interface InternalChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  status: MessageStatus;
+  content: Message;
+  runId?: string | null;
+  parentRunId?: string | null;
+  generationId?: string | null;
+  messageOrderIdx?: number | null;
+  timestamp: number;
+  isStreaming?: boolean;
+}
+
+/**
+ * Exported ChatMessage for backward compatibility with tests
  */
 export interface ChatMessage {
   id: string;
@@ -40,12 +71,45 @@ export interface UseChatOptions {
 }
 
 /**
+ * Generate merge key for message updates
+ */
+function getMergeKey(msg: Message): string {
+  const runId = msg.runId || 'default';
+  const generationId = msg.generationId || 'default';
+  const messageOrderIdx = msg.messageOrderIdx ?? 0;
+  
+  // For tool call updates, include toolCallIdx
+  if (isToolCallUpdateMessage(msg) || isToolsCallUpdateMessage(msg)) {
+    if (isToolCallUpdateMessage(msg)) {
+      // Individual tool call - use tool_call_id as unique identifier
+      return `${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
+    } else {
+      // ToolsCallUpdate - use messageOrderIdx only (tools are accumulated in array)
+      return `${runId}-${generationId}-${messageOrderIdx}`;
+    }
+  }
+  
+  return `${runId}-${generationId}-${messageOrderIdx}`;
+}
+
+/**
+ * Check if message contains test instructions
+ */
+function isTestInstruction(text: string): boolean {
+  return text.includes('<|instruction_start|>') && text.includes('<|instruction_end|>');
+}
+
+/**
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
   const { transport: initialTransport = 'websocket' } = options;
 
-  const messages = ref<ChatMessage[]>([]);
+  // Core state
+  const pendingMessages = ref<InternalChatMessage[]>([]);
+  const messageIndex = ref<Map<string, InternalChatMessage>>(new Map());
+  const messageOrder = ref<string[]>([]); // Order of message IDs for display
+  
   const isLoading = ref(false);
   const error = ref<string | null>(null);
   const usage = ref<UsageMessage | null>(null);
@@ -53,17 +117,351 @@ export function useChat(options: UseChatOptions = {}) {
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
 
+  // Tool results map: tool_call_id -> ToolCallResultMessage
+  const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
+
   const { processUpdate, finalize, reset } = useMessageMerger();
 
-  let currentStreamingId: string | null = null;
+  /**
+   * Get tool call result by tool_call_id
+   */
+  function getResultForToolCall(toolCallId: string | null | undefined): ToolCallResultMessage | null {
+    if (!toolCallId) return null;
+    return toolResults.value.get(toolCallId) || null;
+  }
 
-  // Generate thread ID on first use (persists across messages for multi-turn)
+  /**
+   * Generate thread ID on first use (persists across messages for multi-turn)
+   */
   function getOrCreateThreadId(): string {
     if (!threadId.value) {
       threadId.value = `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
       log.info('Created new thread', { threadId: threadId.value });
     }
     return threadId.value;
+  }
+
+  /**
+   * Build run hierarchy and sort messages
+   */
+  function sortMessages(): InternalChatMessage[] {
+    const allMessages: InternalChatMessage[] = [];
+    
+    // Messages are already received in correct order from the backend
+    // Simply collect them in the order they were added to messageOrder
+    for (const msgId of messageOrder.value) {
+      const msg = messageIndex.value.get(msgId);
+      if (msg && msg.status !== 'pending') {
+        allMessages.push(msg);
+      }
+    }
+
+    // No sorting needed - preserve arrival order
+    return allMessages;
+  }
+
+  /**
+   * Transform messages into display items with pill grouping
+   */
+  const displayItems = computed<DisplayItem[]>(() => {
+    const sortedMessages = sortMessages();
+    const items: DisplayItem[] = [];
+    
+    // Include pending messages at the end
+    for (const pending of pendingMessages.value) {
+      items.push({
+        type: 'user-message',
+        id: pending.id,
+        content: pending.content as TextMessage,
+        status: 'pending',
+        timestamp: pending.timestamp,
+      });
+    }
+
+    let pillBuffer: Array<ReasoningMessage | ToolsCallMessage> = [];
+    let pillRunId: string | null = null;
+    let pillParentRunId: string | null = null;
+    let pillMessageOrderIdx: number | null = null;
+
+    function flushPill() {
+      if (pillBuffer.length > 0) {
+        items.push({
+          type: 'pill',
+          id: `pill-${items.length}`,
+          items: [...pillBuffer],
+          runId: pillRunId,
+          parentRunId: pillParentRunId,
+          messageOrderIdx: pillMessageOrderIdx,
+        });
+        pillBuffer = [];
+        pillRunId = null;
+        pillParentRunId = null;
+        pillMessageOrderIdx = null;
+      }
+    }
+
+    for (const msg of sortedMessages) {
+      if (msg.role === 'user') {
+        flushPill();
+        items.push({
+          type: 'user-message',
+          id: msg.id,
+          content: msg.content as TextMessage,
+          status: msg.status,
+          timestamp: msg.timestamp,
+        });
+      } else if (isReasoningMessage(msg.content)) {
+        // Skip encrypted-only reasoning
+        const reasoning = msg.content as ReasoningMessage;
+        if (reasoning.visibility === 'Encrypted' && !reasoning.reasoning) {
+          continue;
+        }
+        // Add to pill buffer
+        pillBuffer.push(msg.content as ReasoningMessage);
+        pillRunId = msg.runId || null;
+        pillParentRunId = msg.parentRunId || null;
+        pillMessageOrderIdx = msg.messageOrderIdx || null;
+      } else if (isToolsCallMessage(msg.content)) {
+        // Add to pill buffer (multi-tool-call message)
+        pillBuffer.push(msg.content as ToolsCallMessage);
+        pillRunId = msg.runId || null;
+        pillParentRunId = msg.parentRunId || null;
+        pillMessageOrderIdx = msg.messageOrderIdx || null;
+      } else if (isToolCallMessage(msg.content)) {
+        // Add individual tool call to pill buffer
+        // Convert ToolCallMessage to ToolsCallMessage format for consistent handling
+        const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
+        const toolsCallMsg: ToolsCallMessage = {
+          $type: MessageType.ToolsCall,
+          tool_calls: [{
+            tool_call_id: toolCall.tool_call_id,
+            function_name: toolCall.function_name,
+            function_args: toolCall.function_args,
+          }],
+          role: toolCall.role,
+          generationId: toolCall.generationId,
+          runId: toolCall.runId,
+          parentRunId: toolCall.parentRunId,
+          threadId: toolCall.threadId,
+          messageOrderIdx: toolCall.messageOrderIdx,
+        };
+        pillBuffer.push(toolsCallMsg);
+        pillRunId = msg.runId || null;
+        pillParentRunId = msg.parentRunId || null;
+        pillMessageOrderIdx = msg.messageOrderIdx || null;
+      } else if (isTextMessage(msg.content)) {
+        // Text message - flush pill and add text
+        flushPill();
+        items.push({
+          type: 'assistant-message',
+          id: msg.id,
+          content: msg.content as TextMessage,
+          runId: msg.runId,
+          parentRunId: msg.parentRunId,
+          messageOrderIdx: msg.messageOrderIdx,
+        });
+      }
+    }
+
+    // Flush any remaining pill items
+    flushPill();
+
+    return items;
+  });
+
+  /**
+   * Handle RunAssignment message - activate pending messages
+   */
+  function handleRunAssignment(msg: Message) {
+    if (!isRunAssignmentMessage(msg)) return;
+
+    log.info('RunAssignment raw message', { msg });
+    
+    const assignment = msg.Assignment;
+    // Backend sends PascalCase, so we need to access properties accordingly
+    const runId = (assignment as any).RunId || assignment.runId;
+    const generationId = (assignment as any).GenerationId || assignment.generationId;
+    const inputIds = (assignment as any).InputIds || assignment.inputIds || [];
+    const parentRunId = (assignment as any).ParentRunId || assignment.parentRunId;
+    
+    currentRunId.value = runId;
+    log.info('Run assignment received', { 
+      runId, 
+      generationId,
+      inputIds,
+      inputCount: inputIds.length,
+      parentRunId,
+      pendingCount: pendingMessages.value.length
+    });
+
+    // Activate pending messages in FIFO order
+    // The backend sends inputIds for the messages it processed in order
+    const activationCount = Math.min(inputIds.length, pendingMessages.value.length);
+    
+    for (let i = 0; i < activationCount; i++) {
+      const inputId = inputIds[i];
+      const pending = pendingMessages.value[0]; // Always take the first pending message (FIFO)
+      
+      if (pending) {
+        // Update the message with real backend ID and metadata
+        pending.id = inputId;
+        pending.status = 'active';
+        pending.runId = runId;
+        pending.parentRunId = parentRunId;
+        
+        // Move to main message index
+        messageIndex.value.set(inputId, pending);
+        messageOrder.value.push(inputId);
+        
+        // Remove from pending queue
+        pendingMessages.value.shift();
+        
+        log.info('Activated pending message', { 
+          oldId: pending.id, 
+          newId: inputId, 
+          runId,
+          text: (pending.content as TextMessage).text?.substring(0, 50)
+        });
+      }
+    }
+    
+    if (inputIds.length > activationCount) {
+      log.warn('More inputIds than pending messages', { 
+        inputCount: inputIds.length, 
+        pendingCount: pendingMessages.value.length,
+        extraIds: inputIds.slice(activationCount)
+      });
+    }
+  }
+
+  /**
+   * Handle RunCompleted message
+   */
+  function handleRunCompleted(msg: Message) {
+    if (!isRunCompletedMessage(msg)) return;
+
+    log.debug('Run completed', { 
+      runId: msg.completedRunId, 
+      hasPending: msg.hasPendingMessages 
+    });
+
+    // Mark all messages in this run as completed
+    for (const message of messageIndex.value.values()) {
+      if (message.runId === msg.completedRunId && message.status === 'active') {
+        message.status = 'completed';
+        message.isStreaming = false;
+      }
+    }
+  }
+
+  /**
+   * Handle incoming message updates
+   */
+  function handleMessage(msg: Message) {
+    // Handle usage messages
+    if (isUsageMessage(msg)) {
+      usage.value = msg;
+      return;
+    }
+
+    // Handle lifecycle messages
+    if (isRunAssignmentMessage(msg)) {
+      handleRunAssignment(msg);
+      return;
+    }
+
+    if (isRunCompletedMessage(msg)) {
+      handleRunCompleted(msg);
+      return;
+    }
+
+    // Handle tool call results
+    if (isToolCallResultMessage(msg)) {
+      if (msg.tool_call_id) {
+        toolResults.value.set(msg.tool_call_id, msg);
+        log.debug('Received tool result', { toolCallId: msg.tool_call_id });
+        
+        // Find the tool call message and attach the result to it
+        // Search through all messages to find the one with matching tool_call_id
+        for (const chatMsg of messageIndex.value.values()) {
+          if (isToolCallMessage(chatMsg.content)) {
+            const toolCall = chatMsg.content as ToolCallMessage;
+            if (toolCall.tool_call_id === msg.tool_call_id) {
+              // Attach the result to the tool call message
+              toolCall.result = msg.result;
+              log.info('Attached result to tool call', { 
+                toolCallId: msg.tool_call_id,
+                messageId: chatMsg.id
+              });
+              break;
+            }
+          } else if (isToolsCallMessage(chatMsg.content)) {
+            const toolsCall = chatMsg.content as ToolsCallMessage;
+            // Check if any of the tool calls match
+            const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === msg.tool_call_id);
+            if (matchingToolCall) {
+              // Attach the result to the matching tool call
+              matchingToolCall.result = msg.result;
+              log.info('Attached result to tool call in ToolsCallMessage', { 
+                toolCallId: msg.tool_call_id,
+                messageId: chatMsg.id
+              });
+              break;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    // Determine if this is an update message that needs merging
+    const isUpdate = isTextUpdateMessage(msg) || isReasoningUpdateMessage(msg) || 
+                     isToolsCallUpdateMessage(msg) || isToolCallUpdateMessage(msg);
+
+    // Determine if this is a complete (non-update) content message
+    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg);
+
+    if (!isUpdate && !isCompleteMessage) {
+      // Unknown message type - skip
+      log.debug('Skipping unknown message type', { type: msg.$type });
+      return;
+    }
+
+    // Process through merger (handles both updates and complete messages)
+    const mergedMessage = isUpdate ? processUpdate(msg) : msg;
+    const mergeKey = getMergeKey(msg);
+
+    // Find or create message in index
+    let chatMessage = messageIndex.value.get(mergeKey);
+    
+    if (!chatMessage) {
+      // Create new message
+      chatMessage = {
+        id: mergeKey,
+        role: 'assistant',
+        status: 'active',
+        content: mergedMessage,
+        runId: msg.runId,
+        parentRunId: msg.parentRunId,
+        generationId: msg.generationId,
+        messageOrderIdx: msg.messageOrderIdx,
+        timestamp: Date.now(),
+        isStreaming: !isCompleteMessage, // Complete messages are not streaming
+      };
+      messageIndex.value.set(mergeKey, chatMessage);
+      messageOrder.value.push(mergeKey);
+      
+      log.debug('Created new message', { mergeKey, type: msg.$type, isComplete: isCompleteMessage });
+    } else {
+      // Update existing message
+      chatMessage.content = mergedMessage;
+      chatMessage.messageOrderIdx = msg.messageOrderIdx ?? chatMessage.messageOrderIdx;
+      if (isCompleteMessage) {
+        chatMessage.isStreaming = false;
+      }
+      
+      log.trace('Updated message', { mergeKey, type: msg.$type });
+    }
   }
 
   /**
@@ -77,65 +475,44 @@ export function useChat(options: UseChatOptions = {}) {
     error.value = null;
     isLoading.value = true;
 
-    // Add user message
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+    // Check if this is a test instruction
+    const isTest = isTestInstruction(text);
+    const displayText = isTest ? '🧪 Test instruction sent' : text;
+
+    // Create user message WITHOUT an id (backend will assign one)
+    // We use a temporary client-side ID for tracking in the pending queue
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const userMessage: InternalChatMessage = {
+      id: tempId,
       role: 'user',
+      status: 'pending',
       content: {
         $type: MessageType.Text,
-        text,
+        text: displayText,
         role: 'user',
       } as TextMessage,
+      timestamp: Date.now(),
     };
-    messages.value.push(userMessage);
 
-    // Prepare streaming assistant message
-    currentStreamingId = crypto.randomUUID();
-    const assistantMessage: ChatMessage = {
-      id: currentStreamingId,
-      role: 'assistant',
-      content: {
-        $type: MessageType.Text,
-        text: '',
-        role: 'assistant',
-      } as TextMessage,
-      isStreaming: true,
-    };
-    messages.value.push(assistantMessage);
+    // Add to pending queue
+    pendingMessages.value.push(userMessage);
+    log.debug('Added message to pending queue', { tempId, text: displayText.substring(0, 50) });
 
     const callbacks = {
-      onMessage: (msg: Message) => {
-        // Handle usage messages separately
-        if (isUsageMessage(msg)) {
-          usage.value = msg;
-          return;
-        }
-
-        // Handle lifecycle messages
-        if (isRunAssignmentMessage(msg)) {
-          currentRunId.value = msg.assignment.runId;
-          log.debug('Run started', { runId: msg.assignment.runId, generationId: msg.assignment.generationId });
-          return;
-        }
-
-        if (isRunCompletedMessage(msg)) {
-          log.debug('Run completed', { runId: msg.completedRunId, hasPending: msg.hasPendingMessages });
-          return;
-        }
-
-        // Process and merge streaming updates
-        const mergedMessage = processUpdate(msg);
-        const idx = messages.value.findIndex((m) => m.id === currentStreamingId);
-        if (idx !== -1) {
-          messages.value[idx].content = mergedMessage;
-        }
-      },
+      onMessage: handleMessage,
       onDone: () => {
-        log.info('Stream completed', { messageCount: messages.value.length, transport: transport.value });
-        const idx = messages.value.findIndex((m) => m.id === currentStreamingId);
-        if (idx !== -1) {
-          messages.value[idx].isStreaming = false;
+        log.info('Stream completed', { transport: transport.value });
+        
+        // Mark all streaming messages as completed
+        for (const message of messageIndex.value.values()) {
+          if (message.isStreaming) {
+            message.isStreaming = false;
+            if (message.status === 'active') {
+              message.status = 'completed';
+            }
+          }
         }
+        
         finalize();
         isLoading.value = false;
       },
@@ -143,16 +520,12 @@ export function useChat(options: UseChatOptions = {}) {
         log.error('Stream error', { error: err, transport: transport.value });
         error.value = err;
         isLoading.value = false;
-        // Remove streaming message on error
-        const idx = messages.value.findIndex((m) => m.id === currentStreamingId);
-        if (idx !== -1) {
-          messages.value.splice(idx, 1);
-        }
       },
     };
 
     try {
       if (transport.value === 'websocket') {
+        // Send original text (not display text) to server
         await sendChatMessageWs(text, { ...callbacks, threadId: getOrCreateThreadId() });
       } else {
         await sendChatMessage(text, callbacks);
@@ -176,24 +549,29 @@ export function useChat(options: UseChatOptions = {}) {
    */
   function clearMessages(): void {
     log.info('Clearing all messages');
-    messages.value = [];
+    pendingMessages.value = [];
+    messageIndex.value.clear();
+    messageOrder.value = [];
     usage.value = null;
     error.value = null;
-    threadId.value = null; // Reset thread for new conversation
+    threadId.value = null;
     currentRunId.value = null;
+    toolResults.value.clear();
     reset();
   }
 
   return {
-    messages,
+    displayItems,
     isLoading,
     error,
     usage,
     transport,
     threadId,
     currentRunId,
+    toolResults,
     sendMessage,
     clearMessages,
     setTransport,
+    getResultForToolCall,
   };
 }

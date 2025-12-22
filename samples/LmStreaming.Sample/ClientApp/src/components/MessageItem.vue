@@ -1,47 +1,73 @@
 <script setup lang="ts">
+import { inject } from 'vue';
 import type { ChatMessage } from '@/composables/useChat';
+import type { ToolCallResultMessage, ToolCall } from '@/types';
 import { isTextMessage, isToolsCallMessage, isReasoningMessage } from '@/types';
 import TextMessageVue from './TextMessage.vue';
-import ToolCallMessage from './ToolCallMessage.vue';
+import ThinkingPill from './ThinkingPill.vue';
+import { getToolComponent } from './tools/toolRegistry';
 
 defineProps<{
   message: ChatMessage;
 }>();
+
+// Inject getResultForToolCall from parent (ChatView)
+const getResultForToolCall = inject<(toolCallId: string | null | undefined) => ToolCallResultMessage | null>(
+  'getResultForToolCall',
+  () => null
+);
+
+/**
+ * Get result for a specific tool call
+ */
+function getResult(toolCall: ToolCall): ToolCallResultMessage | null {
+  return getResultForToolCall(toolCall.tool_call_id);
+}
 </script>
 
 <template>
   <div class="message-item" :class="message.role">
-    <div class="avatar">
-      {{ message.role === 'user' ? '&#x1F464;' : '&#x1F916;' }}
+    <!-- Assistant: avatar on left -->
+    <div v-if="message.role === 'assistant'" class="avatar assistant-avatar">
+      &#x1F916;
     </div>
-    <div class="content">
-      <div class="role-label">{{ message.role }}</div>
 
-      <!-- Text message -->
+    <div class="content">
+      <!-- Reasoning/Thinking message - render as ThinkingPill -->
+      <ThinkingPill
+        v-if="isReasoningMessage(message.content)"
+        :message="message.content"
+      />
+
+      <!-- Tool calls - dynamically resolved via registry -->
+      <template v-else-if="isToolsCallMessage(message.content)">
+        <div class="tool-calls-container">
+          <component
+            v-for="toolCall in message.content.tool_calls"
+            :key="toolCall.tool_call_id || toolCall.index"
+            :is="getToolComponent(toolCall.function_name)"
+            :tool-call="toolCall"
+            :result="getResult(toolCall)"
+          />
+        </div>
+      </template>
+
+      <!-- Text message - render as regular text -->
       <TextMessageVue
-        v-if="isTextMessage(message.content)"
+        v-else-if="isTextMessage(message.content)"
         :message="message.content"
         :is-streaming="message.isStreaming"
       />
-
-      <!-- Tool call message -->
-      <ToolCallMessage
-        v-else-if="isToolsCallMessage(message.content)"
-        :message="message.content"
-      />
-
-      <!-- Reasoning message -->
-      <div v-else-if="isReasoningMessage(message.content)" class="reasoning">
-        <details>
-          <summary>Reasoning</summary>
-          <pre>{{ message.content.reasoning }}</pre>
-        </details>
-      </div>
 
       <!-- Fallback for unknown message types -->
       <div v-else class="unknown">
         <pre>{{ JSON.stringify(message.content, null, 2) }}</pre>
       </div>
+    </div>
+
+    <!-- User: avatar on right -->
+    <div v-if="message.role === 'user'" class="avatar user-avatar">
+      &#x1F464;
     </div>
   </div>
 </template>
@@ -51,14 +77,23 @@ defineProps<{
   display: flex;
   gap: 12px;
   padding: 16px;
+  max-width: 85%;
 }
 
+/* User messages: right-aligned */
 .message-item.user {
-  background: #f0f7ff;
+  flex-direction: row-reverse;
+  margin-left: auto;
+  background: #e3f2fd;
+  border-radius: 16px 16px 4px 16px;
 }
 
+/* Assistant messages: left-aligned */
 .message-item.assistant {
-  background: #fff;
+  flex-direction: row;
+  margin-right: auto;
+  background: #f5f5f5;
+  border-radius: 16px 16px 16px 4px;
 }
 
 .avatar {
@@ -72,11 +107,11 @@ defineProps<{
   flex-shrink: 0;
 }
 
-.user .avatar {
-  background: #007bff;
+.user-avatar {
+  background: #1976d2;
 }
 
-.assistant .avatar {
+.assistant-avatar {
   background: #6c757d;
 }
 
@@ -85,31 +120,10 @@ defineProps<{
   min-width: 0;
 }
 
-.role-label {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: capitalize;
-  color: #666;
-  margin-bottom: 4px;
-}
-
-.reasoning details {
-  background: #f8f9fa;
-  border-radius: 8px;
-  padding: 8px 12px;
-}
-
-.reasoning summary {
-  cursor: pointer;
-  font-weight: 500;
-  color: #6f42c1;
-}
-
-.reasoning pre {
-  margin: 8px 0 0;
-  font-size: 13px;
-  white-space: pre-wrap;
-  word-break: break-word;
+.tool-calls-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .unknown pre {
@@ -118,5 +132,6 @@ defineProps<{
   border-radius: 8px;
   font-size: 12px;
   overflow-x: auto;
+  margin: 0;
 }
 </style>

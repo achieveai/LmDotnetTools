@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { provide } from 'vue';
 import { useChat } from '@/composables/useChat';
 import MessageList from './MessageList.vue';
 import ChatInput from './ChatInput.vue';
 
-const { messages, isLoading, error, usage, sendMessage, clearMessages } = useChat();
+const { displayItems, isLoading, error, usage, sendMessage, clearMessages, getResultForToolCall } = useChat();
+
+// Provide getResultForToolCall to child components (MessageList -> MetadataPill)
+provide('getResultForToolCall', getResultForToolCall);
 
 function handleSend(message: string) {
   sendMessage(message);
@@ -19,7 +23,7 @@ function handleSend(message: string) {
       </button>
     </header>
 
-    <MessageList :messages="messages" />
+    <MessageList :display-items="displayItems" />
 
     <div v-if="error" class="error-banner">
       {{ error }}

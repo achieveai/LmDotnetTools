@@ -42,7 +42,8 @@
       "Bash(src/McpServer.AspNetCore/Extensions/ServiceCollectionExtensions.cs )",
       "Bash(src/McpServer.AspNetCore/README.md )",
       "Bash(tests/McpServer.AspNetCore.Tests/McpFunctionProviderServerTests.cs )",
-      "Bash(example/LmConfigUsageExample/Program.cs)"
+      "Bash(example/LmConfigUsageExample/Program.cs)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": [],

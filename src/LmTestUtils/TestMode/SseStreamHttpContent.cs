@@ -254,10 +254,11 @@ public sealed class SseStreamHttpContent : HttpContent
     {
         var choices = Enumerable.Empty<Choice>();
 
-        // First, emit the id_message if present
-        if (!string.IsNullOrEmpty(plan.IdMessage))
+        // Emit reasoning first if configured at plan level (before any messages)
+        if (plan.ReasoningLength is int rlen && rlen > 0)
         {
-            choices = choices.Concat(ChunkTextMessage(0, plan.IdMessage, _wordsPerChunk));
+            var reasoning = string.Join(" ", GenerateLoremChunks(rlen, _wordsPerChunk));
+            choices = choices.Concat(ChunkReasoningText(0, reasoning, _wordsPerChunk));
         }
 
         for (var msgIndex = 0; msgIndex < plan.Messages.Count; msgIndex++)
@@ -265,13 +266,6 @@ public sealed class SseStreamHttpContent : HttpContent
             var message = plan.Messages[msgIndex];
             if (message.TextLength is int textLen)
             {
-                // Reasoning first if configured at plan level
-                if (plan.ReasoningLength is int rlen && rlen > 0)
-                {
-                    var reasoning = string.Join(" ", GenerateLoremChunks(rlen, _wordsPerChunk));
-                    choices = choices.Concat(ChunkReasoningText(msgIndex, reasoning, _wordsPerChunk));
-                }
-
                 if (textLen > 0)
                 {
                     var text = string.Join(" ", GenerateLoremChunks(textLen, _wordsPerChunk));
@@ -280,10 +274,6 @@ public sealed class SseStreamHttpContent : HttpContent
             }
             else if (message.ToolCalls is not null)
             {
-                // Generate proper SSE events for tool calls
-                var messageId = $"msg-{msgIndex}-{Guid.NewGuid():N}";
-                var sequenceId = msgIndex + 1;
-
                 choices = choices.Concat(
                     ChunkToolCalls(msgIndex, message.ToolCalls.Select(tc => (tc.Name, tc.ArgsJson)), _wordsPerChunk)
                 );

@@ -118,7 +118,7 @@ describe('ResponseSample Full Rendering', () => {
       expect(wrapper.find('.cursor').exists()).toBe(false); // Not streaming
     });
 
-    it('should render reasoning message in MessageItem', () => {
+    it('should render reasoning message as ThinkingPill in MessageItem', () => {
       const { reasoningMessage } = processAllEvents();
       expect(reasoningMessage).not.toBeNull();
 
@@ -133,12 +133,9 @@ describe('ResponseSample Full Rendering', () => {
         props: { message: chatMessage },
       });
 
-      expect(wrapper.find('.reasoning').exists()).toBe(true);
-      expect(wrapper.find('details').exists()).toBe(true);
-      expect(wrapper.find('summary').text()).toBe('Reasoning');
-
-      const reasoningText = wrapper.find('.reasoning pre').text();
-      expect(reasoningText.length).toBeGreaterThan(100);
+      // Reasoning is now rendered as a ThinkingPill (EventPill with thinking type)
+      expect(wrapper.find('.event-pill').exists()).toBe(true);
+      expect(wrapper.find('.event-pill').classes()).toContain('thinking');
     });
 
     it('should show streaming cursor during text streaming', () => {

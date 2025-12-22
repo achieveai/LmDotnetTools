@@ -56,25 +56,26 @@ describe('MessageItem.vue', () => {
     expect(wrapper.find('.text').text()).toBe('Hello world');
   });
 
-  it('should render ToolCallMessage for tools_call content', () => {
+  it('should render ToolCallPill for tools_call content', () => {
     const chatMessage = createChatMessage(createToolsCallMessage());
     const wrapper = mount(MessageItem, {
       props: { message: chatMessage },
     });
 
-    expect(wrapper.find('.tool-call-message').exists()).toBe(true);
+    // Tool calls are now rendered as pills in a container
+    expect(wrapper.find('.tool-calls-container').exists()).toBe(true);
+    expect(wrapper.find('.event-pill').exists()).toBe(true);
   });
 
-  it('should render Reasoning details for reasoning content', () => {
+  it('should render ThinkingPill for reasoning content', () => {
     const chatMessage = createChatMessage(createReasoningMessage('Thinking about the problem...'));
     const wrapper = mount(MessageItem, {
       props: { message: chatMessage },
     });
 
-    expect(wrapper.find('.reasoning').exists()).toBe(true);
-    expect(wrapper.find('details').exists()).toBe(true);
-    expect(wrapper.find('summary').text()).toBe('Reasoning');
-    expect(wrapper.find('pre').text()).toBe('Thinking about the problem...');
+    // Reasoning is now rendered as a ThinkingPill
+    expect(wrapper.find('.event-pill').exists()).toBe(true);
+    expect(wrapper.find('.event-pill').classes()).toContain('thinking');
   });
 
   it('should show user avatar for user role', () => {
@@ -127,13 +128,26 @@ describe('MessageItem.vue', () => {
     expect(wrapper.find('.cursor').exists()).toBe(true);
   });
 
-  it('should display role label', () => {
+  it('should use left alignment for assistant messages', () => {
     const chatMessage = createChatMessage(createTextMessage('Test'), 'assistant');
     const wrapper = mount(MessageItem, {
       props: { message: chatMessage },
     });
 
-    expect(wrapper.find('.role-label').text()).toBe('assistant');
+    // Assistant messages should have the assistant class (left-aligned)
+    expect(wrapper.find('.message-item.assistant').exists()).toBe(true);
+    expect(wrapper.find('.assistant-avatar').exists()).toBe(true);
+  });
+
+  it('should use right alignment for user messages', () => {
+    const chatMessage = createChatMessage(createTextMessage('Test'), 'user');
+    const wrapper = mount(MessageItem, {
+      props: { message: chatMessage },
+    });
+
+    // User messages should have the user class (right-aligned)
+    expect(wrapper.find('.message-item.user').exists()).toBe(true);
+    expect(wrapper.find('.user-avatar').exists()).toBe(true);
   });
 
   it('should render unknown message types with JSON fallback', () => {

@@ -113,6 +113,11 @@ export function useMessageMerger() {
       isThinking: acc.isThinking,
       role: acc.role,
       generationId: acc.generationId,
+      runId: update.runId,
+      parentRunId: update.parentRunId,
+      threadId: update.threadId,
+      messageOrderIdx: update.messageOrderIdx,
+      fromAgent: update.fromAgent,
     };
   }
 
@@ -182,6 +187,11 @@ export function useMessageMerger() {
       tool_calls: allToolCalls,
       role: acc.role,
       generationId: acc.generationId,
+      runId: update.runId,
+      parentRunId: update.parentRunId,
+      threadId: update.threadId,
+      messageOrderIdx: update.messageOrderIdx,
+      fromAgent: update.fromAgent,
     };
   }
 
@@ -225,6 +235,11 @@ export function useMessageMerger() {
       function_args: acc.functionArgs,
       role: acc.role,
       generationId: acc.generationId,
+      runId: update.runId,
+      parentRunId: update.parentRunId,
+      threadId: update.threadId,
+      messageOrderIdx: update.messageOrderIdx,
+      fromAgent: update.fromAgent,
     };
   }
 
@@ -257,6 +272,11 @@ export function useMessageMerger() {
       visibility: acc.visibility,
       role: acc.role,
       generationId: acc.generationId,
+      runId: update.runId,
+      parentRunId: update.parentRunId,
+      threadId: update.threadId,
+      messageOrderIdx: update.messageOrderIdx,
+      fromAgent: update.fromAgent,
     };
   }
 
