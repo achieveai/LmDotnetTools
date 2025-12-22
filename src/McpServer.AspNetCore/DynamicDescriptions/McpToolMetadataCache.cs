@@ -148,13 +148,47 @@ public sealed class McpToolMetadataCache
 
         return new ToolMetadata
         {
-            Name = method.Name,
+            // Convert PascalCase method name to snake_case for MCP tool name
+            // This matches the behavior of the standard ModelContextProtocol library
+            Name = ToSnakeCase(method.Name),
             DefaultDescription = descriptionAttr?.Description,
             DeclaringType = declaringType,
             Method = method,
             Parameters = parameters,
             InputSchema = inputSchema
         };
+    }
+
+    /// <summary>
+    /// Converts a PascalCase or camelCase string to snake_case.
+    /// Example: "UpdateQuestion" -> "update_question", "getUser" -> "get_user"
+    /// </summary>
+    private static string ToSnakeCase(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return name;
+        }
+
+        var result = new System.Text.StringBuilder();
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                // Add underscore before uppercase letter (except at the start)
+                if (i > 0)
+                {
+                    _ = result.Append('_');
+                }
+                _ = result.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                _ = result.Append(c);
+            }
+        }
+        return result.ToString();
     }
 
     /// <summary>
