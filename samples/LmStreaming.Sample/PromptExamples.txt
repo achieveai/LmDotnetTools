@@ -3,7 +3,7 @@
 {"instruction_chain": [
     {
         "id": "turn1_parallel_tools",
-        "reasoning": {"length": 100},
+        "reasoning": {"length": 30},
         "messages": [
             {"tool_call": [
                 {"name": "get_weather", "args": {"location": "Seattle"}},

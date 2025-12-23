@@ -169,17 +169,6 @@ export function useChat(options: UseChatOptions = {}) {
   const displayItems = computed<DisplayItem[]>(() => {
     const sortedMessages = sortMessages();
     const items: DisplayItem[] = [];
-    
-    // Include pending messages at the end
-    for (const pending of pendingMessages.value) {
-      items.push({
-        type: 'user-message',
-        id: pending.id,
-        content: pending.content as TextMessage,
-        status: 'pending',
-        timestamp: pending.timestamp,
-      });
-    }
 
     let pillBuffer: Array<ReasoningMessage | ToolsCallMessage> = [];
     let pillRunId: string | null = null;
@@ -303,9 +292,13 @@ export function useChat(options: UseChatOptions = {}) {
     
     for (let i = 0; i < activationCount; i++) {
       const inputId = inputIds[i];
-      const pending = pendingMessages.value[0]; // Always take the first pending message (FIFO)
+      
+      // Remove from pending queue FIRST (before mutation)
+      const pending = pendingMessages.value.shift();
       
       if (pending) {
+        const oldId = pending.id;
+        
         // Update the message with real backend ID and metadata
         pending.id = inputId;
         pending.status = 'active';
@@ -316,11 +309,8 @@ export function useChat(options: UseChatOptions = {}) {
         messageIndex.value.set(inputId, pending);
         messageOrder.value.push(inputId);
         
-        // Remove from pending queue
-        pendingMessages.value.shift();
-        
         log.info('Activated pending message', { 
-          oldId: pending.id, 
+          oldId, 
           newId: inputId, 
           runId,
           text: (pending.content as TextMessage).text?.substring(0, 50)
