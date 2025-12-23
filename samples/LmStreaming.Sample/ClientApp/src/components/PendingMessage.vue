@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { TextMessage } from '@/types';
+import { parseMarkdown } from '@/utils/markdown';
 
-defineProps<{
+const props = defineProps<{
   content: TextMessage;
 }>();
+
+const parsedText = computed(() => parseMarkdown(props.content.text));
 </script>
 
 <template>
   <div class="pending-message">
     <div class="pending-content">
-      <span class="message-text">{{ content.text }}</span>
+      <div class="markdown-body" v-html="parsedText"></div>
       <div class="waiting-indicator">
         <span class="dot"></span>
         <span class="dot"></span>
@@ -38,15 +42,26 @@ defineProps<{
   opacity: 0.7;
 }
 
-.message-text {
+.markdown-body {
   font-size: 14px;
   line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Deep selector for markdown content styles */
+.markdown-body :deep(p) {
+  margin: 0 0 0.5em 0;
+}
+
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
 }
 
 .waiting-indicator {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .dot {

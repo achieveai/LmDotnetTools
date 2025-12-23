@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { parseMarkdown } from '@/utils/markdown';
 
 export type PillType = 'thinking' | 'tool-call' | 'tool-result';
 
@@ -15,6 +16,11 @@ const isExpanded = ref(false);
 
 const hasExpandableContent = computed(() => {
   return props.fullContent && props.fullContent !== props.label;
+});
+
+const parsedContent = computed(() => {
+  if (!props.fullContent) return '';
+  return parseMarkdown(props.fullContent);
 });
 
 function toggleExpand() {
@@ -39,7 +45,7 @@ function toggleExpand() {
       </span>
     </div>
     <div v-if="isExpanded && fullContent" class="pill-content">
-      <pre>{{ fullContent }}</pre>
+      <div class="markdown-body" v-html="parsedContent"></div>
     </div>
   </div>
 </template>
@@ -109,13 +115,32 @@ function toggleExpand() {
   border-top: 1px solid rgba(0, 0, 0, 0.1);
 }
 
-.pill-content pre {
+.markdown-body {
   margin: 0;
   font-size: 12px;
-  white-space: pre-wrap;
   word-break: break-word;
   max-height: 200px;
   overflow-y: auto;
+}
+
+.markdown-body :deep(p) {
+  margin: 0 0 0.5em 0;
+}
+
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(pre) {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.markdown-body :deep(code) {
+  font-family: monospace;
 }
 
 .event-pill.expanded {
