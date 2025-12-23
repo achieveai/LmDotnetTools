@@ -74,7 +74,7 @@ try
     _ = builder.Services.AddEndpointsApiExplorer();
 
     // Add Vite services for frontend integration
-    builder.Services.AddViteServices(options =>
+    _ = builder.Services.AddViteServices(options =>
     {
         options.Base = "/dist/";
         options.Server.AutoRun = true;
@@ -101,7 +101,7 @@ try
             var testHandler = new TestSseMessageHandler(handlerLogger)
             {
                 WordsPerChunk = 3,   // Stream 3 words at a time for visible streaming
-                ChunkDelayMs = 50,   // 50ms delay between chunks
+                ChunkDelayMs = 300,   // 50ms delay between chunks
             };
 
             // Create HttpClient with the test handler
@@ -273,7 +273,30 @@ try
             using (Serilog.Context.LogContext.PushProperty("ClientComponent", entry.Component))
             using (Serilog.Context.LogContext.PushProperty("Source", "Browser"))
             {
-                if (entry.Data != null)
+                if (entry.Data is JsonElement jsonElement && jsonElement.ValueKind != JsonValueKind.Undefined && jsonElement.ValueKind != JsonValueKind.Null)
+                {
+                    // Convert JsonElement to object (dictionary/list/primitive) for proper Serilog destructuring
+                    // OR serialize it to a raw string if we want the raw JSON
+                    // Here we'll try to deserialize it to a dynamic object or dictionary to let Serilog handle it
+                    try
+                    {
+                        var rawText = jsonElement.GetRawText();
+                        // Serilog doesn't automatically parse JSON strings into structure unless we do something special.
+                        // But we can just log the raw JSON string if we want, or try to parse it.
+                        // For simplicity and robustness, let's log the raw JSON string as "ClientDataJson"
+                        // and also try to let Serilog destructure a Dictionary if possible.
+
+                        using (Serilog.Context.LogContext.PushProperty("ClientData", rawText))
+                        {
+                             logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
+                        }
+                    }
+                    catch
+                    {
+                         logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
+                    }
+                }
+                else if (entry.Data != null)
                 {
                     using (Serilog.Context.LogContext.PushProperty("ClientData", entry.Data, destructureObjects: true))
                     {
@@ -316,6 +339,6 @@ public record ClientLogEntry(
     int? Line,
     string? Function,
     string? Component,
-    object? Data);
+    object? Data); // Data will be bound as JsonElement by default in ASP.NET Core
 
 public record ClientLogBatch(ClientLogEntry[] Entries);

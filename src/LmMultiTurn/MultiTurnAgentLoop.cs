@@ -167,6 +167,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // POLL: Check for new inputs before each turn
             if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
             {
+                // Send RunAssignment for the newly injected inputs
+                // Note: These are added to the CURRENT run, not a new run
+                var injectionAssignment = new RunAssignment(
+                    RunId: runId,
+                    GenerationId: generationId,
+                    InputIds: newInputs.Select(i => i.ReceiptId).ToList(),
+                    ParentRunId: null, // Injected into current run
+                    WasInjected: true  // Mark as injected to differentiate from initial assignment
+                );
+                
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = injectionAssignment,
+                    ThreadId = ThreadId,
+                }, ct);
+                
                 // Add new messages to current run (injection)
                 foreach (var input in newInputs)
                 {
@@ -177,7 +193,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 }
 
                 Logger.LogInformation(
-                    "Injected {Count} new inputs into run {RunId}",
+                    "Injected {Count} new inputs into run {RunId}, sent RunAssignment",
                     newInputs.Count,
                     runId);
             }
