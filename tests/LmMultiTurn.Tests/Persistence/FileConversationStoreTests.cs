@@ -326,9 +326,11 @@ public class FileConversationStoreTests : IDisposable
     private static List<PersistedMessage> CreateTestMessages(string threadId, string runId, int count)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        return Enumerable.Range(0, count)
-            .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{i}", now + i, messageOrderIdx: i))
-            .ToList();
+        return
+        [
+            .. Enumerable.Range(0, count)
+                .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{i}", now + i, messageOrderIdx: i))
+        ];
     }
 
     private static PersistedMessage CreateMessage(

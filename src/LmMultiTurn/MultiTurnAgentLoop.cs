@@ -93,7 +93,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 }
 
                 // Drain all available inputs
-                TryDrainInputs(out var batch);
+                _ = TryDrainInputs(out var batch);
                 if (batch.Count == 0)
                 {
                     continue;
@@ -172,17 +172,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 var injectionAssignment = new RunAssignment(
                     RunId: runId,
                     GenerationId: generationId,
-                    InputIds: newInputs.Select(i => i.ReceiptId).ToList(),
+                    InputIds: [.. newInputs.Select(i => i.ReceiptId)],
                     ParentRunId: null, // Injected into current run
                     WasInjected: true  // Mark as injected to differentiate from initial assignment
                 );
-                
+
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
                     Assignment = injectionAssignment,
                     ThreadId = ThreadId,
                 }, ct);
-                
+
                 // Add new messages to current run (injection)
                 foreach (var input in newInputs)
                 {

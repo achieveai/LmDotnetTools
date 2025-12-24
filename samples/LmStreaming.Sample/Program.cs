@@ -288,12 +288,12 @@ try
 
                         using (Serilog.Context.LogContext.PushProperty("ClientData", rawText))
                         {
-                             logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
+                            logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
                         }
                     }
                     catch
                     {
-                         logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
+                        logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
                     }
                 }
                 else if (entry.Data != null)

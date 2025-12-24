@@ -17,7 +17,7 @@ describe('TextMessage.vue', () => {
       props: { message },
     });
 
-    expect(wrapper.find('.text').text()).toBe('Test message content');
+    expect(wrapper.find('.markdown-content').text()).toContain('Test message content');
   });
 
   it('should show streaming cursor when isStreaming is true', () => {
@@ -83,7 +83,7 @@ describe('TextMessage.vue', () => {
       props: { message },
     });
 
-    expect(wrapper.find('.text').text()).toBe('');
+    expect(wrapper.find('.markdown-content').text()).toBe('');
   });
 
   it('should render long text with word break', () => {
@@ -93,6 +93,6 @@ describe('TextMessage.vue', () => {
       props: { message },
     });
 
-    expect(wrapper.find('.text').text()).toBe(longText);
+    expect(wrapper.find('.markdown-content').text()).toContain(longText);
   });
 });

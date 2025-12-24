@@ -60,7 +60,7 @@ describe('EventPill.vue', () => {
     await wrapper.find('.event-pill').trigger('click');
 
     expect(wrapper.find('.pill-content').exists()).toBe(true);
-    expect(wrapper.find('.pill-content pre').text()).toBe('Full expanded content');
+    expect(wrapper.find('.pill-content .markdown-body').text()).toContain('Full expanded content');
     expect(wrapper.find('.event-pill').classes()).toContain('expanded');
   });
 

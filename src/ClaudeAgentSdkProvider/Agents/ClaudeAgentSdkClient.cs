@@ -177,13 +177,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             // 7. Create shutdown CTS and start stderr monitor in background (tracked)
             _shutdownCts = new CancellationTokenSource();
-            _stderrMonitorTask = Task.Run(() => MonitorStdErrWithPolling(_shutdownCts.Token));
+            _stderrMonitorTask = Task.Run(() => MonitorStdErrWithPolling(_shutdownCts.Token), cancellationToken);
 
             // 8. Start keepalive task (Interactive mode only)
             if (_options.Mode == ClaudeAgentSdkMode.Interactive)
             {
                 _keepaliveCts = new CancellationTokenSource();
-                _keepaliveTask = Task.Run(() => RunKeepaliveAsync(_keepaliveCts.Token));
+                _keepaliveTask = Task.Run(() => RunKeepaliveAsync(_keepaliveCts.Token), cancellationToken);
             }
 
             // 9. Create session info
@@ -283,7 +283,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             }
         }
 
-        bool isWorking = false;
+        var isWorking = false;
 
         // Read and parse stdout for the response
         await foreach (var line in ReadStdoutLinesAsync(cancellationToken))
@@ -369,13 +369,19 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                         isWorking = false;
                         var jsonLine = JsonSerializer.Serialize(
-                            new InputMessageWrapper {
+                            new InputMessageWrapper
+                            {
                                 Type = "user",
-                                Message = new InputMessage {
+                                Message = new InputMessage
+                                {
                                     Role = "user",
-                                    Content = [new InputTextContentBlock {
-                                        Text = "retry...."
-                                    }]
+                                    Content =
+                                    [
+                                        new InputTextContentBlock
+                                        {
+                                            Text = "retry...."
+                                        }
+                                    ]
                                 }
                             }, _jsonOptions);
 
@@ -806,7 +812,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             {
                 try
                 {
-                    await _stderrMonitorTask.WaitAsync(TimeSpan.FromSeconds(2));
+                    await _stderrMonitorTask.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
                 }
                 catch
                 {
@@ -819,7 +825,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             {
                 try
                 {
-                    await _keepaliveTask.WaitAsync(TimeSpan.FromSeconds(2));
+                    await _keepaliveTask.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
                 }
                 catch
                 {
@@ -1320,17 +1326,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Trim leading/trailing whitespace
         preview = preview.Trim();
 
-        if (string.IsNullOrEmpty(preview))
-        {
-            return "(whitespace only)";
-        }
-
-        if (preview.Length <= maxLength)
-        {
-            return preview;
-        }
-
-        return preview[..maxLength] + "...";
+        return string.IsNullOrEmpty(preview)
+            ? "(whitespace only)"
+            : preview.Length <= maxLength
+                ? preview
+                : preview[..maxLength] + "...";
     }
 
     /// <summary>

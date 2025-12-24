@@ -481,9 +481,11 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var uniqueId = Guid.NewGuid().ToString("N")[..8];
-        return Enumerable.Range(0, count)
-            .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{uniqueId}-{i}", now + i, messageOrderIdx: i))
-            .ToList();
+        return
+        [
+            .. Enumerable.Range(0, count)
+                .Select(i => CreateMessage(threadId, runId, $"msg-{runId}-{uniqueId}-{i}", now + i, messageOrderIdx: i))
+        ];
     }
 
     private static PersistedMessage CreateMessage(

@@ -1150,7 +1150,7 @@ public class MessageTransformationMiddlewareTests
     {
         private readonly IMessage[] _responsesToReturn;
         public List<IMessage> ReceivedMessages { get; } = [];
-        public string Name => "MockAgent";
+        public static string Name => "MockAgent";
         public MockAgent(params IMessage[] responsesToReturn)
         {
             _responsesToReturn = responsesToReturn;
@@ -1168,7 +1168,7 @@ public class MessageTransformationMiddlewareTests
     private class MockStreamingAgent : IStreamingAgent
     {
         private readonly IAsyncEnumerable<IMessage> _streamToReturn;
-        public string Name => "MockStreamingAgent";
+        public static string Name => "MockStreamingAgent";
         public MockStreamingAgent(IAsyncEnumerable<IMessage> streamToReturn)
         {
             _streamToReturn = streamToReturn;

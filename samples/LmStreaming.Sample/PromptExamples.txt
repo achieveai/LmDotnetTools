@@ -17,7 +17,14 @@
         "reasoning": {"length": 50},
         "messages": [
             {"tool_call": [{"name": "get_weather", "args": {"location": "Seattle"}}]},
-            {"text_message": {"length": 150}}
+            {"text_message": {"length": 50}}
+        ]
+    },
+    {
+        "id": "turn2_final",
+        "reasoning": {"length": 10},
+        "messages": [
+            {"text_message": {"length": 100}}
         ]
     }
 ]}

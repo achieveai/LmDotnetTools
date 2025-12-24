@@ -55,17 +55,17 @@ public static class SqliteSchemaInitializer
             using var createMessagesCmd = connection.CreateCommand();
             createMessagesCmd.CommandText = CreateMessagesTableSql;
             createMessagesCmd.Transaction = transaction;
-            await createMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await createMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             using var createIndexCmd = connection.CreateCommand();
             createIndexCmd.CommandText = CreateMessagesIndexSql;
             createIndexCmd.Transaction = transaction;
-            await createIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await createIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             using var createMetadataCmd = connection.CreateCommand();
             createMetadataCmd.CommandText = CreateMetadataTableSql;
             createMetadataCmd.Transaction = transaction;
-            await createMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await createMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             transaction.Commit();
         }
