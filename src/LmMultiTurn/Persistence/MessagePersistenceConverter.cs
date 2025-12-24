@@ -80,9 +80,10 @@ public static class MessagePersistenceConverter
         string runId,
         JsonSerializerOptions? jsonOptions = null)
     {
-        return messages
-            .Select(m => ToPersistedMessage(m, threadId, runId, jsonOptions))
-            .ToList();
+        return
+        [
+            .. messages.Select(m => ToPersistedMessage(m, threadId, runId, jsonOptions))
+        ];
     }
 
     /// <summary>
@@ -92,8 +93,9 @@ public static class MessagePersistenceConverter
         IEnumerable<PersistedMessage> persistedMessages,
         JsonSerializerOptions? jsonOptions = null)
     {
-        return persistedMessages
-            .Select(p => FromPersistedMessage(p, jsonOptions))
-            .ToList();
+        return
+        [
+            .. persistedMessages.Select(p => FromPersistedMessage(p, jsonOptions))
+        ];
     }
 }

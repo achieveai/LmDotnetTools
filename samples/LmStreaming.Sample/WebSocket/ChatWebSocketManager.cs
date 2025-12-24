@@ -149,20 +149,12 @@ public sealed class ChatWebSocketManager
         {
             while (webSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                // #region agent log
-                System.IO.File.AppendAllText(@"d:\Source\repos\LmDotnetTools\.cursor\debug.log", System.Text.Json.JsonSerializer.Serialize(new { location = "ChatWebSocketManager.cs:150", message = "Loop iteration start", data = new { threadId, wsState = webSocket.State.ToString() }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), sessionId = "debug-session", runId = "run1", hypothesisId = "D" }) + "\n");
-                // #endregion
-                
                 WebSocketReceiveResult result;
                 messageBuilder.Clear();
 
                 do
                 {
                     result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                    
-                    // #region agent log
-                    System.IO.File.AppendAllText(@"d:\Source\repos\LmDotnetTools\.cursor\debug.log", System.Text.Json.JsonSerializer.Serialize(new { location = "ChatWebSocketManager.cs:157", message = "ReceiveAsync completed", data = new { threadId, messageType = result.MessageType.ToString(), count = result.Count, endOfMessage = result.EndOfMessage }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), sessionId = "debug-session", runId = "run1", hypothesisId = "A" }) + "\n");
-                    // #endregion
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
@@ -183,10 +175,6 @@ public sealed class ChatWebSocketManager
 
                 if (messageBuilder.Length > 0)
                 {
-                    // #region agent log
-                    System.IO.File.AppendAllText(@"d:\Source\repos\LmDotnetTools\.cursor\debug.log", System.Text.Json.JsonSerializer.Serialize(new { location = "ChatWebSocketManager.cs:176", message = "Processing client message", data = new { threadId, messageLength = messageBuilder.Length, messagePreview = messageBuilder.ToString().Substring(0, Math.Min(100, messageBuilder.Length)) }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), sessionId = "debug-session", runId = "run1", hypothesisId = "C" }) + "\n");
-                    // #endregion
-                    
                     await ProcessClientMessageAsync(agent, threadId, messageBuilder.ToString(), ct);
                 }
             }
@@ -232,19 +220,10 @@ public sealed class ChatWebSocketManager
             };
 
             // Send to agent (non-blocking - queues the message)
-            // #region agent log
-            var inputId = Guid.NewGuid().ToString();
-            System.IO.File.AppendAllText(@"d:\Source\repos\LmDotnetTools\.cursor\debug.log", System.Text.Json.JsonSerializer.Serialize(new { location = "ChatWebSocketManager.cs:223", message = "Before agent.SendAsync", data = new { threadId, inputId, messageText = request.Message }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), sessionId = "debug-session", runId = "run1", hypothesisId = "E" }) + "\n");
-            // #endregion
-            
             var receipt = await agent.SendAsync(
                 [userMessage],
-                inputId: inputId,
+                inputId: Guid.NewGuid().ToString(),
                 ct: ct);
-
-            // #region agent log
-            System.IO.File.AppendAllText(@"d:\Source\repos\LmDotnetTools\.cursor\debug.log", System.Text.Json.JsonSerializer.Serialize(new { location = "ChatWebSocketManager.cs:230", message = "After agent.SendAsync", data = new { threadId, receiptInputId = receipt.InputId, receiptId = receipt.ReceiptId }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), sessionId = "debug-session", runId = "run1", hypothesisId = "E" }) + "\n");
-            // #endregion
 
             _logger.LogDebug(
                 "Message queued for thread {ThreadId}, receipt: {InputId}",

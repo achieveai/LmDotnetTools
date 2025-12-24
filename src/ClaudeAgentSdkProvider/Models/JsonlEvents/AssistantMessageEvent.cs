@@ -15,7 +15,7 @@ public record AssistantMessageEvent : JsonlEventBase
     public string? ParentToolUseId { get; init; }
 
     [JsonPropertyName("session_id")]
-    public string? SessionId { get; init; }
+    public required string SessionId { get; init; }
 
     [JsonPropertyName("message")]
     public required AssistantMessage Message { get; init; }

@@ -105,7 +105,7 @@ public sealed class InMemoryConversationStore : IConversationStore
     /// </summary>
     public IReadOnlyList<string> GetAllThreadIds()
     {
-        return _messages.Keys.Union(_metadata.Keys).Distinct().ToList();
+        return [.. _messages.Keys.Union(_metadata.Keys).Distinct()];
     }
 
     /// <summary>

@@ -18,7 +18,12 @@ public class JsonlStreamParser
     public JsonlStreamParser(ILogger? logger = null)
     {
         _logger = logger;
-        _jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, AllowTrailingCommas = true };
+        _jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            AllowTrailingCommas = true
+        };
     }
 
     /// <summary>

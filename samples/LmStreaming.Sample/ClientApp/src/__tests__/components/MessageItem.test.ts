@@ -53,7 +53,7 @@ describe('MessageItem.vue', () => {
     });
 
     expect(wrapper.find('.text-message').exists()).toBe(true);
-    expect(wrapper.find('.text').text()).toBe('Hello world');
+    expect(wrapper.find('.markdown-content').text()).toContain('Hello world');
   });
 
   it('should render ToolCallPill for tools_call content', () => {

@@ -58,7 +58,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }
         catch
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
             throw;
         }
     }
@@ -81,28 +81,28 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // Use WAL mode for better concurrency
             using var walCommand = connection.CreateCommand();
             walCommand.CommandText = "PRAGMA journal_mode=WAL;";
-            await walCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await walCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             // Set synchronous to NORMAL for balance of safety and speed
             using var syncCommand = connection.CreateCommand();
             syncCommand.CommandText = "PRAGMA synchronous=NORMAL;";
-            await syncCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await syncCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             // Enable foreign keys
             using var fkCommand = connection.CreateCommand();
             fkCommand.CommandText = "PRAGMA foreign_keys=ON;";
-            await fkCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await fkCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             // Set cache size (negative means KB, positive means pages)
             using var cacheCommand = connection.CreateCommand();
             cacheCommand.CommandText = "PRAGMA cache_size=-10000;";
-            await cacheCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await cacheCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             _pragmasSet = true;
         }
         finally
         {
-            _pragmaLock.Release();
+            _ = _pragmaLock.Release();
         }
     }
 
@@ -159,7 +159,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 
             if (disposing)
             {
-                _semaphore.Release();
+                _ = _semaphore.Release();
             }
         }
 
@@ -172,7 +172,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 
             _disposed = true;
             await base.DisposeAsync().ConfigureAwait(false);
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 }

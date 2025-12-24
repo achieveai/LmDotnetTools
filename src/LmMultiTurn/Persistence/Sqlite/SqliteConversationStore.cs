@@ -81,19 +81,19 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
                     );
                     """;
 
-                command.Parameters.AddWithValue("$id", message.Id);
-                command.Parameters.AddWithValue("$thread_id", message.ThreadId);
-                command.Parameters.AddWithValue("$run_id", message.RunId);
-                command.Parameters.AddWithValue("$parent_run_id", (object?)message.ParentRunId ?? DBNull.Value);
-                command.Parameters.AddWithValue("$generation_id", (object?)message.GenerationId ?? DBNull.Value);
-                command.Parameters.AddWithValue("$message_order_idx", (object?)message.MessageOrderIdx ?? DBNull.Value);
-                command.Parameters.AddWithValue("$timestamp", message.Timestamp);
-                command.Parameters.AddWithValue("$message_type", message.MessageType);
-                command.Parameters.AddWithValue("$role", message.Role);
-                command.Parameters.AddWithValue("$from_agent", (object?)message.FromAgent ?? DBNull.Value);
-                command.Parameters.AddWithValue("$message_json", message.MessageJson);
+                _ = command.Parameters.AddWithValue("$id", message.Id);
+                _ = command.Parameters.AddWithValue("$thread_id", message.ThreadId);
+                _ = command.Parameters.AddWithValue("$run_id", message.RunId);
+                _ = command.Parameters.AddWithValue("$parent_run_id", (object?)message.ParentRunId ?? DBNull.Value);
+                _ = command.Parameters.AddWithValue("$generation_id", (object?)message.GenerationId ?? DBNull.Value);
+                _ = command.Parameters.AddWithValue("$message_order_idx", (object?)message.MessageOrderIdx ?? DBNull.Value);
+                _ = command.Parameters.AddWithValue("$timestamp", message.Timestamp);
+                _ = command.Parameters.AddWithValue("$message_type", message.MessageType);
+                _ = command.Parameters.AddWithValue("$role", message.Role);
+                _ = command.Parameters.AddWithValue("$from_agent", (object?)message.FromAgent ?? DBNull.Value);
+                _ = command.Parameters.AddWithValue("$message_json", message.MessageJson);
 
-                await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
             transaction.Commit();
@@ -125,7 +125,7 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
             WHERE thread_id = $thread_id
             ORDER BY timestamp ASC, message_order_idx ASC;
             """;
-        command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
         var messages = new List<PersistedMessage>();
 
@@ -165,12 +165,12 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
                 metadata_json = excluded.metadata_json;
             """;
 
-        command.Parameters.AddWithValue("$thread_id", threadId);
-        command.Parameters.AddWithValue("$current_run_id", (object?)metadata.CurrentRunId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$last_updated", metadata.LastUpdated);
-        command.Parameters.AddWithValue("$metadata_json", (object?)metadataJson ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$current_run_id", (object?)metadata.CurrentRunId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$last_updated", metadata.LastUpdated);
+        _ = command.Parameters.AddWithValue("$metadata_json", (object?)metadataJson ?? DBNull.Value);
 
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -191,15 +191,12 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
             FROM thread_metadata
             WHERE thread_id = $thread_id;
             """;
-        command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            return null;
-        }
-
-        return ReadMetadata(reader);
+        return !await reader.ReadAsync(ct).ConfigureAwait(false)
+            ? null
+            : ReadMetadata(reader);
     }
 
     /// <inheritdoc />
@@ -219,14 +216,14 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
             using var deleteMessagesCmd = connection.CreateCommand();
             deleteMessagesCmd.Transaction = transaction;
             deleteMessagesCmd.CommandText = "DELETE FROM messages WHERE thread_id = $thread_id;";
-            deleteMessagesCmd.Parameters.AddWithValue("$thread_id", threadId);
-            await deleteMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = deleteMessagesCmd.Parameters.AddWithValue("$thread_id", threadId);
+            _ = await deleteMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             using var deleteMetadataCmd = connection.CreateCommand();
             deleteMetadataCmd.Transaction = transaction;
             deleteMetadataCmd.CommandText = "DELETE FROM thread_metadata WHERE thread_id = $thread_id;";
-            deleteMetadataCmd.Parameters.AddWithValue("$thread_id", threadId);
-            await deleteMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = deleteMetadataCmd.Parameters.AddWithValue("$thread_id", threadId);
+            _ = await deleteMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             transaction.Commit();
         }
@@ -275,7 +272,7 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
         }
         finally
         {
-            _schemaLock.Release();
+            _ = _schemaLock.Release();
         }
     }
 
