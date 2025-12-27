@@ -201,6 +201,6 @@ public class ClaudeAgentSdkClientConvertToInputMessageTests
 
         // Assert
         var imageBlock = Assert.IsType<InputImageContentBlock>(result.Message.Content[0]);
-        Assert.Equal("image/jpeg", imageBlock.Source.MediaType);
+        Assert.Equal("image/png", imageBlock.Source.MediaType);
     }
 }

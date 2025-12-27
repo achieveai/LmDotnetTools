@@ -30,12 +30,53 @@ public record ToolCall
     public int ToolCallIdx { get; init; }
 }
 
-public record struct ToolCallResult(
-    [property: JsonPropertyName("tool_call_id")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        string? ToolCallId,
-    [property: JsonPropertyName("result")] string Result
-);
+/// <summary>
+/// Represents the result of a tool call execution.
+/// Supports both text-only and multi-modal (text + images) results.
+/// </summary>
+public record struct ToolCallResult
+{
+    /// <summary>
+    /// Creates a text-only tool call result.
+    /// </summary>
+    public ToolCallResult(string? toolCallId, string result)
+    {
+        ToolCallId = toolCallId;
+        Result = result;
+        ContentBlocks = null;
+    }
+
+    /// <summary>
+    /// Creates a multi-modal tool call result with text and content blocks.
+    /// </summary>
+    public ToolCallResult(string? toolCallId, string result, IList<ToolResultContentBlock>? contentBlocks)
+    {
+        ToolCallId = toolCallId;
+        Result = result;
+        ContentBlocks = contentBlocks;
+    }
+
+    /// <summary>
+    /// The unique identifier for this tool call.
+    /// </summary>
+    [JsonPropertyName("tool_call_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolCallId { get; init; }
+
+    /// <summary>
+    /// The text result of the tool call.
+    /// </summary>
+    [JsonPropertyName("result")]
+    public string Result { get; init; }
+
+    /// <summary>
+    /// Optional multi-modal content blocks (text, images) from MCP tool results.
+    /// When present, provides richer content than the text-only Result.
+    /// </summary>
+    [JsonPropertyName("content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
+}
 
 /// <summary>
 /// Represents a single tool call result as a message.
@@ -82,15 +123,25 @@ public record ToolCallResultMessage : IMessage
     public int? MessageOrderIdx { get; init; }
 
     /// <summary>
+    /// Multi-modal content blocks from MCP tool results.
+    /// Contains text and/or images returned by the tool.
+    /// Optional for backwards compatibility - if null, use Result string.
+    /// </summary>
+    [JsonPropertyName("content_blocks")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
+
+    /// <summary>
     /// Converts this message to a ToolCallResult struct.
     /// </summary>
     public ToolCallResult ToToolCallResult()
     {
-        return new ToolCallResult(ToolCallId, Result);
+        return new ToolCallResult(ToolCallId, Result, ContentBlocks);
     }
 
     /// <summary>
     /// Creates a ToolCallResultMessage from a ToolCallResult struct.
+    /// Preserves ContentBlocks for multi-modal tool results.
     /// </summary>
     public static ToolCallResultMessage FromToolCallResult(
         ToolCallResult result,
@@ -107,6 +158,7 @@ public record ToolCallResultMessage : IMessage
         {
             ToolCallId = result.ToolCallId,
             Result = result.Result,
+            ContentBlocks = result.ContentBlocks,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,
@@ -268,4 +320,46 @@ public class ToolCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<
     {
         return new ToolCallUpdateMessage();
     }
+}
+
+/// <summary>
+/// Base class for content blocks in MCP tool results.
+/// Supports polymorphic serialization for text and image content.
+/// The "type" discriminator is handled automatically by JsonPolymorphic.
+/// </summary>
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(TextToolResultBlock), "text")]
+[JsonDerivedType(typeof(ImageToolResultBlock), "image")]
+public abstract record ToolResultContentBlock;
+
+/// <summary>
+/// Text content block for tool results.
+/// </summary>
+public record TextToolResultBlock : ToolResultContentBlock
+{
+    /// <summary>
+    /// The text content.
+    /// </summary>
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+}
+
+/// <summary>
+/// Image content block for tool results.
+/// Contains base64-encoded image data with MIME type.
+/// </summary>
+public record ImageToolResultBlock : ToolResultContentBlock
+{
+    /// <summary>
+    /// Base64-encoded image data.
+    /// </summary>
+    [JsonPropertyName("data")]
+    public required string Data { get; init; }
+
+    /// <summary>
+    /// MIME type of the image (e.g., "image/png", "image/jpeg").
+    /// Detected from actual bytes, not the data URL.
+    /// </summary>
+    [JsonPropertyName("mimeType")]
+    public required string MimeType { get; init; }
 }

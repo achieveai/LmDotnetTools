@@ -35,7 +35,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -65,7 +65,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -94,7 +94,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         Assert.Equal(2, messages.Count); // TextMessage + UsageMessage
@@ -134,15 +134,13 @@ public class JsonlStreamParserTests
 
         // Assert
         _ = Assert.Single(messages);
-        var toolResultMessage = Assert.IsType<ToolsCallResultMessage>(messages[0]);
+        var toolResultMessage = Assert.IsType<ToolCallResultMessage>(messages[0]);
         Assert.Equal("user-uuid-123", toolResultMessage.RunId);
         Assert.Equal("session-123", toolResultMessage.ThreadId);
         Assert.Equal("user-uuid-123", toolResultMessage.GenerationId);
 
-        _ = Assert.Single(toolResultMessage.ToolCallResults);
-        var result = toolResultMessage.ToolCallResults[0];
-        Assert.Equal("toolu_123", result.ToolCallId);
-        Assert.Contains("Tool execution successful", result.Result);
+        Assert.Equal("toolu_123", toolResultMessage.ToolCallId);
+        Assert.Contains("Tool execution successful", toolResultMessage.Result);
     }
 
     [Fact]
@@ -207,13 +205,13 @@ public class JsonlStreamParserTests
         // Assert
         Assert.Equal(2, messages.Count);
 
-        var firstResult = Assert.IsType<ToolsCallResultMessage>(messages[0]);
-        Assert.Equal("toolu_001", firstResult.ToolCallResults[0].ToolCallId);
-        Assert.Contains("First result", firstResult.ToolCallResults[0].Result);
+        var firstResult = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        Assert.Equal("toolu_001", firstResult.ToolCallId);
+        Assert.Contains("First result", firstResult.Result);
 
-        var secondResult = Assert.IsType<ToolsCallResultMessage>(messages[1]);
-        Assert.Equal("toolu_002", secondResult.ToolCallResults[0].ToolCallId);
-        Assert.Contains("Second result", secondResult.ToolCallResults[0].Result);
+        var secondResult = Assert.IsType<ToolCallResultMessage>(messages[1]);
+        Assert.Equal("toolu_002", secondResult.ToolCallId);
+        Assert.Contains("Second result", secondResult.Result);
     }
 
     [Fact]
@@ -250,7 +248,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -297,7 +295,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -339,7 +337,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -384,7 +382,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         Assert.Equal(2, messages.Count);
@@ -431,7 +429,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -471,7 +469,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert - Invalid base64 should be gracefully ignored
         Assert.Empty(messages);

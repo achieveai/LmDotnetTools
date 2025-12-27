@@ -57,7 +57,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger;
-        _parser = new JsonlStreamParser();
+        // Create parser with shared logger for consistent multi-modal content parsing logs
+        _parser = new JsonlStreamParser(logger);
     }
 
     public bool IsRunning => _process != null && !_process.HasExited;
@@ -304,7 +305,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
-                var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+                var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                 _logger?.LogTrace(
                     "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
                     assistantEvent.Message?.Id,
@@ -469,7 +470,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 if (jsonlEvent is AssistantMessageEvent assistantEvent)
                 {
-                    var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
+                    var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                     _logger?.LogTrace(
                         "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
                         assistantEvent.Message?.Id,

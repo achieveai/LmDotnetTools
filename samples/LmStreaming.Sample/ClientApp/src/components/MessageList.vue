@@ -4,6 +4,12 @@ import type { DisplayItem } from '@/types';
 import TextMessage from './TextMessage.vue';
 import MetadataPill from './MetadataPill.vue';
 import PendingMessage from './PendingMessage.vue';
+import { logger } from '@/utils/logger';
+
+// #region agent log
+const log = logger.forComponent('MessageList');
+log.info('MessageList component created/loaded');
+// #endregion
 
 const props = defineProps<{
   displayItems: readonly DisplayItem[];
@@ -15,6 +21,14 @@ let resizeObserver: ResizeObserver | null = null;
 
 onMounted(() => {
   if (messageListRef.value) {
+    // #region agent log
+    log.debug('MessageList mounted', { 
+      initialHeight: messageListRef.value.clientHeight,
+      scrollHeight: messageListRef.value.scrollHeight,
+      scrollTop: messageListRef.value.scrollTop
+    });
+    // #endregion
+    
     resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         // Use contentRect.height to get height excluding padding
@@ -94,6 +108,31 @@ const splitGroups = computed(() => {
 const lastScrolledMessageId = ref<string | null>(null);
 const lastMessageCount = ref(0);
 
+// Custom smooth scroll function for specific duration
+function smoothScrollTo(element: HTMLElement, to: number, duration: number) {
+  const start = element.scrollTop;
+  const change = to - start;
+  const startTime = performance.now();
+
+  function animate(currentTime: number) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    // Easing function (easeInOutQuad)
+    const ease = progress < 0.5 
+      ? 2 * progress * progress 
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+    element.scrollTop = start + (change * ease);
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    }
+  }
+
+  requestAnimationFrame(animate);
+}
+
 // Watch for new user messages and scroll to them at the top
 watch(
   () => props.displayItems,
@@ -128,13 +167,10 @@ watch(
           if (!messageListRef.value) return;
           
           const element = messageListRef.value.querySelector(`[data-message-id="${lastUserMsg!.id}"]`) as HTMLElement;
+          
           if (element) {
-            // Scroll the element to the top of the view
-            element.scrollIntoView({ 
-              behavior: 'smooth', 
-              block: 'start',
-              inline: 'nearest'
-            });
+            // Scroll the element to the top of the view with 150ms animation
+            smoothScrollTo(messageListRef.value, element.offsetTop, 150);
           }
         });
       });
@@ -330,5 +366,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* justify-content: flex-end; Removed to allow content to start at top */
 }
 </style>
