@@ -77,7 +77,7 @@ public class MultiTurnAgentBaseTests
                 }
                 finally
                 {
-                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, 0, ct);
                 }
             }
         }

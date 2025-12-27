@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
@@ -484,6 +485,247 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         }
 
         return functionMap;
+    }
+
+    /// <summary>
+    ///     Creates a multi-modal function map that returns ToolCallResult with content blocks.
+    ///     This preserves image content from MCP tool responses.
+    /// </summary>
+    /// <param name="mcpClients">Dictionary of MCP clients keyed by client ID</param>
+    /// <param name="logger">Logger for debugging</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>A function map that returns ToolCallResult with text and image content blocks</returns>
+    public static async Task<IDictionary<string, Func<string, Task<ToolCallResult>>>> CreateMultiModalFunctionMapAsync(
+        Dictionary<string, McpClient> mcpClients,
+        ILogger<McpClientFunctionProvider> logger,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+
+        logger.LogDebug(
+            "Creating multi-modal function map: ClientCount={ClientCount}, ClientIds={ClientIds}",
+            mcpClients.Count,
+            string.Join(", ", mcpClients.Keys)
+        );
+
+        foreach (var kvp in mcpClients)
+        {
+            var clientId = kvp.Key;
+            var client = kvp.Value;
+
+            try
+            {
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
+
+                logger.LogDebug(
+                    "MCP multi-modal tool discovery: ClientId={ClientId}, ToolCount={ToolCount}",
+                    clientId,
+                    tools.Count
+                );
+
+                foreach (var tool in tools)
+                {
+                    var sanitizedClientId = SanitizeToolName(kvp.Key);
+                    var sanitizedToolName = SanitizeToolName(tool.Name);
+                    var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
+
+                    functionMap[functionName] = async argsJson =>
+                    {
+                        var stopwatch = Stopwatch.StartNew();
+                        try
+                        {
+                            // Parse arguments from JSON
+                            Dictionary<string, object?> args;
+                            try
+                            {
+                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
+                            }
+                            catch (JsonException jsonEx)
+                            {
+                                logger.LogError(jsonEx, "JSON parsing failed for multi-modal tool: {ToolName}", tool.Name);
+                                throw;
+                            }
+
+                            // Call the MCP tool
+                            var response = await client.CallToolAsync(tool.Name, args);
+
+                            // Extract text content
+                            var textResult = string.Join(
+                                Environment.NewLine,
+                                response.Content != null
+                                    ? response.Content
+                                        .Where(c => c?.Type == "text")
+                                        .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
+                                    : []
+                            );
+
+                            // Extract image content blocks with MIME type detection from bytes
+                            // Use fully qualified name to avoid ambiguity with MCP's ToolResultContentBlock
+                            var imageBlocks = new List<LmCore.Messages.ToolResultContentBlock>();
+                            var imageBlocksInResponse = response.Content?.Count(c => c?.Type == "image") ?? 0;
+                            logger.LogTrace(
+                                "MCP response content analysis: ToolName={ToolName}, TotalBlocks={TotalBlocks}, ImageBlocks={ImageBlocks}",
+                                tool.Name,
+                                response.Content?.Count ?? 0,
+                                imageBlocksInResponse);
+
+                            if (response.Content != null)
+                            {
+                                var imageIndex = 0;
+                                foreach (var content in response.Content.Where(c => c?.Type == "image"))
+                                {
+                                    if (content is ImageContentBlock imgBlock && !string.IsNullOrEmpty(imgBlock.Data))
+                                    {
+                                        try
+                                        {
+                                            // Detect MIME type from actual bytes (don't trust the header)
+                                            var bytes = Convert.FromBase64String(imgBlock.Data);
+                                            var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
+
+                                            // Log MIME type correction at info level for visibility
+                                            if (detectedMimeType != imgBlock.MimeType)
+                                            {
+                                                logger.LogInformation(
+                                                    "MIME type corrected in MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}, Header={HeaderMimeType}, Detected={DetectedMimeType}, ByteLength={ByteLength}",
+                                                    tool.Name,
+                                                    imageIndex,
+                                                    imgBlock.MimeType,
+                                                    detectedMimeType,
+                                                    bytes.Length);
+                                            }
+                                            else
+                                            {
+                                                logger.LogTrace(
+                                                    "Image processed: ToolName={ToolName}, ImageIndex={ImageIndex}, MimeType={MimeType}, ByteLength={ByteLength}",
+                                                    tool.Name,
+                                                    imageIndex,
+                                                    detectedMimeType,
+                                                    bytes.Length);
+                                            }
+
+                                            imageBlocks.Add(new LmCore.Messages.ImageToolResultBlock
+                                            {
+                                                Data = imgBlock.Data,
+                                                MimeType = detectedMimeType
+                                            });
+                                        }
+                                        catch (FormatException ex)
+                                        {
+                                            logger.LogWarning(
+                                                ex,
+                                                "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
+                                                tool.Name,
+                                                imageIndex,
+                                                imgBlock.Data?.Length ?? 0);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            logger.LogWarning(
+                                                ex,
+                                                "Failed to process image from MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}",
+                                                tool.Name,
+                                                imageIndex);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        logger.LogDebug(
+                                            "Skipping image block with missing data: ToolName={ToolName}, ImageIndex={ImageIndex}, IsImageContentBlock={IsImageContentBlock}",
+                                            tool.Name,
+                                            imageIndex,
+                                            content is ImageContentBlock);
+                                    }
+                                    imageIndex++;
+                                }
+                            }
+
+                            stopwatch.Stop();
+                            logger.LogDebug(
+                                "Multi-modal MCP tool execution completed: ToolName={ToolName}, Duration={Duration}ms, ImageCount={ImageCount}",
+                                tool.Name,
+                                stopwatch.ElapsedMilliseconds,
+                                imageBlocks.Count
+                            );
+
+                            return new ToolCallResult(
+                                null, // ToolCallId will be set by executor
+                                textResult,
+                                imageBlocks.Count > 0 ? imageBlocks : null
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            stopwatch.Stop();
+                            logger.LogError(
+                                ex,
+                                "Multi-modal MCP tool execution failed: ToolName={ToolName}, Duration={Duration}ms",
+                                tool.Name,
+                                stopwatch.ElapsedMilliseconds
+                            );
+
+                            return new ToolCallResult(null, $"Error executing MCP tool {tool.Name}: {ex.Message}");
+                        }
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "MCP client multi-modal tool discovery failed: ClientId={ClientId}", clientId);
+            }
+        }
+
+        return functionMap;
+    }
+
+    /// <summary>
+    ///     Detects the MIME type of an image from its byte content.
+    ///     Uses magic bytes to identify common image formats.
+    /// </summary>
+    private static string DetectImageMimeType(byte[] bytes, string fallbackMimeType, ILogger logger)
+    {
+        if (bytes.Length >= 8)
+        {
+            // PNG: 89 50 4E 47
+            if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            {
+                return "image/png";
+            }
+
+            // JPEG: FF D8 FF
+            if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+            {
+                return "image/jpeg";
+            }
+
+            // GIF: 47 49 46 38
+            if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38)
+            {
+                return "image/gif";
+            }
+
+            // WebP: 52 49 46 46 ... 57 45 42 50
+            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            {
+                return "image/webp";
+            }
+        }
+
+        // Log if we're using fallback
+        if (!string.IsNullOrEmpty(fallbackMimeType))
+        {
+            logger.LogDebug(
+                "Could not detect MIME type from bytes, using fallback: {FallbackMimeType}",
+                fallbackMimeType
+            );
+            return fallbackMimeType;
+        }
+
+        logger.LogWarning("Could not detect MIME type from bytes and no fallback provided");
+        return "application/octet-stream";
     }
 
     /// <summary>
