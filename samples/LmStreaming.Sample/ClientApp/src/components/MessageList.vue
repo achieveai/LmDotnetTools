@@ -106,7 +106,6 @@ const splitGroups = computed(() => {
 
 // Track the last user message to scroll to it when it is added (pending or active)
 const lastScrolledMessageId = ref<string | null>(null);
-const lastMessageCount = ref(0);
 
 // Custom smooth scroll function for specific duration
 function smoothScrollTo(element: HTMLElement, to: number, duration: number) {
@@ -136,7 +135,7 @@ function smoothScrollTo(element: HTMLElement, to: number, duration: number) {
 // Watch for new user messages and scroll to them at the top
 watch(
   () => props.displayItems,
-  async (newItems, oldItems) => {
+  async (newItems) => {
     // Find the last user message
     let lastUserMsg: DisplayItem | null = null;
     for (let i = newItems.length - 1; i >= 0; i--) {
@@ -146,13 +145,10 @@ watch(
         break;
       }
     }
-    
+
     // Check if we have a new user message
     const hasNewUserMessage = lastUserMsg && lastUserMsg.id !== lastScrolledMessageId.value;
-    
-    // Check if we have new assistant messages (streaming response)
-    const hasNewMessages = newItems.length > lastMessageCount.value;
-    
+
     if (hasNewUserMessage) {
       // New user message: scroll to position it at the top
       lastScrolledMessageId.value = lastUserMsg!.id;
@@ -174,9 +170,7 @@ watch(
           }
         });
       });
-    } 
-    
-    lastMessageCount.value = newItems.length;
+    }
   },
   { deep: true }
 );
