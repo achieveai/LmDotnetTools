@@ -65,7 +65,8 @@ describe('MessageList', () => {
           id: 'msg-1',
           type: 'user-message',
           content: { $type: MessageType.Text, role: 'user', text: 'Hello', isThinking: false },
-          status: 'active', timestamp: Date.now()
+          status: 'active',
+          timestamp: Date.now()
         }
       ]
     });

@@ -106,7 +106,6 @@ const splitGroups = computed(() => {
 
 // Track the last user message to scroll to it when it is added (pending or active)
 const lastScrolledMessageId = ref<string | null>(null);
-const lastMessageCount = ref(0);
 
 // Custom smooth scroll function for specific duration
 function smoothScrollTo(element: HTMLElement, to: number, duration: number) {
@@ -146,10 +145,10 @@ watch(
         break;
       }
     }
-    
+
     // Check if we have a new user message
     const hasNewUserMessage = lastUserMsg && lastUserMsg.id !== lastScrolledMessageId.value;
-    
+
     if (hasNewUserMessage) {
       // New user message: scroll to position it at the top
       lastScrolledMessageId.value = lastUserMsg!.id;
@@ -171,9 +170,7 @@ watch(
           }
         });
       });
-    } 
-    
-    lastMessageCount.value = newItems.length;
+    }
   },
   { deep: true }
 );

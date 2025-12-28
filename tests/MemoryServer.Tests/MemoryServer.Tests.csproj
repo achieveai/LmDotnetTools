@@ -40,12 +40,18 @@
     <Using Include="Xunit" />
     <Using Include="System.Diagnostics" />
   </ItemGroup>
-  <!-- Copy MemoryServer.exe to test output for integration tests -->
+  <!-- Copy MemoryServer files to test output for integration tests -->
   <Target Name="CopyMemoryServer" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <PropertyGroup>
+      <MemoryServerSourceDir>$(MSBuildProjectDirectory)/../../McpServers/Memory/MemoryServer/bin/$(Configuration)/net9.0</MemoryServerSourceDir>
+    </PropertyGroup>
+    <!-- Copy exe on Windows -->
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.exe" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(MemoryServerSourceDir)/MemoryServer.exe')" />
+    <!-- Copy native executable on Unix -->
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(MemoryServerSourceDir)/MemoryServer')" />
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.runtimeconfig.json" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
     <!-- Copy prompt files needed for LLM services -->
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml" DestinationFolder="$(OutputPath)\Prompts" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Prompts/graph-extraction.yaml" DestinationFolder="$(OutputPath)/Prompts" SkipUnchangedFiles="true" />
   </Target>
 </Project>
