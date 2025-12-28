@@ -3,8 +3,9 @@ import { mount } from '@vue/test-utils';
 import MessageList from '../../components/MessageList.vue';
 import { nextTick } from 'vue';
 
+import { MessageType } from '@/types';
 // Mock ResizeObserver
-global.ResizeObserver = class ResizeObserver {
+(globalThis as any).ResizeObserver = class ResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
@@ -63,9 +64,8 @@ describe('MessageList', () => {
         {
           id: 'msg-1',
           type: 'user-message',
-          role: 'user',
-          content: { text: 'Hello', isThinking: false },
-          status: 'active'
+          content: { $type: MessageType.Text, role: 'user', text: 'Hello', isThinking: false },
+          status: 'active', timestamp: Date.now()
         }
       ]
     });
