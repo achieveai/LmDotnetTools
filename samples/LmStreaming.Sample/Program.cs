@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -90,8 +91,9 @@ try
         return registry;
     });
 
-    // Register the InMemoryConversationStore for conversation persistence
-    _ = builder.Services.AddSingleton<InMemoryConversationStore>();
+    // Register the FileConversationStore for conversation persistence
+    var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
+    _ = builder.Services.AddSingleton<IConversationStore>(new FileConversationStore(conversationsPath));
 
     // Register the provider agent factory (creates OpenClientAgent with TestSseMessageHandler)
     _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
@@ -132,7 +134,7 @@ try
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
         var agentFactory = sp.GetRequiredService<Func<IStreamingAgent>>();
-        var conversationStore = sp.GetRequiredService<InMemoryConversationStore>();
+        var conversationStore = sp.GetRequiredService<IConversationStore>();
 
         return new MultiTurnAgentPool(
             threadId =>
@@ -254,6 +256,86 @@ try
         return result;
     });
 
+    // === Conversation Management Endpoints ===
+
+    // GET /api/conversations - List all conversations
+    _ = app.MapGet("/api/conversations", async (
+        IConversationStore store,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default) =>
+    {
+        var threads = await store.ListThreadsAsync(limit, offset, ct);
+        return threads.Select(t => new ConversationSummary
+        {
+            ThreadId = t.ThreadId,
+            Title = t.Properties?.TryGetValue("title", out var titleObj) == true
+                ? titleObj?.ToString() ?? "New Conversation"
+                : "New Conversation",
+            Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
+                ? previewObj?.ToString()
+                : null,
+            LastUpdated = t.LastUpdated,
+        });
+    });
+
+    // GET /api/conversations/{threadId}/messages - Load messages for a thread
+    _ = app.MapGet("/api/conversations/{threadId}/messages", async (
+        string threadId,
+        IConversationStore store,
+        CancellationToken ct = default) =>
+    {
+        var messages = await store.LoadMessagesAsync(threadId, ct);
+        return messages;
+    });
+
+    // PUT /api/conversations/{threadId}/metadata - Update conversation metadata
+    _ = app.MapPut("/api/conversations/{threadId}/metadata", async (
+        string threadId,
+        ConversationMetadataUpdate update,
+        IConversationStore store,
+        CancellationToken ct = default) =>
+    {
+        var existing = await store.LoadMetadataAsync(threadId, ct);
+        var propertiesBuilder = existing?.Properties?.ToBuilder()
+            ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+        if (update.Title != null)
+        {
+            propertiesBuilder["title"] = update.Title;
+        }
+
+        if (update.Preview != null)
+        {
+            propertiesBuilder["preview"] = update.Preview;
+        }
+
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = threadId,
+            CurrentRunId = existing?.CurrentRunId,
+            LatestRunId = existing?.LatestRunId,
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            SessionMappings = existing?.SessionMappings,
+            Properties = propertiesBuilder.ToImmutable(),
+        };
+
+        await store.SaveMetadataAsync(threadId, metadata, ct);
+        return Results.Ok();
+    });
+
+    // DELETE /api/conversations/{threadId} - Delete a conversation
+    _ = app.MapDelete("/api/conversations/{threadId}", async (
+        string threadId,
+        IConversationStore store,
+        MultiTurnAgentPool agentPool,
+        CancellationToken ct = default) =>
+    {
+        await agentPool.RemoveAgentAsync(threadId);
+        await store.DeleteThreadAsync(threadId, ct);
+        return Results.NoContent();
+    });
+
     // Client logging endpoint - receives logs from browser and writes to server logs
     _ = app.MapPost("/api/logs", (
         ClientLogBatch batch,
@@ -348,3 +430,19 @@ public record ClientLogEntry(
     object? Data); // Data will be bound as JsonElement by default in ASP.NET Core
 
 public record ClientLogBatch(ClientLogEntry[] Entries);
+
+// === Conversation Management DTOs ===
+
+public record ConversationSummary
+{
+    public required string ThreadId { get; init; }
+    public required string Title { get; init; }
+    public string? Preview { get; init; }
+    public required long LastUpdated { get; init; }
+}
+
+public record ConversationMetadataUpdate
+{
+    public string? Title { get; init; }
+    public string? Preview { get; init; }
+}

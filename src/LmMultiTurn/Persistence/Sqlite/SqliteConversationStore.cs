@@ -235,6 +235,38 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT thread_id, current_run_id, last_updated, metadata_json
+            FROM thread_metadata
+            ORDER BY last_updated DESC
+            LIMIT $limit OFFSET $offset;
+            """;
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        _ = command.Parameters.AddWithValue("$offset", offset);
+
+        var metadataList = new List<ThreadMetadata>();
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            metadataList.Add(ReadMetadata(reader));
+        }
+
+        return metadataList;
+    }
+
+    /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_disposed)

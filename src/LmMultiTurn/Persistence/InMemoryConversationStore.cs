@@ -89,6 +89,49 @@ public sealed class InMemoryConversationStore : IConversationStore
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        var allThreadIds = GetAllThreadIds();
+        var metadataList = new List<ThreadMetadata>();
+
+        foreach (var threadId in allThreadIds)
+        {
+            if (_metadata.TryGetValue(threadId, out var metadata))
+            {
+                metadataList.Add(metadata);
+            }
+            else
+            {
+                // Thread has messages but no metadata - create minimal entry
+                long lastUpdated;
+                lock (_messagesLock)
+                {
+                    lastUpdated = _messages.TryGetValue(threadId, out var messages) && messages.Count > 0
+                        ? messages.Max(m => m.Timestamp)
+                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                }
+
+                metadataList.Add(new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = lastUpdated,
+                });
+            }
+        }
+
+        var result = metadataList
+            .OrderByDescending(m => m.LastUpdated)
+            .Skip(offset)
+            .Take(limit)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<ThreadMetadata>>(result);
+    }
+
     /// <summary>
     /// Gets the count of messages for a thread. Useful for testing.
     /// </summary>

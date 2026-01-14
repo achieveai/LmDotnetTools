@@ -63,4 +63,18 @@ public interface IConversationStore
     Task DeleteThreadAsync(
         string threadId,
         CancellationToken ct = default);
+
+    // === Listing ===
+
+    /// <summary>
+    /// Lists all threads with their metadata, ordered by last updated descending.
+    /// </summary>
+    /// <param name="limit">Maximum number of threads to return.</param>
+    /// <param name="offset">Number of threads to skip (for pagination).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>List of thread metadata, or empty list if no threads exist.</returns>
+    Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default);
 }

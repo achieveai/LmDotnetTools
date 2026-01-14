@@ -296,12 +296,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 latestRun = _latestRunId;
             }
 
+            // Load existing metadata to preserve Properties and SessionMappings
+            var existing = await Store.LoadMetadataAsync(ThreadId, ct);
+
             var metadata = new ThreadMetadata
             {
                 ThreadId = ThreadId,
                 CurrentRunId = null, // Only save when run is complete
                 LatestRunId = latestRun,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Properties = existing?.Properties,
+                SessionMappings = existing?.SessionMappings,
             };
 
             await Store.SaveMetadataAsync(ThreadId, metadata, ct);

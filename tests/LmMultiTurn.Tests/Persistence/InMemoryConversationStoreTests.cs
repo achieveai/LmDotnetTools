@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Xunit;
@@ -322,6 +323,170 @@ public class InMemoryConversationStoreTests
         // Assert
         store.GetMessageCount("thread-1").Should().Be(0);
         store.GetAllThreadIds().Should().BeEmpty();
+    }
+
+    #endregion
+
+    #region ListThreadsAsync Tests
+
+    [Fact]
+    public async Task ListThreadsAsync_ReturnsEmptyWhenNoThreads()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+
+        // Act
+        var result = await store.ListThreadsAsync();
+
+        // Assert
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_ReturnsAllThreadsWithMetadata()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync("thread-1", CreateTestMetadata("thread-1"));
+        await store.SaveMetadataAsync("thread-2", CreateTestMetadata("thread-2"));
+        await store.SaveMetadataAsync("thread-3", CreateTestMetadata("thread-3"));
+
+        // Act
+        var result = await store.ListThreadsAsync();
+
+        // Assert
+        result.Should().HaveCount(3);
+        result.Select(m => m.ThreadId).Should().Contain(["thread-1", "thread-2", "thread-3"]);
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_ReturnsSortedByLastUpdatedDescending()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        await store.SaveMetadataAsync("thread-oldest", new ThreadMetadata
+        {
+            ThreadId = "thread-oldest",
+            LastUpdated = now - 2000,
+        });
+        await store.SaveMetadataAsync("thread-newest", new ThreadMetadata
+        {
+            ThreadId = "thread-newest",
+            LastUpdated = now,
+        });
+        await store.SaveMetadataAsync("thread-middle", new ThreadMetadata
+        {
+            ThreadId = "thread-middle",
+            LastUpdated = now - 1000,
+        });
+
+        // Act
+        var result = await store.ListThreadsAsync();
+
+        // Assert
+        result.Should().HaveCount(3);
+        result[0].ThreadId.Should().Be("thread-newest");
+        result[1].ThreadId.Should().Be("thread-middle");
+        result[2].ThreadId.Should().Be("thread-oldest");
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_RespectsLimitParameter()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (int i = 0; i < 5; i++)
+        {
+            await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
+            {
+                ThreadId = $"thread-{i}",
+                LastUpdated = now - (i * 1000), // thread-0 is newest
+            });
+        }
+
+        // Act
+        var result = await store.ListThreadsAsync(limit: 3);
+
+        // Assert
+        result.Should().HaveCount(3);
+        result[0].ThreadId.Should().Be("thread-0"); // newest
+        result[1].ThreadId.Should().Be("thread-1");
+        result[2].ThreadId.Should().Be("thread-2");
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_RespectsOffsetParameter()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (int i = 0; i < 5; i++)
+        {
+            await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
+            {
+                ThreadId = $"thread-{i}",
+                LastUpdated = now - (i * 1000), // thread-0 is newest
+            });
+        }
+
+        // Act
+        var result = await store.ListThreadsAsync(limit: 2, offset: 2);
+
+        // Assert
+        result.Should().HaveCount(2);
+        result[0].ThreadId.Should().Be("thread-2");
+        result[1].ThreadId.Should().Be("thread-3");
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_PreservesPropertiesInMetadata()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = "thread-with-props",
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Properties = new Dictionary<string, object>
+            {
+                ["title"] = "My Conversation Title",
+                ["preview"] = "First message preview...",
+            }.ToImmutableDictionary(),
+        };
+        await store.SaveMetadataAsync("thread-with-props", metadata);
+
+        // Act
+        var result = await store.ListThreadsAsync();
+
+        // Assert
+        result.Should().HaveCount(1);
+        result[0].Properties.Should().NotBeNull();
+        result[0].Properties!["title"].ToString().Should().Be("My Conversation Title");
+        result[0].Properties["preview"].ToString().Should().Be("First message preview...");
+    }
+
+    [Fact]
+    public async Task ListThreadsAsync_CreatesMinimalMetadataForThreadsWithoutExplicitMetadata()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+
+        // Add messages to a thread without explicit metadata
+        await store.AppendMessagesAsync("thread-no-metadata", CreateTestMessages("thread-no-metadata", "run-1", 1));
+
+        // Add a thread with metadata
+        await store.SaveMetadataAsync("thread-with-metadata", CreateTestMetadata("thread-with-metadata"));
+
+        // Act
+        var result = await store.ListThreadsAsync();
+
+        // Assert - Should include both threads (one with full metadata, one with minimal)
+        result.Should().HaveCount(2);
+        result.Select(m => m.ThreadId).Should().Contain("thread-with-metadata");
+        result.Select(m => m.ThreadId).Should().Contain("thread-no-metadata");
     }
 
     #endregion

@@ -1,6 +1,8 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -31,8 +33,9 @@ public class MultiTurnAgentBaseTests
             List<IMessage>? messagesToReturn = null,
             bool shouldFork = false,
             string? systemPrompt = null,
-            ILogger? logger = null)
-            : base(threadId, systemPrompt, logger: logger)
+            ILogger? logger = null,
+            IConversationStore? store = null)
+            : base(threadId, systemPrompt, store: store, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
             _ = shouldFork; // No longer used but kept for API compatibility
@@ -458,6 +461,153 @@ public class MultiTurnAgentBaseTests
         receipt.QueuedAt.Should().BeOnOrBefore(afterSend);
 
         // Cleanup
+        await agent.DisposeAsync();
+    }
+
+    #endregion
+
+    #region Metadata Preservation Tests
+
+    [Fact]
+    public async Task UpdateMetadataAsync_PreservesExistingProperties()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-props";
+
+        // Pre-populate metadata with Properties
+        var initialMetadata = new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = "old-run",
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Properties = new Dictionary<string, object>
+            {
+                ["title"] = "My Conversation Title",
+                ["preview"] = "First message preview",
+            }.ToImmutableDictionary(),
+        };
+        await store.SaveMetadataAsync(threadId, initialMetadata);
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Act - Send a message to trigger run completion and metadata update
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
+        await agent.SendAsync(messages);
+
+        // Wait for processing to complete
+        await Task.Delay(500);
+
+        // Assert - Properties should be preserved after the run updates metadata
+        var updatedMetadata = await store.LoadMetadataAsync(threadId);
+        updatedMetadata.Should().NotBeNull();
+        updatedMetadata!.Properties.Should().NotBeNull();
+        updatedMetadata.Properties!["title"].Should().Be("My Conversation Title");
+        updatedMetadata.Properties["preview"].Should().Be("First message preview");
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_PreservesExistingSessionMappings()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-sessions";
+
+        // Pre-populate metadata with SessionMappings
+        var initialMetadata = new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = "old-run",
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            SessionMappings = new Dictionary<string, string>
+            {
+                ["session-1"] = "external-id-1",
+                ["session-2"] = "external-id-2",
+            },
+        };
+        await store.SaveMetadataAsync(threadId, initialMetadata);
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Act - Send a message to trigger run completion and metadata update
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
+        await agent.SendAsync(messages);
+
+        // Wait for processing to complete
+        await Task.Delay(500);
+
+        // Assert - SessionMappings should be preserved after the run updates metadata
+        var updatedMetadata = await store.LoadMetadataAsync(threadId);
+        updatedMetadata.Should().NotBeNull();
+        updatedMetadata!.SessionMappings.Should().NotBeNull();
+        updatedMetadata.SessionMappings!["session-1"].Should().Be("external-id-1");
+        updatedMetadata.SessionMappings["session-2"].Should().Be("external-id-2");
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_UpdatesLatestRunId_WhilePreservingProperties()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-run-update";
+
+        // Pre-populate metadata with Properties
+        var initialMetadata = new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = "old-run-id",
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Properties = new Dictionary<string, object>
+            {
+                ["title"] = "Preserved Title",
+            }.ToImmutableDictionary(),
+        };
+        await store.SaveMetadataAsync(threadId, initialMetadata);
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Act - Send a message to trigger run completion and metadata update
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
+        await agent.SendAsync(messages);
+
+        // Wait for processing to complete
+        await Task.Delay(500);
+
+        // Assert - LatestRunId should be updated, but Properties preserved
+        var updatedMetadata = await store.LoadMetadataAsync(threadId);
+        updatedMetadata.Should().NotBeNull();
+        updatedMetadata!.LatestRunId.Should().NotBe("old-run-id", "LatestRunId should be updated");
+        updatedMetadata.Properties.Should().NotBeNull();
+        updatedMetadata.Properties!["title"].Should().Be("Preserved Title");
+
+        // Cleanup
+        await cts.CancelAsync();
         await agent.DisposeAsync();
     }
 
