@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -89,6 +90,9 @@ try
         return registry;
     });
 
+    // Register the InMemoryConversationStore for conversation persistence
+    _ = builder.Services.AddSingleton<InMemoryConversationStore>();
+
     // Register the provider agent factory (creates OpenClientAgent with TestSseMessageHandler)
     _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
     {
@@ -128,6 +132,7 @@ try
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
         var agentFactory = sp.GetRequiredService<Func<IStreamingAgent>>();
+        var conversationStore = sp.GetRequiredService<InMemoryConversationStore>();
 
         return new MultiTurnAgentPool(
             threadId =>
@@ -139,6 +144,7 @@ try
                     threadId,
                     systemPrompt: "You are a helpful assistant with access to weather, calculator, and web search tools.",
                     defaultOptions: new GenerateReplyOptions { ModelId = "test-model" },
+                    store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
             },
             loggerFactory.CreateLogger<MultiTurnAgentPool>());
