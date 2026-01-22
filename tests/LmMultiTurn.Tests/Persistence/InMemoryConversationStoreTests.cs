@@ -271,7 +271,7 @@ public class InMemoryConversationStoreTests
         var tasks = new List<Task>();
 
         // Act - Append messages from multiple threads
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
             var runId = $"run-{i}";
             tasks.Add(Task.Run(async () =>
@@ -398,7 +398,7 @@ public class InMemoryConversationStoreTests
         // Arrange
         var store = new InMemoryConversationStore();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
             {
@@ -423,7 +423,7 @@ public class InMemoryConversationStoreTests
         // Arrange
         var store = new InMemoryConversationStore();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             await store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
             {
@@ -465,7 +465,7 @@ public class InMemoryConversationStoreTests
         result.Should().HaveCount(1);
         result[0].Properties.Should().NotBeNull();
         result[0].Properties!["title"].ToString().Should().Be("My Conversation Title");
-        result[0].Properties["preview"].ToString().Should().Be("First message preview...");
+        result[0].Properties!["preview"].ToString().Should().Be("First message preview...");
     }
 
     [Fact]

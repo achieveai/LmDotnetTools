@@ -304,7 +304,7 @@ public class MessagePersistenceConverterTests
             messages, "thread-1", "run-1", _jsonOptions);
 
         // Assert
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
             persisted[i].MessageOrderIdx.Should().Be(i);
         }

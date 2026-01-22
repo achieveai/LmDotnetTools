@@ -411,7 +411,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         var tasks = new List<Task>();
 
         // Act - Append messages from multiple threads
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
             var runId = $"run-{i}";
             tasks.Add(Task.Run(async () =>
@@ -435,7 +435,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         var tasks = new List<Task>();
 
         // Act - Different threads operating on different thread IDs
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             var threadId = $"thread-{i}";
             tasks.Add(Task.Run(async () =>
@@ -448,7 +448,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         await Task.WhenAll(tasks);
 
         // Assert
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             var loaded = await _store.LoadMessagesAsync($"thread-{i}");
             loaded.Should().HaveCount(5);

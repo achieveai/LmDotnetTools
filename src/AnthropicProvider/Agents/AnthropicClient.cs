@@ -5,6 +5,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
@@ -72,7 +73,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
         try
         {
-            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
+            ValidationHelper.ValidateMessages(request.Messages, nameof(request.Messages));
 
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
@@ -110,7 +111,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             var completedMetrics = metrics.Complete(
                 statusCode: 200,
                 usage: response.Usage != null
-                    ? new AchieveAi.LmDotnetTools.LmCore.Models.Usage
+                    ? new Usage
                     {
                         PromptTokens = response.Usage.InputTokens,
                         CompletionTokens = response.Usage.OutputTokens,
@@ -146,7 +147,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
         try
         {
-            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
+            ValidationHelper.ValidateMessages(request.Messages, nameof(request.Messages));
 
             // Set the streaming flag
             request = request with

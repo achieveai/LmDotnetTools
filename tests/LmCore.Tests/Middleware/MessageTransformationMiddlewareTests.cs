@@ -100,7 +100,7 @@ public class MessageTransformationMiddlewareTests
         // Assert
         Assert.Equal(4, messages.Count);
         Assert.All(messages, m => Assert.NotNull(m.MessageOrderIdx));
-        for (int i = 0; i < messages.Count; i++)
+        for (var i = 0; i < messages.Count; i++)
         {
             Assert.Equal(i, messages[i].MessageOrderIdx);
         }

@@ -45,7 +45,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(options);
 
         // Register the file-based cache store (idempotent)
-        services.TryAddSingleton<FileKvStore>(provider =>
+        services.TryAddSingleton(provider =>
         {
             var cacheOptions = provider.GetRequiredService<LlmCacheOptions>();
             return new FileKvStore(cacheOptions.CacheDirectory);

@@ -606,7 +606,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                                     bytes.Length);
                                             }
 
-                                            imageBlocks.Add(new LmCore.Messages.ImageToolResultBlock
+                                            imageBlocks.Add(new ImageToolResultBlock
                                             {
                                                 Data = imgBlock.Data,
                                                 MimeType = detectedMimeType

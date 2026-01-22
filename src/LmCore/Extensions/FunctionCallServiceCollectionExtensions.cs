@@ -37,7 +37,7 @@ public static class FunctionCallServiceCollectionExtensions
         Func<IServiceProvider, IFunctionProvider> factory
     )
     {
-        _ = services.AddSingleton<IFunctionProvider>(factory);
+        _ = services.AddSingleton(factory);
         return services;
     }
 
@@ -49,7 +49,7 @@ public static class FunctionCallServiceCollectionExtensions
         Action<IFunctionProviderRegistry, IServiceProvider> configure
     )
     {
-        _ = services.AddSingleton<Action<IFunctionProviderRegistry, IServiceProvider>>(configure);
+        _ = services.AddSingleton(configure);
         return services;
     }
 }

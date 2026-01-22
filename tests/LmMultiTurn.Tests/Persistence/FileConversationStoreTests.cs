@@ -387,7 +387,7 @@ public class FileConversationStoreTests : IDisposable
     {
         // Arrange
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             await _store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
             {
@@ -411,7 +411,7 @@ public class FileConversationStoreTests : IDisposable
     {
         // Arrange
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             await _store.SaveMetadataAsync($"thread-{i}", new ThreadMetadata
             {
@@ -452,7 +452,7 @@ public class FileConversationStoreTests : IDisposable
         result.Should().HaveCount(1);
         result[0].Properties.Should().NotBeNull();
         result[0].Properties!["title"].ToString().Should().Be("My Conversation Title");
-        result[0].Properties["preview"].ToString().Should().Be("First message preview...");
+        result[0].Properties!["preview"].ToString().Should().Be("First message preview...");
     }
 
     [Fact]

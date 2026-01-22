@@ -70,7 +70,7 @@ public class Program
                     .ConfigureServices(services =>
                     {
                         _ = services.AddHttpClient();
-                        _ = services.AddTransient<OpenRouterModelService>(provider =>
+                        _ = services.AddTransient(provider =>
                         {
                             var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
                             var httpClient = httpClientFactory.CreateClient();
