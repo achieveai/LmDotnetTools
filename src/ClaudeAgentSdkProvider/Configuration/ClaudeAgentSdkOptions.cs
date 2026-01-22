@@ -68,4 +68,10 @@ public record ClaudeAgentSdkOptions
     ///     Only applies in Interactive mode.
     /// </summary>
     public TimeSpan KeepAliveInterval { get; init; } = TimeSpan.FromSeconds(12);
+
+    /// <summary>
+    ///     Comma-separated list of allowed built-in tools.
+    ///     If null, defaults to: "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch"
+    /// </summary>
+    public string? AllowedTools { get; init; }
 }
