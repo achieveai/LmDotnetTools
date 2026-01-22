@@ -19,6 +19,7 @@ export interface WebSocketClientCallbacks {
 export interface WebSocketClientOptions extends WebSocketClientCallbacks {
   baseUrl?: string;
   threadId?: string;
+  modeId?: string;
 }
 
 /**
@@ -38,14 +39,17 @@ export interface WebSocketConnection {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, onMessage, onDone, onError } = options;
+  const { baseUrl = '', threadId, modeId, onMessage, onDone, onError } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
     const effectiveThreadId = threadId || generateThreadId();
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = baseUrl || window.location.host;
-    const wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
+    let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
+    if (modeId) {
+      wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
+    }
 
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
 
@@ -114,29 +118,13 @@ export function sendWebSocketMessage(
   connection: WebSocketConnection,
   message: string
 ): void {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/9bdf32c8-f557-402c-923a-68eddb1d489a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'wsClient.ts:113',message:'sendWebSocketMessage called',data:{isConnected:connection.isConnected,readyState:connection.socket.readyState,messageLength:message.length,messagePreview:message.substring(0,50)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
-  
   if (!connection.isConnected || connection.socket.readyState !== WebSocket.OPEN) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/9bdf32c8-f557-402c-923a-68eddb1d489a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'wsClient.ts:117',message:'WebSocket not connected - throwing error',data:{isConnected:connection.isConnected,readyState:connection.socket.readyState},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     throw new Error('WebSocket is not connected');
   }
 
   const request: ChatRequest = { Message: message };
   log.info('Sending chat message via WebSocket', { messageLength: message.length });
-  
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/9bdf32c8-f557-402c-923a-68eddb1d489a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'wsClient.ts:123',message:'About to call socket.send',data:{requestJson:JSON.stringify(request)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
-  
   connection.socket.send(JSON.stringify(request));
-  
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/9bdf32c8-f557-402c-923a-68eddb1d489a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'wsClient.ts:127',message:'socket.send completed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
 }
 
 /**

@@ -2,11 +2,14 @@
 import { ref, onMounted, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat } from '@/composables/useChat';
+import { useChatModes } from '@/composables/useChatModes';
 import { updateConversationMetadata } from '@/api/conversationsApi';
+import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
+import ModeSelector from './ModeSelector.vue';
 
 const {
   conversations,
@@ -19,6 +22,23 @@ const {
   addOrUpdateConversation,
 } = useConversations();
 
+// Initialize chat modes first (need currentModeId for useChat)
+const {
+  modes,
+  currentModeId,
+  availableTools,
+  isLoading: modesLoading,
+  loadModes,
+  loadTools,
+  selectMode,
+  switchMode,
+  createMode,
+  updateMode,
+  deleteMode,
+  copyMode,
+} = useChatModes();
+
+// Initialize chat with a getter for the current mode ID
 const {
   displayItems,
   isLoading: chatLoading,
@@ -32,16 +52,21 @@ const {
   setThreadId,
   loadMessagesFromBackend,
   getResultForToolCall,
-} = useChat();
+} = useChat({ getModeId: () => currentModeId.value });
 
 // Provide getResultForToolCall to child components
 provide('getResultForToolCall', getResultForToolCall);
 
 const sidebarCollapsed = ref(false);
 
-// Load conversations on mount
+// Load conversations and modes on mount
 onMounted(async () => {
-  await loadConversations();
+  // Load modes and tools in parallel with conversations
+  await Promise.all([
+    loadConversations(),
+    loadModes(),
+    loadTools(),
+  ]);
 
   // If there are existing conversations, select the most recent one
   if (conversations.value.length > 0) {
@@ -95,6 +120,57 @@ async function handleDeleteConversation(threadId: string): Promise<void> {
     }
   } catch (e) {
     console.error('Failed to delete conversation:', e);
+  }
+}
+
+// Handle selecting a mode
+async function handleSelectMode(modeId: string): Promise<void> {
+  if (currentThreadId.value) {
+    // If there's an active conversation, switch the mode for it
+    try {
+      await switchMode(currentThreadId.value, modeId);
+    } catch (e) {
+      console.error('Failed to switch mode:', e);
+    }
+  } else {
+    // Just select the mode for new conversations
+    selectMode(modeId);
+  }
+}
+
+// Handle creating a new mode
+async function handleCreateMode(data: ChatModeCreateUpdate): Promise<void> {
+  try {
+    await createMode(data);
+  } catch (e) {
+    console.error('Failed to create mode:', e);
+  }
+}
+
+// Handle updating a mode
+async function handleUpdateMode(modeId: string, data: ChatModeCreateUpdate): Promise<void> {
+  try {
+    await updateMode(modeId, data);
+  } catch (e) {
+    console.error('Failed to update mode:', e);
+  }
+}
+
+// Handle deleting a mode
+async function handleDeleteMode(modeId: string): Promise<void> {
+  try {
+    await deleteMode(modeId);
+  } catch (e) {
+    console.error('Failed to delete mode:', e);
+  }
+}
+
+// Handle copying a mode
+async function handleCopyMode(modeId: string, newName: string): Promise<void> {
+  try {
+    await copyMode(modeId, newName);
+  } catch (e) {
+    console.error('Failed to copy mode:', e);
   }
 }
 
@@ -173,13 +249,26 @@ onMounted(() => {
             =
           </button>
           <h1>LmStreaming Chat</h1>
-          <button
-            class="clear-btn"
-            @click="clearMessages"
-            :disabled="chatLoading"
-          >
-            Clear
-          </button>
+          <div class="header-actions">
+            <ModeSelector
+              :modes="modes"
+              :current-mode-id="currentModeId"
+              :tools="availableTools"
+              :is-loading="modesLoading"
+              @select-mode="handleSelectMode"
+              @create-mode="handleCreateMode"
+              @update-mode="handleUpdateMode"
+              @delete-mode="handleDeleteMode"
+              @copy-mode="handleCopyMode"
+            />
+            <button
+              class="clear-btn"
+              @click="clearMessages"
+              :disabled="chatLoading"
+            >
+              Clear
+            </button>
+          </div>
         </header>
 
         <MessageList :display-items="displayItems" />
@@ -257,6 +346,13 @@ onMounted(() => {
   font-size: 20px;
   font-weight: 600;
   flex: 1;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .clear-btn {

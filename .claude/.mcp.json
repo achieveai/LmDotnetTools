@@ -1,49 +1,30 @@
 {
   "mcpServers": {
     "sequential-thinking-tools": {
-      "command": "cmd",
+      "command": "npx",
       "args": [
-        "/c",
-        "npx",
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
       ],
       "env": {}
     },
     "clarify-doubt": {
-      "command": "cmd",
+      "command": "npx",
       "args": [
-        "/c",
-        "npx",
         "-y",
         "@achieveai/hitl-mcp-server@latest"
       ]
     },
-    "seq": {
-      "command": "cmd",
-      "args": [
-        "/c",
-        "seq-mcp-server"
-      ],
-      "env": {
-        "SEQ_SERVER_URL": "http://localhost:5341",
-        "SEQ_API_KEY": "Uu5XkCVB6llwhmyF7N1e"
-      }
-    },
     "playwright": {
-      "command": "cmd",
+      "command": "npx",
       "args": [
-        "/c",
-        "npx",
         "-y",
         "@playwright/mcp@latest"
       ]
     },
     "debugger": {
-      "command": "cmd",
+      "command": "npx",
       "args": [
-        "/c",
-        "npx",
         "mcp-remote@latest",
         "http://localhost:4711/sse"
       ]

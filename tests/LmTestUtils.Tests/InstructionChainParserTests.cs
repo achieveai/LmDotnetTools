@@ -194,4 +194,125 @@ public class InstructionChainParserTests
         Assert.Equal("tool1", result[0].Messages[0].ToolCalls![0].Name);
         Assert.Equal("tool2", result[0].Messages[0].ToolCalls![1].Name);
     }
+
+    [Fact]
+    public void ExtractInstructionChain_WithSystemPromptEcho_ShouldParseAsExplicitText()
+    {
+        // Arrange
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Echo system prompt", "messages":[{"system_prompt_echo":{}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Equal("Echo system prompt", result[0].IdMessage);
+        Assert.Single(result[0].Messages);
+        Assert.Equal("__SYSTEM_PROMPT__", result[0].Messages[0].ExplicitText);
+        Assert.Null(result[0].Messages[0].TextLength);
+        Assert.Null(result[0].Messages[0].ToolCalls);
+    }
+
+    [Fact]
+    public void ExtractInstructionChain_WithToolsList_ShouldParseAsExplicitText()
+    {
+        // Arrange
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "List tools", "messages":[{"tools_list":{}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Equal("List tools", result[0].IdMessage);
+        Assert.Single(result[0].Messages);
+        Assert.Equal("__TOOLS_LIST__", result[0].Messages[0].ExplicitText);
+        Assert.Null(result[0].Messages[0].TextLength);
+        Assert.Null(result[0].Messages[0].ToolCalls);
+    }
+
+    [Fact]
+    public void ExtractInstructionChain_WithMixedDynamicAndStaticMessages_ShouldParseAll()
+    {
+        // Arrange
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Mixed messages", "messages":[
+                    {"text_message":{"length":10}},
+                    {"system_prompt_echo":{}},
+                    {"tools_list":{}},
+                    {"tool_call":[{"name":"my_tool","args":{}}]}
+                ]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Equal(4, result[0].Messages.Count);
+
+        // First message: text_message
+        Assert.Equal(10, result[0].Messages[0].TextLength);
+        Assert.Null(result[0].Messages[0].ExplicitText);
+
+        // Second message: system_prompt_echo
+        Assert.Equal("__SYSTEM_PROMPT__", result[0].Messages[1].ExplicitText);
+        Assert.Null(result[0].Messages[1].TextLength);
+
+        // Third message: tools_list
+        Assert.Equal("__TOOLS_LIST__", result[0].Messages[2].ExplicitText);
+        Assert.Null(result[0].Messages[2].TextLength);
+
+        // Fourth message: tool_call
+        Assert.NotNull(result[0].Messages[3].ToolCalls);
+        Assert.Equal("my_tool", result[0].Messages[3].ToolCalls![0].Name);
+    }
+
+    [Fact]
+    public void ExtractInstructionChain_WithDynamicMessagesInChain_ShouldParseMultipleInstructions()
+    {
+        // Arrange
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Show prompt", "messages":[{"system_prompt_echo":{}}]},
+                {"id_message": "Show tools", "messages":[{"tools_list":{}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(2, result.Length);
+
+        Assert.Equal("Show prompt", result[0].IdMessage);
+        Assert.Single(result[0].Messages);
+        Assert.Equal("__SYSTEM_PROMPT__", result[0].Messages[0].ExplicitText);
+
+        Assert.Equal("Show tools", result[1].IdMessage);
+        Assert.Single(result[1].Messages);
+        Assert.Equal("__TOOLS_LIST__", result[1].Messages[0].ExplicitText);
+    }
 }

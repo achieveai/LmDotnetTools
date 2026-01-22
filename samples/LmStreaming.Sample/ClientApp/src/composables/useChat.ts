@@ -67,6 +67,7 @@ export interface ChatMessage {
  */
 export interface UseChatOptions {
   transport?: TransportType;
+  getModeId?: () => string | undefined;
 }
 
 /**
@@ -102,7 +103,7 @@ function isTestInstruction(text: string): boolean {
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket' } = options;
+  const { transport: initialTransport = 'websocket', getModeId } = options;
 
   // Core state
   const pendingMessages = ref<InternalChatMessage[]>([]);
@@ -563,20 +564,22 @@ export function useChat(options: UseChatOptions = {}) {
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection, text);
     } else {
-      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId });
-      
+      const currentModeId = getModeId?.();
+      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId, modeId: currentModeId });
+
       // Close old connection if exists
       if (wsConnection) {
         const { closeWebSocketConnection } = await import('@/api/wsClient');
         closeWebSocketConnection(wsConnection);
         wsConnection = null;
       }
-      
+
       // Create new persistent connection
       const { createWebSocketConnection, sendWebSocketMessage } = await import('@/api/wsClient');
-      
+
       wsConnection = await createWebSocketConnection({
         threadId: effectiveThreadId,
+        modeId: currentModeId,
         ...callbacks,
         onDone: () => {
           log.debug('WebSocket stream done signal received');
