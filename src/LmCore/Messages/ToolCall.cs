@@ -34,7 +34,7 @@ public record ToolCall
 /// Represents the result of a tool call execution.
 /// Supports both text-only and multi-modal (text + images) results.
 /// </summary>
-public record struct ToolCallResult
+public readonly record struct ToolCallResult
 {
     /// <summary>
     /// Creates a text-only tool call result.

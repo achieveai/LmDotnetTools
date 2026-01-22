@@ -123,6 +123,9 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             HttpContent content;
             if (instruction != null)
             {
+                // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
+                ResolveDynamicMessages(instruction, root);
+
                 // Execute the instruction at the calculated index
                 _logger.LogInformation("Executing instruction {Index}: {Id}", responseCount + 1, instruction.IdMessage);
 
@@ -155,6 +158,9 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
 
                     if (plan is not null)
                     {
+                        // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
+                        ResolveDynamicMessages(plan, root);
+
                         _logger.LogInformation("Using single instruction mode (backward compatibility)");
                         content = new SseStreamHttpContent(plan, model, WordsPerChunk, ChunkDelayMs);
                     }
@@ -198,5 +204,107 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
 
         _logger.LogTrace("No instruction found, using fallback");
         return (null, userMessage);
+    }
+
+    /// <summary>
+    ///     Resolves any dynamic message placeholders in the instruction plan using request context.
+    /// </summary>
+    private static void ResolveDynamicMessages(InstructionPlan plan, JsonElement requestRoot)
+    {
+        for (var i = 0; i < plan.Messages.Count; i++)
+        {
+            var message = plan.Messages[i];
+            if (message.ExplicitText == "__SYSTEM_PROMPT__")
+            {
+                message.ExplicitText = ExtractSystemPrompt(requestRoot);
+            }
+            else if (message.ExplicitText == "__TOOLS_LIST__")
+            {
+                message.ExplicitText = ExtractToolsList(requestRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Extracts the system prompt from the request messages array.
+    /// </summary>
+    private static string ExtractSystemPrompt(JsonElement root)
+    {
+        if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
+        {
+            return "No system prompt configured";
+        }
+
+        foreach (var msg in messages.EnumerateArray())
+        {
+            if (msg.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (!msg.TryGetProperty("role", out var role) || role.GetString() != "system")
+            {
+                continue;
+            }
+
+            if (msg.TryGetProperty("content", out var content))
+            {
+                if (content.ValueKind == JsonValueKind.String)
+                {
+                    return content.GetString() ?? "No system prompt configured";
+                }
+
+                // Handle array content format (e.g., [{ "type": "text", "text": "..." }])
+                if (content.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in content.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("type", out var type)
+                            && type.GetString() == "text"
+                            && item.TryGetProperty("text", out var text))
+                        {
+                            return text.GetString() ?? "No system prompt configured";
+                        }
+                    }
+                }
+            }
+        }
+
+        return "No system prompt configured";
+    }
+
+    /// <summary>
+    ///     Extracts tool names from the request tools array.
+    /// </summary>
+    private static string ExtractToolsList(JsonElement root)
+    {
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return "No tools available";
+        }
+
+        var toolNames = new List<string>();
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            // OpenAI format: { "type": "function", "function": { "name": "..." } }
+            if (tool.TryGetProperty("function", out var fn) && fn.ValueKind == JsonValueKind.Object)
+            {
+                if (fn.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    var toolName = name.GetString();
+                    if (!string.IsNullOrEmpty(toolName))
+                    {
+                        toolNames.Add(toolName);
+                    }
+                }
+            }
+        }
+
+        return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
     }
 }

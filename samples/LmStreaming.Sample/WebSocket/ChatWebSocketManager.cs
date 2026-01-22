@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using LmStreaming.Sample.Agents;
+using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.WebSocket;
 
@@ -33,17 +34,24 @@ public sealed class ChatWebSocketManager
     /// </summary>
     /// <param name="webSocket">The WebSocket connection</param>
     /// <param name="threadId">The thread ID for routing to the correct agent</param>
+    /// <param name="mode">Optional chat mode for agent configuration</param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
+        ChatMode? mode,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
-        _logger.LogInformation("WebSocket connection started for thread {ThreadId}", threadId);
+        _logger.LogInformation(
+            "WebSocket connection started for thread {ThreadId} with mode {ModeId}",
+            threadId,
+            mode?.Id ?? "default");
 
-        // Get or create agent for this thread
-        var agent = _agentPool.GetOrCreateAgent(threadId);
+        // Get or create agent for this thread with the specified mode
+        var agent = mode != null
+            ? _agentPool.GetOrCreateAgent(threadId, mode)
+            : _agentPool.GetOrCreateAgent(threadId);
 
         // Create linked cancellation for connection lifetime
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -57,7 +65,7 @@ public sealed class ChatWebSocketManager
         try
         {
             // Wait for either task to complete (connection close or error)
-            await Task.WhenAny(subscriptionTask, receiveTask);
+            _ = await Task.WhenAny(subscriptionTask, receiveTask);
         }
         finally
         {
@@ -96,7 +104,7 @@ public sealed class ChatWebSocketManager
                     break;
                 }
 
-                var messageJson = JsonSerializer.Serialize<IMessage>(message, _jsonOptions);
+                var messageJson = JsonSerializer.Serialize(message, _jsonOptions);
                 var bytes = Encoding.UTF8.GetBytes(messageJson);
 
                 await webSocket.SendAsync(
@@ -113,7 +121,7 @@ public sealed class ChatWebSocketManager
                 // Send done signal after RunCompletedMessage
                 if (message is RunCompletedMessage)
                 {
-                    var doneJson = """{"$type":"done"}""";
+                    var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
                     var doneBytes = Encoding.UTF8.GetBytes(doneJson);
                     await webSocket.SendAsync(
                         new ArraySegment<byte>(doneBytes),
@@ -150,7 +158,7 @@ public sealed class ChatWebSocketManager
             while (webSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
                 WebSocketReceiveResult result;
-                messageBuilder.Clear();
+                _ = messageBuilder.Clear();
 
                 do
                 {
@@ -169,7 +177,7 @@ public sealed class ChatWebSocketManager
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        messageBuilder.Append(chunk);
+                        _ = messageBuilder.Append(chunk);
                     }
                 } while (!result.EndOfMessage);
 

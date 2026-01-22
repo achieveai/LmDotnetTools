@@ -123,7 +123,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddErrorHandlingServices(this IServiceCollection services)
     {
         // Register resilience configurations with default values
-        _ = services.AddSingleton<CircuitBreakerConfiguration>(_ => new CircuitBreakerConfiguration
+        _ = services.AddSingleton(_ => new CircuitBreakerConfiguration
         {
             FailureThreshold = 5,
             TimeoutMs = 30000,
@@ -131,7 +131,7 @@ public static class ServiceCollectionExtensions
             ExponentialFactor = 2.0,
         });
 
-        _ = services.AddSingleton<RetryConfiguration>(_ => new RetryConfiguration
+        _ = services.AddSingleton(_ => new RetryConfiguration
         {
             MaxRetries = 3,
             BaseDelayMs = 1000,
@@ -140,7 +140,7 @@ public static class ServiceCollectionExtensions
             JitterPercent = 0.1,
         });
 
-        _ = services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
+        _ = services.AddSingleton(_ => new GracefulDegradationConfiguration
         {
             FallbackTimeoutMs = 5000,
             RuleBasedQualityScore = 0.7,

@@ -359,16 +359,32 @@ dotnet_diagnostic.IDE0038.severity = none
 # Test-specific suppressions - applied to all files in tests directories
 [tests/**/*.cs]
 dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.IDE0001.severity = none
+dotnet_diagnostic.IDE0002.severity = none
+dotnet_diagnostic.IDE0045.severity = none
+dotnet_diagnostic.IDE0046.severity = none
 dotnet_diagnostic.IDE0051.severity = none
 dotnet_diagnostic.IDE0052.severity = none
-dotnet_diagnostic.IDE0060.severity = none
+dotnet_diagnostic.IDE0053.severity = none
+dotnet_diagnostic.IDE0058.severity = none
 dotnet_diagnostic.IDE0059.severity = none
+dotnet_diagnostic.IDE0060.severity = none
+dotnet_diagnostic.IDE0066.severity = none
 dotnet_diagnostic.CS1591.severity = none
+dotnet_diagnostic.JSON002.severity = none
 
-# Test utility classes - suppress CA1062
-[src/LmTestUtils/**/*.cs]
+# Test utility classes - suppress CA1062 and JSON002
+[src/LmTestUtils/*.cs]
 dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.JSON002.severity = none
 
 # Tool projects - suppress CA1062
 [src/Tools/**/*.cs]
 dotnet_diagnostic.CA1062.severity = none
+
+# Sample/example projects - suppress non-essential style rules
+[src/McpSampleServer/*.cs]
+dotnet_diagnostic.IDE0210.severity = none
+
+[example/**/*.cs]
+dotnet_diagnostic.IDE0046.severity = none

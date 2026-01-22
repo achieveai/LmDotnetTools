@@ -268,7 +268,7 @@ public class McpMiddlewareFactory
     /// </summary>
     private static IClientTransport CreateStdioTransportFromJsonElement(string clientId, JsonElement jsonElement)
     {
-        string? command = GetStringProperty(jsonElement, "command", "Command");
+        var command = GetStringProperty(jsonElement, "command", "Command");
         string[]? arguments = null;
         Dictionary<string, string?>? environmentVariables = null;
 
@@ -392,13 +392,10 @@ public class McpMiddlewareFactory
 
         // Check for HTTP transport indicators
         var url = GetDictStringValue(configDict, "url", "Url", "endpoint", "Endpoint");
-        if (!string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
-            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateHttpTransportFromDictionary(clientId, configDict, url);
-        }
-
-        return CreateStdioTransportFromDictionary(clientId, configDict);
+        return !string.IsNullOrEmpty(url) || transportType.Equals("http", StringComparison.OrdinalIgnoreCase)
+            || transportType.Equals("sse", StringComparison.OrdinalIgnoreCase)
+            ? CreateHttpTransportFromDictionary(clientId, configDict, url)
+            : CreateStdioTransportFromDictionary(clientId, configDict);
     }
 
     /// <summary>
@@ -445,7 +442,7 @@ public class McpMiddlewareFactory
         string clientId,
         Dictionary<string, object> configDict)
     {
-        string? command = GetDictStringValue(configDict, "command", "Command");
+        var command = GetDictStringValue(configDict, "command", "Command");
         string[]? arguments = null;
         Dictionary<string, string?>? environmentVariables = null;
 
@@ -527,14 +524,7 @@ public class McpMiddlewareFactory
                     var result = new Dictionary<string, string?>();
                     foreach (var kvp in objDict)
                     {
-                        if (kvp.Value is string strVal)
-                        {
-                            result[kvp.Key] = strVal;
-                        }
-                        else
-                        {
-                            result[kvp.Key] = kvp.Value?.ToString();
-                        }
+                        result[kvp.Key] = kvp.Value is string strVal ? strVal : kvp.Value?.ToString();
                     }
                     return result;
                 }

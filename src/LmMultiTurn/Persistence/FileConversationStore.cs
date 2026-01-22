@@ -147,6 +147,66 @@ public sealed class FileConversationStore : IConversationStore
         }
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!Directory.Exists(_baseDirectory))
+            {
+                return [];
+            }
+
+            var directories = Directory.GetDirectories(_baseDirectory);
+            var metadataList = new List<ThreadMetadata>();
+
+            foreach (var dir in directories)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var threadId = Path.GetFileName(dir);
+                var metadataFile = Path.Combine(dir, MetadataFileName);
+                var metadata = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+
+                if (metadata != null)
+                {
+                    metadataList.Add(metadata);
+                }
+                else
+                {
+                    // Thread exists but has no metadata - create minimal entry
+                    var messagesFile = Path.Combine(dir, MessagesFileName);
+                    var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
+                    var lastUpdated = messages.Count > 0
+                        ? messages.Max(m => m.Timestamp)
+                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+                    metadataList.Add(new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        LastUpdated = lastUpdated,
+                    });
+                }
+            }
+
+            return
+            [
+                .. metadataList
+                    .OrderByDescending(m => m.LastUpdated)
+                    .Skip(offset)
+                    .Take(limit)
+            ];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
     private string GetThreadDirectory(string threadId)
     {
         // Sanitize thread ID for filesystem safety

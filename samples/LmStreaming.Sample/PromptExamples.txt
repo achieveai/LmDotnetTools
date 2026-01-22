@@ -1,62 +1,117 @@
-# Multiturn example
-<|instruction_start|>
-{"instruction_chain": [
-    {
-        "id": "turn1_parallel_tools",
-        "reasoning": {"length": 30},
-        "messages": [
-            {"tool_call": [
-                {"name": "get_weather", "args": {"location": "Seattle"}},
-                {"name": "get_weather", "args": {"location": "San Francisco"}},
-                {"name": "get_time", "args": {"timezone": "PST"}}
-            ]}
-        ]
-    },
-    {
-        "id": "turn2_final",
-        "reasoning": {"length": 50},
-        "messages": [
-            {"tool_call": [{"name": "get_weather", "args": {"location": "Seattle"}}]},
-            {"text_message": {"length": 50}}
-        ]
-    },
-    {
-        "id": "turn2_final",
-        "reasoning": {"length": 10},
-        "messages": [
-            {"text_message": {"length": 100}}
-        ]
-    }
-]}
-<|instruction_end|>
+# Sample Test Prompts
 
+These prompts can be pasted into the chat to test tool calls and mode switching
+using the mock LLM (TestSseMessageHandler).
 
+## Format
 
-# Calculator tool
-<|instruction_start|>
-{"instruction_chain":[{"id":"calculate","id_message":"Calculating result","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"+","b":5}}]}]}]}
-<|instruction_end|>
+The mock instruction format is:
+<|instruction_start|>{"instruction_chain":[...]}<|instruction_end|>
 
-# WebSearch tool
-<|instruction_start|>
-{"instruction_chain":[{"id":"search","id_message":"Searching the web","messages":[{"tool_call":[{"name":"web_search","args":{"query":"latest news", "numResults":3}}]}]}]}
-<|instruction_end|>
+---
 
-# Weather tool
+## Tool Test Prompts
 
-<|instruction_start|>
-{"instruction_chain":[{"id":"weather-check","id_message":"Checking weather for you","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]}]}]}
-<|instruction_end|>
+### Calculate Tool
 
-# Normal message with reasongin
+Basic addition:
+<|instruction_start|>{"instruction_chain":[{"id":"calc-add","id_message":"Adding numbers","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"add","b":5}}]}]}]}<|instruction_end|>
 
+Multiplication:
+<|instruction_start|>{"instruction_chain":[{"id":"calc-mul","id_message":"Multiplying","messages":[{"tool_call":[{"name":"calculate","args":{"a":7,"operation":"multiply","b":6}}]}]}]}<|instruction_end|>
+
+Division:
+<|instruction_start|>{"instruction_chain":[{"id":"calc-div","id_message":"Dividing","messages":[{"tool_call":[{"name":"calculate","args":{"a":100,"operation":"divide","b":4}}]}]}]}<|instruction_end|>
+
+### Weather Tool
+
+Get weather for a city:
+<|instruction_start|>{"instruction_chain":[{"id":"weather-city","id_message":"Checking weather","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]}]}]}<|instruction_end|>
+
+### Web Search Tool
+
+Search for a topic:
+<|instruction_start|>{"instruction_chain":[{"id":"search-topic","id_message":"Searching","messages":[{"tool_call":[{"name":"web_search","args":{"query":"machine learning","numResults":3}}]}]}]}<|instruction_end|>
+
+### Multiple Tool Calls in One Message
+
+Calculator then weather:
+<|instruction_start|>{"instruction_chain":[{"id":"multi-tools","id_message":"Using multiple tools","messages":[{"tool_call":[{"name":"calculate","args":{"a":32,"operation":"multiply","b":1.8}},{"name":"get_weather","args":{"location":"Tokyo"}}]}]}]}<|instruction_end|>
+
+### Multiturn Example (multiple turns with reasoning)
+
+<|instruction_start|>{"instruction_chain":[{"id":"turn1_parallel_tools","reasoning":{"length":30},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}},{"name":"get_weather","args":{"location":"San Francisco"}}]}]},{"id":"turn2_final","reasoning":{"length":50},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]},{"text_message":{"length":50}}]},{"id":"turn3_summary","reasoning":{"length":10},"messages":[{"text_message":{"length":100}}]}]}<|instruction_end|>
+
+---
+
+## Mode Filtering Test Prompts
+
+Use these to verify that modes correctly restrict available tools.
+
+### Math Helper Mode (only `calculate` allowed)
+
+Should SUCCEED - calculate is allowed:
+<|instruction_start|>{"instruction_chain":[{"id":"math-ok","id_message":"Math mode calc test","messages":[{"tool_call":[{"name":"calculate","args":{"a":25,"operation":"add","b":17}}]}]}]}<|instruction_end|>
+
+Should FAIL - get_weather is NOT allowed in Math Helper:
+<|instruction_start|>{"instruction_chain":[{"id":"math-blocked","id_message":"Math mode weather test","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"NYC"}}]}]}]}<|instruction_end|>
+
+Should FAIL - web_search is NOT allowed in Math Helper:
+<|instruction_start|>{"instruction_chain":[{"id":"math-blocked2","id_message":"Math mode search test","messages":[{"tool_call":[{"name":"web_search","args":{"query":"test"}}]}]}]}<|instruction_end|>
+
+### Weather Assistant Mode (only `get_weather` allowed)
+
+Should SUCCEED - get_weather is allowed:
+<|instruction_start|>{"instruction_chain":[{"id":"weather-ok","id_message":"Weather mode weather test","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"London"}}]}]}]}<|instruction_end|>
+
+Should FAIL - calculate is NOT allowed in Weather Assistant:
+<|instruction_start|>{"instruction_chain":[{"id":"weather-blocked","id_message":"Weather mode calc test","messages":[{"tool_call":[{"name":"calculate","args":{"a":5,"operation":"add","b":3}}]}]}]}<|instruction_end|>
+
+### General Assistant Mode (all tools allowed)
+
+All tools should SUCCEED:
+<|instruction_start|>{"instruction_chain":[{"id":"general-all","id_message":"General mode all tools","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"multiply","b":3}},{"name":"get_weather","args":{"location":"Paris"}},{"name":"web_search","args":{"query":"hello world"}}]}]}]}<|instruction_end|>
+
+---
+
+## System Prompt Verification
+
+The system prompt changes per mode. To check which system prompt is active,
+look at the server logs when the agent is created:
+
+    Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName})
+
+The system prompts are:
+- General Assistant: "You are a helpful assistant with access to weather, calculator, and web search tools..."
+- Math Helper: "You are a math assistant. Help users with calculations..."
+- Weather Assistant: "You are a weather assistant. Help users get weather information..."
+
+---
+
+## Expected Behavior
+
+When a tool is allowed in the current mode:
+- The tool call executes and returns a result (weather data, calculation, etc.)
+
+When a tool is blocked in the current mode:
+- Server log: "No handler registered for function '{name}'. Available functions: [...]"
+- Tool result: {"error":"Unknown function: {name}","available_functions":[...]}
+- The LLM receives the error and responds with text (turn 2 has no tool calls)
+
+---
+
+## Normal Text Messages
+
+Simple text message:
 Some text message
-Reason: Reason about somethign
 
-# Normal message
-
+Message with reasoning:
 Some text message
+Reason: Reason about something
 
-# to combine many messages over many turns learn from
+---
 
-src\LmTestUtils\TestMode\InstructionChainParser.cs
+## Reference
+
+For instruction chain parser details, see:
+src/LmTestUtils/TestMode/InstructionChainParser.cs

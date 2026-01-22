@@ -20,14 +20,16 @@ public sealed class InstructionPlan(string idMessage, int? reasoningLength, List
 
 public sealed class InstructionMessage
 {
-    private InstructionMessage(int? textLength, List<InstructionToolCall>? toolCalls)
+    private InstructionMessage(int? textLength, List<InstructionToolCall>? toolCalls, string? explicitText = null)
     {
         TextLength = textLength;
         ToolCalls = toolCalls;
+        ExplicitText = explicitText;
     }
 
     public int? TextLength { get; }
     public List<InstructionToolCall>? ToolCalls { get; }
+    public string? ExplicitText { get; internal set; }
 
     public static InstructionMessage ForText(int length)
     {
@@ -37,6 +39,11 @@ public sealed class InstructionMessage
     public static InstructionMessage ForToolCalls(List<InstructionToolCall> calls)
     {
         return new InstructionMessage(null, calls);
+    }
+
+    public static InstructionMessage ForExplicitText(string content)
+    {
+        return new InstructionMessage(null, null, content);
     }
 }
 
@@ -264,7 +271,14 @@ public sealed class SseStreamHttpContent : HttpContent
         for (var msgIndex = 0; msgIndex < plan.Messages.Count; msgIndex++)
         {
             var message = plan.Messages[msgIndex];
-            if (message.TextLength is int textLen)
+            if (message.ExplicitText is not null)
+            {
+                if (!string.IsNullOrEmpty(message.ExplicitText))
+                {
+                    choices = choices.Concat(ChunkTextMessage(msgIndex, message.ExplicitText, _wordsPerChunk));
+                }
+            }
+            else if (message.TextLength is int textLen)
             {
                 if (textLen > 0)
                 {

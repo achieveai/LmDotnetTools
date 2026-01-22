@@ -182,7 +182,22 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 if (calls.Count > 0)
                 {
                     messages.Add(InstructionMessage.ForToolCalls(calls));
+                    continue;
                 }
+            }
+
+            // Check for system_prompt_echo - returns the system prompt as text
+            if (item.TryGetProperty("system_prompt_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__SYSTEM_PROMPT__"));
+                continue;
+            }
+
+            // Check for tools_list - returns names of all visible tools
+            if (item.TryGetProperty("tools_list", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__TOOLS_LIST__"));
+                continue;
             }
         }
 

@@ -1,16 +1,18 @@
 using System.Collections.Concurrent;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Agents;
 
 /// <summary>
 /// Pool manager for MultiTurnAgentLoop instances, keyed by threadId.
 /// Creates agents on-demand and reuses them for the same thread.
+/// Supports mode-aware agent creation with customizable system prompts and tool filtering.
 /// </summary>
 public sealed class MultiTurnAgentPool : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, AgentEntry> _agents = new();
-    private readonly Func<string, IMultiTurnAgent> _agentFactory;
+    private readonly Func<string, ChatMode, IMultiTurnAgent> _agentFactory;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
@@ -23,6 +25,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         public required IMultiTurnAgent Agent { get; init; }
         public required Task RunTask { get; init; }
         public required CancellationTokenSource Cts { get; init; }
+        public required ChatMode Mode { get; init; }
 
         public async ValueTask DisposeAsync()
         {
@@ -42,12 +45,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates a new MultiTurnAgentPool.
+    /// Creates a new MultiTurnAgentPool with mode-aware agent factory.
     /// </summary>
-    /// <param name="agentFactory">Factory function that creates an IMultiTurnAgent for a given threadId</param>
+    /// <param name="agentFactory">Factory function that creates an IMultiTurnAgent for a given threadId and ChatMode</param>
     /// <param name="logger">Logger for pool operations</param>
     public MultiTurnAgentPool(
-        Func<string, IMultiTurnAgent> agentFactory,
+        Func<string, ChatMode, IMultiTurnAgent> agentFactory,
         ILogger<MultiTurnAgentPool> logger)
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
@@ -55,17 +58,30 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets or creates an agent for the specified threadId.
+    /// Gets or creates an agent for the specified threadId using the default mode.
     /// If the agent doesn't exist, it's created and its RunAsync() is started.
     /// </summary>
     /// <param name="threadId">The thread identifier</param>
     /// <returns>The agent for this thread</returns>
     public IMultiTurnAgent GetOrCreateAgent(string threadId)
     {
+        return GetOrCreateAgent(threadId, GetDefaultMode());
+    }
+
+    /// <summary>
+    /// Gets or creates an agent for the specified threadId using the specified mode.
+    /// If the agent doesn't exist, it's created and its RunAsync() is started.
+    /// </summary>
+    /// <param name="threadId">The thread identifier</param>
+    /// <param name="mode">The chat mode to use for the agent</param>
+    /// <returns>The agent for this thread</returns>
+    public IMultiTurnAgent GetOrCreateAgent(string threadId, ChatMode mode)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentNullException.ThrowIfNull(mode);
 
-        var entry = _agents.GetOrAdd(threadId, CreateAgentEntry);
+        var entry = _agents.GetOrAdd(threadId, id => CreateAgentEntry(id, mode));
         return entry.Agent;
     }
 
@@ -73,7 +89,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// Checks if an agent exists for the given threadId.
     /// </summary>
     public bool HasAgent(string threadId)
-        => _agents.ContainsKey(threadId);
+    {
+        return _agents.ContainsKey(threadId);
+    }
+
+    /// <summary>
+    /// Gets the current mode for an agent.
+    /// </summary>
+    /// <param name="threadId">The thread identifier</param>
+    /// <returns>The current mode, or null if no agent exists</returns>
+    public ChatMode? GetAgentMode(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.Mode : null;
+    }
 
     /// <summary>
     /// Gets the count of active agents.
@@ -92,11 +120,44 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
     }
 
-    private AgentEntry CreateAgentEntry(string threadId)
+    /// <summary>
+    /// Recreates an agent with a new mode. This will dispose the existing agent
+    /// and create a new one with the specified mode.
+    /// </summary>
+    /// <param name="threadId">The thread identifier</param>
+    /// <param name="mode">The new chat mode to use</param>
+    /// <returns>The new agent for this thread</returns>
+    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(string threadId, ChatMode mode)
     {
-        _logger.LogInformation("Creating new agent for thread {ThreadId}", threadId);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentNullException.ThrowIfNull(mode);
 
-        var agent = _agentFactory(threadId);
+        _logger.LogInformation(
+            "Recreating agent for thread {ThreadId} with mode {ModeId} ({ModeName})",
+            threadId,
+            mode.Id,
+            mode.Name);
+
+        // Remove existing agent (waits for graceful shutdown)
+        await RemoveAgentAsync(threadId);
+
+        // Create new agent with the specified mode
+        var entry = CreateAgentEntry(threadId, mode);
+        _agents[threadId] = entry;
+
+        return entry.Agent;
+    }
+
+    private AgentEntry CreateAgentEntry(string threadId, ChatMode mode)
+    {
+        _logger.LogInformation(
+            "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName})",
+            threadId,
+            mode.Id,
+            mode.Name);
+
+        var agent = _agentFactory(threadId, mode);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
         // Start the agent's background run loop
@@ -121,7 +182,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             Agent = agent,
             RunTask = runTask,
             Cts = cts,
+            Mode = mode,
         };
+    }
+
+    private static ChatMode GetDefaultMode()
+    {
+        return Persistence.SystemChatModes.All[0];
     }
 
     /// <inheritdoc />

@@ -159,40 +159,31 @@ public class ResultEnricher : IResultEnricher
             };
 
             // Enrich based on result type
-            var wasEnriched = false;
-
-            switch (result.Type)
+            var wasEnriched = result.Type switch
             {
-                case UnifiedResultType.Memory:
-                    wasEnriched = await EnrichMemoryResultAsync(
-                        enrichedResult,
-                        sessionContext,
-                        options,
-                        metrics,
-                        cancellationToken
-                    );
-                    break;
-                case UnifiedResultType.Entity:
-                    wasEnriched = await EnrichEntityResultAsync(
-                        enrichedResult,
-                        sessionContext,
-                        options,
-                        metrics,
-                        cancellationToken
-                    );
-                    break;
-                case UnifiedResultType.Relationship:
-                    wasEnriched = await EnrichRelationshipResultAsync(
-                        enrichedResult,
-                        sessionContext,
-                        options,
-                        metrics,
-                        cancellationToken
-                    );
-                    break;
-                default:
-                    throw new NotSupportedException($"Unsupported result type: {result.Type}");
-            }
+                UnifiedResultType.Memory => await EnrichMemoryResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                UnifiedResultType.Entity => await EnrichEntityResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                UnifiedResultType.Relationship => await EnrichRelationshipResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                _ => throw new NotSupportedException($"Unsupported result type: {result.Type}"),
+            };
 
             if (wasEnriched)
             {

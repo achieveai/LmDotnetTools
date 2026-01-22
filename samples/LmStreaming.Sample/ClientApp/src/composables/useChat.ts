@@ -67,6 +67,7 @@ export interface ChatMessage {
  */
 export interface UseChatOptions {
   transport?: TransportType;
+  getModeId?: () => string | undefined;
 }
 
 /**
@@ -102,7 +103,7 @@ function isTestInstruction(text: string): boolean {
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket' } = options;
+  const { transport: initialTransport = 'websocket', getModeId } = options;
 
   // Core state
   const pendingMessages = ref<InternalChatMessage[]>([]);
@@ -563,20 +564,22 @@ export function useChat(options: UseChatOptions = {}) {
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection, text);
     } else {
-      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId });
-      
+      const currentModeId = getModeId?.();
+      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId, modeId: currentModeId });
+
       // Close old connection if exists
       if (wsConnection) {
         const { closeWebSocketConnection } = await import('@/api/wsClient');
         closeWebSocketConnection(wsConnection);
         wsConnection = null;
       }
-      
+
       // Create new persistent connection
       const { createWebSocketConnection, sendWebSocketMessage } = await import('@/api/wsClient');
-      
+
       wsConnection = await createWebSocketConnection({
         threadId: effectiveThreadId,
+        modeId: currentModeId,
         ...callbacks,
         onDone: () => {
           log.debug('WebSocket stream done signal received');
@@ -639,6 +642,106 @@ export function useChat(options: UseChatOptions = {}) {
     }
   }
 
+  /**
+   * Set thread ID externally (for conversation switching)
+   */
+  function setThreadId(newThreadId: string | null): void {
+    log.info('Setting thread ID externally', { oldThreadId: threadId.value, newThreadId });
+    threadId.value = newThreadId;
+  }
+
+  /**
+   * Load messages from backend for an existing conversation
+   */
+  async function loadMessagesFromBackend(existingThreadId: string): Promise<void> {
+    log.info('Loading messages from backend', { threadId: existingThreadId });
+
+    const { loadConversationMessages } = await import('@/api/conversationsApi');
+    const persistedMessages = await loadConversationMessages(existingThreadId);
+
+    log.debug('Loaded persisted messages', { count: persistedMessages.length });
+
+    // Clear current state
+    pendingMessages.value = [];
+    messageIndex.value.clear();
+    messageOrder.value = [];
+    toolResults.value.clear();
+    reset();
+
+    // Set the thread ID
+    threadId.value = existingThreadId;
+
+    // Convert persisted messages to internal format
+    for (const pm of persistedMessages) {
+      try {
+        const parsedMessage = JSON.parse(pm.messageJson) as Message;
+
+        // Skip lifecycle and usage messages
+        if (isRunAssignmentMessage(parsedMessage) ||
+            isRunCompletedMessage(parsedMessage) ||
+            isUsageMessage(parsedMessage)) {
+          continue;
+        }
+
+        // Skip tool call results (they're attached to tool calls)
+        if (isToolCallResultMessage(parsedMessage)) {
+          // Store in toolResults map for lookup
+          if (parsedMessage.tool_call_id) {
+            toolResults.value.set(parsedMessage.tool_call_id, parsedMessage);
+          }
+          continue;
+        }
+
+        // Determine role
+        const role: 'user' | 'assistant' = parsedMessage.role === 'user' ? 'user' : 'assistant';
+
+        // Create chat message
+        const chatMessage: InternalChatMessage = {
+          id: pm.id,
+          role,
+          status: 'completed',
+          content: parsedMessage,
+          runId: pm.runId,
+          parentRunId: pm.parentRunId,
+          generationId: pm.generationId,
+          messageOrderIdx: pm.messageOrderIdx,
+          timestamp: pm.timestamp,
+          isStreaming: false,
+        };
+
+        messageIndex.value.set(pm.id, chatMessage);
+        messageOrder.value.push(pm.id);
+      } catch (e) {
+        log.warn('Failed to parse persisted message', { messageId: pm.id, error: e });
+      }
+    }
+
+    // Attach tool results to tool calls
+    for (const [toolCallId, result] of toolResults.value.entries()) {
+      for (const chatMsg of messageIndex.value.values()) {
+        if (isToolCallMessage(chatMsg.content)) {
+          const toolCall = chatMsg.content as ToolCallMessage;
+          if (toolCall.tool_call_id === toolCallId) {
+            toolCall.result = result.result;
+            break;
+          }
+        } else if (isToolsCallMessage(chatMsg.content)) {
+          const toolsCall = chatMsg.content as ToolsCallMessage;
+          const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === toolCallId);
+          if (matchingToolCall) {
+            matchingToolCall.result = result.result;
+            break;
+          }
+        }
+      }
+    }
+
+    log.info('Loaded messages into chat', {
+      messageCount: messageIndex.value.size,
+      toolResultCount: toolResults.value.size
+    });
+  }
+
   // Computed for exposing pending messages
   const pendingMessagesForQueue = computed(() => {
     return pendingMessages.value.map(msg => ({
@@ -664,5 +767,7 @@ export function useChat(options: UseChatOptions = {}) {
     setTransport,
     disconnectWebSocket,
     getResultForToolCall,
+    setThreadId,
+    loadMessagesFromBackend,
   };
 }

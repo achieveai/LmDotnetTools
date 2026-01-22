@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -5,10 +6,13 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
+using LmStreaming.Sample.Models;
+using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
 using Serilog;
@@ -82,17 +86,23 @@ try
     });
 
     // Register the FunctionRegistry with sample tools
-    _ = builder.Services.AddSingleton<FunctionRegistry>(sp =>
+    _ = builder.Services.AddSingleton(sp =>
     {
         var registry = new FunctionRegistry();
-        registry.AddFunctionsFromType(typeof(SampleTools));
+        _ = registry.AddFunctionsFromType(typeof(SampleTools));
         return registry;
     });
 
+    // Register the FileConversationStore for conversation persistence
+    var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
+    _ = builder.Services.AddSingleton<IConversationStore>(new FileConversationStore(conversationsPath));
+
+    // Register the FileChatModeStore for chat mode persistence
+    var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
+    _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
+
     // Register the provider agent factory (creates OpenClientAgent with TestSseMessageHandler)
-    _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
-    {
-        return () =>
+    _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp => () =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
             var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
@@ -119,26 +129,48 @@ try
             // Create the streaming agent (middleware stack is built by MultiTurnAgentLoop)
             var agentLogger = loggerFactory.CreateLogger<OpenClientAgent>();
             return new OpenClientAgent("MockLLM", openClient, agentLogger);
-        };
-    });
+        });
 
-    // Register the MultiTurnAgentPool
-    _ = builder.Services.AddSingleton<MultiTurnAgentPool>(sp =>
+    // Register the MultiTurnAgentPool with mode-aware factory
+    _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
         var agentFactory = sp.GetRequiredService<Func<IStreamingAgent>>();
+        var conversationStore = sp.GetRequiredService<IConversationStore>();
 
         return new MultiTurnAgentPool(
-            threadId =>
+            (threadId, mode) =>
             {
                 var providerAgent = agentFactory();
+
+                // Create filtered function registry based on mode's enabled tools
+                var filteredRegistry = functionRegistry;
+                if (mode.EnabledTools != null && mode.EnabledTools.Count > 0)
+                {
+                    // Create a new registry with only the enabled tools
+                    var enabledToolSet = mode.EnabledTools.ToHashSet();
+                    var (allContracts, allHandlers) = functionRegistry.Build();
+
+                    var newRegistry = new FunctionRegistry();
+                    foreach (var contract in allContracts)
+                    {
+                        if (enabledToolSet.Contains(contract.Name) && allHandlers.TryGetValue(contract.Name, out var handler))
+                        {
+                            _ = newRegistry.AddFunction(contract, handler, "FilteredTools");
+                        }
+                    }
+
+                    filteredRegistry = newRegistry;
+                }
+
                 return new MultiTurnAgentLoop(
                     providerAgent,
-                    functionRegistry,
+                    filteredRegistry,
                     threadId,
-                    systemPrompt: "You are a helpful assistant with access to weather, calculator, and web search tools.",
+                    systemPrompt: mode.SystemPrompt,
                     defaultOptions: new GenerateReplyOptions { ModelId = "test-model" },
+                    store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
             },
             loggerFactory.CreateLogger<MultiTurnAgentPool>());
@@ -179,6 +211,7 @@ try
     _ = app.Map("/ws", async (
         HttpContext context,
         ChatWebSocketManager wsManager,
+        IChatModeStore modeStore,
         ILogger<Program> wsLogger,
         CancellationToken cancellationToken) =>
     {
@@ -194,12 +227,21 @@ try
             ?? context.Request.Query["connectionId"].FirstOrDefault()
             ?? Guid.NewGuid().ToString();
 
+        // Get modeId from query string (optional, defaults to system default)
+        var modeId = context.Request.Query["modeId"].FirstOrDefault();
+        var mode = !string.IsNullOrEmpty(modeId)
+            ? await modeStore.GetModeAsync(modeId, cancellationToken)
+            : null;
+
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        wsLogger.LogInformation("WebSocket connection established for thread {ThreadId}", threadId);
+        wsLogger.LogInformation(
+            "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
+            threadId,
+            mode?.Id ?? "default");
 
         try
         {
-            await wsManager.HandleConnectionAsync(webSocket, threadId, cancellationToken);
+            await wsManager.HandleConnectionAsync(webSocket, threadId, mode, cancellationToken);
         }
         finally
         {
@@ -246,6 +288,203 @@ try
             string.Join(", ", result.Select(r => r.Type)));
 
         return result;
+    });
+
+    // === Conversation Management Endpoints ===
+
+    // GET /api/conversations - List all conversations
+    _ = app.MapGet("/api/conversations", async (
+        IConversationStore store,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default) =>
+    {
+        var threads = await store.ListThreadsAsync(limit, offset, ct);
+        return threads.Select(t => new ConversationSummary
+        {
+            ThreadId = t.ThreadId,
+            Title = t.Properties?.TryGetValue("title", out var titleObj) == true
+                ? titleObj?.ToString() ?? "New Conversation"
+                : "New Conversation",
+            Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
+                ? previewObj?.ToString()
+                : null,
+            LastUpdated = t.LastUpdated,
+        });
+    });
+
+    // GET /api/conversations/{threadId}/messages - Load messages for a thread
+    _ = app.MapGet("/api/conversations/{threadId}/messages", async (
+        string threadId,
+        IConversationStore store,
+        CancellationToken ct = default) =>
+    {
+        var messages = await store.LoadMessagesAsync(threadId, ct);
+        return messages;
+    });
+
+    // PUT /api/conversations/{threadId}/metadata - Update conversation metadata
+    _ = app.MapPut("/api/conversations/{threadId}/metadata", async (
+        string threadId,
+        ConversationMetadataUpdate update,
+        IConversationStore store,
+        CancellationToken ct = default) =>
+    {
+        var existing = await store.LoadMetadataAsync(threadId, ct);
+        var propertiesBuilder = existing?.Properties?.ToBuilder()
+            ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+        if (update.Title != null)
+        {
+            propertiesBuilder["title"] = update.Title;
+        }
+
+        if (update.Preview != null)
+        {
+            propertiesBuilder["preview"] = update.Preview;
+        }
+
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = threadId,
+            CurrentRunId = existing?.CurrentRunId,
+            LatestRunId = existing?.LatestRunId,
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            SessionMappings = existing?.SessionMappings,
+            Properties = propertiesBuilder.ToImmutable(),
+        };
+
+        await store.SaveMetadataAsync(threadId, metadata, ct);
+        return Results.Ok();
+    });
+
+    // DELETE /api/conversations/{threadId} - Delete a conversation
+    _ = app.MapDelete("/api/conversations/{threadId}", async (
+        string threadId,
+        IConversationStore store,
+        MultiTurnAgentPool agentPool,
+        CancellationToken ct = default) =>
+    {
+        await agentPool.RemoveAgentAsync(threadId);
+        await store.DeleteThreadAsync(threadId, ct);
+        return Results.NoContent();
+    });
+
+    // === Chat Mode Endpoints ===
+
+    // GET /api/chat-modes - List all chat modes
+    _ = app.MapGet("/api/chat-modes", async (
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        var modes = await modeStore.GetAllModesAsync(ct);
+        return modes;
+    });
+
+    // GET /api/chat-modes/{modeId} - Get a specific chat mode
+    _ = app.MapGet("/api/chat-modes/{modeId}", async (
+        string modeId,
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        var mode = await modeStore.GetModeAsync(modeId, ct);
+        return mode != null ? Results.Ok(mode) : Results.NotFound();
+    });
+
+    // POST /api/chat-modes - Create a new user mode
+    _ = app.MapPost("/api/chat-modes", async (
+        ChatModeCreateUpdate createData,
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        var mode = await modeStore.CreateModeAsync(createData, ct);
+        return Results.Created($"/api/chat-modes/{mode.Id}", mode);
+    });
+
+    // PUT /api/chat-modes/{modeId} - Update a user mode
+    _ = app.MapPut("/api/chat-modes/{modeId}", async (
+        string modeId,
+        ChatModeCreateUpdate updateData,
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        try
+        {
+            var mode = await modeStore.UpdateModeAsync(modeId, updateData, ct);
+            return Results.Ok(mode);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        catch (KeyNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    });
+
+    // DELETE /api/chat-modes/{modeId} - Delete a user mode
+    _ = app.MapDelete("/api/chat-modes/{modeId}", async (
+        string modeId,
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        try
+        {
+            await modeStore.DeleteModeAsync(modeId, ct);
+            return Results.NoContent();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    });
+
+    // POST /api/chat-modes/{modeId}/copy - Copy a mode
+    _ = app.MapPost("/api/chat-modes/{modeId}/copy", async (
+        string modeId,
+        ChatModeCopy copyData,
+        IChatModeStore modeStore,
+        CancellationToken ct = default) =>
+    {
+        try
+        {
+            var mode = await modeStore.CopyModeAsync(modeId, copyData.NewName, ct);
+            return Results.Created($"/api/chat-modes/{mode.Id}", mode);
+        }
+        catch (KeyNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    });
+
+    // GET /api/tools - List available tools
+    _ = app.MapGet("/api/tools", (FunctionRegistry functionRegistry) =>
+    {
+        var (contracts, _) = functionRegistry.Build();
+        return contracts.Select(c => new ToolDefinition
+        {
+            Name = c.Name,
+            Description = c.Description,
+        });
+    });
+
+    // POST /api/conversations/{threadId}/switch-mode - Switch mode for a conversation
+    _ = app.MapPost("/api/conversations/{threadId}/switch-mode", async (
+        string threadId,
+        SwitchModeRequest request,
+        IChatModeStore modeStore,
+        MultiTurnAgentPool agentPool,
+        CancellationToken ct = default) =>
+    {
+        var mode = await modeStore.GetModeAsync(request.ModeId, ct);
+        if (mode == null)
+        {
+            return Results.NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+        }
+
+        _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
+        return Results.Ok(new { modeId = mode.Id, modeName = mode.Name });
     });
 
     // Client logging endpoint - receives logs from browser and writes to server logs
@@ -342,3 +581,24 @@ public record ClientLogEntry(
     object? Data); // Data will be bound as JsonElement by default in ASP.NET Core
 
 public record ClientLogBatch(ClientLogEntry[] Entries);
+
+// === Conversation Management DTOs ===
+
+public record ConversationSummary
+{
+    public required string ThreadId { get; init; }
+    public required string Title { get; init; }
+    public string? Preview { get; init; }
+    public required long LastUpdated { get; init; }
+}
+
+public record ConversationMetadataUpdate
+{
+    public string? Title { get; init; }
+    public string? Preview { get; init; }
+}
+
+public record SwitchModeRequest
+{
+    public required string ModeId { get; init; }
+}

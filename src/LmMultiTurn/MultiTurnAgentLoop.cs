@@ -260,33 +260,45 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     toolCall.FunctionName,
                     toolCall.ToolCallId);
 
-                // Start execution immediately
-                var executionTask = ExecuteToolCallAsync(toolCall, ct);
+                // Start execution and publish result immediately when complete
+                // This runs in parallel with LLM streaming and other tool executions
+                var executionTask = ExecuteAndPublishToolCallAsync(toolCall, ct);
                 pendingToolCalls[toolCall.ToolCallId] = executionTask;
             }
         }
 
-        // Await all tool executions and add results
+        // Wait for all tool executions to complete before next turn
+        // Results are already published as each tool completes
         if (pendingToolCalls.Count > 0)
         {
             Logger.LogDebug("Awaiting {Count} tool call results", pendingToolCalls.Count);
-
             _ = await Task.WhenAll(pendingToolCalls.Values);
-
-            foreach (var (toolCallId, task) in pendingToolCalls)
-            {
-                var result = await task;
-                AddToHistory(result);
-                await PublishToAllAsync(result, ct);
-
-                Logger.LogDebug(
-                    "Tool result for {ToolCallId}: {ResultPreview}",
-                    toolCallId,
-                    result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result);
-            }
         }
 
         return hasToolCalls;
+    }
+
+    /// <summary>
+    /// Executes a tool call and immediately publishes the result to all subscribers.
+    /// This enables parallel execution with LLM streaming - results are sent to clients
+    /// as each tool completes, rather than waiting for all tools to finish.
+    /// </summary>
+    private async Task<ToolCallResultMessage> ExecuteAndPublishToolCallAsync(
+        ToolCallMessage toolCall,
+        CancellationToken ct)
+    {
+        var result = await ExecuteToolCallAsync(toolCall, ct);
+
+        // Publish immediately when this tool completes (parallel with other tools/streaming)
+        AddToHistory(result);
+        await PublishToAllAsync(result, ct);
+
+        Logger.LogDebug(
+            "Tool result for {ToolCallId}: {ResultPreview}",
+            toolCall.ToolCallId,
+            result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result);
+
+        return result;
     }
 
     private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
