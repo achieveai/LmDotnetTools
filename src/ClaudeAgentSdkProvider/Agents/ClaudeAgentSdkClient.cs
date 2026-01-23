@@ -196,8 +196,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             };
 
             _logger?.LogInformation(
-                "claude-agent-sdk CLI started successfully. SessionId: {SessionId}, PID: {ProcessId}",
-                CurrentSession.SessionId,
+                "[Agent:{SessionId}] claude-agent-sdk CLI started successfully. PID: {ProcessId}",
+                CurrentSession?.SessionId,
                 _process.Id
             );
 
@@ -266,7 +266,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
             _logger?.LogInformation(
-                "Submitting to LLM - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                "[Agent:{SessionId}] Submitting to LLM - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
                 lastText ?? "(same as first)");
@@ -340,8 +341,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             else if (jsonlEvent is SystemInitEvent systemInitEvent)
             {
                 _logger?.LogInformation(
-                    "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
-                    systemInitEvent.SessionId,
+                    "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
+                    CurrentSession?.SessionId,
                     systemInitEvent.Model,
                     systemInitEvent.Tools?.Count ?? 0,
                     string.Join(", ", systemInitEvent.McpServers?.Select(s => $"{s.Name}({s.Status})") ?? [])
@@ -503,8 +504,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 else if (jsonlEvent is SystemInitEvent systemInitEvent)
                 {
                     _logger?.LogInformation(
-                        "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}",
-                        systemInitEvent.SessionId,
+                        "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}",
+                        CurrentSession?.SessionId,
                         systemInitEvent.Model,
                         systemInitEvent.Tools?.Count ?? 0);
 
@@ -575,7 +576,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
             _logger?.LogInformation(
-                "Submitting to LLM (Interactive) - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                "[Agent:{SessionId}] Submitting to LLM (Interactive) - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
                 lastText ?? "(same as first)");
@@ -601,7 +603,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         _ = cancellationToken; // Unused - keepalive disabled
         // The claude-agent-sdk CLI expects JSONL input - empty lines cause parse errors.
         // Keepalive is not needed as the CLI process stays alive as long as stdin is open.
-        _logger?.LogTrace("Keepalive: skipped (empty lines crash CLI)");
+        _logger?.LogTrace("[Agent:{SessionId}] Keepalive: skipped (empty lines crash CLI)", CurrentSession?.SessionId);
         return Task.CompletedTask;
     }
 
@@ -616,7 +618,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             return;
         }
 
-        _logger?.LogDebug("Keepalive task started with interval: {Interval}", _options.KeepAliveInterval);
+        _logger?.LogDebug("[Agent:{SessionId}] Keepalive task started with interval: {Interval}", CurrentSession?.SessionId, _options.KeepAliveInterval);
 
         using var timer = new PeriodicTimer(_options.KeepAliveInterval);
 
@@ -638,7 +640,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             }
         }
 
-        _logger?.LogDebug("Keepalive task stopped");
+        _logger?.LogDebug("[Agent:{SessionId}] Keepalive task stopped", CurrentSession?.SessionId);
     }
 
     public void Dispose()
@@ -650,7 +652,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         try
         {
-            _logger?.LogInformation("Disposing claude-agent-sdk client");
+            _logger?.LogInformation("[Agent:{SessionId}] Disposing claude-agent-sdk client", CurrentSession?.SessionId);
 
             // Close stdin to signal process to exit gracefully
             _stdinWriter?.Close();
