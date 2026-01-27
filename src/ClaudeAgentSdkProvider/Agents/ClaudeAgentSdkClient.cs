@@ -942,6 +942,18 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             args.Add($"--system-prompt-file \"{_systemPromptTempFile}\"");
         }
 
+        // Disable checkpoints/snapshots if configured
+        if (_options.DisableCheckpoints)
+        {
+            args.Add("--no-checkpoints");
+        }
+
+        // Disable session persistence if configured
+        if (_options.DisableSessionPersistence)
+        {
+            args.Add("--no-session-persistence");
+        }
+
         return string.Join(" ", args);
     }
 

@@ -74,4 +74,18 @@ public record ClaudeAgentSdkOptions
     ///     If null, defaults to: "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch"
     /// </summary>
     public string? AllowedTools { get; init; }
+
+    /// <summary>
+    ///     Disable checkpoints/snapshots in claude-agent-sdk.
+    ///     When true, adds the --no-checkpoints CLI flag.
+    ///     This prevents the SDK from creating file snapshots during execution.
+    /// </summary>
+    public bool DisableCheckpoints { get; init; }
+
+    /// <summary>
+    ///     Disable session persistence in claude-agent-sdk.
+    ///     When true, adds the --no-session-persistence CLI flag.
+    ///     Sessions will not be saved to disk and cannot be resumed.
+    /// </summary>
+    public bool DisableSessionPersistence { get; init; }
 }
