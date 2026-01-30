@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Exceptions;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 #pragma warning disable IDE0058 // Expression value is never used
@@ -306,6 +307,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
+                // Check for API errors (e.g., billing_error) before processing normal messages
+                if (assistantEvent.IsApiErrorMessage)
+                {
+                    var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
+                    _logger?.LogError(
+                        "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
+                        CurrentSession?.SessionId,
+                        assistantEvent.Error,
+                        errorText);
+
+                    throw new BillingErrorException(
+                        assistantEvent.Error,
+                        errorText,
+                        CurrentSession?.SessionId);
+                }
+
                 var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                 _logger?.LogTrace(
                     "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
@@ -471,6 +488,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 if (jsonlEvent is AssistantMessageEvent assistantEvent)
                 {
+                    // Check for API errors (e.g., billing_error) before processing normal messages
+                    if (assistantEvent.IsApiErrorMessage)
+                    {
+                        var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
+                        _logger?.LogError(
+                            "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
+                            CurrentSession?.SessionId,
+                            assistantEvent.Error,
+                            errorText);
+
+                        throw new BillingErrorException(
+                            assistantEvent.Error,
+                            errorText,
+                            CurrentSession?.SessionId);
+                    }
+
                     var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                     _logger?.LogTrace(
                         "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
