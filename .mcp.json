@@ -27,7 +27,7 @@
       "args": [
         "mcp-server-duckdb",
         "--db-path",
-        "./data.duckdb"
+        ":memory:"
       ]
     }
   }

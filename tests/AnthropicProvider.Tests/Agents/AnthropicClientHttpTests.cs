@@ -3,20 +3,23 @@ using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using Microsoft.Extensions.Logging;
 
+using Xunit.Abstractions;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 /// <summary>
 ///     HTTP-level unit tests for AnthropicClient using shared test infrastructure
 ///     Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
 /// </summary>
-public class AnthropicClientHttpTests
+public class AnthropicClientHttpTests : LoggingTestBase
 {
     private readonly ILogger<AnthropicClient> _logger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public AnthropicClientHttpTests()
+    public AnthropicClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = TestLoggerFactory.CreateLogger<AnthropicClient>();
+        _logger = LoggerFactory.CreateLogger<AnthropicClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
