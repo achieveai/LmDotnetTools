@@ -1,4 +1,5 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -37,7 +38,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -90,7 +91,7 @@ public class OpenClientHttpTests
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -122,7 +123,7 @@ public class OpenClientHttpTests
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -154,7 +155,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -196,7 +197,7 @@ public class OpenClientHttpTests
             false, // should fail
         };
 
-        // Scenario: Max retries exceeded
+        // Scenario: Max retries exceeded (BaseHttpService.ExecuteHttpWithRetryAsync has maxRetries=2)
         yield return new object[]
         {
             new[]
@@ -204,9 +205,8 @@ public class OpenClientHttpTests
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
-                HttpStatusCode.ServiceUnavailable,
             },
-            false, // should fail after max retries
+            false, // should fail after max retries (1 initial + 2 retries = 3 attempts needed to exhaust)
         };
 
         // Scenario: Success on first try

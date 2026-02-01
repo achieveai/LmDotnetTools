@@ -15,14 +15,14 @@ public static class HttpRetryHelper
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="operation">The operation to execute</param>
     /// <param name="logger">Logger for retry attempts</param>
-    /// <param name="maxRetries">Maximum number of retries</param>
+    /// <param name="retryOptions">Retry configuration options (defaults to RetryOptions.Default)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <param name="checkDisposed">Optional function to check if object is disposed</param>
     /// <returns>The result of the operation</returns>
     public static async Task<T> ExecuteWithRetryAsync<T>(
         Func<Task<T>> operation,
         ILogger logger,
-        int maxRetries = 3,
+        RetryOptions? retryOptions = null,
         CancellationToken cancellationToken = default,
         Func<bool>? checkDisposed = null
     )
@@ -34,6 +34,7 @@ public static class HttpRetryHelper
             throw new ObjectDisposedException("Service has been disposed");
         }
 
+        var options = retryOptions ?? RetryOptions.Default;
         var attempt = 0;
         while (true)
         {
@@ -41,14 +42,14 @@ public static class HttpRetryHelper
             {
                 return await operation();
             }
-            catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))
+            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex))
             {
                 attempt++;
-                var delay = CalculateDelay(attempt);
+                var delay = options.CalculateDelay(attempt);
                 logger.LogWarning(
                     "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
                     attempt,
-                    maxRetries + 1,
+                    options.MaxRetries + 1,
                     delay.TotalMilliseconds,
                     ex.Message
                 );
@@ -59,6 +60,21 @@ public static class HttpRetryHelper
     }
 
     /// <summary>
+    ///     Executes an operation with retry logic and exponential backoff (legacy overload)
+    /// </summary>
+    public static Task<T> ExecuteWithRetryAsync<T>(
+        Func<Task<T>> operation,
+        ILogger logger,
+        int maxRetries,
+        CancellationToken cancellationToken = default,
+        Func<bool>? checkDisposed = null
+    )
+    {
+        var options = new RetryOptions { MaxRetries = maxRetries };
+        return ExecuteWithRetryAsync(operation, logger, options, cancellationToken, checkDisposed);
+    }
+
+    /// <summary>
     ///     Executes an HTTP operation with retry logic and exponential backoff
     ///     This version handles HttpResponseMessage status codes directly
     /// </summary>
@@ -66,7 +82,7 @@ public static class HttpRetryHelper
     /// <param name="httpOperation">The HTTP operation that returns HttpResponseMessage</param>
     /// <param name="responseProcessor">Function to process successful responses</param>
     /// <param name="logger">Logger for retry attempts</param>
-    /// <param name="maxRetries">Maximum number of retries</param>
+    /// <param name="retryOptions">Retry configuration options (defaults to RetryOptions.Default)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <param name="checkDisposed">Optional function to check if object is disposed</param>
     /// <returns>The result of the operation</returns>
@@ -74,7 +90,7 @@ public static class HttpRetryHelper
         Func<Task<HttpResponseMessage>> httpOperation,
         Func<HttpResponseMessage, Task<T>> responseProcessor,
         ILogger logger,
-        int maxRetries = 3,
+        RetryOptions? retryOptions = null,
         CancellationToken cancellationToken = default,
         Func<bool>? checkDisposed = null
     )
@@ -87,6 +103,7 @@ public static class HttpRetryHelper
             throw new ObjectDisposedException("Service has been disposed");
         }
 
+        var options = retryOptions ?? RetryOptions.Default;
         var attempt = 0;
         while (true)
         {
@@ -100,15 +117,15 @@ public static class HttpRetryHelper
                 }
 
                 // Check if this is a retryable status code
-                if (attempt < maxRetries && IsRetryableStatusCode(response.StatusCode))
+                if (attempt < options.MaxRetries && IsRetryableStatusCode(response.StatusCode))
                 {
                     attempt++;
-                    var delay = CalculateDelay(attempt);
+                    var delay = options.CalculateDelay(attempt);
                     logger.LogWarning(
                         "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
                         response.StatusCode,
                         attempt,
-                        maxRetries + 1,
+                        options.MaxRetries + 1,
                         delay.TotalMilliseconds
                     );
 
@@ -142,14 +159,14 @@ public static class HttpRetryHelper
 
                 return default!; // This line should never be reached
             }
-            catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))
+            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex))
             {
                 attempt++;
-                var delay = CalculateDelay(attempt);
+                var delay = options.CalculateDelay(attempt);
                 logger.LogWarning(
                     "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
                     attempt,
-                    maxRetries + 1,
+                    options.MaxRetries + 1,
                     delay.TotalMilliseconds,
                     ex.Message
                 );
@@ -157,6 +174,22 @@ public static class HttpRetryHelper
                 await Task.Delay(delay, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    ///     Executes an HTTP operation with retry logic (legacy overload)
+    /// </summary>
+    public static Task<T> ExecuteHttpWithRetryAsync<T>(
+        Func<Task<HttpResponseMessage>> httpOperation,
+        Func<HttpResponseMessage, Task<T>> responseProcessor,
+        ILogger logger,
+        int maxRetries,
+        CancellationToken cancellationToken = default,
+        Func<bool>? checkDisposed = null
+    )
+    {
+        var options = new RetryOptions { MaxRetries = maxRetries };
+        return ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, logger, options, cancellationToken, checkDisposed);
     }
 
     /// <summary>
@@ -217,6 +250,14 @@ public static class HttpRetryHelper
             }
         }
 
+        // Check for rate limiting (429)
+        if (message.Contains("429", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("TooManyRequests", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         // Check for HTTP 5xx status codes in the exception message
         // EnsureSuccessStatusCode() creates messages like "Response status code does not indicate success: 500 (Internal Server Error)"
         return message.Contains("500", StringComparison.OrdinalIgnoreCase)
@@ -228,15 +269,5 @@ public static class HttpRetryHelper
             || message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase)
             || message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase)
             || message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    ///     Calculates the delay for exponential backoff
-    /// </summary>
-    /// <param name="attempt">The current attempt number (1-based)</param>
-    /// <returns>The delay for this attempt</returns>
-    private static TimeSpan CalculateDelay(int attempt)
-    {
-        return TimeSpan.FromSeconds(Math.Pow(2, attempt + 3));
     }
 }

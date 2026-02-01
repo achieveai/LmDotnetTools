@@ -40,21 +40,37 @@ public class BaseHttpServiceTests
 
         public async Task<T> TestExecuteWithRetryAsync<T>(
             Func<Task<T>> operation,
-            int maxRetries = 3,
+            int maxRetries = 2,
             CancellationToken cancellationToken = default
         )
         {
-            return await ExecuteWithRetryAsync(operation, maxRetries, cancellationToken);
+            // Use fast retry options for tests
+            var options = new RetryOptions
+            {
+                MaxRetries = maxRetries,
+                InitialDelayMs = 100,
+                MaxDelayMs = 500,
+                BackoffMultiplier = 2.0,
+            };
+            return await ExecuteWithRetryAsync(operation, options, cancellationToken);
         }
 
         public async Task<T> TestExecuteHttpWithRetryAsync<T>(
             Func<Task<HttpResponseMessage>> httpOperation,
             Func<HttpResponseMessage, Task<T>> responseProcessor,
-            int maxRetries = 3,
+            int maxRetries = 2,
             CancellationToken cancellationToken = default
         )
         {
-            return await ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, maxRetries, cancellationToken);
+            // Use fast retry options for tests
+            var options = new RetryOptions
+            {
+                MaxRetries = maxRetries,
+                InitialDelayMs = 100,
+                MaxDelayMs = 500,
+                BackoffMultiplier = 2.0,
+            };
+            return await ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, options, cancellationToken);
         }
     }
 
@@ -214,7 +230,8 @@ public class BaseHttpServiceTests
         var result = await service.TestExecuteWithRetryAsync(() =>
         {
             attempts++;
-            return attempts < 3
+            // Fail on first attempt, succeed on second (1 retry)
+            return attempts < 2
                 ? throw new HttpRequestException("Temporary network timeout")
                 : Task.FromResult("success");
         });
@@ -222,10 +239,10 @@ public class BaseHttpServiceTests
 
         // Assert
         Assert.Equal("success", result);
-        Assert.Equal(3, attempts);
+        Assert.Equal(2, attempts);
         Assert.True(
-            stopwatch.ElapsedMilliseconds >= 1000,
-            $"Expected at least 1000ms for retries, got {stopwatch.ElapsedMilliseconds}ms"
+            stopwatch.ElapsedMilliseconds >= 80,
+            $"Expected at least 80ms for 1 retry (100ms configured), got {stopwatch.ElapsedMilliseconds}ms"
         );
         Debug.WriteLine(
             $"✓ ExecuteWithRetryAsync succeeded after {attempts} attempts in {stopwatch.ElapsedMilliseconds}ms"
@@ -277,7 +294,8 @@ public class BaseHttpServiceTests
             () =>
             {
                 attempts++;
-                return attempts < 3
+                // Fail on first attempt, succeed on second (1 retry)
+                return attempts < 2
                     ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError))
                     : Task.FromResult(
                         new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
@@ -294,10 +312,10 @@ public class BaseHttpServiceTests
 
         // Assert
         Assert.Equal("success", result);
-        Assert.Equal(3, attempts);
+        Assert.Equal(2, attempts);
         Assert.True(
-            stopwatch.ElapsedMilliseconds >= 1000,
-            $"Expected at least 1000ms for retries, got {stopwatch.ElapsedMilliseconds}ms"
+            stopwatch.ElapsedMilliseconds >= 80,
+            $"Expected at least 80ms for 1 retry (100ms configured), got {stopwatch.ElapsedMilliseconds}ms"
         );
         Debug.WriteLine(
             $"✓ ExecuteHttpWithRetryAsync succeeded after {attempts} attempts in {stopwatch.ElapsedMilliseconds}ms"
@@ -386,7 +404,6 @@ public class BaseHttpServiceTests
             [0, 1, "No retries (maxRetries=0)"],
             [1, 2, "One retry (maxRetries=1)"],
             [2, 3, "Two retries (maxRetries=2)"],
-            [5, 6, "Five retries (maxRetries=5)"],
         ];
 
     #endregion

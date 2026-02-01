@@ -23,6 +23,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     private const string ProviderName = "Anthropic";
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly IPerformanceTracker _performanceTracker;
+    private readonly RetryOptions _retryOptions;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="AnthropicClient" /> class.
@@ -31,11 +32,13 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     /// <param name="httpClient">Optional custom HTTP client to use.</param>
     /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
     /// <param name="logger">Optional logger for diagnostic information.</param>
+    /// <param name="retryOptions">Optional retry configuration options.</param>
     public AnthropicClient(
         string apiKey,
         HttpClient? httpClient = null,
         IPerformanceTracker? performanceTracker = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        RetryOptions? retryOptions = null
     )
         : base(logger ?? NullLogger.Instance, httpClient ?? CreateHttpClient(apiKey))
     {
@@ -43,6 +46,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
+        _retryOptions = retryOptions ?? RetryOptions.Default;
     }
 
     /// <summary>
@@ -51,15 +55,18 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     /// <param name="httpClient">Pre-configured HTTP client with authentication headers.</param>
     /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
     /// <param name="logger">Optional logger for diagnostic information.</param>
+    /// <param name="retryOptions">Optional retry configuration options.</param>
     public AnthropicClient(
         HttpClient httpClient,
         IPerformanceTracker? performanceTracker = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        RetryOptions? retryOptions = null
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
+        _retryOptions = retryOptions ?? RetryOptions.Default;
     }
 
     /// <inheritdoc />
@@ -86,6 +93,9 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         Content = content,
                     };
 
+                    // Add beta headers for built-in tools that require them
+                    AddBetaHeaders(requestMessage, request);
+
                     Logger.LogDebug("Sending Anthropic chat completion request for model {Model}", request.Model);
                     return await HttpClient.SendAsync(requestMessage, cancellationToken);
                 },
@@ -104,7 +114,8 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
                     return anthropicResponse;
                 },
-                cancellationToken: cancellationToken
+                _retryOptions,
+                cancellationToken
             );
 
             // Track successful request metrics
@@ -166,6 +177,9 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         Content = content,
                     };
 
+                    // Add beta headers for built-in tools that require them
+                    AddBetaHeaders(requestMessage, request);
+
                     Logger.LogDebug(
                         "Sending Anthropic streaming chat completion request for model {Model}",
                         request.Model
@@ -177,7 +191,8 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     );
                 },
                 httpResponse => Task.FromResult(httpResponse.Content),
-                cancellationToken: cancellationToken
+                _retryOptions,
+                cancellationToken
             );
 
             // Track successful setup
@@ -218,6 +233,42 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     {
         var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
         return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
+    }
+
+    /// <summary>
+    ///     Adds required beta headers for built-in tools that require them.
+    /// </summary>
+    /// <param name="request">The HTTP request message to add headers to.</param>
+    /// <param name="anthropicRequest">The Anthropic request to check for built-in tools.</param>
+    private static void AddBetaHeaders(HttpRequestMessage request, AnthropicRequest anthropicRequest)
+    {
+        if (anthropicRequest.Tools == null || anthropicRequest.Tools.Count == 0)
+        {
+            return;
+        }
+
+        var betaFeatures = new List<string>();
+
+        foreach (var tool in anthropicRequest.Tools)
+        {
+            // Check for web_fetch tool (requires beta header)
+            if (tool is AnthropicWebFetchTool)
+            {
+                betaFeatures.Add("web-fetch-2025-09-10");
+            }
+            // Check for code_execution tool (requires beta header)
+            else if (tool is AnthropicCodeExecutionTool)
+            {
+                betaFeatures.Add("code-execution-2025-08-25");
+            }
+        }
+
+        if (betaFeatures.Count > 0)
+        {
+            // Remove duplicates and join
+            var uniqueFeatures = betaFeatures.Distinct().ToList();
+            request.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", uniqueFeatures));
+        }
     }
 
     private async IAsyncEnumerable<AnthropicStreamEvent> StreamData(
