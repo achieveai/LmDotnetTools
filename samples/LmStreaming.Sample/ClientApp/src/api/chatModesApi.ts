@@ -81,7 +81,7 @@ export async function deleteChatMode(modeId: string): Promise<void> {
  * Copies a chat mode to create a new user-defined mode.
  */
 export async function copyChatMode(modeId: string, newName: string): Promise<ChatMode> {
-  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}/copy`, {
+  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}/copies`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ newName }),
@@ -111,7 +111,7 @@ export async function switchConversationMode(
   modeId: string
 ): Promise<SwitchModeResponse> {
   const response = await fetch(
-    `/api/conversations/${encodeURIComponent(threadId)}/switch-mode`,
+    `/api/conversations/${encodeURIComponent(threadId)}/mode`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -153,6 +153,22 @@ public class AnthropicStreamParser
             Input = contentBlock["input"]?.AsObject(),
         };
 
+        // Check for citations on text blocks
+        if (contentBlock["citations"] != null)
+        {
+            try
+            {
+                _contentBlocks[index].Citations = JsonSerializer.Deserialize<List<Citation>>(
+                    contentBlock["citations"]!.ToJsonString(),
+                    _jsonOptions
+                );
+            }
+            catch
+            {
+                // Ignore citation parsing errors
+            }
+        }
+
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
         if (blockType == "tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
         {
@@ -181,7 +197,86 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
+        // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
+        if (blockType == "server_tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
+        {
+            // Store tool_use_id for correlating with results
+            _contentBlocks[index].ToolUseId = _contentBlocks[index].Id;
+
+            var serverToolUse = new ServerToolUseMessage
+            {
+                ToolUseId = _contentBlocks[index].Id!,
+                ToolName = _contentBlocks[index].Name ?? string.Empty,
+                Input = contentBlock["input"] != null
+                    ? JsonSerializer.Deserialize<JsonElement>(contentBlock["input"]!.ToJsonString())
+                    : default,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
+        }
+
+        // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
+        if (IsServerToolResultType(blockType))
+        {
+            var toolUseId = contentBlock["tool_use_id"]?.GetValue<string>() ?? string.Empty;
+            var resultContent = contentBlock["content"];
+            var isError = false;
+            string? errorCode = null;
+
+            // Check if this is an error result
+            if (resultContent != null)
+            {
+                var contentType = resultContent["type"]?.GetValue<string>();
+                if (contentType?.EndsWith("_error") == true)
+                {
+                    isError = true;
+                    errorCode = resultContent["error_code"]?.GetValue<string>();
+                }
+            }
+
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = toolUseId,
+                ToolName = GetToolNameFromResultType(blockType),
+                Result = resultContent != null
+                    ? JsonSerializer.Deserialize<JsonElement>(resultContent.ToJsonString())
+                    : default,
+                IsError = isError,
+                ErrorCode = errorCode,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
         return [];
+    }
+
+    private static bool IsServerToolResultType(string blockType)
+    {
+        return blockType is "web_search_tool_result"
+            or "web_fetch_tool_result"
+            or "bash_code_execution_tool_result"
+            or "text_editor_code_execution_tool_result";
+    }
+
+    private static string GetToolNameFromResultType(string resultType)
+    {
+        return resultType switch
+        {
+            "web_search_tool_result" => "web_search",
+            "web_fetch_tool_result" => "web_fetch",
+            "bash_code_execution_tool_result" => "bash_code_execution",
+            "text_editor_code_execution_tool_result" => "text_editor_code_execution",
+            _ => resultType.Replace("_tool_result", ""),
+        };
     }
 
     private List<IMessage> HandleContentBlockDelta(JsonNode json)
@@ -268,9 +363,42 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // For text blocks, create a final TextMessage
+        // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
         {
+            // Check if we have citations - if so, create TextWithCitationsMessage
+            if (block.Citations != null && block.Citations.Count > 0)
+            {
+                var citationsMessage = new TextWithCitationsMessage
+                {
+                    Text = block.Text,
+                    Citations = block.Citations
+                        .Select(c => new CitationInfo
+                        {
+                            Type = c.Type,
+                            Url = c.Url,
+                            Title = c.Title,
+                            CitedText = c.CitedText,
+                            StartIndex = c.StartCharIndex,
+                            EndIndex = c.EndCharIndex,
+                        })
+                        .ToImmutableList(),
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                };
+
+                // Apply usage if available
+                if (_usage != null)
+                {
+                    citationsMessage = citationsMessage with { Metadata = CreateUsageMetadata() };
+                }
+
+                _messages.Add(citationsMessage);
+                return [citationsMessage];
+            }
+
+            // No citations - regular text message
             var textMessage = new TextMessage
             {
                 Text = block.Text,
@@ -624,7 +752,123 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
+        // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
+        if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
+        {
+            _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
+
+            var serverToolUse = new ServerToolUseMessage
+            {
+                ToolUseId = serverToolUseContent.Id,
+                ToolName = serverToolUseContent.Name,
+                Input = serverToolUseContent.Input,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
+        }
+
+        // Handle web_search_tool_result
+        if (contentBlock is AnthropicWebSearchToolResultContent webSearchResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = webSearchResult.ToolUseId,
+                ToolName = "web_search",
+                Result = webSearchResult.Content,
+                IsError = IsServerToolResultError(webSearchResult.Content),
+                ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle web_fetch_tool_result
+        if (contentBlock is AnthropicWebFetchToolResultContent webFetchResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = webFetchResult.ToolUseId,
+                ToolName = "web_fetch",
+                Result = webFetchResult.Content,
+                IsError = IsServerToolResultError(webFetchResult.Content),
+                ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle bash_code_execution_tool_result
+        if (contentBlock is AnthropicBashCodeExecutionToolResultContent bashResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = bashResult.ToolUseId,
+                ToolName = "bash_code_execution",
+                Result = bashResult.Content,
+                IsError = IsServerToolResultError(bashResult.Content),
+                ErrorCode = GetErrorCodeFromResult(bashResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle text_editor_code_execution_tool_result
+        if (contentBlock is AnthropicTextEditorCodeExecutionToolResultContent textEditorResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = textEditorResult.ToolUseId,
+                ToolName = "text_editor_code_execution",
+                Result = textEditorResult.Content,
+                IsError = IsServerToolResultError(textEditorResult.Content),
+                ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
         return [];
+    }
+
+    private static bool IsServerToolResultError(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement))
+        {
+            var type = typeElement.GetString();
+            return type?.EndsWith("_error") == true;
+        }
+
+        return false;
+    }
+
+    private static string? GetErrorCodeFromResult(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement))
+        {
+            return errorElement.GetString();
+        }
+
+        return null;
     }
 
     private List<IMessage> HandleTypedContentBlockDelta(AnthropicContentBlockDeltaEvent contentBlockDeltaEvent)
@@ -753,9 +997,36 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // For text blocks, create a final TextMessage
+        // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
         {
+            // Check if we have citations - if so, create TextWithCitationsMessage
+            if (block.Citations != null && block.Citations.Count > 0)
+            {
+                var citationsMessage = new TextWithCitationsMessage
+                {
+                    Text = block.Text,
+                    Citations = block.Citations
+                        .Select(c => new CitationInfo
+                        {
+                            Type = c.Type,
+                            Url = c.Url,
+                            Title = c.Title,
+                            CitedText = c.CitedText,
+                            StartIndex = c.StartCharIndex,
+                            EndIndex = c.EndCharIndex,
+                        })
+                        .ToImmutableList(),
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                };
+
+                _messages.Add(citationsMessage);
+                return [citationsMessage];
+            }
+
+            // No citations - regular text message
             var textMessage = new TextMessage
             {
                 Text = block.Text,
@@ -867,6 +1138,12 @@ public class AnthropicStreamParser
         public string? Id { get; set; }
         public string? Name { get; set; }
         public JsonNode? Input { get; set; }
+
+        // For server tool results - correlate tool use with result
+        public string? ToolUseId { get; set; }
+
+        // For text with citations
+        public List<Citation>? Citations { get; set; }
 
         // For accumulating partial JSON during streaming
         public InputJsonAccumulator JsonAccumulator { get; } = new();

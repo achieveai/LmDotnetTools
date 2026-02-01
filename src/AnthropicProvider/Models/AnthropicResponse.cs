@@ -55,6 +55,14 @@ public record AnthropicResponse
     /// </summary>
     [JsonPropertyName("usage")]
     public AnthropicUsage? Usage { get; init; }
+
+    /// <summary>
+    ///     Container information for code execution tool.
+    ///     Contains the container ID for reusing the sandbox across turns.
+    /// </summary>
+    [JsonPropertyName("container")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ContainerInfo? Container { get; init; }
 }
 
 /// <summary>
@@ -102,9 +110,10 @@ public record AnthropicUsage
 public record AnthropicStreamEvent
 {
     /// <summary>
-    ///     The type of the event.
+    ///     The type of the event. This is handled by the polymorphic discriminator,
+    ///     but kept for runtime type identification.
     /// </summary>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public string Type =>
         this switch
         {
@@ -268,9 +277,10 @@ public record AnthropicMessageDelta
 public record AnthropicDelta
 {
     /// <summary>
-    ///     The type of the delta.
+    ///     The type of the delta. This is handled by the polymorphic discriminator,
+    ///     but kept for runtime type identification.
     /// </summary>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public string Type =>
         this switch
         {

@@ -153,7 +153,7 @@ class Logger {
     this.isFlushing = true;
 
     try {
-      const response = await fetch(`${this.options.baseUrl}/api/logs`, {
+      const response = await fetch(`${this.options.baseUrl}/api/diagnostics/logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entries }),

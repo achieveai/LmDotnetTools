@@ -323,7 +323,7 @@ public class AnthropicClientHttpTests
             false, // should fail
         };
 
-        // Scenario: Max retries exceeded
+        // Scenario: Max retries exceeded (BaseHttpService.ExecuteHttpWithRetryAsync has maxRetries=5)
         yield return new object[]
         {
             new[]
@@ -332,8 +332,10 @@ public class AnthropicClientHttpTests
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
             },
-            false, // should fail after max retries
+            false, // should fail after max retries (1 initial + 5 retries = 6 attempts needed to exhaust)
         };
 
         // Scenario: Success on first try

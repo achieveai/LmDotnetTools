@@ -1,20 +1,16 @@
-using System.Collections.Immutable;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
-using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
+using System.Text;
 using Serilog;
 using Serilog.Enrichers.CallerInfo;
 using Serilog.Events;
@@ -75,6 +71,7 @@ try
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
     });
 
+    _ = builder.Services.AddControllers();
     _ = builder.Services.AddEndpointsApiExplorer();
 
     // Add Vite services for frontend integration
@@ -233,6 +230,22 @@ try
             ? await modeStore.GetModeAsync(modeId, cancellationToken)
             : null;
 
+        var recordEnabled = app.Environment.IsDevelopment()
+            && string.Equals(
+                context.Request.Query["record"].FirstOrDefault(),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+
+        StreamWriter? recordWriter = null;
+        if (recordEnabled)
+        {
+            var recordingsDir = Path.Combine(app.Environment.ContentRootPath, "recordings");
+            Directory.CreateDirectory(recordingsDir);
+            var fileName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}.jsonl";
+            recordWriter = new StreamWriter(Path.Combine(recordingsDir, fileName), false, new UTF8Encoding(false));
+            wsLogger.LogInformation("Recording WebSocket messages to {FileName}", fileName);
+        }
+
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
         wsLogger.LogInformation(
             "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
@@ -241,10 +254,15 @@ try
 
         try
         {
-            await wsManager.HandleConnectionAsync(webSocket, threadId, mode, cancellationToken);
+            await wsManager.HandleConnectionAsync(webSocket, threadId, mode, recordWriter, cancellationToken);
         }
         finally
         {
+            if (recordWriter != null)
+            {
+                await recordWriter.DisposeAsync();
+            }
+
             if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
             {
                 await webSocket.CloseAsync(
@@ -258,299 +276,8 @@ try
         }
     });
 
-    // Simple endpoint to test JSON serialization
-    _ = app.MapGet("/api/message-types", (ILogger<Program> endpointLogger) =>
-    {
-        endpointLogger.LogDebug("Message-types endpoint called");
-
-        var jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
-
-        IMessage[] messages =
-        [
-            new TextMessage { Role = Role.User, Text = "Hello!" },
-            new TextUpdateMessage { Role = Role.Assistant, Text = "Hi there", IsUpdate = true },
-            new ToolsCallMessage
-            {
-                Role = Role.Assistant,
-                ToolCalls = [new ToolCall { FunctionName = "get_weather", ToolCallId = "call_123", FunctionArgs = /*lang=json,strict*/ "{\"location\": \"NYC\"}" }]
-            }
-        ];
-
-        var result = messages.Select(m => new
-        {
-            Type = m.GetType().Name,
-            Json = JsonSerializer.Serialize(m, jsonOptions)
-        }).ToList();
-
-        endpointLogger.LogInformation(
-            "Returning {MessageCount} message types: {Types}",
-            result.Count,
-            string.Join(", ", result.Select(r => r.Type)));
-
-        return result;
-    });
-
-    // === Conversation Management Endpoints ===
-
-    // GET /api/conversations - List all conversations
-    _ = app.MapGet("/api/conversations", async (
-        IConversationStore store,
-        int limit = 50,
-        int offset = 0,
-        CancellationToken ct = default) =>
-    {
-        var threads = await store.ListThreadsAsync(limit, offset, ct);
-        return threads.Select(t => new ConversationSummary
-        {
-            ThreadId = t.ThreadId,
-            Title = t.Properties?.TryGetValue("title", out var titleObj) == true
-                ? titleObj?.ToString() ?? "New Conversation"
-                : "New Conversation",
-            Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
-                ? previewObj?.ToString()
-                : null,
-            LastUpdated = t.LastUpdated,
-        });
-    });
-
-    // GET /api/conversations/{threadId}/messages - Load messages for a thread
-    _ = app.MapGet("/api/conversations/{threadId}/messages", async (
-        string threadId,
-        IConversationStore store,
-        CancellationToken ct = default) =>
-    {
-        var messages = await store.LoadMessagesAsync(threadId, ct);
-        return messages;
-    });
-
-    // PUT /api/conversations/{threadId}/metadata - Update conversation metadata
-    _ = app.MapPut("/api/conversations/{threadId}/metadata", async (
-        string threadId,
-        ConversationMetadataUpdate update,
-        IConversationStore store,
-        CancellationToken ct = default) =>
-    {
-        var existing = await store.LoadMetadataAsync(threadId, ct);
-        var propertiesBuilder = existing?.Properties?.ToBuilder()
-            ?? ImmutableDictionary.CreateBuilder<string, object>();
-
-        if (update.Title != null)
-        {
-            propertiesBuilder["title"] = update.Title;
-        }
-
-        if (update.Preview != null)
-        {
-            propertiesBuilder["preview"] = update.Preview;
-        }
-
-        var metadata = new ThreadMetadata
-        {
-            ThreadId = threadId,
-            CurrentRunId = existing?.CurrentRunId,
-            LatestRunId = existing?.LatestRunId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            SessionMappings = existing?.SessionMappings,
-            Properties = propertiesBuilder.ToImmutable(),
-        };
-
-        await store.SaveMetadataAsync(threadId, metadata, ct);
-        return Results.Ok();
-    });
-
-    // DELETE /api/conversations/{threadId} - Delete a conversation
-    _ = app.MapDelete("/api/conversations/{threadId}", async (
-        string threadId,
-        IConversationStore store,
-        MultiTurnAgentPool agentPool,
-        CancellationToken ct = default) =>
-    {
-        await agentPool.RemoveAgentAsync(threadId);
-        await store.DeleteThreadAsync(threadId, ct);
-        return Results.NoContent();
-    });
-
-    // === Chat Mode Endpoints ===
-
-    // GET /api/chat-modes - List all chat modes
-    _ = app.MapGet("/api/chat-modes", async (
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        var modes = await modeStore.GetAllModesAsync(ct);
-        return modes;
-    });
-
-    // GET /api/chat-modes/{modeId} - Get a specific chat mode
-    _ = app.MapGet("/api/chat-modes/{modeId}", async (
-        string modeId,
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        var mode = await modeStore.GetModeAsync(modeId, ct);
-        return mode != null ? Results.Ok(mode) : Results.NotFound();
-    });
-
-    // POST /api/chat-modes - Create a new user mode
-    _ = app.MapPost("/api/chat-modes", async (
-        ChatModeCreateUpdate createData,
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        var mode = await modeStore.CreateModeAsync(createData, ct);
-        return Results.Created($"/api/chat-modes/{mode.Id}", mode);
-    });
-
-    // PUT /api/chat-modes/{modeId} - Update a user mode
-    _ = app.MapPut("/api/chat-modes/{modeId}", async (
-        string modeId,
-        ChatModeCreateUpdate updateData,
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        try
-        {
-            var mode = await modeStore.UpdateModeAsync(modeId, updateData, ct);
-            return Results.Ok(mode);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Results.BadRequest(new { error = ex.Message });
-        }
-        catch (KeyNotFoundException)
-        {
-            return Results.NotFound();
-        }
-    });
-
-    // DELETE /api/chat-modes/{modeId} - Delete a user mode
-    _ = app.MapDelete("/api/chat-modes/{modeId}", async (
-        string modeId,
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        try
-        {
-            await modeStore.DeleteModeAsync(modeId, ct);
-            return Results.NoContent();
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Results.BadRequest(new { error = ex.Message });
-        }
-    });
-
-    // POST /api/chat-modes/{modeId}/copy - Copy a mode
-    _ = app.MapPost("/api/chat-modes/{modeId}/copy", async (
-        string modeId,
-        ChatModeCopy copyData,
-        IChatModeStore modeStore,
-        CancellationToken ct = default) =>
-    {
-        try
-        {
-            var mode = await modeStore.CopyModeAsync(modeId, copyData.NewName, ct);
-            return Results.Created($"/api/chat-modes/{mode.Id}", mode);
-        }
-        catch (KeyNotFoundException)
-        {
-            return Results.NotFound();
-        }
-    });
-
-    // GET /api/tools - List available tools
-    _ = app.MapGet("/api/tools", (FunctionRegistry functionRegistry) =>
-    {
-        var (contracts, _) = functionRegistry.Build();
-        return contracts.Select(c => new ToolDefinition
-        {
-            Name = c.Name,
-            Description = c.Description,
-        });
-    });
-
-    // POST /api/conversations/{threadId}/switch-mode - Switch mode for a conversation
-    _ = app.MapPost("/api/conversations/{threadId}/switch-mode", async (
-        string threadId,
-        SwitchModeRequest request,
-        IChatModeStore modeStore,
-        MultiTurnAgentPool agentPool,
-        CancellationToken ct = default) =>
-    {
-        var mode = await modeStore.GetModeAsync(request.ModeId, ct);
-        if (mode == null)
-        {
-            return Results.NotFound(new { error = $"Mode '{request.ModeId}' not found." });
-        }
-
-        _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
-        return Results.Ok(new { modeId = mode.Id, modeName = mode.Name });
-    });
-
-    // Client logging endpoint - receives logs from browser and writes to server logs
-    _ = app.MapPost("/api/logs", (
-        ClientLogBatch batch,
-        ILogger<Program> logEndpointLogger) =>
-    {
-        foreach (var entry in batch.Entries)
-        {
-            var level = entry.Level?.ToLowerInvariant() switch
-            {
-                "error" => LogLevel.Error,
-                "warn" or "warning" => LogLevel.Warning,
-                "info" or "information" => LogLevel.Information,
-                "debug" => LogLevel.Debug,
-                "trace" => LogLevel.Trace,
-                _ => LogLevel.Information
-            };
-
-            // Log with client context using structured logging
-            using (Serilog.Context.LogContext.PushProperty("ClientTimestamp", entry.Timestamp))
-            using (Serilog.Context.LogContext.PushProperty("ClientFile", entry.File))
-            using (Serilog.Context.LogContext.PushProperty("ClientLine", entry.Line))
-            using (Serilog.Context.LogContext.PushProperty("ClientFunction", entry.Function))
-            using (Serilog.Context.LogContext.PushProperty("ClientComponent", entry.Component))
-            using (Serilog.Context.LogContext.PushProperty("Source", "Browser"))
-            {
-                if (entry.Data is JsonElement jsonElement && jsonElement.ValueKind != JsonValueKind.Undefined && jsonElement.ValueKind != JsonValueKind.Null)
-                {
-                    // Convert JsonElement to object (dictionary/list/primitive) for proper Serilog destructuring
-                    // OR serialize it to a raw string if we want the raw JSON
-                    // Here we'll try to deserialize it to a dynamic object or dictionary to let Serilog handle it
-                    try
-                    {
-                        var rawText = jsonElement.GetRawText();
-                        // Serilog doesn't automatically parse JSON strings into structure unless we do something special.
-                        // But we can just log the raw JSON string if we want, or try to parse it.
-                        // For simplicity and robustness, let's log the raw JSON string as "ClientDataJson"
-                        // and also try to let Serilog destructure a Dictionary if possible.
-
-                        using (Serilog.Context.LogContext.PushProperty("ClientData", rawText))
-                        {
-                            logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
-                        }
-                    }
-                    catch
-                    {
-                        logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
-                    }
-                }
-                else if (entry.Data != null)
-                {
-                    using (Serilog.Context.LogContext.PushProperty("ClientData", entry.Data, destructureObjects: true))
-                    {
-                        logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
-                    }
-                }
-                else
-                {
-                    logEndpointLogger.Log(level, "[Client] {Message}", entry.Message);
-                }
-            }
-        }
-
-        return Results.Ok(new { received = batch.Entries.Length });
-    });
+    // Map controllers (conversations, chat-modes, tools, diagnostics)
+    _ = app.MapControllers();
 
     // Fallback for SPA routing - serve Vite-generated index.html with correct asset hashes
     _ = app.MapFallbackToFile("dist/index.html");
@@ -568,37 +295,4 @@ finally
 
 public partial class Program
 {
-}
-
-public record ClientLogEntry(
-    string? Level,
-    string? Message,
-    string? Timestamp,
-    string? File,
-    int? Line,
-    string? Function,
-    string? Component,
-    object? Data); // Data will be bound as JsonElement by default in ASP.NET Core
-
-public record ClientLogBatch(ClientLogEntry[] Entries);
-
-// === Conversation Management DTOs ===
-
-public record ConversationSummary
-{
-    public required string ThreadId { get; init; }
-    public required string Title { get; init; }
-    public string? Preview { get; init; }
-    public required long LastUpdated { get; init; }
-}
-
-public record ConversationMetadataUpdate
-{
-    public string? Title { get; init; }
-    public string? Preview { get; init; }
-}
-
-public record SwitchModeRequest
-{
-    public required string ModeId { get; init; }
 }

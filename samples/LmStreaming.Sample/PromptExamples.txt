@@ -47,6 +47,8 @@ Calculator then weather:
 ## Mode Filtering Test Prompts
 
 Use these to verify that modes correctly restrict available tools.
+Note: You can switch modes mid-conversation using the dropdown at the top right.
+The new mode's tools and system prompt will apply to the very next message.
 
 ### Math Helper Mode (only `calculate` allowed)
 
@@ -76,15 +78,50 @@ All tools should SUCCEED:
 
 ## System Prompt Verification
 
-The system prompt changes per mode. To check which system prompt is active,
-look at the server logs when the agent is created:
+Use these prompts to verify that the correct system prompt is being used for each mode.
+The `system_prompt_echo` instruction returns the current system prompt as text.
 
-    Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName})
+### Echo System Prompt (works in any mode)
 
-The system prompts are:
+Returns the full system prompt for the current mode:
+<|instruction_start|>{"instruction_chain":[{"id":"sys-prompt","id_message":"Echoing system prompt","messages":[{"system_prompt_echo":{}}]}]}<|instruction_end|>
+
+### System Prompt with Explanation
+
+Echo system prompt followed by a text message:
+<|instruction_start|>{"instruction_chain":[{"id":"sys-prompt-explain","id_message":"System prompt check","messages":[{"system_prompt_echo":{}},{"text_message":{"length":50}}]}]}<|instruction_end|>
+
+The system prompts per mode are:
 - General Assistant: "You are a helpful assistant with access to weather, calculator, and web search tools..."
 - Math Helper: "You are a math assistant. Help users with calculations..."
 - Weather Assistant: "You are a weather assistant. Help users get weather information..."
+
+---
+
+## Tool Call List Verification
+
+Use these prompts to verify which tools are available in the current mode.
+The `tools_list` instruction returns the names of all visible tools.
+
+### List Available Tools (works in any mode)
+
+Returns the list of tools available in the current mode:
+<|instruction_start|>{"instruction_chain":[{"id":"tools-list","id_message":"Listing available tools","messages":[{"tools_list":{}}]}]}<|instruction_end|>
+
+### Tools List with Explanation
+
+List tools followed by a text explanation:
+<|instruction_start|>{"instruction_chain":[{"id":"tools-explain","id_message":"Checking tools","messages":[{"tools_list":{}},{"text_message":{"length":30}}]}]}<|instruction_end|>
+
+### Combined: System Prompt + Tools List
+
+Verify both system prompt and available tools together:
+<|instruction_start|>{"instruction_chain":[{"id":"full-verification","id_message":"Full mode verification","messages":[{"system_prompt_echo":{}},{"tools_list":{}},{"text_message":{"length":20}}]}]}<|instruction_end|>
+
+Expected tool lists per mode:
+- General Assistant: calculate, get_weather, web_search
+- Math Helper: calculate
+- Weather Assistant: get_weather
 
 ---
 

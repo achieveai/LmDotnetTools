@@ -102,16 +102,15 @@ public class MockHttpHandlerBuilderTests
             SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test3" }),
         };
 
-        // Act - Use reflection to access the private GenerateCacheKey method
+        // Act - Use reflection to access the private static GenerateCacheKey method
         var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType(
             "AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware"
         );
-        var middleware = Activator.CreateInstance(middlewareType!, "test.json");
-        var method = middlewareType!.GetMethod("GenerateCacheKey", BindingFlags.NonPublic | BindingFlags.Instance);
+        var method = middlewareType!.GetMethod("GenerateCacheKey", BindingFlags.NonPublic | BindingFlags.Static);
 
-        var key1 = (string)method!.Invoke(middleware, [interaction1])!;
-        var key2 = (string)method!.Invoke(middleware, [interaction2])!;
-        var key3 = (string)method!.Invoke(middleware, [interaction3])!;
+        var key1 = (string)method!.Invoke(null, [interaction1])!;
+        var key2 = (string)method!.Invoke(null, [interaction2])!;
+        var key3 = (string)method!.Invoke(null, [interaction3])!;
 
         // Assert
         // Same request content should generate same hash
@@ -141,14 +140,13 @@ public class MockHttpHandlerBuilderTests
             SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test" }),
         };
 
-        // Act - Use reflection to access the private GenerateCacheKey method
+        // Act - Use reflection to access the private static GenerateCacheKey method
         var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType(
             "AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware"
         );
-        var middleware = Activator.CreateInstance(middlewareType!, "test.json");
-        var method = middlewareType!.GetMethod("GenerateCacheKey", BindingFlags.NonPublic | BindingFlags.Instance);
+        var method = middlewareType!.GetMethod("GenerateCacheKey", BindingFlags.NonPublic | BindingFlags.Static);
 
-        var key = (string)method!.Invoke(middleware, [interaction])!;
+        var key = (string)method!.Invoke(null, [interaction])!;
 
         // Assert
         Assert.Equal("undefined-request", key);

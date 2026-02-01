@@ -20,16 +20,31 @@ public sealed class InstructionPlan(string idMessage, int? reasoningLength, List
 
 public sealed class InstructionMessage
 {
-    private InstructionMessage(int? textLength, List<InstructionToolCall>? toolCalls, string? explicitText = null)
+    private InstructionMessage(
+        int? textLength,
+        List<InstructionToolCall>? toolCalls,
+        string? explicitText = null,
+        InstructionServerToolUse? serverToolUse = null,
+        InstructionServerToolResult? serverToolResult = null,
+        InstructionTextWithCitations? textWithCitations = null
+    )
     {
         TextLength = textLength;
         ToolCalls = toolCalls;
         ExplicitText = explicitText;
+        ServerToolUse = serverToolUse;
+        ServerToolResult = serverToolResult;
+        TextWithCitations = textWithCitations;
     }
 
     public int? TextLength { get; }
     public List<InstructionToolCall>? ToolCalls { get; }
     public string? ExplicitText { get; internal set; }
+
+    // Server-side tool support
+    public InstructionServerToolUse? ServerToolUse { get; }
+    public InstructionServerToolResult? ServerToolResult { get; }
+    public InstructionTextWithCitations? TextWithCitations { get; }
 
     public static InstructionMessage ForText(int length)
     {
@@ -45,6 +60,63 @@ public sealed class InstructionMessage
     {
         return new InstructionMessage(null, null, content);
     }
+
+    public static InstructionMessage ForServerToolUse(InstructionServerToolUse serverToolUse)
+    {
+        return new InstructionMessage(null, null, null, serverToolUse);
+    }
+
+    public static InstructionMessage ForServerToolResult(InstructionServerToolResult serverToolResult)
+    {
+        return new InstructionMessage(null, null, null, null, serverToolResult);
+    }
+
+    public static InstructionMessage ForTextWithCitations(InstructionTextWithCitations textWithCitations)
+    {
+        return new InstructionMessage(null, null, null, null, null, textWithCitations);
+    }
+}
+
+/// <summary>
+///     Represents a server-side tool use instruction (built-in tools like web_search).
+/// </summary>
+public sealed class InstructionServerToolUse
+{
+    public string? Id { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public JsonElement? Input { get; init; }
+}
+
+/// <summary>
+///     Represents a server-side tool result instruction.
+/// </summary>
+public sealed class InstructionServerToolResult
+{
+    public string? ToolUseId { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public JsonElement? Result { get; init; }
+    public string? ErrorCode { get; init; }
+}
+
+/// <summary>
+///     Represents a text message with citations instruction.
+/// </summary>
+public sealed class InstructionTextWithCitations
+{
+    public string? Text { get; init; }
+    public int? Length { get; init; }
+    public List<InstructionCitation>? Citations { get; init; }
+}
+
+/// <summary>
+///     Represents a citation in test instructions.
+/// </summary>
+public sealed class InstructionCitation
+{
+    public string Type { get; init; } = "url_citation";
+    public string? Url { get; init; }
+    public string? Title { get; init; }
+    public string? CitedText { get; init; }
 }
 
 public sealed class InstructionToolCall(string name, string argsJson)
@@ -291,6 +363,36 @@ public sealed class SseStreamHttpContent : HttpContent
                 choices = choices.Concat(
                     ChunkToolCalls(msgIndex, message.ToolCalls.Select(tc => (tc.Name, tc.ArgsJson)), _wordsPerChunk)
                 );
+            }
+            // Server tool use - emit as text containing the tool use info for OpenAI format
+            // For full Anthropic SSE support, use AnthropicSseStreamHttpContent instead
+            else if (message.ServerToolUse is not null)
+            {
+                var toolUseText =
+                    $"[Server Tool Use: {message.ServerToolUse.Name}({message.ServerToolUse.Input?.GetRawText() ?? "{}"})]";
+                choices = choices.Concat(ChunkTextMessage(msgIndex, toolUseText, _wordsPerChunk));
+            }
+            // Server tool result - emit as text containing the result info
+            else if (message.ServerToolResult is not null)
+            {
+                var resultText = message.ServerToolResult.ErrorCode != null
+                    ? $"[Server Tool Error: {message.ServerToolResult.Name} - {message.ServerToolResult.ErrorCode}]"
+                    : $"[Server Tool Result: {message.ServerToolResult.Name}]";
+                choices = choices.Concat(ChunkTextMessage(msgIndex, resultText, _wordsPerChunk));
+            }
+            // Text with citations - emit as regular text (citations are metadata)
+            else if (message.TextWithCitations is not null)
+            {
+                var text = message.TextWithCitations.Text
+                    ?? (
+                        message.TextWithCitations.Length is int len
+                            ? string.Join(" ", GenerateLoremChunks(len, _wordsPerChunk))
+                            : string.Empty
+                    );
+                if (!string.IsNullOrEmpty(text))
+                {
+                    choices = choices.Concat(ChunkTextMessage(msgIndex, text, _wordsPerChunk));
+                }
             }
         }
 

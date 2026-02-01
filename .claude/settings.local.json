@@ -61,6 +61,7 @@
     "clarify-doubt",
     "playwright",
     "seq",
-    "debugger"
+    "debugger",
+    "duckdb"
   ]
 }

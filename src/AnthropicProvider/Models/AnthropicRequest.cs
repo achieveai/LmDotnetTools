@@ -56,21 +56,33 @@ public record AnthropicRequest
 
     /// <summary>
     ///     Tool definitions for the request.
+    ///     Can contain both AnthropicTool (function tools) and AnthropicBuiltInTool (server-side tools).
     /// </summary>
     [JsonPropertyName("tools")]
-    public List<AnthropicTool>? Tools { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<object>? Tools { get; init; }
 
     /// <summary>
     ///     Controls how the model uses tools.
+    ///     Values: "auto", "any", "none", or specific tool name.
     /// </summary>
     [JsonPropertyName("tool_choice")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolChoice { get; init; }
 
     /// <summary>
     ///     Configuration for extended thinking mode for compatible models.
     /// </summary>
     [JsonPropertyName("thinking")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AnthropicThinking? Thinking { get; init; }
+
+    /// <summary>
+    ///     Container ID for code execution tool (reuse sandbox across turns).
+    /// </summary>
+    [JsonPropertyName("container")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Container { get; init; }
 
     /// <summary>
     ///     Creates an AnthropicRequest from a list of LmCore messages and options.
@@ -167,6 +179,9 @@ public record AnthropicRequest
             thinking = thinkingValue;
         }
 
+        // Combine function tools and built-in tools
+        var tools = MapFunctionsAndBuiltInTools(options?.Functions, options?.BuiltInTools);
+
         // Create the request with options
         return new AnthropicRequest
         {
@@ -177,10 +192,14 @@ public record AnthropicRequest
             Temperature = options?.Temperature ?? 0.7f,
             TopP = options?.TopP,
             Stream = false, // Set by caller if streaming is needed
-            // Add tool configuration if functions are provided
-            Tools = options?.Functions != null ? MapFunctionsToTools(options.Functions) : null,
+            // Add tool configuration
+            Tools = tools?.Count > 0 ? tools : null,
+            // Wire ToolChoice from options
+            ToolChoice = options?.ToolChoice,
             // Add thinking configuration if present
             Thinking = thinking,
+            // Add container for code execution
+            Container = options?.ContainerId,
         };
     }
 
@@ -228,9 +247,50 @@ public record AnthropicRequest
     private static void AddBasicMessageContents(IMessage message, AnthropicMessage anthropicMessage)
     {
         // Handle different message types
-        if (message is TextMessage txtMsg)
+        if (message is TextWithCitationsMessage textWithCitationsMsg)
+        {
+            // Text with citations - include citations for context in history
+            anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = textWithCitationsMsg.Text });
+        }
+        else if (message is TextMessage txtMsg)
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
+        }
+        else if (message is ServerToolUseMessage serverToolUseMsg)
+        {
+            // Server tool use - convert back to server_tool_use content block for history
+            anthropicMessage.Content.Add(
+                new AnthropicContent
+                {
+                    Type = "server_tool_use",
+                    Id = serverToolUseMsg.ToolUseId,
+                    Name = serverToolUseMsg.ToolName,
+                    Input = serverToolUseMsg.Input,
+                }
+            );
+        }
+        else if (message is ServerToolResultMessage serverToolResultMsg)
+        {
+            // Server tool result - these are part of the same response as server_tool_use,
+            // so we typically don't need to send them back, but include for completeness
+            var resultType = serverToolResultMsg.ToolName switch
+            {
+                "web_search" => "web_search_tool_result",
+                "web_fetch" => "web_fetch_tool_result",
+                "bash_code_execution" => "bash_code_execution_tool_result",
+                "text_editor_code_execution" => "text_editor_code_execution_tool_result",
+                _ => $"{serverToolResultMsg.ToolName}_tool_result",
+            };
+
+            anthropicMessage.Content.Add(
+                new AnthropicContent
+                {
+                    Type = resultType,
+                    ToolUseId = serverToolResultMsg.ToolUseId,
+                    // Result is stored as JsonElement - serialize appropriately
+                    Content = serverToolResultMsg.Result.GetRawText(),
+                }
+            );
         }
         else if (message is ToolsCallMessage toolsCallMsg && toolsCallMsg.ToolCalls?.Any() == true)
         {
@@ -305,6 +365,35 @@ public record AnthropicRequest
                 );
             }
         }
+    }
+
+    /// <summary>
+    ///     Combines function contracts and built-in tools into a single list for the API request.
+    /// </summary>
+    /// <param name="functions">Function contracts to convert to tools.</param>
+    /// <param name="builtInTools">Built-in tools to include.</param>
+    /// <returns>Combined list of tools, or null if empty.</returns>
+    public static List<object>? MapFunctionsAndBuiltInTools(
+        FunctionContract[]? functions,
+        IReadOnlyList<object>? builtInTools
+    )
+    {
+        var tools = new List<object>();
+
+        // Add built-in tools first (they have priority)
+        if (builtInTools != null)
+        {
+            tools.AddRange(builtInTools);
+        }
+
+        // Add function tools
+        var functionTools = MapFunctionsToTools(functions);
+        if (functionTools != null)
+        {
+            tools.AddRange(functionTools);
+        }
+
+        return tools.Count > 0 ? tools : null;
     }
 
     private static List<AnthropicTool>? MapFunctionsToTools(FunctionContract[]? functions)
