@@ -95,8 +95,15 @@ function getMergeKey(msg: Message): string {
 /**
  * Check if message contains test instructions
  */
-function isTestInstruction(text: string): boolean {
+export function isTestInstruction(text: string): boolean {
   return text.includes('<|instruction_start|>') && text.includes('<|instruction_end|>');
+}
+
+/**
+ * Get display text for a message, transforming test instructions
+ */
+export function getDisplayText(text: string): string {
+  return isTestInstruction(text) ? '🧪 Test instruction sent' : text;
 }
 
 /**
@@ -694,6 +701,14 @@ export function useChat(options: UseChatOptions = {}) {
 
         // Determine role
         const role: 'user' | 'assistant' = parsedMessage.role === 'user' ? 'user' : 'assistant';
+
+        // Transform test instruction messages for display
+        if (role === 'user' && isTextMessage(parsedMessage)) {
+          const textMsg = parsedMessage as TextMessage;
+          if (isTestInstruction(textMsg.text)) {
+            textMsg.text = '🧪 Test instruction sent';
+          }
+        }
 
         // Create chat message
         const chatMessage: InternalChatMessage = {
