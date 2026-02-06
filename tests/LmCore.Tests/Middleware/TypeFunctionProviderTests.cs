@@ -339,7 +339,7 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithFunctionAttribute
     {
         [Function("add", "Adds two numbers")]
-        public static int Add(int a, int b)
+        public int Add(int a, int b)
         {
             return a + b;
         }
@@ -352,7 +352,7 @@ public class TypeFunctionProviderTests
         }
 
         [Function]
-        public static async Task<string> AsyncMethod(string input)
+        public async Task<string> AsyncMethod(string input)
         {
             await Task.Delay(1);
             return $"Processed: {input}";
@@ -368,7 +368,7 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithDescriptionAttribute
     {
         [Description("Concatenates two strings")]
-        public static string Concat(string a, string b)
+        public string Concat(string a, string b)
         {
             return a + b;
         }
@@ -391,13 +391,13 @@ public class TypeFunctionProviderTests
         private int _counter;
 
         [Function("calculate", "Performs calculation")]
-        public static double Calculate(double value, double factor = 2.0)
+        public double Calculate(double value, double factor = 2.0)
         {
             return value * factor;
         }
 
         [Description("Converts to uppercase")]
-        public static string ToUpper(string? text)
+        public string ToUpper(string? text)
         {
             return text?.ToUpper() ?? string.Empty;
         }
@@ -412,13 +412,13 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithExceptions
     {
         [Function("divide", "Divides two numbers")]
-        public static double Divide(double a, double b)
+        public double Divide(double a, double b)
         {
             return b == 0 ? throw new ArgumentException("Cannot divide by zero") : a / b;
         }
 
         [Function("asyncError")]
-        public static async Task<string> AsyncError()
+        public async Task<string> AsyncError()
         {
             await Task.Delay(1);
             throw new InvalidOperationException("Async error occurred");

@@ -18,7 +18,7 @@ public class FunctionFilterTests
 
     #region Helper Methods
 
-    private static FunctionDescriptor CreateTestDescriptor(string functionName, string providerName = "TestProvider")
+    private static FunctionDescriptor CreateTestDescriptor(string functionName, string providerName = "SampleProvider")
     {
         return new FunctionDescriptor
         {
@@ -45,7 +45,7 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = false },
+                ["SampleProvider"] = new() { Enabled = false },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -57,7 +57,7 @@ public class FunctionFilterTests
         // Assert
         Assert.True(result.IsFiltered);
         Assert.Equal(FilterRuleType.ProviderDisabled, result.RuleType);
-        Assert.Contains("TestProvider", result.Reason);
+        Assert.Contains("SampleProvider", result.Reason);
         Assert.Contains("disabled", result.Reason);
     }
 
@@ -166,7 +166,7 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, BlockedFunctions = ["blockedFunc", "anotherBlocked"] },
+                ["SampleProvider"] = new() { Enabled = true, BlockedFunctions = ["blockedFunc", "anotherBlocked"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -180,7 +180,7 @@ public class FunctionFilterTests
         Assert.Equal(FilterRuleType.ProviderBlockList, result.RuleType);
         Assert.Equal("blockedFunc", result.MatchedPattern);
         Assert.Contains("blocked", result.Reason);
-        Assert.Contains("TestProvider", result.Reason);
+        Assert.Contains("SampleProvider", result.Reason);
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, BlockedFunctions = ["blocked*"] },
+                ["SampleProvider"] = new() { Enabled = true, BlockedFunctions = ["blocked*"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -220,7 +220,7 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, AllowedFunctions = ["allowedFunc", "anotherAllowed"] },
+                ["SampleProvider"] = new() { Enabled = true, AllowedFunctions = ["allowedFunc", "anotherAllowed"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -245,7 +245,7 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, AllowedFunctions = ["allowedFunc", "anotherAllowed"] },
+                ["SampleProvider"] = new() { Enabled = true, AllowedFunctions = ["allowedFunc", "anotherAllowed"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -291,7 +291,7 @@ public class FunctionFilterTests
     public void ShouldFilterFunctionWithReason_WithGlobalBlockList_ChecksProviderPrefixedPattern()
     {
         // Arrange
-        var config = new FunctionFilterConfig { EnableFiltering = true, GlobalBlockedFunctions = ["TestProvider__*"] };
+        var config = new FunctionFilterConfig { EnableFiltering = true, GlobalBlockedFunctions = ["SampleProvider__*"] };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("anyFunction");
 
@@ -301,7 +301,7 @@ public class FunctionFilterTests
         // Assert
         Assert.True(result.IsFiltered);
         Assert.Equal(FilterRuleType.GlobalBlockList, result.RuleType);
-        Assert.Equal("TestProvider__*", result.MatchedPattern);
+        Assert.Equal("SampleProvider__*", result.MatchedPattern);
     }
 
     #endregion
@@ -365,7 +365,7 @@ public class FunctionFilterTests
             GlobalAllowedFunctions = ["testFunc"],
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, BlockedFunctions = ["testFunc"] },
+                ["SampleProvider"] = new() { Enabled = true, BlockedFunctions = ["testFunc"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -389,7 +389,7 @@ public class FunctionFilterTests
             GlobalBlockedFunctions = ["testFunc"],
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new() { Enabled = true, AllowedFunctions = ["testFunc"] },
+                ["SampleProvider"] = new() { Enabled = true, AllowedFunctions = ["testFunc"] },
             },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
@@ -510,7 +510,7 @@ public class FunctionFilterTests
         {
             EnableFiltering = true,
             GlobalBlockedFunctions = ["*debug*"],
-            GlobalAllowedFunctions = ["get*", "list*", "create*"],
+            GlobalAllowedFunctions = ["get*", "list*", "create*", "special"],
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
                 ["Provider1"] = new()

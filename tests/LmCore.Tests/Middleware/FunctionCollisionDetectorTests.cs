@@ -95,7 +95,12 @@ public class FunctionCollisionDetectorTests
     {
         return new FunctionDescriptor
         {
-            Contract = new FunctionContract { Name = functionName, Description = $"Test function {functionName}" },
+            Contract = new FunctionContract
+            {
+                Name = functionName,
+                ClassName = providerName,
+                Description = $"Test function {functionName}",
+            },
             Handler = _ => Task.FromResult($"Result from {functionName}"),
             ProviderName = providerName,
         };

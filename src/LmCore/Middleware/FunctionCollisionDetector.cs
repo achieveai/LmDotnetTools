@@ -173,8 +173,8 @@ public partial class FunctionCollisionDetector
             sanitized = "_" + sanitized;
         }
 
-        // Ensure it's not empty after sanitization
-        if (string.IsNullOrEmpty(sanitized))
+        // Ensure it's not empty or only non-alphanumeric after sanitization
+        if (string.IsNullOrEmpty(sanitized) || !sanitized.Any(char.IsLetterOrDigit))
         {
             sanitized = "sanitized_function";
         }
