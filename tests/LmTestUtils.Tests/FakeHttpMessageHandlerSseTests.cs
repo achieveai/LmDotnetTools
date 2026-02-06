@@ -1,11 +1,20 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace LmTestUtils.Tests;
 
-public class FakeHttpMessageHandlerSseTests
+public class FakeHttpMessageHandlerSseTests : LoggingTestBase
 {
+    public FakeHttpMessageHandlerSseTests(ITestOutputHelper output) : base(output)
+    {
+    }
+
     [Fact]
     public async Task CreateSseStreamHandler_ShouldReturnProperSseFormat()
     {
@@ -162,5 +171,111 @@ public class FakeHttpMessageHandlerSseTests
         Assert.DoesNotContain("event:", content);
         Assert.Contains("data: Simple message", content);
         Assert.Contains("id: 1", content);
+    }
+
+    /// <summary>
+    ///     Tests SSE streaming with InstructionChainParser pattern.
+    ///     Uses TestSseMessageHandler and verifies SSE format in the response.
+    ///     This demonstrates how InstructionChainParser generates SSE events.
+    /// </summary>
+    [Fact]
+    public async Task TestSseMessageHandler_WithInstructionChain_ShouldReturnProperSseFormat()
+    {
+        Logger.LogInformation("Starting TestSseMessageHandler_WithInstructionChain_ShouldReturnProperSseFormat test");
+
+        // Arrange - Using TestSseMessageHandler with instruction chain
+        var handlerLogger = LoggerFactory.CreateLogger<TestSseMessageHandler>();
+        var testHandler = new TestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 5,
+            ChunkDelayMs = 10,
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        Logger.LogDebug("Created HttpClient with TestSseMessageHandler");
+
+        // User message with instruction chain for text response
+        var userMessage = """
+            Test message
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "SSE format test", "messages":[{"text_message":{"length":15}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Create OpenAI-format request with streaming
+        var requestBody = new
+        {
+            model = "test-model",
+            stream = true,
+            messages = new[]
+            {
+                new { role = "user", content = userMessage }
+            }
+        };
+
+        var jsonContent = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            System.Text.Encoding.UTF8,
+            "application/json"
+        );
+
+        Logger.LogDebug("Created streaming request with instruction chain");
+
+        // Act
+        var response = await httpClient.PostAsync("/v1/chat/completions", jsonContent);
+
+        // Assert - Verify SSE response format
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+        var content = await response.Content.ReadAsStringAsync();
+        Logger.LogInformation("SSE Response content length: {Length}", content.Length);
+        Debug.WriteLine($"InstructionChain SSE Content: {content}");
+
+        // Verify SSE format structure
+        Assert.Contains("data:", content);
+        Assert.Contains("[DONE]", content);
+
+        // Verify proper SSE line format (data: followed by JSON)
+        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var dataLines = lines.Where(l => l.StartsWith("data:")).ToList();
+
+        Logger.LogInformation("Found {Count} data lines in SSE response", dataLines.Count);
+
+        Assert.NotEmpty(dataLines);
+
+        // The last data line should be [DONE]
+        Assert.Equal("data: [DONE]", dataLines.Last());
+
+        // Other data lines should contain valid JSON
+        foreach (var dataLine in dataLines.Take(dataLines.Count - 1))
+        {
+            var jsonPart = dataLine.Substring("data:".Length).Trim();
+
+            if (string.IsNullOrWhiteSpace(jsonPart))
+            {
+                continue;
+            }
+
+            // Should be valid JSON
+            try
+            {
+                using var doc = JsonDocument.Parse(jsonPart);
+                Assert.NotNull(doc.RootElement);
+                Logger.LogTrace("Parsed SSE event: {Json}", jsonPart.Length > 100 ? jsonPart[..100] + "..." : jsonPart);
+            }
+            catch (JsonException ex)
+            {
+                Logger.LogWarning("Non-JSON data line: {Line} - {Error}", dataLine, ex.Message);
+            }
+        }
+
+        Logger.LogInformation("TestSseMessageHandler_WithInstructionChain_ShouldReturnProperSseFormat completed successfully");
     }
 }

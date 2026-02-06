@@ -55,15 +55,19 @@ function handleDelete(event: Event, threadId: string): void {
         {{ isCollapsed ? '>' : '<' }}
       </button>
       <button
-        v-if="!isCollapsed"
-        class="new-chat-btn"
+        :class="['new-chat-btn', { hidden: isCollapsed }]"
         @click="emit('newChat')"
+        :tabindex="isCollapsed ? -1 : 0"
       >
         + New Chat
       </button>
     </div>
 
-    <div v-if="!isCollapsed" class="sidebar-content">
+    <div
+      :class="['sidebar-content', { hidden: isCollapsed }]"
+      :aria-hidden="isCollapsed"
+      :inert="isCollapsed ? '' : null"
+    >
       <div v-if="isLoading" class="loading">
         Loading conversations...
       </div>
@@ -113,7 +117,10 @@ function handleDelete(event: Event, threadId: string): void {
   display: flex;
   flex-direction: column;
   background: #f8f9fa;
-  transition: width 0.2s ease, min-width 0.2s ease;
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: width, min-width;
+  contain: layout style;
 }
 
 .conversation-sidebar.collapsed {
@@ -127,6 +134,7 @@ function handleDelete(event: Event, threadId: string): void {
   display: flex;
   gap: 8px;
   align-items: center;
+  overflow: hidden;
 }
 
 .toggle-btn {
@@ -156,16 +164,38 @@ function handleDelete(event: Event, threadId: string): void {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.15s;
 }
 
-.new-chat-btn:hover {
+.new-chat-btn.hidden {
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
+}
+
+.new-chat-btn:hover:not(.hidden) {
   background: #0056b3;
 }
 
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
+  opacity: 1;
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-content.hidden {
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+  visibility: hidden;
 }
 
 .loading,

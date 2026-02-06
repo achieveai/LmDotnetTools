@@ -2,9 +2,12 @@ using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -12,16 +15,16 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 ///     HTTP-level unit tests for OpenClient using shared test infrastructure
 ///     Tests retry logic, performance tracking, and validation
 /// </summary>
-public class OpenClientHttpTests
+public class OpenClientHttpTests : LoggingTestBase
 {
     private static readonly string[] fallbackKeys = ["OPENAI_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["OPENAI_API_URL"];
-    private readonly ILogger<OpenClient> _logger;
+    private readonly ILogger<OpenClient> _openClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public OpenClientHttpTests()
+    public OpenClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = TestLoggerFactory.CreateLogger<OpenClient>();
+        _openClientLogger = LoggerFactory.CreateLogger<OpenClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
@@ -38,7 +41,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -91,7 +94,7 @@ public class OpenClientHttpTests
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -123,7 +126,7 @@ public class OpenClientHttpTests
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -155,7 +158,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger, RetryOptions.FastForTests);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -179,6 +182,77 @@ public class OpenClientHttpTests
         Assert.NotNull(metrics);
         Assert.Equal(1, metrics.TotalRequests);
         Assert.Equal(1, metrics.SuccessfulRequests);
+    }
+
+    /// <summary>
+    ///     Tests streaming with InstructionChainParser pattern.
+    ///     Uses TestSseMessageHandler for unified test setup.
+    /// </summary>
+    [Fact]
+    public async Task StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed()
+    {
+        // Arrange - Using TestSseMessageHandler with instruction chain in user message
+        Logger.LogInformation("Starting StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed test");
+
+        var handlerLogger = LoggerFactory.CreateLogger<TestSseMessageHandler>();
+        var testHandler = new TestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 3,
+            ChunkDelayMs = 10, // Fast for tests
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        // Create OpenClient with test handler - using test-mode URL
+        var client = new OpenClient(httpClient, "http://test-mode/v1", _performanceTracker, _openClientLogger);
+
+        Logger.LogDebug("Created OpenClient with TestSseMessageHandler");
+
+        // User message with instruction chain embedded
+        var userMessage = """
+            Hello, can you help me with a task?
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Streaming test response", "messages":[{"text_message":{"length":20}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var request = new ChatCompletionRequest(
+            "test-model",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent(userMessage) }]
+        )
+        {
+            Stream = true,
+        };
+
+        Logger.LogDebug("Created ChatCompletionRequest with instruction chain");
+
+        // Act
+        var responseStream = client.StreamingChatCompletionsAsync(request);
+        var chunks = new List<ChatCompletionResponse>();
+        var allContent = new System.Text.StringBuilder();
+
+        await foreach (var chunk in responseStream)
+        {
+            chunks.Add(chunk);
+            var content = chunk.Choices?.FirstOrDefault()?.Delta?.Content;
+            if (content != null)
+            {
+                allContent.Append(content);
+            }
+        }
+
+        Logger.LogInformation("Received {ChunkCount} chunks, total content: {Content}", chunks.Count, allContent.ToString());
+
+        // Assert
+        Assert.NotEmpty(chunks);
+        Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
+
+        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
     }
 
     public static IEnumerable<object[]> GetRetryScenarios()

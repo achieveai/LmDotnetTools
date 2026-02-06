@@ -50,7 +50,8 @@
       "Bash(git -C /Users/gautambhakar/.claude-worktrees/LmDotnetTools/infallible-moser add tests/MemoryServer.Tests/MemoryServer.Tests.csproj)",
       "Bash(git -C /Users/gautambhakar/.claude-worktrees/LmDotnetTools/infallible-moser commit -m \"$(cat <<''EOF''\nfix: Make MemoryServer copy target cross-platform compatible\n\nThe build was failing on macOS/Linux because the copy target was\nlooking for MemoryServer.exe which only exists on Windows. Updated\nto use conditional copy statements that handle both Windows (.exe)\nand Unix (no extension) executables.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(npm install:*)",
-      "Bash(npm run test:run:*)"
+      "Bash(npm run test:run:*)",
+      "Bash(lsof:*)"
     ],
     "deny": [],
     "ask": [],

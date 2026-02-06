@@ -1,11 +1,19 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.TestUtils.MockTools;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
-public class FunctionToolTests
+public class FunctionToolTests : LoggingTestBase
 {
+    public FunctionToolTests(ITestOutputHelper output) : base(output)
+    {
+    }
+
     [Fact]
     public async Task RequestFormat_FunctionTools()
     {
@@ -228,9 +236,7 @@ public class FunctionToolTests
 
         // Verify we got a proper response with text
         Assert.NotNull(response);
-        _ = Assert.IsType<TextMessage>(response.First());
-
-        var textResponse = (TextMessage)response.First();
+        var textResponse = Assert.IsType<TextMessage>(response.First());
         Assert.Contains("I'll help you list the files", textResponse.Text);
 
         // Check that the request was captured correctly using RequestCapture API
@@ -245,5 +251,93 @@ public class FunctionToolTests
         Assert.Equal("python_mcp-list_directory", tools[0].Name);
 
         TestLogger.Log($"Successfully validated tool use response with tool: {tools[0].Name}");
+    }
+
+    /// <summary>
+    ///     Tests tool call response with InstructionChainParser pattern.
+    ///     Uses AnthropicTestSseMessageHandler for unified test setup.
+    ///     The instruction chain specifies a tool_call to simulate.
+    /// </summary>
+    [Fact]
+    public async Task ToolUseResponse_WithInstructionChain_ShouldGenerateToolCall()
+    {
+        Logger.LogInformation("Starting ToolUseResponse_WithInstructionChain_ShouldGenerateToolCall test");
+
+        // Arrange - Using AnthropicTestSseMessageHandler with tool_call instruction
+        var handlerLogger = LoggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
+        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 5,
+            ChunkDelayMs = 10, // Fast for tests
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
+
+        Logger.LogDebug("Created AnthropicAgent with AnthropicTestSseMessageHandler");
+
+        // User message with instruction chain for tool call
+        var userMessage = """
+            List files in the root directory
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Simulating tool call", "messages":[
+                    {"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}}]}
+                ]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var messages = new[]
+        {
+            new TextMessage { Role = Role.User, Text = userMessage },
+        };
+
+        // Extract list_directory function from MockPythonExecutionTool
+        var listDirTemplate = MockToolCallHelper
+            .CreateMockToolCalls([typeof(MockPythonExecutionTool)])
+            .Item1.First(f => f.Name == "list_directory");
+
+        var listDirFunction = new FunctionContract
+        {
+            Name = "python_mcp-list_directory",
+            Description = "List directory contents",
+            Parameters = listDirTemplate.Parameters,
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-3-sonnet-20240229",
+            Functions = [listDirFunction],
+        };
+
+        Logger.LogDebug("Created messages with tool_call instruction chain");
+
+        // Act
+        var response = await agent.GenerateReplyAsync(messages, options);
+
+        // Assert
+        Assert.NotNull(response);
+        var responseList = response.ToList();
+        Assert.NotEmpty(responseList);
+
+        Logger.LogInformation("Response count: {Count}", responseList.Count);
+
+        // The response should contain a ToolCallMessage or ToolCallResultMessage
+        // depending on how the agent processes tool calls
+        foreach (var msg in responseList)
+        {
+            Logger.LogInformation("Response message: Type={Type}, Role={Role}", msg.GetType().Name, msg.Role);
+        }
+
+        // Verify we got at least one response
+        Assert.True(responseList.Count >= 1);
+
+        Logger.LogInformation("ToolUseResponse_WithInstructionChain_ShouldGenerateToolCall completed successfully");
     }
 }

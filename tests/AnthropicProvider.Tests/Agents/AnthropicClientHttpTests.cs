@@ -1,10 +1,10 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Microsoft.Extensions.Logging;
-
-using Xunit.Abstractions;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -14,12 +14,12 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 /// </summary>
 public class AnthropicClientHttpTests : LoggingTestBase
 {
-    private readonly ILogger<AnthropicClient> _logger;
+    private readonly ILogger<AnthropicClient> _anthropicClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
     public AnthropicClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = LoggerFactory.CreateLogger<AnthropicClient>();
+        _anthropicClientLogger = LoggerFactory.CreateLogger<AnthropicClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
@@ -35,7 +35,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -84,7 +84,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -109,7 +109,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -150,7 +150,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -194,7 +194,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -230,6 +230,96 @@ public class AnthropicClientHttpTests : LoggingTestBase
         Assert.Equal(1, metrics.SuccessfulRequests);
     }
 
+    /// <summary>
+    ///     Tests streaming with InstructionChainParser pattern.
+    ///     Uses AnthropicTestSseMessageHandler for unified test setup.
+    /// </summary>
+    [Fact]
+    public async Task StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed()
+    {
+        // Arrange - Using AnthropicTestSseMessageHandler with instruction chain in user message
+        Logger.LogInformation("Starting StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed test");
+
+        var handlerLogger = LoggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
+        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 3,
+            ChunkDelayMs = 10, // Fast for tests
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        // Create AnthropicClient with test handler
+        var client = new AnthropicClient("test-api-key", httpClient);
+
+        Logger.LogDebug("Created AnthropicClient with AnthropicTestSseMessageHandler");
+
+        // User message with instruction chain embedded
+        var userMessage = """
+            Hello Claude, can you help me with a task?
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Anthropic streaming test response", "messages":[{"text_message":{"length":20}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var request = new AnthropicRequest
+        {
+            Model = "claude-3-sonnet-20240229",
+            MaxTokens = 1000,
+            Stream = true,
+            Messages =
+            [
+                new AnthropicMessage
+                {
+                    Role = "user",
+                    Content = [new AnthropicContent { Type = "text", Text = userMessage }],
+                },
+            ],
+        };
+
+        Logger.LogDebug("Created AnthropicRequest with instruction chain");
+
+        // Act
+        var responseStream = await client.StreamingChatCompletionsAsync(request);
+        var events = new List<AnthropicStreamEvent>();
+        var allContent = new System.Text.StringBuilder();
+
+        await foreach (var streamEvent in responseStream)
+        {
+            events.Add(streamEvent);
+
+            // Extract text content from content_block_delta events
+            if (streamEvent is AnthropicContentBlockDeltaEvent deltaEvent
+                && deltaEvent.Delta is AnthropicTextDelta textDelta)
+            {
+                allContent.Append(textDelta.Text);
+            }
+        }
+
+        Logger.LogInformation(
+            "Received {EventCount} events, total content: {Content}",
+            events.Count,
+            allContent.ToString()
+        );
+
+        // Assert
+        Assert.NotEmpty(events);
+        Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
+
+        // Verify we got proper Anthropic event types
+        Assert.Contains(events, e => e.Type == "message_start");
+        Assert.Contains(events, e => e.Type == "content_block_start");
+        Assert.Contains(events, e => e.Type == "content_block_delta");
+        Assert.Contains(events, e => e.Type == "message_stop");
+
+        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+    }
+
     [Fact]
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
     {
@@ -238,7 +328,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {

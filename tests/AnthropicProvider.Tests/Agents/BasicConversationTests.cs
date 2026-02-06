@@ -1,12 +1,21 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
+// and AnthropicTestSseMessageHandler for InstructionChainParser pattern
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
-public class BasicConversationTests
+public class BasicConversationTests : LoggingTestBase
 {
+    public BasicConversationTests(ITestOutputHelper output) : base(output)
+    {
+    }
+
     [Fact]
     public async Task SimpleConversation_ShouldCreateProperRequest()
     {
@@ -129,9 +138,79 @@ public class BasicConversationTests
         Assert.NotNull(responses);
         var response = responses.FirstOrDefault();
         Assert.NotNull(response);
-        _ = Assert.IsType<TextMessage>(response);
-        var textResponse = (TextMessage)response;
+        var textResponse = Assert.IsType<TextMessage>(response);
         Assert.Equal(Role.Assistant, textResponse.Role);
         Assert.Contains("Claude", textResponse.Text);
+    }
+
+    /// <summary>
+    ///     Tests basic conversation with InstructionChainParser pattern.
+    ///     Uses AnthropicTestSseMessageHandler for unified test setup.
+    ///     The instruction chain is embedded in the user message.
+    /// </summary>
+    [Fact]
+    public async Task ResponseFormat_WithInstructionChain_ShouldGenerateTextResponse()
+    {
+        Logger.LogInformation("Starting ResponseFormat_WithInstructionChain_ShouldGenerateTextResponse test");
+
+        // Arrange - Using AnthropicTestSseMessageHandler with instruction chain
+        var handlerLogger = LoggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
+        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 5,
+            ChunkDelayMs = 10, // Fast for tests
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
+
+        Logger.LogDebug("Created AnthropicAgent with AnthropicTestSseMessageHandler");
+
+        // User message with instruction chain for text response
+        // Using explicit text to match the expected content
+        var userMessage = """
+            Hello Claude!
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Basic text response", "messages":[{"text_message":{"length":30}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var messages = new[]
+        {
+            new TextMessage { Role = Role.User, Text = userMessage },
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-3-sonnet-20240229",
+        };
+
+        Logger.LogDebug("Created messages with instruction chain");
+
+        // Act
+        var responses = await agent.GenerateReplyAsync(messages, options);
+
+        // Assert
+        Assert.NotNull(responses);
+        var response = responses.FirstOrDefault();
+        Assert.NotNull(response);
+
+        Logger.LogInformation("Response type: {Type}, Role: {Role}", response.GetType().Name, response.Role);
+
+        var textResponse = Assert.IsType<TextMessage>(response);
+        Assert.Equal(Role.Assistant, textResponse.Role);
+        Assert.NotEmpty(textResponse.Text);
+
+        Logger.LogInformation(
+            "ResponseFormat_WithInstructionChain_ShouldGenerateTextResponse completed. Response: {Response}",
+            textResponse.Text
+        );
     }
 }
