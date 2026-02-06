@@ -11,6 +11,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
@@ -104,6 +105,11 @@ public class DataDrivenFunctionToolTests
     [Fact]
     public async Task CreateWeatherFunctionToolTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         // Skip if the test data already exists
         var testName = "WeatherFunctionTool";
         var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
@@ -173,6 +179,11 @@ public class DataDrivenFunctionToolTests
     [Fact]
     public async Task CreateMultiFunctionToolTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         // Skip if the test data already exists
         var testName = "MultiFunctionTool";
         var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
@@ -278,5 +289,14 @@ public class DataDrivenFunctionToolTests
     private static string GetApiBaseUrlFromEnv()
     {
         return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
     }
 }

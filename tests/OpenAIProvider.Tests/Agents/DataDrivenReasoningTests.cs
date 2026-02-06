@@ -18,6 +18,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 /// </summary>
 public class DataDrivenReasoningTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
@@ -89,6 +90,11 @@ public class DataDrivenReasoningTests
     [Fact]
     public async Task CreateBasicReasoningTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "BasicReasoning";
 
         // Short-circuit if data already there
@@ -159,6 +165,11 @@ public class DataDrivenReasoningTests
     [Fact]
     public async Task CreateO4MiniReasoningTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "O4MiniReasoning";
 
         var lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
@@ -233,6 +244,15 @@ public class DataDrivenReasoningTests
     private static string GetApiBaseUrlFromEnv()
     {
         return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
     }
 
     #endregion

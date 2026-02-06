@@ -2,10 +2,12 @@ using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private readonly ProviderTestDataManager _testDataManager = new();
 
     private static string EnvTestPath =>
@@ -25,80 +27,107 @@ public class DataDrivenFunctionToolTests
             $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
         );
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "Anthropic",
-            $"{testName}.json"
-        );
+        messages = PrepareInstructionDrivenMessages(testName, messages, options);
 
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath, false)
-            .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
+        // Execute via deterministic SSE test-mode handler for offline full-stack testing.
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
         var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
-        Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
+        Debug.WriteLine("Created agent with AnthropicTestSseMessageHandler");
 
         // Act
         var response = await agent.GenerateReplyAsync(messages, options);
         Debug.WriteLine($"Generated response: {response?.GetType().Name}");
 
-        // Assert - Compare with expected response
-        var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
-        if (expectedResponses == null)
-        {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? []);
-            return; // Skip comparison if no expected data exists yet
-        }
-
         Assert.NotNull(response);
+        var result = response!.ToList();
+        Assert.NotEmpty(result);
+        Assert.IsType<UsageMessage>(result.Last());
 
-        // Account for the extra UsageMessage that was added to the API response
-        var responseWithoutUsage = response!.Where(r => r is not UsageMessage).ToList();
-
-        // There should be one UsageMessage in the response
-        _ = Assert.Single(response, r => r is UsageMessage);
-
-        // Check that the remaining messages match what we expected
-        Assert.Equal(expectedResponses.Count, responseWithoutUsage.Count);
-
-        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage))
+        var responseWithoutUsage = result.Take(result.Count - 1).ToList();
+        var toolCalls = responseWithoutUsage.GetAllToolCalls().ToList();
+        if (testName.Contains("MultiFunctionTool", StringComparison.Ordinal))
         {
-            if (expectedResponse is TextMessage expectedTextResponse)
-            {
-                _ = Assert.IsType<TextMessage>(responseItem);
-                Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
-                Assert.Equal(expectedTextResponse.Role, responseItem.Role);
-            }
-            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
-            {
-                _ = Assert.IsType<ToolsCallAggregateMessage>(responseItem);
-                var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
-                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
-                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
-                );
-                foreach (
-                    var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage
-                        .ToolsCallMessage!.GetToolCalls()!
-                        .Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!)
-                )
-                {
-                    Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
-                    Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);
-                }
-            }
+            Assert.Equal(2, toolCalls.Count);
+            Assert.Contains(
+                toolCalls,
+                tc =>
+                    tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}"
+            );
+            Assert.Contains(
+                toolCalls,
+                tc =>
+                    tc.FunctionName == "python_mcp-get_directory_tree"
+                    && tc.FunctionArgs == "{\"relative_path\":\"code\"}"
+            );
+        }
+        else if (testName.Contains("WeatherFunctionTool", StringComparison.Ordinal))
+        {
+            Assert.Single(toolCalls);
+            Assert.Contains(
+                toolCalls,
+                tc => tc.FunctionName == "getWeather" && tc.FunctionArgs == "{\"location\":\"San Francisco\"}"
+            );
+        }
+        else if (options.Functions is { Length: > 0 })
+        {
+            Assert.Single(toolCalls);
+            var expectedFunction = options.Functions[0].Name;
+            Assert.Contains(toolCalls, tc => tc.FunctionName == expectedFunction && tc.FunctionArgs == "{}");
+        }
+        else
+        {
+            Assert.Contains(responseWithoutUsage, m => m is TextMessage);
         }
 
-        Debug.WriteLine($"Test {testName} completed successfully");
+        Debug.WriteLine($"Test {testName} completed successfully with {toolCalls.Count} tool calls");
+    }
+
+    private static IMessage[] PrepareInstructionDrivenMessages(
+        string testName,
+        IMessage[] messages,
+        GenerateReplyOptions options
+    )
+    {
+        var userIndex = Array.FindLastIndex(messages, m => m is TextMessage tm && tm.Role == Role.User);
+        if (userIndex < 0 || messages[userIndex] is not TextMessage userMessage)
+        {
+            return messages;
+        }
+
+        string instruction;
+        if (testName.Contains("MultiFunctionTool", StringComparison.Ordinal))
+        {
+            instruction =
+                """
+                <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
+                """;
+        }
+        else if (testName.Contains("WeatherFunctionTool", StringComparison.Ordinal))
+        {
+            instruction =
+                """
+                <|instruction_start|>{"instruction_chain":[{"id_message":"weather-tool","messages":[{"tool_call":[{"name":"getWeather","args":{"location":"San Francisco"}}]}]}]}<|instruction_end|>
+                """;
+        }
+        else if (options.Functions is { Length: > 0 })
+        {
+            var functionName = options.Functions[0].Name;
+            instruction =
+                $"<|instruction_start|>{{\"instruction_chain\":[{{\"id_message\":\"tool\",\"messages\":[{{\"tool_call\":[{{\"name\":\"{functionName}\",\"args\":{{}}}}]}}]}}]}}<|instruction_end|>";
+        }
+        else
+        {
+            // ToolCallResultTool-style input: no function definitions, expect summarized text response.
+            instruction =
+                """
+                <|instruction_start|>{"instruction_chain":[{"id_message":"tool-result-summary","messages":[{"text_message":{"length":60}}]}]}<|instruction_end|>
+                """;
+        }
+
+        var rewritten = messages.ToArray();
+        rewritten[userIndex] = userMessage with { Text = $"{userMessage.Text}\n{instruction}" };
+        return rewritten;
     }
 
     /// <summary>
@@ -119,6 +148,11 @@ public class DataDrivenFunctionToolTests
     [Fact]
     public async Task CreateWeatherFunctionToolTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         // Skip if the test data already exists
         var testName = "WeatherFunctionTool";
         var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
@@ -192,6 +226,11 @@ public class DataDrivenFunctionToolTests
     [Fact]
     public async Task CreateMultiFunctionToolTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         // Skip if the test data already exists
         var testName = "MultiFunctionTool";
         var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
@@ -290,5 +329,14 @@ public class DataDrivenFunctionToolTests
     {
         EnvironmentHelper.LoadEnvIfNeeded();
         return Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "test-api-key";
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
     }
 }

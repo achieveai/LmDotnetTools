@@ -15,6 +15,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 /// </summary>
 public class DataDrivenMultiTurnReasoningTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_BASE_URL"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_KEY"];
@@ -82,6 +83,11 @@ public class DataDrivenMultiTurnReasoningTests
     [MemberData(nameof(GetProviders))]
     public async Task CreateMultiTurnArtefacts(string testName, string model)
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         var path = _dm.GetTestDataPath(testName + "_Turn2", ProviderType.OpenAI, DataType.FinalResponse);
         if (File.Exists(path))
         {
@@ -148,5 +154,14 @@ public class DataDrivenMultiTurnReasoningTests
 
         var turn2Resp = await agent.GenerateReplyAsync(turn2Prompt, opts);
         _dm.SaveFinalResponse(testName + "_Turn2", ProviderType.OpenAI, turn2Resp);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
     }
 }

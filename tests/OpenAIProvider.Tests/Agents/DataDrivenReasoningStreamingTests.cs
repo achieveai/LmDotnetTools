@@ -22,6 +22,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 /// </summary>
 public class DataDrivenReasoningStreamingTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
@@ -284,6 +285,11 @@ public class DataDrivenReasoningStreamingTests
     [Fact]
     public async Task CreateBasicReasoningStreamingTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "BasicReasoningStreaming";
         await CreateStreamingArtefactsAsync(testName, "deepseek/deepseek-r1-0528:free");
     }
@@ -291,6 +297,11 @@ public class DataDrivenReasoningStreamingTests
     [Fact]
     public async Task CreateO4MiniReasoningStreamingTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "O4MiniReasoningStreaming";
         await CreateStreamingArtefactsAsync(testName, "o4-mini");
     }
@@ -373,6 +384,15 @@ public class DataDrivenReasoningStreamingTests
     private static string GetApiBaseUrlFromEnv()
     {
         return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
     }
 
     private static IMessage[] WithStreamingReasoningInstruction(IMessage[] messages, string id)
