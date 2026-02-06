@@ -706,7 +706,7 @@ public class FunctionCallMiddlewareTests
     public async Task FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin()
     {
         EnvironmentHelper.LoadEnvIfNeeded();
-        Debug.WriteLine("=== TEST START ===");
+        TestContextLogger.LogDebugMessage("=== TEST START ===");
 
         // Arrange
         var functionContracts = new[]
@@ -735,7 +735,7 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        Debug.WriteLine("Function contracts created");
+        TestContextLogger.LogDebugMessage("Function contracts created");
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -746,11 +746,11 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        Debug.WriteLine("Function map created");
+        TestContextLogger.LogDebugMessage("Function map created");
 
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
-        Debug.WriteLine("Middleware created");
+        TestContextLogger.LogDebugMessage("Middleware created");
 
         var messages = new List<IMessage>
         {
@@ -758,15 +758,15 @@ public class FunctionCallMiddlewareTests
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
-        Debug.WriteLine("Messages created");
+        TestContextLogger.LogDebugMessage("Messages created");
 
         var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = functionContracts };
 
-        Debug.WriteLine("Options created");
+        TestContextLogger.LogDebugMessage("Options created");
 
         var context = new MiddlewareContext(messages, options);
 
-        Debug.WriteLine("Context created");
+        TestContextLogger.LogDebugMessage("Context created");
 
         // Create HTTP client with streaming response that includes tool calls (replaces record/playback)
         var toolCallStreamingResponse = CreateToolCallStreamingResponse();
@@ -775,50 +775,50 @@ public class FunctionCallMiddlewareTests
             toolCallStreamingResponse
         );
 
-        Debug.WriteLine("Handler created");
+        TestContextLogger.LogDebugMessage("Handler created");
 
         var httpClient = new HttpClient(handler);
 
-        Debug.WriteLine("HttpClient created");
+        TestContextLogger.LogDebugMessage("HttpClient created");
 
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
 
-        Debug.WriteLine("OpenClient created");
+        TestContextLogger.LogDebugMessage("OpenClient created");
 
         var agent = new OpenClientAgent("TestAgent", client);
 
-        Debug.WriteLine("Agent created");
+        TestContextLogger.LogDebugMessage("Agent created");
 
-        Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
-        Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
-        Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
-        Debug.WriteLine($"Agent type: {agent.GetType().Name}");
+        TestContextLogger.LogDebugMessage("=== MIDDLEWARE TEST DEBUG ===");
+        TestContextLogger.LogDebug("Context messages count: {MessageCount}", context.Messages.Count());
+        TestContextLogger.LogDebug("Last message type: {MessageType}", context.Messages.Last().GetType().Name);
+        TestContextLogger.LogDebug("Agent type: {AgentType}", agent.GetType().Name);
 
         // Act
-        Debug.WriteLine("Calling middleware.InvokeStreamingAsync...");
+        TestContextLogger.LogDebugMessage("Calling middleware.InvokeStreamingAsync...");
         var responseStream = await middleware.InvokeStreamingAsync(context, agent);
-        Debug.WriteLine("Got response stream, iterating...");
+        TestContextLogger.LogDebugMessage("Got response stream, iterating...");
 
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
+            TestContextLogger.LogDebug("Response received: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
             if (response is ToolsCallMessage toolsCall)
             {
-                Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
+                TestContextLogger.LogDebug("Tool calls count: {ToolCallCount}", toolsCall.ToolCalls?.Count ?? 0);
             }
 
             responses.Add(response);
         }
 
         // Assert
-        Debug.WriteLine($"Total responses: {responses.Count}");
+        TestContextLogger.LogDebug("Total responses: {ResponseCount}", responses.Count);
         foreach (var response in responses)
         {
-            Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            TestContextLogger.LogDebug("Response type: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
         }
 
-        Debug.WriteLine("=== END DEBUG ===");
+        TestContextLogger.LogDebugMessage("=== END DEBUG ===");
         Assert.NotEmpty(responses);
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
@@ -1029,15 +1029,15 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            Debug.WriteLine($"Response received: {response.GetType().Name}");
+            TestContextLogger.LogDebug("Response received: {MessageType}", response.GetType().Name);
             responses.Add(response);
         }
 
         // Assert
-        Debug.WriteLine($"Total responses: {responses.Count}");
+        TestContextLogger.LogDebug("Total responses: {ResponseCount}", responses.Count);
         foreach (var response in responses)
         {
-            Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            TestContextLogger.LogDebug("Response type: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
         }
 
         Assert.NotEmpty(responses);
@@ -1125,38 +1125,38 @@ public class FunctionCallMiddlewareTests
     {
         try
         {
-            Debug.WriteLine("=== DIAGNOSTIC TEST START ===");
+            TestContextLogger.LogDebugMessage("=== DIAGNOSTIC TEST START ===");
 
             // Test environment loading
             EnvironmentHelper.LoadEnvIfNeeded();
             var apiKey = GetApiKeyFromEnv();
             var baseUrl = GetApiBaseUrlFromEnv();
-            Debug.WriteLine($"API Key: {apiKey}");
-            Debug.WriteLine($"Base URL: {baseUrl}");
+            TestContextLogger.LogDebug("API Key configured: {HasApiKey}", !string.IsNullOrWhiteSpace(apiKey));
+            TestContextLogger.LogDebug("Base URL: {BaseUrl}", baseUrl);
 
             // Test MockHttpHandlerBuilder
             var handler = MockHttpHandlerBuilder.Create().RespondWithJson("{\"test\": \"value\"}").Build();
-            Debug.WriteLine("Handler created successfully");
+            TestContextLogger.LogDebugMessage("Handler created successfully");
 
             // Test HttpClient
             var httpClient = new HttpClient(handler);
-            Debug.WriteLine("HttpClient created successfully");
+            TestContextLogger.LogDebugMessage("HttpClient created successfully");
 
             // Test OpenClient
             var client = new OpenClient(httpClient, baseUrl);
-            Debug.WriteLine("OpenClient created successfully");
+            TestContextLogger.LogDebugMessage("OpenClient created successfully");
 
             // Test OpenClientAgent
             var agent = new OpenClientAgent("TestAgent", client);
-            Debug.WriteLine("OpenClientAgent created successfully");
+            TestContextLogger.LogDebugMessage("OpenClientAgent created successfully");
 
-            Debug.WriteLine("=== DIAGNOSTIC TEST COMPLETE ===");
+            TestContextLogger.LogDebugMessage("=== DIAGNOSTIC TEST COMPLETE ===");
 
             Assert.True(true); // If we get here, basic setup works
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Exception in diagnostic test: {ex}");
+            TestContextLogger.LogDebug("Exception in diagnostic test: {Exception}", ex);
             throw;
         }
     }
@@ -1166,7 +1166,7 @@ public class FunctionCallMiddlewareTests
     {
         try
         {
-            Debug.WriteLine("=== AGENT STREAMING TEST START ===");
+            TestContextLogger.LogDebugMessage("=== AGENT STREAMING TEST START ===");
 
             // Use the exact same pattern as the working OpenAI streaming test
             var streamingResponse = CreateStreamingResponse();
@@ -1208,29 +1208,29 @@ public class FunctionCallMiddlewareTests
                 ],
             };
 
-            Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
+            TestContextLogger.LogDebugMessage("Calling agent.GenerateReplyStreamingAsync...");
 
             // Test the agent directly
             var streamingResponse2 = await agent.GenerateReplyStreamingAsync(messages, options);
 
-            Debug.WriteLine("Got streaming response, iterating...");
+            TestContextLogger.LogDebugMessage("Got streaming response, iterating...");
 
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
-                Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
+                TestContextLogger.LogDebug("Agent response: {MessageType}, Role: {Role}", response.GetType().Name, response.Role);
                 responses.Add(response);
             }
 
-            Debug.WriteLine($"Total agent responses: {responses.Count}");
+            TestContextLogger.LogDebug("Total agent responses: {ResponseCount}", responses.Count);
 
             Assert.True(responses.Count > 0, "Agent should return at least one response");
 
-            Debug.WriteLine("=== AGENT STREAMING TEST COMPLETE ===");
+            TestContextLogger.LogDebugMessage("=== AGENT STREAMING TEST COMPLETE ===");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Exception in agent streaming test: {ex}");
+            TestContextLogger.LogDebug("Exception in agent streaming test: {Exception}", ex);
             throw;
         }
     }

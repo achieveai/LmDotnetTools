@@ -77,7 +77,7 @@ public static class SchemaHelper
             foreach (var kvp in transformedProperties)
             {
                 requiredPropertyNames.Add(kvp.Key);
-                Console.WriteLine($"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)");
+
             }
         }
 

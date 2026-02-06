@@ -82,7 +82,7 @@ public abstract class LoggingTestBase : IDisposable
         // Create a logger for this test class
         Logger = LoggerFactory.CreateLogger(GetType());
 
-        Logger.LogDebug("Test initialized: {TestClass}.{TestMethod}", TestClassName, TestMethodName);
+        Logger.LogDebug("Test initialized: {testClassName}.{testCaseName}", TestClassName, TestMethodName);
     }
 
     /// <summary>
@@ -94,7 +94,7 @@ public abstract class LoggingTestBase : IDisposable
     {
         TestMethodName = methodName;
         // Update the log context with the new method name
-        _ = LogContext.PushProperty("TestMethod", methodName);
+        _ = LogContext.PushProperty("testCaseName", methodName);
     }
 
     /// <summary>
@@ -114,14 +114,14 @@ public abstract class LoggingTestBase : IDisposable
         if (additionalContext != null)
         {
             Logger.LogInformation(
-                "▶ Test starting: {TestClass}.{TestMethod} with context {@Context}",
+                "▶ Test starting: {testClassName}.{testCaseName} with context {@Context}",
                 TestClassName,
                 methodName,
                 additionalContext);
         }
         else
         {
-            Logger.LogInformation("▶ Test starting: {TestClass}.{TestMethod}", TestClassName, methodName);
+            Logger.LogInformation("▶ Test starting: {testClassName}.{testCaseName}", TestClassName, methodName);
         }
     }
 
@@ -131,7 +131,7 @@ public abstract class LoggingTestBase : IDisposable
     /// <param name="methodName">The test method name (auto-detected via CallerMemberName).</param>
     protected void LogTestEnd([CallerMemberName] string? methodName = null)
     {
-        Logger.LogInformation("✓ Test completed: {TestClass}.{TestMethod}", TestClassName, methodName);
+        Logger.LogInformation("✓ Test completed: {testClassName}.{testCaseName}", TestClassName, methodName);
     }
 
     /// <summary>
@@ -204,7 +204,7 @@ public abstract class LoggingTestBase : IDisposable
 
         if (disposing)
         {
-            Logger.LogDebug("Test disposing: {TestClass}.{TestMethod}", TestClassName, TestMethodName);
+            Logger.LogDebug("Test disposing: {testClassName}.{testCaseName}", TestClassName, TestMethodName);
             _logScope.Dispose();
             LoggerFactory.Dispose();
         }

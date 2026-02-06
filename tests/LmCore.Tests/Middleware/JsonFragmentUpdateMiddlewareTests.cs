@@ -51,7 +51,7 @@ public class JsonFragmentUpdateMiddlewareTests
         _ = Assert.Single(result);
         Assert.Same(textMessage, result[0]);
 
-        Debug.WriteLine("✓ Non-ToolsCallUpdateMessage passed through unchanged");
+        TestContextLogger.LogDebugMessage("✓ Non-ToolsCallUpdateMessage passed through unchanged");
     }
 
     [Theory]
@@ -63,7 +63,7 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        Debug.WriteLine($"Testing: {functionName} with args: {functionArgs}");
+        TestContextLogger.LogDebug("Testing function call parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}", functionName, functionArgs);
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdate = new ToolCallUpdate
@@ -84,7 +84,7 @@ public class JsonFragmentUpdateMiddlewareTests
         // Act
         var result = ProcessMessagesSync(middleware, messages);
 
-        Debug.WriteLine($"Result count: {result.Count}");
+        TestContextLogger.LogDebug("Result count: {ResultCount}", result.Count);
 
         // Assert
         _ = Assert.Single(result);
@@ -102,10 +102,15 @@ public class JsonFragmentUpdateMiddlewareTests
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
             Assert.NotEmpty(processedUpdate.JsonFragmentUpdates);
 
-            Debug.WriteLine($"JsonFragmentUpdates count: {processedUpdate.JsonFragmentUpdates.Count}");
+            TestContextLogger.LogDebug("JsonFragmentUpdates count: {UpdateCount}", processedUpdate.JsonFragmentUpdates.Count);
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
-                Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+                TestContextLogger.LogDebug(
+                    "Fragment update. Kind: {Kind}, Path: {Path}, Value: {Value}",
+                    update.Kind,
+                    update.Path,
+                    update.TextValue
+                );
             }
         }
     }
@@ -119,7 +124,12 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        Debug.WriteLine($"Testing streaming: '{fragment1}' + '{fragment2}' + '{fragment3}'");
+        TestContextLogger.LogDebug(
+            "Testing streaming fragments. Fragment1: {Fragment1}, Fragment2: {Fragment2}, Fragment3: {Fragment3}",
+            fragment1,
+            fragment2,
+            fragment3
+        );
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -167,21 +177,26 @@ public class JsonFragmentUpdateMiddlewareTests
             var processedUpdate = processedMessage.ToolCallUpdates[0];
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
 
-            Debug.WriteLine($"Message has {processedUpdate.JsonFragmentUpdates.Count} fragment updates");
+            TestContextLogger.LogDebug("Message has fragment updates. Count: {UpdateCount}", processedUpdate.JsonFragmentUpdates.Count);
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
-                Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+                TestContextLogger.LogDebug(
+                    "Fragment update. Kind: {Kind}, Path: {Path}, Value: {Value}",
+                    update.Kind,
+                    update.Path,
+                    update.TextValue
+                );
             }
         }
 
-        Debug.WriteLine("✓ All streaming messages processed successfully");
+        TestContextLogger.LogDebugMessage("✓ All streaming messages processed successfully");
     }
 
     [Fact]
     public void ProcessAsync_WithEmptyFunctionArgs_ReturnsOriginalUpdate()
     {
         // Arrange
-        Debug.WriteLine("Testing empty function args");
+        TestContextLogger.LogDebugMessage("Testing empty function args");
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdate = new ToolCallUpdate
@@ -213,14 +228,14 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("", processedUpdate.FunctionArgs);
         Assert.Null(processedUpdate.JsonFragmentUpdates);
 
-        Debug.WriteLine("✓ Empty function args handled correctly");
+        TestContextLogger.LogDebugMessage("✓ Empty function args handled correctly");
     }
 
     [Fact]
     public void ProcessAsync_WithNullFunctionArgs_ReturnsOriginalUpdate()
     {
         // Arrange
-        Debug.WriteLine("Testing null function args");
+        TestContextLogger.LogDebugMessage("Testing null function args");
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdate = new ToolCallUpdate
@@ -252,14 +267,14 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Null(processedUpdate.FunctionArgs);
         Assert.Null(processedUpdate.JsonFragmentUpdates);
 
-        Debug.WriteLine("✓ Null function args handled correctly");
+        TestContextLogger.LogDebugMessage("✓ Null function args handled correctly");
     }
 
     [Fact]
     public void ProcessAsync_WithMultipleToolCallUpdatesInSameMessage_ProcessesEachSeparately()
     {
         // Arrange
-        Debug.WriteLine("Testing multiple tool call updates in same message");
+        TestContextLogger.LogDebugMessage("Testing multiple tool call updates in same message");
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdates = ImmutableList.Create(
@@ -298,19 +313,21 @@ public class JsonFragmentUpdateMiddlewareTests
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
             Assert.NotEmpty(processedUpdate.JsonFragmentUpdates);
 
-            Debug.WriteLine(
-                $"Tool call {processedUpdate.ToolCallId} has {processedUpdate.JsonFragmentUpdates.Count} fragment updates"
+            TestContextLogger.LogDebug(
+                "Tool call fragment updates. ToolCallId: {ToolCallId}, UpdateCount: {UpdateCount}",
+                processedUpdate.ToolCallId,
+                processedUpdate.JsonFragmentUpdates.Count
             );
         }
 
-        Debug.WriteLine("✓ Multiple tool call updates processed correctly");
+        TestContextLogger.LogDebugMessage("✓ Multiple tool call updates processed correctly");
     }
 
     [Fact]
     public void ClearGenerators_RemovesAllGeneratorState()
     {
         // Arrange
-        Debug.WriteLine("Testing generator clearing");
+        TestContextLogger.LogDebugMessage("Testing generator clearing");
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -345,13 +362,13 @@ public class JsonFragmentUpdateMiddlewareTests
         var processedUpdate = processedMessage.ToolCallUpdates[0];
         Assert.NotNull(processedUpdate.JsonFragmentUpdates);
 
-        Debug.WriteLine("✓ Generator clearing works correctly");
+        TestContextLogger.LogDebugMessage("✓ Generator clearing works correctly");
     }
 
     [Fact]
     public void ProcessAsync_WithCompleteJsonToolCall_IncludesJsonCompleteEvent()
     {
-        Debug.WriteLine("Testing ProcessAsync with complete JSON tool call includes JsonComplete event");
+        TestContextLogger.LogDebugMessage("Testing ProcessAsync with complete JSON tool call includes JsonComplete event");
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -388,8 +405,8 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("root", completeEvent.Path);
         Assert.Equal("{\"message\": \"Hello World\"}", completeEvent.TextValue);
 
-        Debug.WriteLine($"✓ JsonComplete event found: {completeEvent.TextValue}");
-        Debug.WriteLine($"✓ Total fragment updates: {processedToolCall.JsonFragmentUpdates.Count}");
+        TestContextLogger.LogDebug("JsonComplete event found. Value: {JsonValue}", completeEvent.TextValue);
+        TestContextLogger.LogDebug("Total fragment updates: {UpdateCount}", processedToolCall.JsonFragmentUpdates.Count);
     }
 
     /// <summary>
@@ -444,7 +461,7 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Testing singular: {functionName} with args: {functionArgs}");
+        TestContextLogger.LogDebug("Testing singular parse. FunctionName: {FunctionName}, FunctionArgs: {FunctionArgs}", functionName, functionArgs);
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdateMessage = new ToolCallUpdateMessage
@@ -460,7 +477,7 @@ public class JsonFragmentUpdateMiddlewareTests
         // Act
         var result = ProcessMessagesSync(middleware, messages);
 
-        System.Diagnostics.Debug.WriteLine($"Result count: {result.Count}");
+        TestContextLogger.LogDebug("Result count: {ResultCount}", result.Count);
 
         // Assert
         _ = Assert.Single(result);
@@ -476,12 +493,18 @@ public class JsonFragmentUpdateMiddlewareTests
             Assert.NotNull(processedMessage.JsonFragmentUpdates);
             Assert.NotEmpty(processedMessage.JsonFragmentUpdates);
 
-            System.Diagnostics.Debug.WriteLine(
-                $"JsonFragmentUpdates count: {processedMessage.JsonFragmentUpdates.Count}"
+            TestContextLogger.LogDebug(
+                "JsonFragmentUpdates count: {UpdateCount}",
+                processedMessage.JsonFragmentUpdates.Count
             );
             foreach (var update in processedMessage.JsonFragmentUpdates)
             {
-                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+                TestContextLogger.LogDebug(
+                    "Fragment update. Kind: {Kind}, Path: {Path}, Value: {Value}",
+                    update.Kind,
+                    update.Path,
+                    update.TextValue
+                );
             }
         }
     }
@@ -495,7 +518,12 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Testing singular streaming: '{fragment1}' + '{fragment2}' + '{fragment3}'");
+        TestContextLogger.LogDebug(
+            "Testing singular streaming fragments. Fragment1: {Fragment1}, Fragment2: {Fragment2}, Fragment3: {Fragment3}",
+            fragment1,
+            fragment2,
+            fragment3
+        );
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -537,23 +565,29 @@ public class JsonFragmentUpdateMiddlewareTests
             var processedMessage = Assert.IsType<ToolCallUpdateMessage>(message);
             Assert.NotNull(processedMessage.JsonFragmentUpdates);
 
-            System.Diagnostics.Debug.WriteLine(
-                $"Message has {processedMessage.JsonFragmentUpdates.Count} fragment updates"
+            TestContextLogger.LogDebug(
+                "Message has fragment updates. UpdateCount: {UpdateCount}",
+                processedMessage.JsonFragmentUpdates.Count
             );
             foreach (var update in processedMessage.JsonFragmentUpdates)
             {
-                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+                TestContextLogger.LogDebug(
+                    "Fragment update. Kind: {Kind}, Path: {Path}, Value: {Value}",
+                    update.Kind,
+                    update.Path,
+                    update.TextValue
+                );
             }
         }
 
-        System.Diagnostics.Debug.WriteLine("✓ All singular streaming messages processed successfully");
+        TestContextLogger.LogDebugMessage("✓ All singular streaming messages processed successfully");
     }
 
     [Fact]
     public void ProcessAsync_WithEmptyFunctionArgs_ToolCallUpdateMessage_ReturnsOriginalUpdate()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine("Testing singular empty function args");
+        TestContextLogger.LogDebugMessage("Testing singular empty function args");
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdateMessage = new ToolCallUpdateMessage
@@ -579,14 +613,14 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("", processedMessage.FunctionArgs);
         Assert.Null(processedMessage.JsonFragmentUpdates);
 
-        System.Diagnostics.Debug.WriteLine("✓ Singular empty function args handled correctly");
+        TestContextLogger.LogDebugMessage("✓ Singular empty function args handled correctly");
     }
 
     [Fact]
     public void ProcessAsync_WithNullFunctionArgs_ToolCallUpdateMessage_ReturnsOriginalUpdate()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine("Testing singular null function args");
+        TestContextLogger.LogDebugMessage("Testing singular null function args");
 
         var middleware = new JsonFragmentUpdateMiddleware();
         var toolCallUpdateMessage = new ToolCallUpdateMessage
@@ -612,13 +646,13 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Null(processedMessage.FunctionArgs);
         Assert.Null(processedMessage.JsonFragmentUpdates);
 
-        System.Diagnostics.Debug.WriteLine("✓ Singular null function args handled correctly");
+        TestContextLogger.LogDebugMessage("✓ Singular null function args handled correctly");
     }
 
     [Fact]
     public void ProcessAsync_WithCompleteJsonToolCallUpdateMessage_IncludesJsonCompleteEvent()
     {
-        System.Diagnostics.Debug.WriteLine(
+        TestContextLogger.LogDebugMessage(
             "Testing singular ProcessAsync with complete JSON includes JsonComplete event"
         );
 
@@ -655,15 +689,15 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("root", completeEvent.Path);
         Assert.Equal("{\"message\": \"Hello World\"}", completeEvent.TextValue);
 
-        System.Diagnostics.Debug.WriteLine($"✓ Singular JsonComplete event found: {completeEvent.TextValue}");
-        System.Diagnostics.Debug.WriteLine($"✓ Total fragment updates: {processedMessage.JsonFragmentUpdates.Count}");
+        TestContextLogger.LogDebug("Singular JsonComplete event found. Value: {JsonValue}", completeEvent.TextValue);
+        TestContextLogger.LogDebug("Total fragment updates: {UpdateCount}", processedMessage.JsonFragmentUpdates.Count);
     }
 
     [Fact]
     public void ProcessAsync_WithMixedToolCallAndToolsCallUpdateMessages_ProcessesBothCorrectly()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine("Testing mixed singular and plural messages");
+        TestContextLogger.LogDebugMessage("Testing mixed singular and plural messages");
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -712,7 +746,7 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.NotNull(pluralUpdate.JsonFragmentUpdates);
         Assert.NotEmpty(pluralUpdate.JsonFragmentUpdates);
 
-        System.Diagnostics.Debug.WriteLine("✓ Mixed message types processed correctly");
+        TestContextLogger.LogDebugMessage("✓ Mixed message types processed correctly");
     }
 
     #endregion

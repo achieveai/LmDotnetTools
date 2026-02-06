@@ -1386,7 +1386,7 @@ public class NaturalToolUseParserMiddlewareTests
 
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Test input: {fullText}");
+            TestContextLogger.LogDebug("Test input received. FullText: {FullText}", fullText);
         }
 
         // Setup schema validator to reject invalid JSON but accept fallback JSON
@@ -1418,7 +1418,7 @@ public class NaturalToolUseParserMiddlewareTests
 
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Fallback parser will return: {validFallbackJson}");
+            TestContextLogger.LogDebug("Fallback parser return payload: {Payload}", validFallbackJson);
         }
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 12);
@@ -1431,12 +1431,12 @@ public class NaturalToolUseParserMiddlewareTests
         // Debug: Print out all messages
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Number of messages: {result.Count}");
+            TestContextLogger.LogDebug("Number of messages: {MessageCount}", result.Count);
             for (var i = 0; i < result.Count; i++)
             {
                 var message = result.ElementAt(i);
                 var content = message is ICanGetText textMessage ? textMessage.GetText()! : "[No text content]";
-                Console.WriteLine($"[DEBUG] Message {i}: Type={message.GetType().Name}, Content={content}");
+                TestContextLogger.LogDebug("Message detail. Index: {Index}, MessageType: {MessageType}, Content: {Content}", i, message.GetType().Name, content);
             }
         }
 

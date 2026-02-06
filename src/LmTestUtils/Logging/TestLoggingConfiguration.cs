@@ -118,8 +118,8 @@ public static class TestLoggingConfiguration
             .Enrich.FromLogContext()
             .Enrich.WithThreadId()
             .Enrich.WithProperty("TestRunId", CurrentRunId)
-            .Enrich.WithProperty("TestClass", testClass)
-            .Enrich.WithProperty("TestMethod", testMethod)
+            .Enrich.WithProperty("testClassName", testClass)
+            .Enrich.WithProperty("testCaseName", testMethod)
             .WriteTo.Logger(_sharedLogger!); // Write to shared file logger
 
         // Add xUnit output sink if provided
@@ -128,7 +128,7 @@ public static class TestLoggingConfiguration
             _ = loggerConfig.WriteTo.TestOutput(
                 testOutput,
                 outputTemplate:
-                "[{Timestamp:HH:mm:ss} {Level:u3}] [{TestClass}.{TestMethod}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}");
+                "[{Timestamp:HH:mm:ss} {Level:u3}] [{testClassName}.{testCaseName}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}");
         }
 
         var logger = loggerConfig.CreateLogger();
@@ -149,8 +149,8 @@ public static class TestLoggingConfiguration
 
         // Push properties that will be included in all logs within this scope
         return new CompositeDisposable(
-            LogContext.PushProperty("TestClass", testClass),
-            LogContext.PushProperty("TestMethod", testMethod));
+            LogContext.PushProperty("testClassName", testClass),
+            LogContext.PushProperty("testCaseName", testMethod));
     }
 
     /// <summary>

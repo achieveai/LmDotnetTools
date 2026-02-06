@@ -55,11 +55,18 @@ dotnet test LmDotnetTools.sln --logger "trx;LogFileName=results.trx" --results-d
 ```
 
 ### Structured Test Logs
-All tests output structured JSON logs to `.logs/tests/tests.jsonl`. Each log line includes:
-- `TestClass` - The test class name
-- `TestMethod` - The test method name
-- `TestRunId` - Unique identifier for the test run (timestamp-based)
-- Standard Serilog fields (`@t`, `@m`, `@l`, `SourceContext`, etc.)
+All tests output structured JSON logs to `.logs/tests/tests.jsonl`.
+
+Current logging stack:
+- `Serilog` via `Serilog.Extensions.Logging`
+- JSON sink: `CompactJsonFormatter` in `src/LmTestUtils/Logging/TestLoggingConfiguration.cs`
+- Ambient test context: Serilog `LogContext` properties
+
+Each log line includes:
+- `testClassName` - test class name
+- `testCaseName` - test method/case name
+- `TestRunId` - unique test run identifier (timestamp-based)
+- Standard Serilog fields (`@t`, `@mt`, `@l`, `SourceContext`, etc.)
 
 Previous test logs are automatically archived to `.logs/tests/tests-{timestamp}.jsonl.gz` and old archives (>7 days) are deleted.
 
@@ -78,7 +85,7 @@ public class MyTests : LoggingTestBase
     {
         Logger.LogInformation("Starting test with value {Value}", 42);
         
-        // Production code logs include TestClass/TestMethod automatically
+        // Production code logs include testClassName/testCaseName automatically
         var service = new MyService(LoggerFactory.CreateLogger<MyService>());
         service.DoWork(); // Logs from here will include test context
         
@@ -87,34 +94,50 @@ public class MyTests : LoggingTestBase
 }
 ```
 
+### Using TestContextLogger in LmCore.Tests
+For `LmCore.Tests`, use `TestContextLogger` for test diagnostics:
+
+```csharp
+TestContextLogger.LogDebug(
+    "Response received: {MessageType}, Role: {Role}",
+    response.GetType().Name,
+    response.Role
+);
+```
+
+Important:
+- Prefer message templates with named properties.
+- Avoid string interpolation for variable data.
+- Use `LogDebugMessage("constant text")` for constant diagnostics.
+
 ### Querying Logs with DuckDB
 Use DuckDB CLI or the DuckDB MCP server to query structured test logs:
 
 ```sql
 -- NOTE: When using in-memory DuckDB server, use ABSOLUTE paths to log files
 -- Find all logs for a specific test
-SELECT "@t" as Time, "@l" as Level, SourceContext, "@mt" as Message
+SELECT "@t" as Time, "@l" as Level, SourceContext, "@mt" as MessageTemplate
 FROM read_json('/Users/gautambhakar/Sources/LmDotnetTools/.logs/tests/tests.jsonl')
-WHERE TestClass = 'FunctionRegistryTests'
-  AND TestMethod = 'Build_WithExplicitFunction'
+WHERE testClassName = 'FunctionCallMiddlewareTests'
+  AND testCaseName = 'FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin'
 ORDER BY "@t";
 
 -- Find errors across all tests in a run
-SELECT TestClass, TestMethod, "@mt" as Message, Exception
+SELECT testClassName, testCaseName, "@mt" as MessageTemplate, "@x" as Exception
 FROM read_json('/Users/gautambhakar/Sources/LmDotnetTools/.logs/tests/tests.jsonl')
 WHERE "@l" = 'Error'
   AND TestRunId = '2026-02-01_12-00-00';
 
--- Trace control flow through production code
-SELECT "@t" as Time, SourceContext, "@mt" as Message
+-- Trace control flow and inspect structured fields captured in logs
+SELECT "@t" as Time, SourceContext, "@mt" as MessageTemplate, MessageType, Role, ResponseCount
 FROM read_json('/Users/gautambhakar/Sources/LmDotnetTools/.logs/tests/tests.jsonl')
-WHERE TestMethod = 'MyFailingTest'
+WHERE testCaseName = 'FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin'
 ORDER BY "@t";
 
 -- Count logs per test
-SELECT TestClass, TestMethod, COUNT(*) as LogCount
+SELECT testClassName, testCaseName, COUNT(*) as LogCount
 FROM read_json('/Users/gautambhakar/Sources/LmDotnetTools/.logs/tests/tests.jsonl')
-GROUP BY TestClass, TestMethod
+GROUP BY testClassName, testCaseName
 ORDER BY LogCount DESC;
 ```
 
@@ -145,8 +168,7 @@ ORDER BY LogCount DESC;
    Trace("Stream chunk received: {ChunkLength} bytes", chunk.Length);
    ```
 
-5. **Correlate with test context** - All production code logs automatically include `TestClass` and `TestMethod`, enabling:
+5. **Correlate with test context** - Logs should include `testClassName` and `testCaseName`, enabling:
    - Filter logs for a failing test
    - Trace exactly what production code did during a specific test
    - Debug intermittent failures by comparing log patterns
-
