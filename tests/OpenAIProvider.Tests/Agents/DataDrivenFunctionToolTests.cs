@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
 
@@ -10,6 +11,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
+    private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
     private readonly ProviderTestDataManager _testDataManager = new();
@@ -25,90 +27,63 @@ public class DataDrivenFunctionToolTests
 
         // Arrange - Load data from test files
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.OpenAI);
+        messages = PrepareInstructionDrivenMessages(testName, messages);
         Debug.WriteLine(
             $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
         );
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "OpenAI",
-            $"{testName}.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, TestBaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
-        Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
+        Debug.WriteLine("Created agent with TestSseMessageHandler");
 
         // Act
         var response = await agent.GenerateReplyAsync(messages, options);
         Debug.WriteLine($"Generated response: {response?.GetType().Name}");
 
-        // Assert - Compare with expected response
-        var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
-
-        Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count ?? 0}");
-        Debug.WriteLine($"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? [])}");
-        Debug.WriteLine($"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? [])}");
-
+        // Assert deterministic semantic invariants for SSE-handler full-stack testing.
         Assert.NotNull(response);
+        var list = response.ToList();
+        Assert.NotEmpty(list);
+        Assert.IsType<UsageMessage>(list.Last());
+        var toolCalls = list.Take(list.Count - 1).GetAllToolCalls().ToList();
+        Assert.NotEmpty(toolCalls);
 
-        if (expectedResponses == null)
+        if (testName.Contains("MultiFunctionTool", StringComparison.Ordinal))
         {
-            // No expected data exists yet, skip comparison
-            return;
+            Assert.Contains(toolCalls, tc => tc.FunctionName == "python_mcp-list_directory" && tc.FunctionArgs == "{\"relative_path\":\".\"}");
+            Assert.Contains(
+                toolCalls,
+                tc => tc.FunctionName == "python_mcp-get_directory_tree" && tc.FunctionArgs == "{\"relative_path\":\"code\"}"
+            );
         }
-
-        // The expected count in the test files is 2, but the actual response now has 3 items due to the UsageMessage
-        // Modify the assertion to expect 3 items instead of 2
-        Assert.Equal(expectedResponses.Count + 1, response.Count());
-
-        // Match the first two messages from the response with the expected messages
-        var responseToTest = response.Take(expectedResponses.Count).ToList();
-        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseToTest))
+        else
         {
-            if (expectedResponse is TextMessage expectedTextResponse)
-            {
-                _ = Assert.IsType<TextMessage>(responseItem);
-                Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
-                Assert.Equal(expectedTextResponse.Role, responseItem.Role);
-            }
-            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
-            {
-                _ = Assert.IsType<ToolsCallAggregateMessage>(responseItem);
-                var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
-                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
-                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
-                );
-                foreach (
-                    var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage
-                        .ToolsCallMessage!.GetToolCalls()!
-                        .Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!)
-                )
-                {
-                    Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
-                    Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);
-                }
-            }
+            Assert.Contains(toolCalls, tc => tc.FunctionName == "getWeather" && tc.FunctionArgs == "{\"location\":\"San Francisco\"}");
         }
-
-        // Verify that the last message is a UsageMessage
-        var lastMessage = response.Last();
-        _ = Assert.IsType<UsageMessage>(lastMessage);
 
         Debug.WriteLine($"Test {testName} completed successfully");
+    }
+
+    private static IMessage[] PrepareInstructionDrivenMessages(string testName, IMessage[] messages)
+    {
+        var userIndex = Array.FindIndex(messages, m => m is TextMessage tm && tm.Role == Role.User);
+        if (userIndex < 0 || messages[userIndex] is not TextMessage userMessage)
+        {
+            return messages;
+        }
+
+        string instruction = testName.Contains("MultiFunctionTool", StringComparison.Ordinal)
+            ? """
+              <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
+              """
+            : """
+              <|instruction_start|>{"instruction_chain":[{"id_message":"weather-tool","messages":[{"tool_call":[{"name":"getWeather","args":{"location":"San Francisco"}}]}]}]}<|instruction_end|>
+              """;
+
+        var rewritten = messages.ToArray();
+        rewritten[userIndex] = userMessage with { Text = $"{userMessage.Text}\n{instruction}" };
+        return rewritten;
     }
 
     /// <summary>

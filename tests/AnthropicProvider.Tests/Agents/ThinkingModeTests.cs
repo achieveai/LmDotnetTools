@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -49,14 +50,9 @@ public class ThinkingModeTests
     {
         Console.WriteLine("Starting ThinkingMode_ShouldBeIncludedInRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
-            .CaptureRequests(out var requestCapture)
-            .Build();
-
-        var httpClient = new HttpClient(handler);
+        // Arrange - Using test-mode handler with request capture
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient);
 
         var thinking = new AnthropicThinking(2048);
@@ -99,14 +95,9 @@ public class ThinkingModeTests
     {
         TestLogger.Log("Starting ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
-            .CaptureRequests(out var requestCapture)
-            .Build();
-
-        var httpClient = new HttpClient(handler);
+        // Arrange - Using test-mode handler with request capture
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");

@@ -148,14 +148,23 @@ public record ChatMessage
         // Then, emit top-level reasoning only if it wasn't already processed with proper visibility
         if (!string.IsNullOrEmpty(Reasoning) && !processedReasoningTexts.Contains(Reasoning))
         {
-            yield return new ReasoningUpdateMessage
-            {
-                Role = ToRole(role!.Value),
-                Reasoning = Reasoning!,
-                FromAgent = name,
-                GenerationId = Id,
-                Visibility = ReasoningVisibility.Plain,
-            };
+            yield return isStreaming
+                ? new ReasoningUpdateMessage
+                {
+                    Role = ToRole(role!.Value),
+                    Reasoning = Reasoning!,
+                    FromAgent = name,
+                    GenerationId = Id,
+                    Visibility = ReasoningVisibility.Plain,
+                }
+                : new ReasoningMessage
+                {
+                    Role = ToRole(role!.Value),
+                    Reasoning = Reasoning!,
+                    FromAgent = name,
+                    GenerationId = Id,
+                    Visibility = ReasoningVisibility.Plain,
+                };
         }
 
         if (Content == null)

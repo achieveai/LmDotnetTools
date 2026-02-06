@@ -68,7 +68,7 @@ public static class TestLoggingConfiguration
 
             // Configure the shared Serilog logger
             _sharedLogger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
+                .MinimumLevel.Verbose()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                 .MinimumLevel.Override("System", LogEventLevel.Warning)
                 .Enrich.FromLogContext()
@@ -113,7 +113,7 @@ public static class TestLoggingConfiguration
 
         // Create a logger configuration that includes xUnit output if provided
         var loggerConfig = new LoggerConfiguration()
-            .MinimumLevel.Debug()
+            .MinimumLevel.Verbose()
             .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
             .Enrich.FromLogContext()
             .Enrich.WithThreadId()

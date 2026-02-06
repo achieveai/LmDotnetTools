@@ -3,8 +3,9 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -12,41 +13,22 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class OpenAiAgentTests
 {
-    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
-    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
-
-    private static string EnvTestPath =>
-        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
+    private const string BaseUrl = "http://test-mode/v1";
 
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
     {
-        // Create HTTP client with record/playback functionality
-        var testCaseName = "SimpleConversation_ShouldReturnResponse";
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "OpenAIProvider.Tests",
-            "TestData",
-            "OpenAI",
-            $"{testCaseName}.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, BaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
-        // Create a system message
         var systemMessage = new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent" };
-
-        // Create a user message
-        var userMessage = new TextMessage { Role = Role.User, Text = "Hello Bot" };
+        var userMessage = new TextMessage
+        {
+            Role = Role.User,
+            Text =
+                "Hello Bot\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"simple\",\"messages\":[{\"text_message\":{\"length\":18}}]}]}<|instruction_end|>",
+        };
 
         // Act
         var response = await agent.GenerateReplyAsync(
@@ -76,7 +58,11 @@ public class OpenAiAgentTests
                 Role = Role.System,
                 Text = "You will always respond in JSON as `{\"response\": \"...\"}`",
             },
-            new TextMessage { Role = Role.User, Text = "Hello Bot!!!" },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "{\"response\":\"hello\"}",
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -87,32 +73,23 @@ public class OpenAiAgentTests
             ResponseFormat = ResponseFormat.JSON,
         };
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "OpenAIProvider.Tests",
-            "TestData",
-            "OpenAI",
-            "ChatCompletionRequest_SerializesToCorrectJson.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var requestCapture = new RequestCapture<ChatCompletionRequest, ChatCompletionResponse>();
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(capture: requestCapture, chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, BaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
         var request = ChatCompletionRequest.FromMessages(messages, options);
         var response = await agent.GenerateReplyAsync(messages, options);
-        var json = JsonNode.Parse(((ICanGetText)response.First())!.GetText()!);
-        Assert.NotNull(json);
-        Assert.NotNull(json["response"]);
+        var responseText = ((ICanGetText)response.First())!.GetText()!;
+        var parsed = JsonNode.Parse(responseText);
+        var capturedRequest = requestCapture.GetRequest();
+        Assert.NotNull(request);
+        Assert.Equal("gpt-4o-mini", request.Model);
+        Assert.Equal(ResponseFormat.JSON, options.ResponseFormat);
+        Assert.NotNull(capturedRequest?.ResponseFormat);
+        Assert.Equal("json_object", capturedRequest.ResponseFormat.ResponseFormatType);
+        Assert.NotNull(parsed?["response"]);
     }
 
     [Fact]
@@ -122,7 +99,12 @@ public class OpenAiAgentTests
         var messages = new[]
         {
             new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text =
+                    "What's the weather in San Francisco?\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"tool\",\"messages\":[{\"tool_call\":[{\"name\":\"getWeather\",\"args\":{\"location\":\"San Francisco\"}}]}]}]}<|instruction_end|>",
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -155,24 +137,8 @@ public class OpenAiAgentTests
             ],
         };
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "OpenAIProvider.Tests",
-            "TestData",
-            "OpenAI",
-            "FunctionToolCall_ShouldReturnToolMessage.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, BaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
@@ -208,7 +174,12 @@ public class OpenAiAgentTests
         var messages = new[]
         {
             new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text =
+                    "What's the weather in San Francisco?\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"tool-stream\",\"messages\":[{\"tool_call\":[{\"name\":\"getWeather\",\"args\":{\"location\":\"San Francisco\"}}]}]}]}<|instruction_end|>",
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -241,22 +212,8 @@ public class OpenAiAgentTests
             ],
         };
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "FunctionToolCall_ShouldReturnToolMessage_streaming.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, BaseUrl);
         var agent = new OpenClientAgent("TestAgent", client).WithMiddleware(
             new MessageUpdateJoinerMiddleware("Message Joiner")
         );
@@ -305,7 +262,12 @@ public class OpenAiAgentTests
         var messages = new[]
         {
             new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text =
+                    "What's the weather in San Francisco?\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"tool-join\",\"messages\":[{\"tool_call\":[{\"name\":\"getWeather\",\"args\":{\"location\":\"San Francisco\"}}]}]}]}<|instruction_end|>",
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -338,24 +300,8 @@ public class OpenAiAgentTests
             ],
         };
 
-        // Create HTTP client with record/playback functionality
-        var testDataFilePath = Path.Combine(
-            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "OpenAIProvider.Tests",
-            "TestData",
-            "OpenAI",
-            "FunctionToolCall_ShouldReturnToolMessage_Streaming_WithJoin.json"
-        );
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(testDataFilePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, BaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
@@ -387,19 +333,4 @@ public class OpenAiAgentTests
         }
     }
 
-    /// <summary>
-    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
-    /// </summary>
-    private static string GetApiKeyFromEnv()
-    {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
-    }
-
-    /// <summary>
-    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
-    /// </summary>
-    private static string GetApiBaseUrlFromEnv()
-    {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
-    }
 }

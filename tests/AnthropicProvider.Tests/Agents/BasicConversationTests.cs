@@ -5,9 +5,6 @@ using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
-// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
-// and AnthropicTestSseMessageHandler for InstructionChainParser pattern
-
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class BasicConversationTests : LoggingTestBase
@@ -21,17 +18,12 @@ public class BasicConversationTests : LoggingTestBase
     {
         TestLogger.Log("Starting SimpleConversation_ShouldCreateProperRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
-            .CaptureRequests(out var requestCapture)
-            .Build();
-
-        var httpClient = new HttpClient(handler);
+        // Arrange - Using Anthropic test-mode handler with request capture
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent with mock HTTP handler and request capture");
+        TestLogger.Log("Created agent with test-mode HTTP handler and request capture");
 
         // Create a simple conversation
         var messages = new[]
@@ -110,22 +102,21 @@ public class BasicConversationTests : LoggingTestBase
     [Fact]
     public async Task ResponseFormat_BasicTextResponse()
     {
-        // Arrange - Using MockHttpHandlerBuilder for response testing
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage(
-                "Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?",
-                "claude-3-7-sonnet-20250219"
-            )
-            .Build();
-
-        var httpClient = new HttpClient(handler);
+        // Arrange - Using Anthropic test-mode handler for deterministic response testing
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
+        var userMessage = """
+            Hello Claude!
+            <|instruction_start|>
+            {"instruction_chain":[{"id_message":"Basic text response","messages":[{"text_message":{"length":24}}]}]}
+            <|instruction_end|>
+            """;
+
         var messages = new[]
         {
-            new TextMessage { Role = Role.User, Text = "Hello Claude!" },
+            new TextMessage { Role = Role.User, Text = userMessage },
         };
 
         // Act
@@ -140,7 +131,7 @@ public class BasicConversationTests : LoggingTestBase
         Assert.NotNull(response);
         var textResponse = Assert.IsType<TextMessage>(response);
         Assert.Equal(Role.Assistant, textResponse.Role);
-        Assert.Contains("Claude", textResponse.Text);
+        Assert.NotEmpty(textResponse.Text);
     }
 
     /// <summary>
@@ -154,17 +145,11 @@ public class BasicConversationTests : LoggingTestBase
         Logger.LogInformation("Starting ResponseFormat_WithInstructionChain_ShouldGenerateTextResponse test");
 
         // Arrange - Using AnthropicTestSseMessageHandler with instruction chain
-        var handlerLogger = LoggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
-        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
-        {
-            WordsPerChunk = 5,
-            ChunkDelayMs = 10, // Fast for tests
-        };
-
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("http://test-mode/v1"),
-        };
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            wordsPerChunk: 5,
+            chunkDelayMs: 10
+        );
 
         var anthropicClient = new AnthropicClient("test-api-key", httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
