@@ -71,7 +71,7 @@ public abstract class LoggingTestBase : IDisposable
     {
         Output = output;
         TestClassName = GetType().Name;
-        TestMethodName = testMethodName ?? DetectTestMethodName() ?? "Unknown";
+        TestMethodName = ExtractTestMethodName(output) ?? testMethodName ?? DetectTestMethodName() ?? "Unknown";
 
         // Begin a logging scope that includes test context
         _logScope = TestLoggingConfiguration.BeginTestScope(TestClassName, TestMethodName);
@@ -153,6 +153,64 @@ public abstract class LoggingTestBase : IDisposable
     protected void Trace(string message, params object[] args)
     {
         Logger.LogTrace(message, args);
+    }
+
+    /// <summary>
+    ///     Extracts the test method name from the xUnit ITestOutputHelper via reflection.
+    ///     In xUnit 2.x, the concrete TestOutputHelper has a 'test' field of type ITest,
+    ///     which contains the test case display name including the method name.
+    /// </summary>
+    private static string? ExtractTestMethodName(ITestOutputHelper output)
+    {
+        try
+        {
+            // xUnit 2.x: TestOutputHelper has a private field "test" of type ITest
+            var type = output.GetType();
+            var testField = type.GetField("test", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (testField == null)
+            {
+                return null;
+            }
+
+            var test = testField.GetValue(output);
+            if (test == null)
+            {
+                return null;
+            }
+
+            // ITest has a TestCase property
+            var testCaseProp = test.GetType().GetProperty("TestCase");
+            var testCase = testCaseProp?.GetValue(test);
+            if (testCase == null)
+            {
+                return null;
+            }
+
+            // ITestCase has a TestMethod property
+            var testMethodProp = testCase.GetType().GetProperty("TestMethod");
+            var testMethod = testMethodProp?.GetValue(testCase);
+            if (testMethod == null)
+            {
+                return null;
+            }
+
+            // ITestMethod has a Method property (IMethodInfo)
+            var methodProp = testMethod.GetType().GetProperty("Method");
+            var method = methodProp?.GetValue(testMethod);
+            if (method == null)
+            {
+                return null;
+            }
+
+            // IMethodInfo has a Name property
+            var nameProp = method.GetType().GetProperty("Name");
+            return nameProp?.GetValue(method) as string;
+        }
+        catch
+        {
+            // If reflection fails for any reason, fall back to other detection methods
+            return null;
+        }
     }
 
     private static string? DetectTestMethodName()

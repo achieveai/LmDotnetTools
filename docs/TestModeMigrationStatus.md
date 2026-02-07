@@ -26,6 +26,12 @@
   - `tests/OpenAIProvider.Tests/Agents/DataDrivenReasoningTests.cs`
   - `tests/OpenAIProvider.Tests/Agents/DataDrivenReasoningStreamingTests.cs`
   - `tests/OpenAIProvider.Tests/Agents/DataDrivenMultiTurnReasoningTests.cs`
+- Migrated Anthropic data-driven playback path to deterministic SSE-handler flow:
+  - `tests/AnthropicProvider.Tests/Agents/DataDrivenFunctionToolTests.cs` (`FunctionTool_RequestAndResponseTransformation`)
+- Hardened creator facts as manual-only:
+  - All data-creation tests in the above OpenAI files
+  - `CreateWeatherFunctionToolTestData` / `CreateMultiFunctionToolTestData` in
+    `tests/AnthropicProvider.Tests/Agents/DataDrivenFunctionToolTests.cs`
 
 ## Remaining MockHttpHandlerBuilder usage in provider agent folders
 
@@ -33,13 +39,22 @@
 
 - `tests/AnthropicProvider.Tests/Agents/AnthropicClientWrapper.Tests.cs`
 
-### Artifact-creation paths (non-primary playback path)
+### Artifact-creation paths (manual-only)
 
 - `tests/OpenAIProvider.Tests/Agents/DataDrivenFunctionToolTests.cs` (creator facts)
 - `tests/OpenAIProvider.Tests/Agents/DataDrivenReasoningTests.cs` (creator facts)
 - `tests/OpenAIProvider.Tests/Agents/DataDrivenReasoningStreamingTests.cs` (creator facts)
 - `tests/OpenAIProvider.Tests/Agents/DataDrivenMultiTurnReasoningTests.cs` (creator facts)
-- `tests/AnthropicProvider.Tests/Agents/DataDrivenFunctionToolTests.cs`
+- `tests/AnthropicProvider.Tests/Agents/DataDrivenFunctionToolTests.cs` (creator facts)
+
+## Phase 4 Audit Result
+
+- Provider agent test folders audited for `MockHttpHandlerBuilder` / `FakeHttpMessageHandler`.
+- No remaining mock-handler usage in normal SSE playback/validation paths.
+- Remaining usage is intentionally scoped to:
+  - record/playback coverage test: `tests/AnthropicProvider.Tests/Agents/AnthropicClientWrapper.Tests.cs`
+  - manual artifact-creation facts listed above.
+- Migration backlog in provider agent folders: none.
 
 ## Notes
 

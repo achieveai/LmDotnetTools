@@ -2,10 +2,15 @@ using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
-public class MessageUpdateJoinerMiddlewareTests
+public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
 {
+    public MessageUpdateJoinerMiddlewareTests(ITestOutputHelper output) : base(output) { }
+
     /// <summary>
     ///     Gets the path to test files
     /// </summary>
@@ -43,7 +48,7 @@ public class MessageUpdateJoinerMiddlewareTests
         // Arrange
         // Get paths to test files
         var testFilesPath = GetTestFilesPath();
-        Console.WriteLine($"Test files path: {testFilesPath}");
+        Logger.LogTrace("Test files path: {TestFilesPath}", testFilesPath);
 
         var streamingResponsePath = Path.Combine(testFilesPath, "example_streaming_response2.txt");
         var expectedOutputPath = Path.Combine(testFilesPath, "streaming_responses2_lmcore.json");

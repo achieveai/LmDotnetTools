@@ -17,20 +17,20 @@ public class FunctionToolTests : LoggingTestBase
     [Fact]
     public async Task RequestFormat_FunctionTools()
     {
-        TestLogger.Log("Starting RequestFormat_FunctionTools test");
+        Logger.LogTrace("Starting RequestFormat_FunctionTools test");
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent and capture client");
+        Logger.LogTrace("Created agent and capture client");
 
         var messages = new[]
         {
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
-        TestLogger.Log($"Created {messages.Length} messages");
+        Logger.LogTrace("Created {MessageCount} messages", messages.Length);
 
         // Get weather function from MockWeatherTool
         var weatherFunction = MockToolCallHelper.CreateMockToolCalls([typeof(MockWeatherTool)]).Item1.First();
@@ -40,13 +40,13 @@ public class FunctionToolTests : LoggingTestBase
             ModelId = "claude-3-7-sonnet-20250219",
             Functions = [weatherFunction],
         };
-        TestLogger.Log("Created options with function tools");
-        TestLogger.LogObject("Function definition", weatherFunction);
+        Logger.LogTrace("Created options with function tools");
+        LogData("Function definition", weatherFunction);
 
         // Act
-        TestLogger.Log("About to call GenerateReplyAsync");
+        Logger.LogTrace("About to call GenerateReplyAsync");
         var response = await agent.GenerateReplyAsync(messages, options);
-        TestLogger.Log("After GenerateReplyAsync call");
+        Logger.LogTrace("After GenerateReplyAsync call");
 
         // Assert using structured RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -68,20 +68,20 @@ public class FunctionToolTests : LoggingTestBase
         Assert.True(weatherTool.HasInputProperty("location"));
         Assert.Equal("string", weatherTool.GetInputPropertyType("location"));
 
-        TestLogger.Log($"Successfully validated tool: {weatherTool.Name} with {tools.Count} tools total");
+        Logger.LogTrace("Successfully validated tool: {ToolName} with {ToolCount} tools total", weatherTool.Name, tools.Count);
     }
 
     [Fact]
     public async Task MultipleTools_ShouldBeCorrectlyConfigured()
     {
-        TestLogger.Log("Starting MultipleTools_ShouldBeCorrectlyConfigured test");
+        Logger.LogTrace("Starting MultipleTools_ShouldBeCorrectlyConfigured test");
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent and capture client");
+        Logger.LogTrace("Created agent and capture client");
 
         var messages = new[]
         {
@@ -92,7 +92,7 @@ public class FunctionToolTests : LoggingTestBase
             },
             new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." },
         };
-        TestLogger.Log($"Created messages array with {messages.Length} messages");
+        Logger.LogTrace("Created messages array with {MessageCount} messages", messages.Length);
 
         // Get mock functions from MockPythonExecutionTool
         var mockFunctions = MockToolCallHelper.CreateMockToolCalls([typeof(MockPythonExecutionTool)]).Item1;
@@ -138,12 +138,12 @@ public class FunctionToolTests : LoggingTestBase
             Temperature = 0.7f,
             Functions = [listDirectoryFunction, deleteFileFunction, getDirTreeFunction, cleanupFunction],
         };
-        TestLogger.Log("Created options with multiple function tools");
+        Logger.LogTrace("Created options with multiple function tools");
 
         // Act
-        TestLogger.Log("About to call GenerateReplyAsync");
+        Logger.LogTrace("About to call GenerateReplyAsync");
         var response = await agent.GenerateReplyAsync(messages, options);
-        TestLogger.Log("After GenerateReplyAsync call");
+        Logger.LogTrace("After GenerateReplyAsync call");
 
         // Assert using structured RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -171,13 +171,13 @@ public class FunctionToolTests : LoggingTestBase
             Assert.NotNull(tool.InputSchema);
         }
 
-        TestLogger.Log($"Successfully validated all {tools.Count} tools with structured data");
+        Logger.LogTrace("Successfully validated all {ToolCount} tools with structured data", tools.Count);
     }
 
     [Fact]
     public async Task ToolUseResponse_ShouldBeCorrectlyParsed()
     {
-        TestLogger.Log("Starting ToolUseResponse_ShouldBeCorrectlyParsed test");
+        Logger.LogTrace("Starting ToolUseResponse_ShouldBeCorrectlyParsed test");
 
         // Arrange - Use instruction-chain driven tool call with request capture.
         var requestCapture = new RequestCapture();
@@ -189,7 +189,7 @@ public class FunctionToolTests : LoggingTestBase
         );
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent and test-mode handler for tool use response");
+        Logger.LogTrace("Created agent and test-mode handler for tool use response");
 
         var userMessage = """
             List files in the root directory
@@ -223,9 +223,9 @@ public class FunctionToolTests : LoggingTestBase
         };
 
         // Act
-        TestLogger.Log("About to call GenerateReplyAsync");
+        Logger.LogTrace("About to call GenerateReplyAsync");
         var response = await agent.GenerateReplyAsync(messages, options);
-        TestLogger.Log("After GenerateReplyAsync call");
+        Logger.LogTrace("After GenerateReplyAsync call");
 
         // Verify we got a tool-call shaped response
         Assert.NotNull(response);
@@ -246,7 +246,7 @@ public class FunctionToolTests : LoggingTestBase
         _ = Assert.Single(tools);
         Assert.Equal("python_mcp-list_directory", tools[0].Name);
 
-        TestLogger.Log($"Successfully validated tool use response with tool: {tools[0].Name}");
+        Logger.LogTrace("Successfully validated tool use response with tool: {ToolName}", tools[0].Name);
     }
 
     /// <summary>

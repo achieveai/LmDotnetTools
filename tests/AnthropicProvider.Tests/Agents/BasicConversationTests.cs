@@ -16,14 +16,14 @@ public class BasicConversationTests : LoggingTestBase
     [Fact]
     public async Task SimpleConversation_ShouldCreateProperRequest()
     {
-        TestLogger.Log("Starting SimpleConversation_ShouldCreateProperRequest test");
+        Logger.LogTrace("Starting SimpleConversation_ShouldCreateProperRequest test");
 
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent with test-mode HTTP handler and request capture");
+        Logger.LogTrace("Created agent with test-mode HTTP handler and request capture");
 
         // Create a simple conversation
         var messages = new[]
@@ -33,20 +33,20 @@ public class BasicConversationTests : LoggingTestBase
         };
 
         // Log the messages for debugging
-        TestLogger.Log($"Created messages array with {messages.Length} messages");
+        Logger.LogTrace("Created messages array with {MessageCount} messages", messages.Length);
         foreach (var msg in messages)
         {
-            TestLogger.Log($"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {msg?.Text ?? "null"}");
+            Logger.LogTrace("Message - Role: {Role}, Type: {MessageType}, Text: {Text}", msg.Role, msg.GetType().Name, msg?.Text ?? "null");
         }
 
         var options = new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" };
-        TestLogger.Log($"Created options with ModelId: {options.ModelId}");
+        Logger.LogTrace("Created options with ModelId: {ModelId}", options.ModelId);
 
         // Act
-        TestLogger.Log("About to call GenerateReplyAsync");
+        Logger.LogTrace("About to call GenerateReplyAsync");
         var responses = await agent.GenerateReplyAsync(messages, options);
         var response = responses.FirstOrDefault();
-        TestLogger.Log("After GenerateReplyAsync call");
+        Logger.LogTrace("After GenerateReplyAsync call");
         // Safe way to get text from IMessage regardless of the actual implementation
         string? responseText = null;
         if (response is TextMessage textMsg)
@@ -54,23 +54,23 @@ public class BasicConversationTests : LoggingTestBase
             responseText = textMsg.Text;
         }
 
-        TestLogger.Log($"Response: Role={response?.Role}, Text={responseText ?? "null"}");
+        Logger.LogTrace("Response: Role={Role}, Text={Text}", response?.Role, responseText ?? "null");
 
         // Log what was captured using new RequestCapture API
-        TestLogger.Log($"Captured requests count: {requestCapture.RequestCount}");
+        Logger.LogTrace("Captured requests count: {RequestCount}", requestCapture.RequestCount);
         Assert.Equal(1, requestCapture.RequestCount);
 
         var capturedRequest = requestCapture.GetAnthropicRequest();
         Assert.NotNull(capturedRequest);
-        TestLogger.Log($"Model: {capturedRequest.Model}");
-        TestLogger.Log($"System prompt: {capturedRequest.System ?? "null"}");
+        Logger.LogTrace("Model: {Model}", capturedRequest.Model);
+        Logger.LogTrace("System prompt: {SystemPrompt}", capturedRequest.System ?? "null");
 
         var messagesList = capturedRequest.Messages.ToList();
-        TestLogger.Log($"Messages count: {messagesList.Count}");
+        Logger.LogTrace("Messages count: {MessageCount}", messagesList.Count);
 
         foreach (var msg in messagesList)
         {
-            TestLogger.Log($"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}");
+            Logger.LogTrace("Captured message - Role: {Role}, Content: {Content}", msg.Role, msg.Content ?? "null");
         }
 
         // Assert with new RequestCapture API
@@ -81,20 +81,20 @@ public class BasicConversationTests : LoggingTestBase
 
         // This is where most tests fail - let's check what we have instead of just asserting
         var messagesCount = messagesList.Count;
-        TestLogger.Log($"Expected 2 messages, got {messagesCount}");
+        Logger.LogTrace("Expected 2 messages, got {MessagesCount}", messagesCount);
 
         // Try a more flexible assertion approach
         // System message might be handled differently (as system property in the request)
         if (capturedRequest.System != null)
         {
             // If System is set, we should have 1 message (the user message)
-            TestLogger.Log("System message was moved to System property, checking for 1 message");
+            Logger.LogTrace("System message was moved to System property, checking for 1 message");
             Assert.Equal(1, messagesCount);
         }
         else
         {
             // Otherwise we should have 2 messages
-            TestLogger.Log("No System property set, expecting 2 messages");
+            Logger.LogTrace("No System property set, expecting 2 messages");
             Assert.Equal(2, messagesCount);
         }
     }

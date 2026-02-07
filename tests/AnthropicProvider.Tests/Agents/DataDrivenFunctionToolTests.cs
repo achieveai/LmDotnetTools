@@ -1,14 +1,18 @@
-using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
-public class DataDrivenFunctionToolTests
+public class DataDrivenFunctionToolTests : LoggingTestBase
 {
     private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
     private readonly ProviderTestDataManager _testDataManager = new();
+
+    public DataDrivenFunctionToolTests(ITestOutputHelper output) : base(output) { }
 
     private static string EnvTestPath =>
         Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
@@ -18,14 +22,15 @@ public class DataDrivenFunctionToolTests
     [InlineData("ToolCallResultTool")]
     public async Task FunctionTool_RequestAndResponseTransformation(string testName)
     {
-        Debug.WriteLine($"Starting test for {testName}");
+        Logger.LogTrace("Starting test for {TestName}", testName);
 
         // Arrange - Load data from test files
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.Anthropic);
 
-        Debug.WriteLine(
-            $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
-        );
+        Logger.LogTrace(
+            "Loaded {MessageCount} messages and options with {FunctionCount} functions",
+            messages.Length,
+            options.Functions?.Length ?? 0);
 
         messages = PrepareInstructionDrivenMessages(testName, messages, options);
 
@@ -33,11 +38,11 @@ public class DataDrivenFunctionToolTests
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
         var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
-        Debug.WriteLine("Created agent with AnthropicTestSseMessageHandler");
+        Logger.LogTrace("Created agent with AnthropicTestSseMessageHandler");
 
         // Act
         var response = await agent.GenerateReplyAsync(messages, options);
-        Debug.WriteLine($"Generated response: {response?.GetType().Name}");
+        Logger.LogTrace("Generated response: {ResponseType}", response?.GetType().Name);
 
         Assert.NotNull(response);
         var result = response!.ToList();
@@ -80,7 +85,7 @@ public class DataDrivenFunctionToolTests
             Assert.Contains(responseWithoutUsage, m => m is TextMessage);
         }
 
-        Debug.WriteLine($"Test {testName} completed successfully with {toolCalls.Count} tool calls");
+        Logger.LogTrace("Test {TestName} completed successfully with {ToolCallCount} tool calls", testName, toolCalls.Count);
     }
 
     private static IMessage[] PrepareInstructionDrivenMessages(
@@ -159,7 +164,7 @@ public class DataDrivenFunctionToolTests
 
         if (File.Exists(testDataPath))
         {
-            Debug.WriteLine($"Test data already exists at {testDataPath}. Skipping creation.");
+            Logger.LogTrace("Test data already exists at {TestDataPath}. Skipping creation.", testDataPath);
             return;
         }
 
@@ -237,7 +242,7 @@ public class DataDrivenFunctionToolTests
 
         if (File.Exists(testDataPath))
         {
-            Debug.WriteLine($"Test data already exists at {testDataPath}. Skipping creation.");
+            Logger.LogTrace("Test data already exists at {TestDataPath}. Skipping creation.", testDataPath);
             return;
         }
 
