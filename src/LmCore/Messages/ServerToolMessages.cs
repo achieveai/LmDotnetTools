@@ -46,8 +46,9 @@ public record ServerToolUseMessage : IMessage
 
     /// <summary>
     ///     The generation ID for this message.
+    ///     Uses camelCase "generationId" to match TextUpdateMessage/TextMessage for frontend merge key consistency.
     /// </summary>
-    [JsonPropertyName("generation_id")]
+    [JsonPropertyName("generationId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; }
 
@@ -150,8 +151,9 @@ public record ServerToolResultMessage : IMessage
 
     /// <summary>
     ///     The generation ID for this message.
+    ///     Uses camelCase "generationId" to match TextUpdateMessage/TextMessage for frontend merge key consistency.
     /// </summary>
-    [JsonPropertyName("generation_id")]
+    [JsonPropertyName("generationId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; }
 
@@ -281,8 +283,9 @@ public record TextWithCitationsMessage : IMessage, ICanGetText
 
     /// <summary>
     ///     The generation ID for this message.
+    ///     Uses camelCase "generationId" to match TextUpdateMessage/TextMessage for frontend merge key consistency.
     /// </summary>
-    [JsonPropertyName("generation_id")]
+    [JsonPropertyName("generationId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; }
 

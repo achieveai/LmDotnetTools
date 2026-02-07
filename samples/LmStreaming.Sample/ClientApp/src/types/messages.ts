@@ -18,6 +18,10 @@ export const MessageType = {
   // Lifecycle messages from MultiTurnAgentLoop
   RunAssignment: 'run_assignment',
   RunCompleted: 'run_completed',
+  // Server-side tool messages (built-in tools like web_search)
+  ServerToolUse: 'server_tool_use',
+  ServerToolResult: 'server_tool_result',
+  TextWithCitations: 'text_with_citations',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -226,6 +230,52 @@ export interface ImageMessage extends IMessage {
 }
 
 /**
+ * ServerToolUseMessage matching C# ServerToolUseMessage.cs
+ * Represents server-side tool invocation (e.g., web_search, web_fetch, code_execution)
+ */
+export interface ServerToolUseMessage extends IMessage {
+  $type: typeof MessageType.ServerToolUse;
+  tool_use_id: string;
+  tool_name: string;
+  input?: unknown;
+}
+
+/**
+ * ServerToolResultMessage matching C# ServerToolResultMessage.cs
+ * Represents results from server-side tool execution
+ */
+export interface ServerToolResultMessage extends IMessage {
+  $type: typeof MessageType.ServerToolResult;
+  tool_use_id: string;
+  tool_name: string;
+  result?: unknown;
+  is_error?: boolean;
+  error_code?: string | null;
+}
+
+/**
+ * CitationInfo matching C# CitationInfo record
+ */
+export interface CitationInfo {
+  type?: string;
+  url?: string | null;
+  title?: string | null;
+  cited_text?: string | null;
+  start_index?: number | null;
+  end_index?: number | null;
+}
+
+/**
+ * TextWithCitationsMessage matching C# TextWithCitationsMessage.cs
+ * Text content with citation references from server-side tools
+ */
+export interface TextWithCitationsMessage extends IMessage {
+  $type: typeof MessageType.TextWithCitations;
+  text: string;
+  citations?: CitationInfo[] | null;
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -242,7 +292,10 @@ export type Message =
   | ReasoningMessage
   | ReasoningUpdateMessage
   | RunAssignmentMessage
-  | RunCompletedMessage;
+  | RunCompletedMessage
+  | ServerToolUseMessage
+  | ServerToolResultMessage
+  | TextWithCitationsMessage;
 
 // Type guard functions
 
@@ -296,6 +349,18 @@ export function isToolCallMessage(msg: IMessage): msg is ToolCallMessage {
 
 export function isToolCallUpdateMessage(msg: IMessage): msg is ToolCallUpdateMessage {
   return msg.$type === MessageType.ToolCallUpdate;
+}
+
+export function isServerToolUseMessage(msg: IMessage): msg is ServerToolUseMessage {
+  return msg.$type === MessageType.ServerToolUse;
+}
+
+export function isServerToolResultMessage(msg: IMessage): msg is ServerToolResultMessage {
+  return msg.$type === MessageType.ServerToolResult;
+}
+
+export function isTextWithCitationsMessage(msg: IMessage): msg is TextWithCitationsMessage {
+  return msg.$type === MessageType.TextWithCitations;
 }
 
 /**

@@ -123,9 +123,12 @@ public sealed class ChatWebSocketManager
                 }
 
                 _logger.LogDebug(
-                    "Sent message type {MessageType} to thread {ThreadId}",
+                    "Sent message type {MessageType} to thread {ThreadId}, orderIdx={MessageOrderIdx}, genId={GenerationId}, runId={RunId}",
                     message.GetType().Name,
-                    threadId);
+                    threadId,
+                    message.MessageOrderIdx,
+                    message.GenerationId,
+                    message.RunId);
 
                 // Send done signal after RunCompletedMessage
                 if (message is RunCompletedMessage)

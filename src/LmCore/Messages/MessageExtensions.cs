@@ -226,18 +226,19 @@ public static class MessageExtensions
     /// </summary>
     public static IMessage WithIds(this IMessage message, string? runId, string? parentRunId, string? threadId)
     {
-        return message is TextMessage textMessage
-            ? textMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-            : message is ToolsCallMessage toolsCallMessage
-                ? toolsCallMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-                : message is ReasoningMessage reasoningMessage
-                    ? reasoningMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-                    : message is TextUpdateMessage textUpdateMessage
-                        ? textUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-                        : message is ToolsCallUpdateMessage toolsCallUpdateMessage
-                            ? toolsCallUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-                            : message is ReasoningUpdateMessage reasoningUpdateMessage
-                                ? reasoningUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId }
-                                : message;
+        return message switch
+        {
+            TextMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            TextUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            TextWithCitationsMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ToolsCallMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ToolsCallUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ReasoningMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ReasoningUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ServerToolUseMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            ServerToolResultMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
+            UsageMessage m => m with { RunId = runId, ThreadId = threadId },
+            _ => message,
+        };
     }
 }

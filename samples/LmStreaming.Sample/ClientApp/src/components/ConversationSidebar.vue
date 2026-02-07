@@ -66,7 +66,7 @@ function handleDelete(event: Event, threadId: string): void {
     <div
       :class="['sidebar-content', { hidden: isCollapsed }]"
       :aria-hidden="isCollapsed"
-      :inert="isCollapsed ? '' : null"
+      :inert="isCollapsed || undefined"
     >
       <div v-if="isLoading" class="loading">
         Loading conversations...

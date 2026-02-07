@@ -126,6 +126,7 @@ try
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
+                "test-anthropic" => CreateAnthropicTestAgent(loggerFactory),
                 _ => CreateTestAgent(loggerFactory),
             };
         });
@@ -373,12 +374,42 @@ public partial class Program
     /// <summary>
     ///     Gets the model ID based on the provider mode and env vars.
     /// </summary>
+    /// <summary>
+    ///     Creates an Anthropic-format test agent using AnthropicTestSseMessageHandler for mock responses.
+    ///     This supports server-side tools (web_search, web_fetch, code_execution) and citations.
+    /// </summary>
+    private static IStreamingAgent CreateAnthropicTestAgent(ILoggerFactory loggerFactory)
+    {
+        var handlerLogger = loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
+        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 3,
+            ChunkDelayMs = 300,
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        var anthropicClient = new AnthropicClient(
+            httpClient,
+            baseUrl: "http://test-mode/v1",
+            logger: loggerFactory.CreateLogger<AnthropicClient>());
+
+        return new AnthropicAgent(
+            "MockAnthropic",
+            anthropicClient,
+            loggerFactory.CreateLogger<AnthropicAgent>());
+    }
+
     private static string GetModelIdForProvider(string providerMode)
     {
         return providerMode.ToLowerInvariant() switch
         {
             "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
             "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
+            "test-anthropic" => "claude-sonnet-4-5-20250929",
             _ => "test-model",
         };
     }
@@ -391,7 +422,7 @@ public partial class Program
     {
         return providerMode.ToLowerInvariant() switch
         {
-            "anthropic" => [new AnthropicWebSearchTool()],
+            "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
     }
