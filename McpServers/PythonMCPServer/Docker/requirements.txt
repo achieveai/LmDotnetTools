@@ -45,7 +45,7 @@ requests==2.32.4  # HTTP library
 lxml==5.1.0  # XML processing
 
 # Geospatial data analysis
-geopandas==0.14.2
+geopandas==1.1.2
 folium==0.15.1  # Interactive maps
 
 # Advanced visualization
