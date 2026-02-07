@@ -19,8 +19,9 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 /// </summary>
 public class AnthropicClient : BaseHttpService, IAnthropicClient
 {
-    private const string BaseUrl = "https://api.anthropic.com/v1";
+    private const string DefaultBaseUrl = "https://api.anthropic.com/v1";
     private const string ProviderName = "Anthropic";
+    private readonly string _baseUrl;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly IPerformanceTracker _performanceTracker;
     private readonly RetryOptions _retryOptions;
@@ -29,44 +30,63 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     ///     Initializes a new instance of the <see cref="AnthropicClient" /> class.
     /// </summary>
     /// <param name="apiKey">The API key to use for authentication.</param>
+    /// <param name="baseUrl">Optional base URL override. Falls back to ANTHROPIC_BASE_URL env var, then default.</param>
     /// <param name="httpClient">Optional custom HTTP client to use.</param>
     /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
     /// <param name="logger">Optional logger for diagnostic information.</param>
     /// <param name="retryOptions">Optional retry configuration options.</param>
     public AnthropicClient(
         string apiKey,
+        string? baseUrl = null,
         HttpClient? httpClient = null,
         IPerformanceTracker? performanceTracker = null,
         ILogger? logger = null,
         RetryOptions? retryOptions = null
     )
-        : base(logger ?? NullLogger.Instance, httpClient ?? CreateHttpClient(apiKey))
+        : base(logger ?? NullLogger.Instance, httpClient ?? CreateHttpClient(apiKey, baseUrl))
     {
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
 
+        _baseUrl = ResolveBaseUrl(baseUrl);
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
         _retryOptions = retryOptions ?? RetryOptions.Default;
+
+        Logger.LogTrace(
+            "AnthropicClient initialized (apiKey ctor) - BaseUrl: {BaseUrl}, ExplicitBaseUrl: {ExplicitBaseUrl}, HttpClientProvided: {HttpClientProvided}",
+            _baseUrl,
+            baseUrl,
+            httpClient != null
+        );
     }
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="AnthropicClient" /> class with a pre-configured HTTP client.
     /// </summary>
     /// <param name="httpClient">Pre-configured HTTP client with authentication headers.</param>
+    /// <param name="baseUrl">Optional base URL override. Falls back to ANTHROPIC_BASE_URL env var, then default.</param>
     /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
     /// <param name="logger">Optional logger for diagnostic information.</param>
     /// <param name="retryOptions">Optional retry configuration options.</param>
     public AnthropicClient(
         HttpClient httpClient,
+        string? baseUrl = null,
         IPerformanceTracker? performanceTracker = null,
         ILogger? logger = null,
         RetryOptions? retryOptions = null
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
+        _baseUrl = ResolveBaseUrl(baseUrl);
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
         _retryOptions = retryOptions ?? RetryOptions.Default;
+
+        Logger.LogTrace(
+            "AnthropicClient initialized (httpClient ctor) - BaseUrl: {BaseUrl}, ExplicitBaseUrl: {ExplicitBaseUrl}",
+            _baseUrl,
+            baseUrl
+        );
     }
 
     /// <inheritdoc />
@@ -88,7 +108,10 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+                    var requestUrl = $"{_baseUrl}/messages";
+                    Logger.LogTrace("Constructing chat completion request to {RequestUrl}", requestUrl);
+
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl)
                     {
                         Content = content,
                     };
@@ -172,7 +195,10 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+                    var requestUrl = $"{_baseUrl}/messages";
+                    Logger.LogTrace("Constructing streaming request to {RequestUrl}", requestUrl);
+
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, requestUrl)
                     {
                         Content = content,
                     };
@@ -229,10 +255,50 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         }
     }
 
-    private static HttpClient CreateHttpClient(string apiKey)
+    /// <summary>
+    ///     Resolves the base URL from explicit parameter, environment variable, or default.
+    ///     Ensures the result always ends with /v1 since the client appends /messages to it.
+    /// </summary>
+    private static string ResolveBaseUrl(string? explicitBaseUrl)
     {
+        string resolved;
+
+        if (!string.IsNullOrEmpty(explicitBaseUrl))
+        {
+            resolved = explicitBaseUrl.TrimEnd('/');
+        }
+        else
+        {
+            var envUrl = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
+            if (!string.IsNullOrEmpty(envUrl))
+            {
+                resolved = envUrl.TrimEnd('/');
+            }
+            else
+            {
+                return DefaultBaseUrl;
+            }
+        }
+
+        // Normalize: ensure the URL ends with /v1 since the client appends /messages to it
+        if (!resolved.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            resolved += "/v1";
+        }
+
+        return resolved;
+    }
+
+    private static HttpClient CreateHttpClient(string apiKey, string? baseUrl = null)
+    {
+        var resolvedUrl = ResolveBaseUrl(baseUrl);
+        // Strip /v1 suffix for the HttpClient base address since CreateForAnthropic adds no path
+        var httpClientBaseUrl = resolvedUrl.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)
+            ? resolvedUrl[..^3]
+            : resolvedUrl;
+
         var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
-        return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
+        return HttpClientFactory.CreateForAnthropic(apiKey, httpClientBaseUrl, null, headers);
     }
 
     /// <summary>

@@ -31,7 +31,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -79,7 +79,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -105,7 +105,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: statusCodes,
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -143,7 +143,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -184,7 +184,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
             statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
             chunkDelayMs: 0
         );
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -237,7 +237,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
         );
 
         // Create AnthropicClient with test handler
-        var client = new AnthropicClient("test-api-key", httpClient);
+        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         Logger.LogDebug("Created AnthropicClient with AnthropicTestSseMessageHandler");
 
@@ -309,7 +309,7 @@ public class AnthropicClientHttpTests : LoggingTestBase
     {
         // Arrange
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _anthropicClientLogger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {

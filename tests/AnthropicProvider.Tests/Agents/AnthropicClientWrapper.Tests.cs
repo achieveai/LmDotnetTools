@@ -19,7 +19,12 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
+        // Check for both .git directory (normal repo) and .git file (worktree)
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, ".git"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -53,7 +58,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient("test-api-key", httpClient);
+        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         try
         {
@@ -119,7 +124,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient("test-api-key", httpClient);
+        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         try
         {

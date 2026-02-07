@@ -21,7 +21,7 @@ public class BasicConversationTests : LoggingTestBase
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent with test-mode HTTP handler and request capture");
 
@@ -104,7 +104,7 @@ public class BasicConversationTests : LoggingTestBase
     {
         // Arrange - Using Anthropic test-mode handler for deterministic response testing
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         var userMessage = """
@@ -151,7 +151,7 @@ public class BasicConversationTests : LoggingTestBase
             chunkDelayMs: 10
         );
 
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         Logger.LogDebug("Created AnthropicAgent with AnthropicTestSseMessageHandler");

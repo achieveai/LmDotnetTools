@@ -119,8 +119,8 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             InstructionPlan? planToExecute = instruction;
             if (instruction != null)
             {
-                // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
-                ResolveDynamicMessages(instruction, root);
+                // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)
+                ResolveDynamicMessages(instruction, root, request);
 
                 // Execute the instruction at the calculated index
                 _logger.LogInformation("Executing instruction {Index}: {Id}", responseCount + 1, instruction.IdMessage);
@@ -151,8 +151,8 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
 
                     if (plan is not null)
                     {
-                        // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
-                        ResolveDynamicMessages(plan, root);
+                        // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)
+                        ResolveDynamicMessages(plan, root, request);
 
                         _logger.LogInformation("Using single instruction mode (backward compatibility)");
                         planToExecute = plan;
@@ -203,7 +203,11 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
     /// <summary>
     ///     Resolves any dynamic message placeholders in the instruction plan using request context.
     /// </summary>
-    private static void ResolveDynamicMessages(InstructionPlan plan, JsonElement requestRoot)
+    private static void ResolveDynamicMessages(
+        InstructionPlan plan,
+        JsonElement requestRoot,
+        HttpRequestMessage request
+    )
     {
         for (var i = 0; i < plan.Messages.Count; i++)
         {
@@ -215,6 +219,21 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             else if (message.ExplicitText == "__TOOLS_LIST__")
             {
                 message.ExplicitText = ExtractToolsList(requestRoot);
+            }
+            else if (message.ExplicitText == "__REQUEST_URL__")
+            {
+                message.ExplicitText = request.RequestUri?.ToString() ?? "No request URL";
+            }
+            else if (message.ExplicitText == "__REQUEST_HEADERS__")
+            {
+                message.ExplicitText = ExtractRequestHeaders(request);
+            }
+            else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__REQUEST_PARAMS__"))
+            {
+                var fieldFilter = message.ExplicitText.Contains(':')
+                    ? message.ExplicitText.Split(':', 2)[1].Split(',')
+                    : null;
+                message.ExplicitText = ExtractRequestParams(requestRoot, fieldFilter);
             }
         }
     }
@@ -300,6 +319,50 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         }
 
         return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
+    }
+
+    /// <summary>
+    ///     Extracts request headers as a newline-separated string.
+    /// </summary>
+    private static string ExtractRequestHeaders(HttpRequestMessage request)
+    {
+        var headers = new List<string>();
+        foreach (var header in request.Headers)
+        {
+            headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+        }
+
+        if (request.Content?.Headers != null)
+        {
+            foreach (var header in request.Content.Headers)
+            {
+                headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+            }
+        }
+
+        return headers.Count > 0 ? string.Join("\n", headers) : "No headers";
+    }
+
+    /// <summary>
+    ///     Extracts request body parameters, optionally filtered to specific fields.
+    /// </summary>
+    private static string ExtractRequestParams(JsonElement root, string[]? fields)
+    {
+        if (fields == null || fields.Length == 0)
+        {
+            return root.GetRawText();
+        }
+
+        var result = new Dictionary<string, string>();
+        foreach (var field in fields)
+        {
+            if (root.TryGetProperty(field, out var value))
+            {
+                result[field] = value.ToString();
+            }
+        }
+
+        return result.Count > 0 ? JsonSerializer.Serialize(result) : "No matching params";
     }
 
     private StringContent CreateNonStreamingResponse(InstructionPlan plan, string model)

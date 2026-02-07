@@ -31,7 +31,7 @@ public class DataDrivenFunctionToolTests
 
         // Execute via deterministic SSE test-mode handler for offline full-stack testing.
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
         Debug.WriteLine("Created agent with AnthropicTestSseMessageHandler");
 
@@ -210,7 +210,7 @@ public class DataDrivenFunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -312,7 +312,7 @@ public class DataDrivenFunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -327,8 +327,7 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        EnvironmentHelper.LoadEnvIfNeeded();
-        return Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "test-api-key";
+        return EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
     }
 
     private static bool ManualArtifactCreationEnabled()
