@@ -192,8 +192,8 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 }
             }
 
-            // Resolve any dynamic message placeholders
-            ResolveDynamicMessages(planToExecute, root);
+            // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)
+            ResolveDynamicMessages(planToExecute, root, request);
 
             _logger.LogInformation(
                 "Executing instruction: IdMessage={IdMessage}, ReasoningLength={ReasoningLength}, MessageCount={MessageCount}",
@@ -244,7 +244,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
     /// <summary>
     ///     Resolves any dynamic message placeholders in the instruction plan using request context.
     /// </summary>
-    private void ResolveDynamicMessages(InstructionPlan plan, JsonElement requestRoot)
+    private void ResolveDynamicMessages(
+        InstructionPlan plan,
+        JsonElement requestRoot,
+        HttpRequestMessage request
+    )
     {
         for (var i = 0; i < plan.Messages.Count; i++)
         {
@@ -253,8 +257,10 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             if (message.ExplicitText == "__SYSTEM_PROMPT__")
             {
                 var systemPrompt = ExtractSystemPrompt(requestRoot);
-                _logger.LogDebug("Resolved __SYSTEM_PROMPT__ placeholder to: {Preview}",
-                    systemPrompt.Length > 50 ? systemPrompt[..50] + "..." : systemPrompt);
+                _logger.LogDebug(
+                    "Resolved __SYSTEM_PROMPT__ placeholder to: {Preview}",
+                    systemPrompt.Length > 50 ? systemPrompt[..50] + "..." : systemPrompt
+                );
                 message.ExplicitText = systemPrompt;
             }
             else if (message.ExplicitText == "__TOOLS_LIST__")
@@ -263,7 +269,69 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 _logger.LogDebug("Resolved __TOOLS_LIST__ placeholder to: {ToolsList}", toolsList);
                 message.ExplicitText = toolsList;
             }
+            else if (message.ExplicitText == "__REQUEST_URL__")
+            {
+                message.ExplicitText = request.RequestUri?.ToString() ?? "No request URL";
+                _logger.LogDebug("Resolved __REQUEST_URL__ placeholder to: {Url}", message.ExplicitText);
+            }
+            else if (message.ExplicitText == "__REQUEST_HEADERS__")
+            {
+                message.ExplicitText = ExtractRequestHeaders(request);
+                _logger.LogDebug("Resolved __REQUEST_HEADERS__ placeholder");
+            }
+            else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__REQUEST_PARAMS__"))
+            {
+                var fieldFilter = message.ExplicitText.Contains(':')
+                    ? message.ExplicitText.Split(':', 2)[1].Split(',')
+                    : null;
+                message.ExplicitText = ExtractRequestParams(requestRoot, fieldFilter);
+                _logger.LogDebug("Resolved __REQUEST_PARAMS__ placeholder");
+            }
         }
+    }
+
+    /// <summary>
+    ///     Extracts request headers as a newline-separated string.
+    /// </summary>
+    private static string ExtractRequestHeaders(HttpRequestMessage request)
+    {
+        var headers = new List<string>();
+        foreach (var header in request.Headers)
+        {
+            headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+        }
+
+        if (request.Content?.Headers != null)
+        {
+            foreach (var header in request.Content.Headers)
+            {
+                headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+            }
+        }
+
+        return headers.Count > 0 ? string.Join("\n", headers) : "No headers";
+    }
+
+    /// <summary>
+    ///     Extracts request body parameters, optionally filtered to specific fields.
+    /// </summary>
+    private static string ExtractRequestParams(JsonElement root, string[]? fields)
+    {
+        if (fields == null || fields.Length == 0)
+        {
+            return root.GetRawText();
+        }
+
+        var result = new Dictionary<string, string>();
+        foreach (var field in fields)
+        {
+            if (root.TryGetProperty(field, out var value))
+            {
+                result[field] = value.ToString();
+            }
+        }
+
+        return result.Count > 0 ? JsonSerializer.Serialize(result) : "No matching params";
     }
 
     /// <summary>

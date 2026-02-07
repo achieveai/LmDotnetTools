@@ -22,7 +22,7 @@ public class FunctionToolTests : LoggingTestBase
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -79,7 +79,7 @@ public class FunctionToolTests : LoggingTestBase
         // Arrange - Using Anthropic test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, requestCapture, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
@@ -187,7 +187,7 @@ public class FunctionToolTests : LoggingTestBase
             wordsPerChunk: 5,
             chunkDelayMs: 0
         );
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and test-mode handler for tool use response");
 
@@ -266,7 +266,7 @@ public class FunctionToolTests : LoggingTestBase
             chunkDelayMs: 10
         );
 
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         Logger.LogDebug("Created AnthropicAgent with AnthropicTestSseMessageHandler");

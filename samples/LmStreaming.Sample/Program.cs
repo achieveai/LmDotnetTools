@@ -1,9 +1,11 @@
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
@@ -17,6 +19,9 @@ using Serilog.Events;
 using Serilog.Exceptions;
 using Serilog.Formatting.Compact;
 using Vite.AspNetCore;
+
+// Load .env file from workspace root (if it exists)
+EnvironmentHelper.LoadEnvIfNeeded(FindEnvFile());
 
 // Bootstrap Serilog for early logging (before host is built)
 Log.Logger = new LoggerConfiguration()
@@ -98,34 +103,20 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
-    // Register the provider agent factory (creates OpenClientAgent with TestSseMessageHandler)
+    // Register the provider agent factory (multi-provider support via LM_PROVIDER_MODE env var)
+    var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
+    Log.Information("LM Provider Mode: {ProviderMode}", providerMode);
+
     _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp => () =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-            var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
 
-            // Create the test handler that follows instruction chains
-            var testHandler = new TestSseMessageHandler(handlerLogger)
+            return providerMode.ToLowerInvariant() switch
             {
-                WordsPerChunk = 3,   // Stream 3 words at a time for visible streaming
-                ChunkDelayMs = 300,   // 50ms delay between chunks
+                "openai" => CreateOpenAiAgent(loggerFactory),
+                "anthropic" => CreateAnthropicAgent(loggerFactory),
+                _ => CreateTestAgent(loggerFactory),
             };
-
-            // Create HttpClient with the test handler
-            var httpClient = new HttpClient(testHandler)
-            {
-                BaseAddress = new Uri("http://test-mode/v1"),
-            };
-
-            // Create OpenClient with the mock HttpClient
-            var openClient = new OpenClient(
-                httpClient,
-                "http://test-mode/v1",
-                logger: loggerFactory.CreateLogger<OpenClient>());
-
-            // Create the streaming agent (middleware stack is built by MultiTurnAgentLoop)
-            var agentLogger = loggerFactory.CreateLogger<OpenClientAgent>();
-            return new OpenClientAgent("MockLLM", openClient, agentLogger);
         });
 
     // Register the MultiTurnAgentPool with mode-aware factory
@@ -161,12 +152,14 @@ try
                     filteredRegistry = newRegistry;
                 }
 
+                var modelId = GetModelIdForProvider(providerMode);
+
                 return new MultiTurnAgentLoop(
                     providerAgent,
                     filteredRegistry,
                     threadId,
                     systemPrompt: mode.SystemPrompt,
-                    defaultOptions: new GenerateReplyOptions { ModelId = "test-model" },
+                    defaultOptions: new GenerateReplyOptions { ModelId = modelId },
                     store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
             },
@@ -295,4 +288,116 @@ finally
 
 public partial class Program
 {
+    /// <summary>
+    ///     Creates a test-mode agent using TestSseMessageHandler for mock responses.
+    /// </summary>
+    private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory)
+    {
+        var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
+        var testHandler = new TestSseMessageHandler(handlerLogger)
+        {
+            WordsPerChunk = 3,
+            ChunkDelayMs = 300,
+        };
+
+        var httpClient = new HttpClient(testHandler)
+        {
+            BaseAddress = new Uri("http://test-mode/v1"),
+        };
+
+        var openClient = new OpenClient(
+            httpClient,
+            "http://test-mode/v1",
+            logger: loggerFactory.CreateLogger<OpenClient>());
+
+        return new OpenClientAgent("MockLLM", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
+    }
+
+    /// <summary>
+    ///     Creates an OpenAI-compatible agent (works with OpenAI, Kimi 2.5 OpenAI mode, etc.).
+    ///     Reads OPENAI_API_KEY, OPENAI_BASE_URL from env vars.
+    /// </summary>
+    private static IStreamingAgent CreateOpenAiAgent(ILoggerFactory loggerFactory)
+    {
+        var apiKey = EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY");
+        var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "OPENAI_BASE_URL",
+            defaultValue: "https://api.openai.com/v1");
+
+        Log.Information("Creating OpenAI agent with base URL: {BaseUrl}", baseUrl);
+
+        var openClient = new OpenClient(
+            apiKey,
+            baseUrl,
+            logger: loggerFactory.CreateLogger<OpenClient>());
+
+        return new OpenClientAgent("OpenAI", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
+    }
+
+    /// <summary>
+    ///     Creates an Anthropic-compatible agent (works with Anthropic, Kimi 2.5 Anthropic mode, etc.).
+    ///     Reads ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL from env vars.
+    /// </summary>
+    private static IStreamingAgent CreateAnthropicAgent(ILoggerFactory loggerFactory)
+    {
+        var apiKey = EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
+        var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "ANTHROPIC_BASE_URL",
+            defaultValue: "https://api.anthropic.com/v1");
+
+        Log.Information("Creating Anthropic agent with base URL: {BaseUrl}", baseUrl);
+
+        var anthropicClient = new AnthropicClient(
+            apiKey,
+            baseUrl: baseUrl,
+            logger: loggerFactory.CreateLogger<AnthropicClient>());
+
+        return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
+    }
+
+    /// <summary>
+    ///     Gets the model ID based on the provider mode and env vars.
+    /// </summary>
+    private static string GetModelIdForProvider(string providerMode)
+    {
+        return providerMode.ToLowerInvariant() switch
+        {
+            "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
+            "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
+            _ => "test-model",
+        };
+    }
+
+    /// <summary>
+    ///     Finds the .env file by searching up from the current directory.
+    /// </summary>
+    internal static string? FindEnvFile()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var envPath = Path.Combine(dir.FullName, ".env");
+            if (File.Exists(envPath))
+            {
+                return envPath;
+            }
+
+            var envTestPath = Path.Combine(dir.FullName, ".env.test");
+            if (File.Exists(envTestPath))
+            {
+                return envTestPath;
+            }
+
+            if (dir.GetFiles("*.sln").Length > 0
+                || dir.GetDirectories(".git").Length > 0
+                || File.Exists(Path.Combine(dir.FullName, ".git")))
+            {
+                break;
+            }
+
+            dir = dir.Parent;
+        }
+
+        return null;
+    }
 }

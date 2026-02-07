@@ -10,6 +10,49 @@ namespace LmStreaming.Sample.Controllers;
 [Route("api/diagnostics")]
 public class DiagnosticsController(ILogger<DiagnosticsController> logger) : ControllerBase
 {
+    /// <summary>
+    ///     Returns the active provider configuration so you can verify
+    ///     which LLM backend the service is connected to.
+    /// </summary>
+    [HttpGet("provider-info")]
+    public IActionResult GetProviderInfo()
+    {
+        var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
+        var info = new Dictionary<string, string?>
+        {
+            ["providerMode"] = providerMode,
+        };
+
+        switch (providerMode.ToLowerInvariant())
+        {
+            case "anthropic":
+                info["baseUrl"] = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
+                info["model"] = Environment.GetEnvironmentVariable("ANTHROPIC_MODEL")
+                    ?? "claude-sonnet-4-20250514";
+                info["apiKeyConfigured"] = (!string.IsNullOrEmpty(
+                    Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY"))).ToString();
+                break;
+            case "openai":
+                info["baseUrl"] = Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+                info["model"] = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
+                info["apiKeyConfigured"] = (!string.IsNullOrEmpty(
+                    Environment.GetEnvironmentVariable("OPENAI_API_KEY"))).ToString();
+                break;
+            default:
+                info["baseUrl"] = "http://test-mode/v1";
+                info["model"] = "test-model";
+                info["apiKeyConfigured"] = "N/A";
+                break;
+        }
+
+        logger.LogInformation(
+            "Provider info requested - Mode: {ProviderMode}, BaseUrl: {BaseUrl}, Model: {Model}",
+            info["providerMode"],
+            info["baseUrl"],
+            info["model"]);
+
+        return Ok(info);
+    }
     [HttpPost("logs")]
     public IActionResult IngestLogs([FromBody] ClientLogBatch batch)
     {

@@ -41,7 +41,7 @@ public class DataDrivenFunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
         Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
 
@@ -176,7 +176,7 @@ public class DataDrivenFunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -273,7 +273,7 @@ public class DataDrivenFunctionToolTests
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -288,7 +288,6 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        EnvironmentHelper.LoadEnvIfNeeded();
-        return Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "test-api-key";
+        return EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
     }
 }

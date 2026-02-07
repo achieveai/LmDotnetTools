@@ -53,7 +53,7 @@ public class ThinkingModeTests
         // Arrange - Using test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         var thinking = new AnthropicThinking(2048);
         Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
@@ -98,7 +98,7 @@ public class ThinkingModeTests
         // Arrange - Using test-mode handler with request capture
         var requestCapture = new RequestCapture();
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 

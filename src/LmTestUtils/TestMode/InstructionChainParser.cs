@@ -200,6 +200,47 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 continue;
             }
 
+            // Check for request_url_echo - returns the request URL as text
+            if (item.TryGetProperty("request_url_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__REQUEST_URL__"));
+                continue;
+            }
+
+            // Check for request_headers_echo - returns request headers as text
+            if (item.TryGetProperty("request_headers_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__REQUEST_HEADERS__"));
+                continue;
+            }
+
+            // Check for request_params_echo - returns request body params as text
+            if (
+                item.TryGetProperty("request_params_echo", out var paramsEchoEl)
+                && paramsEchoEl.ValueKind == JsonValueKind.Object
+            )
+            {
+                List<string>? fields = null;
+                if (
+                    paramsEchoEl.TryGetProperty("fields", out var fieldsEl)
+                    && fieldsEl.ValueKind == JsonValueKind.Array
+                )
+                {
+                    fields = fieldsEl
+                        .EnumerateArray()
+                        .Where(f => f.ValueKind == JsonValueKind.String)
+                        .Select(f => f.GetString()!)
+                        .ToList();
+                }
+
+                var placeholder =
+                    fields != null && fields.Count > 0
+                        ? $"__REQUEST_PARAMS__:{string.Join(",", fields)}"
+                        : "__REQUEST_PARAMS__";
+                messages.Add(InstructionMessage.ForExplicitText(placeholder));
+                continue;
+            }
+
             // Check for server_tool_use (built-in tools like web_search)
             if (
                 item.TryGetProperty("server_tool_use", out var serverToolUseEl)
