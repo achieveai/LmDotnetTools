@@ -1,0 +1,37 @@
+{
+  "id": "msg_server_tool_err_01",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-20250514",
+  "content": [
+    {
+      "type": "text",
+      "text": "Let me search for that."
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_err_01",
+      "name": "web_search",
+      "input": {
+        "query": "something to search"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_err_01",
+      "content": {
+        "type": "web_search_tool_result_error",
+        "error_code": "max_uses_exceeded"
+      }
+    },
+    {
+      "type": "text",
+      "text": "I was unable to search for that information due to search limits."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 150
+  }
+}

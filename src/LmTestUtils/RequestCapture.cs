@@ -158,6 +158,7 @@ public class AnthropicRequestCapture
                 .EnumerateArray()
                 .Select(tool => new ToolCapture
                 {
+                    Type = tool.TryGetProperty("type", out var type) ? type.GetString() : null,
                     Name = tool.TryGetProperty("name", out var name) ? name.GetString() : null,
                     Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
                     InputSchema = tool.TryGetProperty("input_schema", out var schema) ? schema : null,
@@ -303,6 +304,7 @@ public class MessageCapture
 /// </summary>
 public class ToolCapture
 {
+    public string? Type { get; set; }
     public string? Name { get; set; }
     public string? Description { get; set; }
     public object? InputSchema { get; set; }

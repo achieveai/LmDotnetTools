@@ -50,6 +50,17 @@ public static class SystemChatModes
             CreatedAt = 0,
             UpdatedAt = 0,
         },
+        new ChatMode
+        {
+            Id = "research-assistant",
+            Name = "Research Assistant",
+            Description = "An assistant that can search the web for up-to-date information using server-side web search.",
+            SystemPrompt = "You are a research assistant with access to web search. When the user asks questions that require up-to-date information, current events, or facts you're unsure about, use your web search capability to find accurate answers. Cite your sources when providing information from web searches.",
+            EnabledTools = null, // All tools enabled (including server-side web_search)
+            IsSystemDefined = true,
+            CreatedAt = 0,
+            UpdatedAt = 0,
+        },
     ];
 
     /// <summary>

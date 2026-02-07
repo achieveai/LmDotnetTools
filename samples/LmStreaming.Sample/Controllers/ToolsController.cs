@@ -6,17 +6,20 @@ namespace LmStreaming.Sample.Controllers;
 
 [ApiController]
 [Route("api/tools")]
-public class ToolsController(FunctionRegistry functionRegistry) : ControllerBase
+public class ToolsController(
+    FunctionRegistry functionRegistry,
+    IReadOnlyList<ToolDefinition> builtInToolDefinitions) : ControllerBase
 {
     [HttpGet]
     public IActionResult List()
     {
         var (contracts, _) = functionRegistry.Build();
-        var tools = contracts.Select(c => new ToolDefinition
+        var functionTools = contracts.Select(c => new ToolDefinition
         {
             Name = c.Name,
             Description = c.Description,
         });
-        return Ok(tools);
+        var allTools = builtInToolDefinitions.Concat(functionTools);
+        return Ok(allTools);
     }
 }

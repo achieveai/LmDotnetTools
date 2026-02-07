@@ -139,23 +139,50 @@ public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, I
                 continue;
             }
 
-            // Check if it contains instruction tags
-            if (message.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+            if (!message.TryGetProperty("content", out var content))
             {
-                var contentStr = content.GetString() ?? string.Empty;
-                var extractedChain = _chainParser.ExtractInstructionChain(contentStr);
+                continue;
+            }
 
-                if (extractedChain != null)
+            // Check for instruction chain in content (handles both string and array formats)
+            InstructionPlan[]? extractedChain = null;
+
+            if (content.ValueKind == JsonValueKind.String)
+            {
+                extractedChain = _chainParser.ExtractInstructionChain(content.GetString() ?? string.Empty);
+            }
+            else if (content.ValueKind == JsonValueKind.Array)
+            {
+                // Handle content array format (e.g., [{type: "text", text: "..."}])
+                foreach (var item in content.EnumerateArray())
                 {
-                    chain = extractedChain;
-                    chainMessageIndex = i;
-                    _logger.LogInformation(
-                        "Found instruction chain with {Count} instructions at message index {Index}",
-                        chain.Length,
-                        chainMessageIndex
-                    );
-                    break; // Use the last (most recent) chain found
+                    if (
+                        item.ValueKind == JsonValueKind.Object
+                        && item.TryGetProperty("type", out var type)
+                        && type.GetString() == "text"
+                        && item.TryGetProperty("text", out var text)
+                        && text.ValueKind == JsonValueKind.String
+                    )
+                    {
+                        extractedChain = _chainParser.ExtractInstructionChain(text.GetString() ?? string.Empty);
+                        if (extractedChain != null)
+                        {
+                            break;
+                        }
+                    }
                 }
+            }
+
+            if (extractedChain != null)
+            {
+                chain = extractedChain;
+                chainMessageIndex = i;
+                _logger.LogInformation(
+                    "Found instruction chain with {Count} instructions at message index {Index}",
+                    chain.Length,
+                    chainMessageIndex
+                );
+                break; // Use the last (most recent) chain found
             }
         }
 

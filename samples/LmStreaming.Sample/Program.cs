@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -9,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
+using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
@@ -103,8 +105,17 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
-    // Register the provider agent factory (multi-provider support via LM_PROVIDER_MODE env var)
+    // Register built-in (server-side) tool definitions for the tools API
     var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
+    var builtInTools = GetBuiltInToolsForProvider(providerMode);
+    var builtInToolDefinitions = builtInTools?
+        .OfType<AnthropicBuiltInTool>()
+        .Select(t => new ToolDefinition { Name = t.Name, Description = $"Server-side {t.Name} tool ({t.Type})" })
+        .ToList()
+        ?? [];
+    _ = builder.Services.AddSingleton<IReadOnlyList<ToolDefinition>>(builtInToolDefinitions);
+
+    // Register the provider agent factory (multi-provider support via LM_PROVIDER_MODE env var)
     Log.Information("LM Provider Mode: {ProviderMode}", providerMode);
 
     _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp => () =>
@@ -159,7 +170,11 @@ try
                     filteredRegistry,
                     threadId,
                     systemPrompt: mode.SystemPrompt,
-                    defaultOptions: new GenerateReplyOptions { ModelId = modelId },
+                    defaultOptions: new GenerateReplyOptions
+                    {
+                        ModelId = modelId,
+                        BuiltInTools = GetBuiltInToolsForProvider(providerMode),
+                    },
                     store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
             },
@@ -365,6 +380,19 @@ public partial class Program
             "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
             "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
             _ => "test-model",
+        };
+    }
+
+    /// <summary>
+    ///     Gets the built-in (server-side) tools based on the provider mode.
+    ///     These are tools that execute on the provider's servers (e.g., Anthropic web_search).
+    /// </summary>
+    private static List<object>? GetBuiltInToolsForProvider(string providerMode)
+    {
+        return providerMode.ToLowerInvariant() switch
+        {
+            "anthropic" => [new AnthropicWebSearchTool()],
+            _ => null,
         };
     }
 

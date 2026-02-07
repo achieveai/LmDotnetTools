@@ -304,7 +304,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 ? idEl.GetString()
                 : null;
 
-        JsonElement? input = element.TryGetProperty("input", out var inputEl) ? inputEl : null;
+        JsonElement? input = element.TryGetProperty("input", out var inputEl) ? inputEl.Clone() : null;
 
         return new InstructionServerToolUse { Id = id, Name = name, Input = input };
     }
@@ -331,7 +331,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 ? errorEl.GetString()
                 : null;
 
-        JsonElement? result = element.TryGetProperty("result", out var resultEl) ? resultEl : null;
+        JsonElement? result = element.TryGetProperty("result", out var resultEl) ? resultEl.Clone() : null;
 
         return new InstructionServerToolResult
         {

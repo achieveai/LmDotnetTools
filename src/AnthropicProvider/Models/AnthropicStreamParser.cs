@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
@@ -14,6 +16,7 @@ public class AnthropicStreamParser
 {
     private readonly Dictionary<int, StreamingContentBlock> _contentBlocks = [];
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILogger _logger;
     private readonly List<IMessage> _messages = [];
     private string _messageId = string.Empty;
     private string _model = string.Empty;
@@ -23,9 +26,10 @@ public class AnthropicStreamParser
     /// <summary>
     ///     Creates a new instance of the AnthropicStreamParser
     /// </summary>
-    public AnthropicStreamParser()
+    public AnthropicStreamParser(ILogger? logger = null)
     {
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateUniversal();
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -158,15 +162,33 @@ public class AnthropicStreamParser
         {
             try
             {
+                var citationsJson = contentBlock["citations"]!.ToJsonString();
+                _logger.LogDebug(
+                    "Parsing citations from content_block_start: {CitationsJson}",
+                    citationsJson
+                );
                 _contentBlocks[index].Citations = JsonSerializer.Deserialize<List<Citation>>(
-                    contentBlock["citations"]!.ToJsonString(),
+                    citationsJson,
                     _jsonOptions
                 );
+                _logger.LogDebug(
+                    "Parsed {CitationCount} citations for block {Index}",
+                    _contentBlocks[index].Citations?.Count ?? 0,
+                    index
+                );
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore citation parsing errors
+                _logger.LogWarning(ex, "Failed to parse citations from content_block_start");
             }
+        }
+        else
+        {
+            _logger.LogDebug(
+                "No citations found on content_block_start for block {Index} (type={BlockType})",
+                index,
+                blockType
+            );
         }
 
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
@@ -227,14 +249,14 @@ public class AnthropicStreamParser
             var isError = false;
             string? errorCode = null;
 
-            // Check if this is an error result
-            if (resultContent != null)
+            // Check if this is an error result (content is an object with type ending in "_error")
+            if (resultContent is JsonObject resultObj)
             {
-                var contentType = resultContent["type"]?.GetValue<string>();
+                var contentType = resultObj["type"]?.GetValue<string>();
                 if (contentType?.EndsWith("_error") == true)
                 {
                     isError = true;
-                    errorCode = resultContent["error_code"]?.GetValue<string>();
+                    errorCode = resultObj["error_code"]?.GetValue<string>();
                 }
             }
 
@@ -722,6 +744,17 @@ public class AnthropicStreamParser
             Name = name,
             Input = input,
         };
+
+        // Check for citations on text blocks
+        if (contentBlock is AnthropicResponseTextContent textContent && textContent.Citations != null)
+        {
+            _contentBlocks[index].Citations = textContent.Citations;
+            _logger.LogDebug(
+                "Captured {CitationCount} citations from typed content_block_start for block {Index}",
+                textContent.Citations.Count,
+                index
+            );
+        }
 
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
         if (contentBlock is AnthropicResponseToolUseContent toolUseTool && !string.IsNullOrEmpty(toolUseTool.Id))

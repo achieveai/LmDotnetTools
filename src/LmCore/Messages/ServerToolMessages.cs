@@ -28,6 +28,7 @@ public record ServerToolUseMessage : IMessage
     ///     The input parameters to the tool.
     /// </summary>
     [JsonPropertyName("input")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public JsonElement Input { get; init; }
 
     /// <summary>
@@ -118,6 +119,7 @@ public record ServerToolResultMessage : IMessage
     ///     The result content from the tool execution.
     /// </summary>
     [JsonPropertyName("result")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public JsonElement Result { get; init; }
 
     /// <summary>

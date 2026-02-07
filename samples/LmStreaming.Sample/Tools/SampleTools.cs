@@ -67,33 +67,4 @@ public static class SampleTools
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    /// <summary>
-    /// Search the web for information.
-    /// </summary>
-    [Function("web_search", "Search the web for information on a topic")]
-    public static string WebSearch(
-        [Description("Search query")] string query,
-        [Description("Number of results to return (1-10, default: 3)")] int numResults = 3)
-    {
-        numResults = Math.Clamp(numResults, 1, 10);
-
-        // Mock search results
-        var results = Enumerable.Range(1, numResults).Select(i => new
-        {
-            title = $"Result {i}: {query}",
-            url = $"https://example.com/search/{Uri.EscapeDataString(query)}/{i}",
-            snippet = $"This is a mock search result {i} for the query '{query}'. " +
-                     $"In a real implementation, this would contain actual search results from a search engine API.",
-            publishedDate = DateTime.UtcNow.AddDays(-Random.Next(1, 365)).ToString("yyyy-MM-dd")
-        }).ToList();
-
-        var response = new
-        {
-            query,
-            totalResults = numResults,
-            results
-        };
-
-        return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
-    }
 }

@@ -43,6 +43,13 @@ public record AnthropicResponseTextContent : AnthropicResponseContent
     /// </summary>
     [JsonPropertyName("text")]
     public string Text { get; init; } = string.Empty;
+
+    /// <summary>
+    ///     Citations associated with this text content (from web_search or web_fetch results).
+    /// </summary>
+    [JsonPropertyName("citations")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<Citation>? Citations { get; init; }
 }
 
 /// <summary>
@@ -317,5 +324,5 @@ public record AnthropicResponseTextWithCitationsContent : AnthropicResponseTextC
     ///     The citations associated with this text content.
     /// </summary>
     [JsonPropertyName("citations")]
-    public List<Citation>? Citations { get; init; }
+    public new List<Citation>? Citations { get; init; }
 }
