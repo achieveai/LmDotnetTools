@@ -196,6 +196,8 @@ export interface RunCompletedMessage extends IMessage {
   forkedToRunId?: string | null;
   hasPendingMessages: boolean;
   pendingMessageCount: number;
+  isError?: boolean;
+  errorMessage?: string | null;
 }
 
 /**

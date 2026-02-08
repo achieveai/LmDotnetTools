@@ -714,6 +714,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="wasForked">Whether the run was forked due to new input</param>
     /// <param name="forkedToRunId">The run ID that was forked to (if applicable)</param>
     /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
+    /// <param name="isError">Whether the run completed due to an error</param>
+    /// <param name="errorMessage">Error message when isError is true</param>
     /// <param name="ct">Cancellation token</param>
     protected async Task CompleteRunAsync(
         string runId,
@@ -721,6 +723,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         bool wasForked = false,
         string? forkedToRunId = null,
         int pendingMessageCount = 0,
+        bool isError = false,
+        string? errorMessage = null,
         CancellationToken ct = default)
     {
         await PublishToAllAsync(new RunCompletedMessage
@@ -732,6 +736,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             GenerationId = generationId,
             HasPendingMessages = pendingMessageCount > 0,
             PendingMessageCount = pendingMessageCount,
+            IsError = isError,
+            ErrorMessage = errorMessage,
         }, ct);
 
         lock (_stateLock)
@@ -740,7 +746,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _currentRunId = null;
         }
 
-        Logger.LogInformation("Run {RunId} completed. WasForked: {WasForked}", runId, wasForked);
+        if (isError)
+        {
+            Logger.LogWarning("Run {RunId} completed with error: {ErrorMessage}", runId, errorMessage);
+        }
+        else
+        {
+            Logger.LogInformation("Run {RunId} completed. WasForked: {WasForked}", runId, wasForked);
+        }
 
         // Persist metadata after run completes
         await UpdateMetadataAsync(ct);

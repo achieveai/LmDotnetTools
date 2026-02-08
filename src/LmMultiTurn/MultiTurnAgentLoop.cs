@@ -120,9 +120,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 {
                     // Execute turns - poll for new input between turns
                     await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
-                }
-                finally
-                {
+
                     // Complete run - simple loop has no pending messages
                     await CompleteRunAsync(
                         assignment.RunId,
@@ -130,7 +128,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                         wasForked: false,
                         forkedToRunId: null,
                         pendingMessageCount: 0,
-                        ct);
+                        ct: ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Per-run error: log, notify client, but keep the loop alive
+                    Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        isError: true,
+                        errorMessage: ex.Message,
+                        ct: ct);
                 }
             }
         }

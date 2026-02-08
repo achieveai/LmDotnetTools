@@ -24,6 +24,17 @@ public record RunCompletedMessage : IMessage
     /// </summary>
     public int PendingMessageCount { get; init; }
 
+    /// <summary>
+    /// Indicates the run completed due to an error (e.g. API call failure).
+    /// When true, <see cref="ErrorMessage"/> contains the error details.
+    /// </summary>
+    public bool IsError { get; init; }
+
+    /// <summary>
+    /// Error message when <see cref="IsError"/> is true.
+    /// </summary>
+    public string? ErrorMessage { get; init; }
+
     public string? FromAgent { get; init; }
     public Role Role => Role.System;
     public ImmutableDictionary<string, object>? Metadata { get; init; }

@@ -345,7 +345,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         wasForked: false,
                         forkedToRunId: null,
                         pendingMessageCount: _localMessageQueue.Count,
-                        ct);
+                        ct: ct);
                 }
             }
         }
@@ -626,7 +626,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 wasForked: false,
                 forkedToRunId: null,
                 pendingMessageCount: 0,
-                ct);
+                ct: ct);
         }
     }
 

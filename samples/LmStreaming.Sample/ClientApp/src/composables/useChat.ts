@@ -344,10 +344,31 @@ export function useChat(options: UseChatOptions = {}) {
   function handleRunCompleted(msg: Message) {
     if (!isRunCompletedMessage(msg)) return;
 
-    log.debug('Run completed', { 
-      runId: msg.completedRunId, 
-      hasPending: msg.hasPendingMessages 
+    log.debug('Run completed', {
+      runId: msg.completedRunId,
+      hasPending: msg.hasPendingMessages,
+      isError: msg.isError,
     });
+
+    // If the run ended with an error, add an error message to the chat
+    if (msg.isError && msg.errorMessage) {
+      const errorId = `error-${msg.completedRunId}`;
+      const errorMsg: InternalChatMessage = {
+        id: errorId,
+        role: 'assistant',
+        status: 'completed',
+        content: {
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: `Error: ${msg.errorMessage}`,
+        },
+        isStreaming: false,
+        runId: msg.completedRunId,
+        generationId: msg.generationId,
+        timestamp: Date.now(),
+      };
+      messageIndex.value.set(errorId, errorMsg);
+    }
 
     // Mark all messages in this run as completed
     for (const message of messageIndex.value.values()) {
