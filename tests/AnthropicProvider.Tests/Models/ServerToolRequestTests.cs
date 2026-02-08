@@ -133,12 +133,13 @@ public class ServerToolRequestTests
         var doc = JsonDocument.Parse(json);
         var requestMessages = doc.RootElement.GetProperty("messages");
 
-        // Find assistant message with server_tool_use content
+        // Find assistant message with server_tool_use and user message with tool_result
         var hasServerToolUse = false;
-        var hasServerToolResult = false;
+        var hasToolResult = false;
 
         foreach (var msg in requestMessages.EnumerateArray())
         {
+            var role = msg.GetProperty("role").GetString();
             if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
             {
                 foreach (var block in content.EnumerateArray())
@@ -148,14 +149,20 @@ public class ServerToolRequestTests
                         if (blockType.GetString() == "server_tool_use")
                         {
                             hasServerToolUse = true;
+                            Assert.Equal("assistant", role);
                             Assert.Equal("srvtoolu_01", block.GetProperty("id").GetString());
                             Assert.Equal("web_search", block.GetProperty("name").GetString());
                         }
 
-                        if (blockType.GetString() == "web_search_tool_result")
+                        // ServerToolResultMessage is converted to tool_result in a user message,
+                        // since providers like Kimi treat server_tool_use as regular tool_use
+                        // and require a matching tool_result in the next user turn.
+                        if (blockType.GetString() == "tool_result"
+                            && block.TryGetProperty("tool_use_id", out var toolUseId)
+                            && toolUseId.GetString() == "srvtoolu_01")
                         {
-                            hasServerToolResult = true;
-                            Assert.Equal("srvtoolu_01", block.GetProperty("tool_use_id").GetString());
+                            hasToolResult = true;
+                            Assert.Equal("user", role);
                         }
                     }
                 }
@@ -163,6 +170,6 @@ public class ServerToolRequestTests
         }
 
         Assert.True(hasServerToolUse, "Expected server_tool_use content block in serialized request");
-        Assert.True(hasServerToolResult, "Expected web_search_tool_result content block in serialized request");
+        Assert.True(hasToolResult, "Expected tool_result content block in user message for server tool result");
     }
 }

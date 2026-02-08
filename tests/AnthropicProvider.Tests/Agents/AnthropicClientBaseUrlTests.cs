@@ -92,9 +92,9 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task ExplicitBaseUrl_WithoutV1_ShouldNormalize()
+    public async Task ExplicitBaseUrl_WithoutV1_ShouldBeUsedAsIs()
     {
-        Logger.LogInformation("Testing explicit base URL without /v1 suffix");
+        Logger.LogInformation("Testing explicit base URL without /v1 suffix is used as-is");
 
         // Arrange
         var requestCapture = new RequestCapture();
@@ -104,7 +104,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             chunkDelayMs: 0
         );
 
-        // Use explicit base URL without /v1 - should be normalized to include it
+        // Use explicit base URL without /v1 - should be used as-is (no auto-normalization)
         var client = new AnthropicClient(
             "test-api-key",
             baseUrl: "https://custom-api.example.com",
@@ -118,10 +118,10 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             new GenerateReplyOptions { ModelId = "claude-3-sonnet-20240229" }
         );
 
-        // Assert
+        // Assert - URL is used as-is, /messages appended directly
         var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
-        Logger.LogInformation("Normalized URL request URI: {RequestUri}", requestUri);
-        Assert.Contains("custom-api.example.com/v1/messages", requestUri!);
+        Logger.LogInformation("As-is URL request URI: {RequestUri}", requestUri);
+        Assert.Contains("custom-api.example.com/messages", requestUri!);
     }
 
     [Fact]
@@ -163,9 +163,9 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task EnvVarBaseUrl_WithoutV1_ShouldNormalize()
+    public async Task EnvVarBaseUrl_WithoutV1_ShouldBeUsedAsIs()
     {
-        Logger.LogInformation("Testing ANTHROPIC_BASE_URL env var without /v1 suffix");
+        Logger.LogInformation("Testing ANTHROPIC_BASE_URL env var without /v1 suffix is used as-is");
 
         // Arrange
         var originalEnvValue = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
@@ -189,10 +189,10 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
                 new GenerateReplyOptions { ModelId = "claude-3-sonnet-20240229" }
             );
 
-            // Assert
+            // Assert - URL is used as-is, /messages appended directly
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
-            Logger.LogInformation("Env var normalized URL request URI: {RequestUri}", requestUri);
-            Assert.Contains("env-no-v1.example.com/v1/messages", requestUri!);
+            Logger.LogInformation("Env var as-is URL request URI: {RequestUri}", requestUri);
+            Assert.Contains("env-no-v1.example.com/messages", requestUri!);
         }
         finally
         {
@@ -242,6 +242,39 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         {
             Environment.SetEnvironmentVariable("ANTHROPIC_BASE_URL", originalEnvValue);
         }
+    }
+
+    [Fact]
+    public async Task ExplicitBaseUrl_WithCustomPath_ShouldPreservePath()
+    {
+        Logger.LogInformation("Testing explicit base URL with custom path prefix (e.g. Kimi)");
+
+        // Arrange
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            requestCapture,
+            chunkDelayMs: 0
+        );
+
+        // URL like Kimi uses: custom path without /v1
+        var client = new AnthropicClient(
+            "test-api-key",
+            baseUrl: "https://api.kimi.com/coding",
+            httpClient: httpClient
+        );
+        var agent = new AnthropicAgent("TestAgent", client);
+
+        // Act
+        var responses = await agent.GenerateReplyAsync(
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
+            new GenerateReplyOptions { ModelId = "kimi-2.5" }
+        );
+
+        // Assert - path should be preserved, /messages appended
+        var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
+        Logger.LogInformation("Custom path URL request URI: {RequestUri}", requestUri);
+        Assert.Contains("api.kimi.com/coding/messages", requestUri!);
     }
 
     [Fact]

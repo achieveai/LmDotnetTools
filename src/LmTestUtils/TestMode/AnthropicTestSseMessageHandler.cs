@@ -11,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 /// </summary>
 /// <remarks>
 ///     This is the Anthropic equivalent of <see cref="TestSseMessageHandler" />.
-///     It intercepts POST requests to /v1/messages and generates Anthropic-format SSE responses.
+///     It intercepts POST requests to paths ending with /messages and generates Anthropic-format SSE responses.
 /// </remarks>
 public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
 {
@@ -90,11 +90,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        // Check for Anthropic API endpoint (/v1/messages)
-        if (!request.RequestUri.AbsolutePath.EndsWith("/v1/messages", StringComparison.OrdinalIgnoreCase))
+        // Check for Anthropic API endpoint (any path ending with /messages)
+        if (!request.RequestUri.AbsolutePath.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogTrace(
-                "Path doesn't match /v1/messages: {Path}",
+                "Path doesn't match /messages: {Path}",
                 request.RequestUri.AbsolutePath
             );
             return new HttpResponseMessage(HttpStatusCode.NotFound);
