@@ -96,5 +96,25 @@ describe('MessageList', () => {
     
     expect(requestAnimationFrameMock).toHaveBeenCalled();
   });
+
+  describe('Layout containment (overflow regression)', () => {
+    const componentSource = (() => {
+      const fs = require('fs');
+      const path = require('path');
+      return fs.readFileSync(
+        path.resolve(__dirname, '../../components/MessageList.vue'),
+        'utf-8'
+      ) as string;
+    })();
+
+    it('should have width 100% on .assistant-message-wrapper to fill available space', () => {
+      expect(componentSource).toMatch(/\.assistant-message-wrapper\s*\{[^}]*width:\s*100%/);
+    });
+
+    it('should have min-width 0 on message containers to prevent flex overflow', () => {
+      // The combined rule targets both user and assistant containers
+      expect(componentSource).toMatch(/\.assistant-message-container[^{]*\{[^}]*min-width:\s*0/);
+    });
+  });
 });
 

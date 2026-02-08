@@ -299,6 +299,7 @@ watch(
 
 .assistant-message-wrapper {
   margin-right: auto;
+  width: 100%;
 }
 
 .user-message-container,
@@ -306,6 +307,8 @@ watch(
   display: flex;
   gap: 12px;
   align-items: flex-start;
+  width: 100%;
+  min-width: 0;
 }
 
 .user-message-container {

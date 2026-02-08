@@ -300,6 +300,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   padding: 8px;
   border: 1px solid #e0e0e0;
   margin-bottom: 8px;
+  overflow: hidden;
 }
 
 .pill-header {
@@ -371,6 +372,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid transparent;
+  min-width: 0;
 }
 
 .pill-item:hover {
@@ -475,6 +477,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #e0e0e0;
+  overflow-x: auto;
 }
 
 .reasoning-text {
