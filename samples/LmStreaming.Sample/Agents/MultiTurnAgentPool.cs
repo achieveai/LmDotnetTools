@@ -12,7 +12,7 @@ namespace LmStreaming.Sample.Agents;
 public sealed class MultiTurnAgentPool : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, AgentEntry> _agents = new();
-    private readonly Func<string, ChatMode, IMultiTurnAgent> _agentFactory;
+    private readonly Func<string, ChatMode, string?, IMultiTurnAgent> _agentFactory;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
@@ -26,6 +26,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         public required Task RunTask { get; init; }
         public required CancellationTokenSource Cts { get; init; }
         public required ChatMode Mode { get; init; }
+        public string? RequestResponseDumpFileName { get; init; }
 
         public async ValueTask DisposeAsync()
         {
@@ -50,7 +51,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <param name="agentFactory">Factory function that creates an IMultiTurnAgent for a given threadId and ChatMode</param>
     /// <param name="logger">Logger for pool operations</param>
     public MultiTurnAgentPool(
-        Func<string, ChatMode, IMultiTurnAgent> agentFactory,
+        Func<string, ChatMode, string?, IMultiTurnAgent> agentFactory,
         ILogger<MultiTurnAgentPool> logger)
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
@@ -65,7 +66,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <returns>The agent for this thread</returns>
     public IMultiTurnAgent GetOrCreateAgent(string threadId)
     {
-        return GetOrCreateAgent(threadId, GetDefaultMode());
+        return GetOrCreateAgent(threadId, GetDefaultMode(), null);
     }
 
     /// <summary>
@@ -74,14 +75,37 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     /// <param name="threadId">The thread identifier</param>
     /// <param name="mode">The chat mode to use for the agent</param>
+    /// <param name="requestResponseDumpFileName">
+    /// Optional base file name for provider request/response recording.
+    /// Only applied when creating a new agent instance.
+    /// </param>
     /// <returns>The agent for this thread</returns>
-    public IMultiTurnAgent GetOrCreateAgent(string threadId, ChatMode mode)
+    public IMultiTurnAgent GetOrCreateAgent(
+        string threadId,
+        ChatMode mode,
+        string? requestResponseDumpFileName = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
         ArgumentNullException.ThrowIfNull(mode);
 
-        var entry = _agents.GetOrAdd(threadId, id => CreateAgentEntry(id, mode));
+        var entry = _agents.GetOrAdd(
+            threadId,
+            id => CreateAgentEntry(id, mode, requestResponseDumpFileName));
+
+        if (!string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            && !string.Equals(
+                entry.RequestResponseDumpFileName,
+                requestResponseDumpFileName,
+                StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Request/response recording was requested for thread {ThreadId}, but an existing agent is being reused. " +
+                "Recording dump file is fixed at agent creation time. Existing dump base: {ExistingDumpBase}",
+                threadId,
+                entry.RequestResponseDumpFileName ?? "(none)");
+        }
+
         return entry.Agent;
     }
 
@@ -143,21 +167,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         await RemoveAgentAsync(threadId);
 
         // Create new agent with the specified mode
-        var entry = CreateAgentEntry(threadId, mode);
+        var entry = CreateAgentEntry(threadId, mode, requestResponseDumpFileName: null);
         _agents[threadId] = entry;
 
         return entry.Agent;
     }
 
-    private AgentEntry CreateAgentEntry(string threadId, ChatMode mode)
+    private AgentEntry CreateAgentEntry(string threadId, ChatMode mode, string? requestResponseDumpFileName)
     {
         _logger.LogInformation(
-            "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName})",
+            "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName}), dump recording enabled: {DumpEnabled}",
             threadId,
             mode.Id,
-            mode.Name);
+            mode.Name,
+            !string.IsNullOrWhiteSpace(requestResponseDumpFileName));
 
-        var agent = _agentFactory(threadId, mode);
+        var agent = _agentFactory(threadId, mode, requestResponseDumpFileName);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
         // Start the agent's background run loop
@@ -183,6 +208,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             RunTask = runTask,
             Cts = cts,
             Mode = mode,
+            RequestResponseDumpFileName = requestResponseDumpFileName,
         };
     }
 

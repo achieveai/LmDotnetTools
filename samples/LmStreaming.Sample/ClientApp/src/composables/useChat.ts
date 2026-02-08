@@ -114,6 +114,7 @@ export function getDisplayText(text: string): string {
  */
 export function useChat(options: UseChatOptions = {}) {
   const { transport: initialTransport = 'websocket', getModeId } = options;
+  const recordEnabled = isRecordingEnabledFromPageQuery();
 
   // Core state
   const pendingMessages = ref<InternalChatMessage[]>([]);
@@ -687,7 +688,11 @@ export function useChat(options: UseChatOptions = {}) {
       sendWebSocketMessage(wsConnection, text);
     } else {
       const currentModeId = getModeId?.();
-      log.info('Creating new WebSocket connection', { threadId: effectiveThreadId, modeId: currentModeId });
+      log.info('Creating new WebSocket connection', {
+        threadId: effectiveThreadId,
+        modeId: currentModeId,
+        recordEnabled,
+      });
 
       // Close old connection if exists
       if (wsConnection) {
@@ -702,6 +707,7 @@ export function useChat(options: UseChatOptions = {}) {
       wsConnection = await createWebSocketConnection({
         threadId: effectiveThreadId,
         modeId: currentModeId,
+        record: recordEnabled,
         ...callbacks,
         onDone: () => {
           log.debug('WebSocket stream done signal received');
@@ -900,4 +906,12 @@ export function useChat(options: UseChatOptions = {}) {
     setThreadId,
     loadMessagesFromBackend,
   };
+}
+
+function isRecordingEnabledFromPageQuery(): boolean {
+  const recordValue = new URLSearchParams(window.location.search).get('record');
+  if (!recordValue) return false;
+
+  const normalized = recordValue.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true';
 }

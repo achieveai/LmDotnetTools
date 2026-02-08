@@ -20,6 +20,7 @@ export interface WebSocketClientOptions extends WebSocketClientCallbacks {
   baseUrl?: string;
   threadId?: string;
   modeId?: string;
+  record?: boolean;
 }
 
 /**
@@ -39,7 +40,7 @@ export interface WebSocketConnection {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, onMessage, onDone, onError } = options;
+  const { baseUrl = '', threadId, modeId, record, onMessage, onDone, onError } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
@@ -49,6 +50,9 @@ export function createWebSocketConnection(
     let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
     if (modeId) {
       wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
+    }
+    if (record) {
+      wsUrl += '&record=1';
     }
 
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });

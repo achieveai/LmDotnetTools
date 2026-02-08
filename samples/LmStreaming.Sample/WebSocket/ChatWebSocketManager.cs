@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
+using LmStreaming.Sample.Persistence;
 
 namespace LmStreaming.Sample.WebSocket;
 
@@ -35,12 +36,16 @@ public sealed class ChatWebSocketManager
     /// <param name="webSocket">The WebSocket connection</param>
     /// <param name="threadId">The thread ID for routing to the correct agent</param>
     /// <param name="mode">Optional chat mode for agent configuration</param>
+    /// <param name="requestResponseDumpFileName">
+    /// Optional base file name for provider request/response recording.
+    /// </param>
     /// <param name="recordWriter">Optional writer for recording messages to a JSONL file</param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
         ChatMode? mode,
+        string? requestResponseDumpFileName,
         StreamWriter? recordWriter,
         CancellationToken cancellationToken)
     {
@@ -52,8 +57,11 @@ public sealed class ChatWebSocketManager
 
         // Get or create agent for this thread with the specified mode
         var agent = mode != null
-            ? _agentPool.GetOrCreateAgent(threadId, mode)
-            : _agentPool.GetOrCreateAgent(threadId);
+            ? _agentPool.GetOrCreateAgent(threadId, mode, requestResponseDumpFileName)
+            : _agentPool.GetOrCreateAgent(
+                threadId,
+                SystemChatModes.All[0],
+                requestResponseDumpFileName);
 
         // Create linked cancellation for connection lifetime
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

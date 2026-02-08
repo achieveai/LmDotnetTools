@@ -140,7 +140,7 @@ try
         var conversationStore = sp.GetRequiredService<IConversationStore>();
 
         return new MultiTurnAgentPool(
-            (threadId, mode) =>
+            (threadId, mode, requestResponseDumpFileName) =>
             {
                 var providerAgent = agentFactory();
 
@@ -189,6 +189,7 @@ try
                     {
                         ModelId = modelId,
                         BuiltInTools = filteredBuiltInTools,
+                        RequestResponseDumpFileName = requestResponseDumpFileName,
                     },
                     store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
@@ -254,19 +255,26 @@ try
             : null;
 
         var recordEnabled = app.Environment.IsDevelopment()
-            && string.Equals(
-                context.Request.Query["record"].FirstOrDefault(),
-                "true",
-                StringComparison.OrdinalIgnoreCase);
+            && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
 
         StreamWriter? recordWriter = null;
+        string? requestResponseDumpFileName = null;
         if (recordEnabled)
         {
             var recordingsDir = Path.Combine(app.Environment.ContentRootPath, "recordings");
             Directory.CreateDirectory(recordingsDir);
-            var fileName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}.jsonl";
-            recordWriter = new StreamWriter(Path.Combine(recordingsDir, fileName), false, new UTF8Encoding(false));
-            wsLogger.LogInformation("Recording WebSocket messages to {FileName}", fileName);
+            var sessionBaseName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}";
+
+            var wsFileName = $"{sessionBaseName}.ws.jsonl";
+            recordWriter = new StreamWriter(Path.Combine(recordingsDir, wsFileName), false, new UTF8Encoding(false));
+
+            requestResponseDumpFileName = Path.Combine(recordingsDir, $"{sessionBaseName}.llm");
+
+            wsLogger.LogInformation(
+                "Recording enabled for thread {ThreadId}. WS file: {WsFile}, LLM dump base: {DumpBase}",
+                threadId,
+                wsFileName,
+                requestResponseDumpFileName);
         }
 
         var webSocket = await context.WebSockets.AcceptWebSocketAsync();
@@ -277,7 +285,13 @@ try
 
         try
         {
-            await wsManager.HandleConnectionAsync(webSocket, threadId, mode, recordWriter, cancellationToken);
+            await wsManager.HandleConnectionAsync(
+                webSocket,
+                threadId,
+                mode,
+                requestResponseDumpFileName,
+                recordWriter,
+                cancellationToken);
         }
         finally
         {
@@ -439,6 +453,16 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     Returns true when recording is explicitly enabled via query string (record=1 or record=true).
+    /// </summary>
+    internal static bool IsRecordingEnabled(string? recordValue)
+    {
+        return recordValue is not null
+            && (string.Equals(recordValue, "1", StringComparison.Ordinal)
+                || string.Equals(recordValue, "true", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
