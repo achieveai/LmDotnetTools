@@ -3,8 +3,8 @@
 #
 # Usage:
 #   # For Kimi:
-#   export ANTHROPIC_API_KEY="your-kimi-key"
-#   export ANTHROPIC_BASE_URL="https://api.kimi.com/coding"
+#   export ANTHROPIC_API_KEY="$KIMI_API_KEY"
+#   export ANTHROPIC_BASE_URL="https://api.kimi.com/coding/v1"
 #   export ANTHROPIC_MODEL="kimi-2.5"
 #
 #   # For Anthropic:

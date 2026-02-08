@@ -161,7 +161,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 continue;
             }
 
-            // Check for text message
+            // Check for text message (lorem ipsum of given length)
             if (item.TryGetProperty("text_message", out var textEl) && textEl.ValueKind == JsonValueKind.Object)
             {
                 if (
@@ -171,6 +171,20 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 )
                 {
                     messages.Add(InstructionMessage.ForText(Math.Max(0, tlen)));
+                    continue;
+                }
+            }
+
+            // Check for explicit text content: {"text": "some string"}
+            if (
+                item.TryGetProperty("text", out var explicitTextEl)
+                && explicitTextEl.ValueKind == JsonValueKind.String
+            )
+            {
+                var explicitText = explicitTextEl.GetString();
+                if (!string.IsNullOrEmpty(explicitText))
+                {
+                    messages.Add(InstructionMessage.ForExplicitText(explicitText));
                     continue;
                 }
             }
