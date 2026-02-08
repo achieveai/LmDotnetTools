@@ -193,6 +193,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                 async () =>
                 {
                     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+                    Logger.LogTrace("Anthropic streaming request body: {RequestBody}", requestJson);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
                     var requestUrl = $"{_baseUrl}/messages";
@@ -257,48 +258,30 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
     /// <summary>
     ///     Resolves the base URL from explicit parameter, environment variable, or default.
-    ///     Ensures the result always ends with /v1 since the client appends /messages to it.
+    ///     The client appends /messages to this URL, so it should include the full API path prefix
+    ///     (e.g. "https://api.anthropic.com/v1" or "https://api.kimi.com/coding").
     /// </summary>
     private static string ResolveBaseUrl(string? explicitBaseUrl)
     {
-        string resolved;
-
         if (!string.IsNullOrEmpty(explicitBaseUrl))
         {
-            resolved = explicitBaseUrl.TrimEnd('/');
-        }
-        else
-        {
-            var envUrl = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
-            if (!string.IsNullOrEmpty(envUrl))
-            {
-                resolved = envUrl.TrimEnd('/');
-            }
-            else
-            {
-                return DefaultBaseUrl;
-            }
+            return explicitBaseUrl.TrimEnd('/');
         }
 
-        // Normalize: ensure the URL ends with /v1 since the client appends /messages to it
-        if (!resolved.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        var envUrl = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
+        if (!string.IsNullOrEmpty(envUrl))
         {
-            resolved += "/v1";
+            return envUrl.TrimEnd('/');
         }
 
-        return resolved;
+        return DefaultBaseUrl;
     }
 
     private static HttpClient CreateHttpClient(string apiKey, string? baseUrl = null)
     {
         var resolvedUrl = ResolveBaseUrl(baseUrl);
-        // Strip /v1 suffix for the HttpClient base address since CreateForAnthropic adds no path
-        var httpClientBaseUrl = resolvedUrl.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)
-            ? resolvedUrl[..^3]
-            : resolvedUrl;
-
         var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
-        return HttpClientFactory.CreateForAnthropic(apiKey, httpClientBaseUrl, null, headers);
+        return HttpClientFactory.CreateForAnthropic(apiKey, resolvedUrl, null, headers);
     }
 
     /// <summary>

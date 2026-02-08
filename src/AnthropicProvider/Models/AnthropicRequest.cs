@@ -154,6 +154,14 @@ public record AnthropicRequest
                         _ => "user", // Default to user if unknown
                     };
 
+                    // Server tool results must be placed in user messages as tool_result,
+                    // since providers like Kimi treat server_tool_use like regular tool_use
+                    // and require a matching tool_result in the next user turn.
+                    if (message is ServerToolResultMessage)
+                    {
+                        role = "user";
+                    }
+
                     var anthropicMessage = new AnthropicMessage { Role = role };
 
                     AddBasicMessageContents(message, anthropicMessage);
@@ -167,6 +175,11 @@ public record AnthropicRequest
                     break;
             }
         }
+
+        // Merge consecutive same-role messages (required by Anthropic API which expects alternating roles).
+        // This happens when server tool use, server tool result, and text content from a single assistant
+        // turn arrive as separate IMessage objects.
+        anthropicMessages = MergeConsecutiveSameRoleMessages(anthropicMessages);
 
         // Extract the Thinking property from ExtraProperties if present
         AnthropicThinking? thinking = null;
@@ -235,6 +248,23 @@ public record AnthropicRequest
                     secondaryMessage.Content.Add(toolResultContent);
                 }
             }
+            else if (message is ServerToolResultMessage serverToolResultMsg)
+            {
+                // Server tool results must go in a user message as tool_result,
+                // since providers like Kimi treat server_tool_use as regular tool_use
+                // and require a matching tool_result in the next user turn.
+                secondaryMessage ??= new AnthropicMessage { Role = "user" };
+                secondaryMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "tool_result",
+                        ToolUseId = serverToolResultMsg.ToolUseId,
+                        Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
+                            ? serverToolResultMsg.Result.GetRawText()
+                            : "{}",
+                    }
+                );
+            }
             else
             {
                 AddBasicMessageContents(message, primaryMessage);
@@ -265,30 +295,25 @@ public record AnthropicRequest
                     Type = "server_tool_use",
                     Id = serverToolUseMsg.ToolUseId,
                     Name = serverToolUseMsg.ToolName,
-                    Input = serverToolUseMsg.Input.Clone(),
+                    Input = serverToolUseMsg.Input.ValueKind != JsonValueKind.Undefined
+                        ? serverToolUseMsg.Input.Clone()
+                        : default,
                 }
             );
         }
         else if (message is ServerToolResultMessage serverToolResultMsg)
         {
-            // Server tool result - these are part of the same response as server_tool_use,
-            // so we typically don't need to send them back, but include for completeness
-            var resultType = serverToolResultMsg.ToolName switch
-            {
-                "web_search" => "web_search_tool_result",
-                "web_fetch" => "web_fetch_tool_result",
-                "bash_code_execution" => "bash_code_execution_tool_result",
-                "text_editor_code_execution" => "text_editor_code_execution_tool_result",
-                _ => $"{serverToolResultMsg.ToolName}_tool_result",
-            };
-
+            // Server tool results are sent as tool_result in user messages.
+            // Providers like Kimi treat server_tool_use as regular tool_use and require
+            // a matching tool_result response in the next user turn.
             anthropicMessage.Content.Add(
                 new AnthropicContent
                 {
-                    Type = resultType,
+                    Type = "tool_result",
                     ToolUseId = serverToolResultMsg.ToolUseId,
-                    // Result is stored as JsonElement - serialize appropriately
-                    Content = serverToolResultMsg.Result.GetRawText(),
+                    Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
+                        ? serverToolResultMsg.Result.GetRawText()
+                        : "{}",
                 }
             );
         }
@@ -461,6 +486,32 @@ public record AnthropicRequest
         }
 
         return tools;
+    }
+
+    private static List<AnthropicMessage> MergeConsecutiveSameRoleMessages(List<AnthropicMessage> messages)
+    {
+        if (messages.Count <= 1)
+        {
+            return messages;
+        }
+
+        var merged = new List<AnthropicMessage> { messages[0] };
+        for (var i = 1; i < messages.Count; i++)
+        {
+            var prev = merged[^1];
+            var curr = messages[i];
+            if (prev.Role == curr.Role)
+            {
+                // Merge content blocks into the previous message
+                prev.Content.AddRange(curr.Content);
+            }
+            else
+            {
+                merged.Add(curr);
+            }
+        }
+
+        return merged;
     }
 
     private static string GetJsonType(JsonSchemaObject schemaObject)

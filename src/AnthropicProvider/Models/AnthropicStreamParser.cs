@@ -244,7 +244,9 @@ public class AnthropicStreamParser
         // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
         if (IsServerToolResultType(blockType))
         {
-            var toolUseId = contentBlock["tool_use_id"]?.GetValue<string>() ?? string.Empty;
+            var rawToolUseId = contentBlock["tool_use_id"]?.GetValue<string>() ?? string.Empty;
+            var toolName = GetToolNameFromResultType(blockType);
+            var toolUseId = ResolveServerToolUseId(rawToolUseId, toolName);
             var resultContent = contentBlock["content"];
             var isError = false;
             string? errorCode = null;
@@ -263,7 +265,7 @@ public class AnthropicStreamParser
             var serverToolResult = new ServerToolResultMessage
             {
                 ToolUseId = toolUseId,
-                ToolName = GetToolNameFromResultType(blockType),
+                ToolName = toolName,
                 Result = resultContent != null
                     ? JsonSerializer.Deserialize<JsonElement>(resultContent.ToJsonString())
                     : default,
@@ -734,6 +736,15 @@ public class AnthropicStreamParser
                     ? JsonNode.Parse(toolUseContent.Input.ToString())
                     : null;
         }
+        else if (contentBlock is AnthropicResponseServerToolUseContent serverToolContent)
+        {
+            id = serverToolContent.Id;
+            name = serverToolContent.Name;
+            input =
+                serverToolContent.Input.ValueKind != JsonValueKind.Undefined
+                    ? JsonNode.Parse(serverToolContent.Input.ToString())
+                    : null;
+        }
 
         // Create and store the content block
         _contentBlocks[index] = new StreamingContentBlock
@@ -794,7 +805,9 @@ public class AnthropicStreamParser
             {
                 ToolUseId = serverToolUseContent.Id,
                 ToolName = serverToolUseContent.Name,
-                Input = serverToolUseContent.Input.Clone(),
+                Input = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
+                    ? serverToolUseContent.Input.Clone()
+                    : default,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -809,9 +822,11 @@ public class AnthropicStreamParser
         {
             var serverToolResult = new ServerToolResultMessage
             {
-                ToolUseId = webSearchResult.ToolUseId,
+                ToolUseId = ResolveServerToolUseId(webSearchResult.ToolUseId, "web_search"),
                 ToolName = "web_search",
-                Result = webSearchResult.Content.Clone(),
+                Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webSearchResult.Content.Clone()
+                    : default,
                 IsError = IsServerToolResultError(webSearchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
                 Role = ParseRole(_role),
@@ -828,9 +843,11 @@ public class AnthropicStreamParser
         {
             var serverToolResult = new ServerToolResultMessage
             {
-                ToolUseId = webFetchResult.ToolUseId,
+                ToolUseId = ResolveServerToolUseId(webFetchResult.ToolUseId, "web_fetch"),
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content.Clone(),
+                Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webFetchResult.Content.Clone()
+                    : default,
                 IsError = IsServerToolResultError(webFetchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
                 Role = ParseRole(_role),
@@ -847,9 +864,11 @@ public class AnthropicStreamParser
         {
             var serverToolResult = new ServerToolResultMessage
             {
-                ToolUseId = bashResult.ToolUseId,
+                ToolUseId = ResolveServerToolUseId(bashResult.ToolUseId, "bash_code_execution"),
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content.Clone(),
+                Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? bashResult.Content.Clone()
+                    : default,
                 IsError = IsServerToolResultError(bashResult.Content),
                 ErrorCode = GetErrorCodeFromResult(bashResult.Content),
                 Role = ParseRole(_role),
@@ -866,9 +885,11 @@ public class AnthropicStreamParser
         {
             var serverToolResult = new ServerToolResultMessage
             {
-                ToolUseId = textEditorResult.ToolUseId,
+                ToolUseId = ResolveServerToolUseId(textEditorResult.ToolUseId, "text_editor_code_execution"),
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content.Clone(),
+                Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? textEditorResult.Content.Clone()
+                    : default,
                 IsError = IsServerToolResultError(textEditorResult.Content),
                 ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
                 Role = ParseRole(_role),
@@ -1161,6 +1182,59 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
+    ///     Resolves the tool_use_id for a server tool result block.
+    ///     Always prefers the ID from the preceding server_tool_use block to ensure
+    ///     consistency between server_tool_use.id and tool_result.tool_use_id in the request.
+    ///     Providers like Kimi may provide mismatched IDs between the tool use and result blocks.
+    /// </summary>
+    private string ResolveServerToolUseId(string toolUseId, string toolName)
+    {
+        // Always try to find the matching server_tool_use block by tool name,
+        // since providers may provide different IDs in the result vs use blocks
+        foreach (var block in _contentBlocks.Values)
+        {
+            if (block.Type == "server_tool_use"
+                && block.Name == toolName
+                && !string.IsNullOrEmpty(block.ToolUseId)
+                && !block.ToolUseIdConsumed)
+            {
+                block.ToolUseIdConsumed = true;
+                if (!string.IsNullOrEmpty(toolUseId) && toolUseId != block.ToolUseId)
+                {
+                    _logger.LogDebug(
+                        "Overriding tool_use_id for {ToolName} result from {OriginalId} to {ResolvedId} to match server_tool_use block {BlockIndex}",
+                        toolName,
+                        toolUseId,
+                        block.ToolUseId,
+                        block.Index
+                    );
+                }
+                else if (string.IsNullOrEmpty(toolUseId))
+                {
+                    _logger.LogDebug(
+                        "Resolved empty tool_use_id for {ToolName} result to {ToolUseId} from server_tool_use block {BlockIndex}",
+                        toolName,
+                        block.ToolUseId,
+                        block.Index
+                    );
+                }
+
+                return block.ToolUseId;
+            }
+        }
+
+        if (string.IsNullOrEmpty(toolUseId))
+        {
+            _logger.LogWarning(
+                "Could not resolve tool_use_id for {ToolName} result - no matching server_tool_use block found",
+                toolName
+            );
+        }
+
+        return toolUseId;
+    }
+
+    /// <summary>
     ///     Helper class to track the state of a content block during streaming
     /// </summary>
     private class StreamingContentBlock
@@ -1174,6 +1248,9 @@ public class AnthropicStreamParser
 
         // For server tool results - correlate tool use with result
         public string? ToolUseId { get; set; }
+
+        // Track whether this server_tool_use block's ID has been consumed by a result
+        public bool ToolUseIdConsumed { get; set; }
 
         // For text with citations
         public List<Citation>? Citations { get; set; }

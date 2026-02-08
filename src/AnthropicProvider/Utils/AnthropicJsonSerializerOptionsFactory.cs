@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
@@ -24,12 +25,19 @@ public static class AnthropicJsonSerializerOptionsFactory
     )
     {
         // Anthropic API requires camelCase property naming
-        return JsonSerializerOptionsFactory.CreateBase(
+        var options = JsonSerializerOptionsFactory.CreateBase(
             writeIndented,
             JsonNamingPolicy.CamelCase,
             caseInsensitive,
             allowTrailingCommas
         );
+
+        // Register StableJsonElementConverter globally so that all JsonElement properties
+        // are eagerly cloned during deserialization. This prevents stale references when
+        // SSE streaming disposes the per-line JsonDocument after each event.
+        options.Converters.Add(new StableJsonElementConverter());
+
+        return options;
     }
 
     /// <summary>

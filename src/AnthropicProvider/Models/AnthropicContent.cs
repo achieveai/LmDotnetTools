@@ -4,6 +4,32 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
+///     JsonConverter that eagerly clones JsonElement during deserialization,
+///     producing a stable copy that survives disposal of the source JsonDocument.
+///     This is needed because SSE streaming disposes the per-line JsonDocument
+///     after deserialization, leaving JsonElement properties as dangling references.
+/// </summary>
+internal sealed class StableJsonElementConverter : JsonConverter<JsonElement>
+{
+    public override JsonElement Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        return doc.RootElement.Clone();
+    }
+
+    public override void Write(Utf8JsonWriter writer, JsonElement value, JsonSerializerOptions options)
+    {
+        if (value.ValueKind == JsonValueKind.Undefined)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        value.WriteTo(writer);
+    }
+}
+
+/// <summary>
 ///     Base class for different types of content in an Anthropic response.
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
@@ -81,6 +107,7 @@ public record AnthropicResponseToolUseContent : AnthropicResponseContent
     ///     The input to the tool.
     /// </summary>
     [JsonPropertyName("input")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Input { get; init; }
 }
 
@@ -139,6 +166,7 @@ public record AnthropicResponseServerToolUseContent : AnthropicResponseContent
     ///     The input to the tool.
     /// </summary>
     [JsonPropertyName("input")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Input { get; init; }
 }
 
@@ -165,6 +193,7 @@ public record AnthropicWebSearchToolResultContent : AnthropicResponseContent
     ///     The search results or error content.
     /// </summary>
     [JsonPropertyName("content")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Content { get; init; }
 }
 
@@ -212,6 +241,7 @@ public record AnthropicWebFetchToolResultContent : AnthropicResponseContent
     ///     The fetch result content.
     /// </summary>
     [JsonPropertyName("content")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Content { get; init; }
 }
 
@@ -238,6 +268,7 @@ public record AnthropicBashCodeExecutionToolResultContent : AnthropicResponseCon
     ///     The execution result content.
     /// </summary>
     [JsonPropertyName("content")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Content { get; init; }
 }
 
@@ -264,6 +295,7 @@ public record AnthropicTextEditorCodeExecutionToolResultContent : AnthropicRespo
     ///     The execution result content.
     /// </summary>
     [JsonPropertyName("content")]
+    [JsonConverter(typeof(StableJsonElementConverter))]
     public JsonElement Content { get; init; }
 }
 
