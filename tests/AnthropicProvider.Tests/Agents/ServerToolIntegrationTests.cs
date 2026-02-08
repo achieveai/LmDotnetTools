@@ -426,6 +426,103 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Logger.LogTrace("Verified all 3 built-in tools in request");
     }
 
+    [Fact]
+    public async Task WebSearch_Streaming_MultiTurn_ShouldNotThrowOnSecondRequest()
+    {
+        Logger.LogTrace("Starting WebSearch_Streaming_MultiTurn_ShouldNotThrowOnSecondRequest");
+
+        // Turn 1: instruction chain with server tool content
+        var turn1Instruction = """
+            <|instruction_start|>{"instruction_chain": [
+                {"messages": [
+                    {"server_tool_use": {"name": "web_search", "id": "srvtoolu_t1_01", "input": {"query": "first query"}}},
+                    {"server_tool_result": {"name": "web_search", "tool_use_id": "srvtoolu_t1_01"}},
+                    {"text_with_citations": {"text": "Here are the results from the first search.", "citations": [{"type": "web_search_result_location", "url": "https://example.com/1", "title": "Result 1", "cited_text": "first result text"}]}}
+                ]}
+            ]}<|instruction_end|>
+            """;
+
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory, requestCapture, chunkDelayMs: 0
+        );
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+        };
+
+        // Turn 1: send instruction chain and collect response
+        var turn1Messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = turn1Instruction },
+        };
+
+        var turn1Responses = new List<IMessage>();
+        await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn1Messages, options))
+        {
+            turn1Responses.Add(msg);
+            Logger.LogTrace("Turn 1 message: {MessageType}, Role={Role}",
+                msg.GetType().Name, msg.Role);
+        }
+
+        Logger.LogTrace("Turn 1 complete, got {Count} messages", turn1Responses.Count);
+        Assert.NotEmpty(turn1Responses);
+        Assert.Contains(turn1Responses, m => m is ServerToolUseMessage);
+        Assert.Contains(turn1Responses, m => m is ServerToolResultMessage);
+
+        // Verify the JsonElement fields are accessible after turn 1
+        var toolUse1 = turn1Responses.OfType<ServerToolUseMessage>().First();
+        var inputJson = toolUse1.Input.GetRawText();
+        Logger.LogTrace("Turn 1 ServerToolUse Input accessible: {Input}", inputJson);
+
+        var toolResult1 = turn1Responses.OfType<ServerToolResultMessage>().First();
+        var resultJson = toolResult1.Result.GetRawText();
+        Logger.LogTrace("Turn 1 ServerToolResult Result accessible: {Result}", resultJson);
+
+        // Turn 2: Build history = [original user, turn1 responses, new user message]
+        // This is where the bug manifests: AnthropicRequest.FromMessages() tries to serialize
+        // the JsonElement fields from turn 1, which would be stale if not cloned
+        var turn2Instruction = """
+            <|instruction_start|>{"instruction_chain": [
+                {"messages": [
+                    {"text": "Here is the follow-up answer based on additional context."}
+                ]}
+            ]}<|instruction_end|>
+            """;
+
+        var turn2Messages = new List<IMessage>();
+        turn2Messages.AddRange(turn1Messages);
+        turn2Messages.AddRange(turn1Responses);
+        turn2Messages.Add(new TextMessage { Role = Role.User, Text = turn2Instruction });
+
+        Logger.LogTrace("Turn 2: sending {Count} messages in history", turn2Messages.Count);
+
+        // Turn 2: This call will serialize all previous messages (including server tool
+        // messages with JsonElement) into the Anthropic request format.
+        // Without .Clone(), this would throw InvalidOperationException.
+        var turn2Responses = new List<IMessage>();
+        var turn2Exception = await Record.ExceptionAsync(async () =>
+        {
+            await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn2Messages, options))
+            {
+                turn2Responses.Add(msg);
+                Logger.LogTrace("Turn 2 message: {MessageType}, Role={Role}",
+                    msg.GetType().Name, msg.Role);
+            }
+        });
+
+        Assert.Null(turn2Exception);
+        Logger.LogTrace("Turn 2 complete, got {Count} messages (no exception)", turn2Responses.Count);
+        Assert.NotEmpty(turn2Responses);
+
+        // Verify the second request was sent successfully
+        Assert.Equal(2, requestCapture.RequestCount);
+    }
+
     /// <summary>
     ///     Builds SSE events simulating a successful web_search streaming flow:
     ///     text -> server_tool_use -> web_search_tool_result -> text with citations

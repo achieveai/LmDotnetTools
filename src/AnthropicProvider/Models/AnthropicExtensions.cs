@@ -207,7 +207,7 @@ public static class AnthropicExtensions
             {
                 ToolUseId = serverToolUse.Id,
                 ToolName = serverToolUse.Name,
-                Input = serverToolUse.Input,
+                Input = serverToolUse.Input.Clone(),
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
@@ -217,7 +217,7 @@ public static class AnthropicExtensions
             {
                 ToolUseId = webSearchResult.ToolUseId,
                 ToolName = "web_search",
-                Result = webSearchResult.Content,
+                Result = webSearchResult.Content.Clone(),
                 IsError = IsContentError(webSearchResult.Content),
                 ErrorCode = GetContentErrorCode(webSearchResult.Content),
                 Role = ParseRole("assistant"),
@@ -229,7 +229,7 @@ public static class AnthropicExtensions
             {
                 ToolUseId = webFetchResult.ToolUseId,
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content,
+                Result = webFetchResult.Content.Clone(),
                 IsError = IsContentError(webFetchResult.Content),
                 ErrorCode = GetContentErrorCode(webFetchResult.Content),
                 Role = ParseRole("assistant"),
@@ -241,7 +241,7 @@ public static class AnthropicExtensions
             {
                 ToolUseId = bashResult.ToolUseId,
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content,
+                Result = bashResult.Content.Clone(),
                 IsError = IsContentError(bashResult.Content),
                 ErrorCode = GetContentErrorCode(bashResult.Content),
                 Role = ParseRole("assistant"),
@@ -253,7 +253,7 @@ public static class AnthropicExtensions
             {
                 ToolUseId = textEditorResult.ToolUseId,
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content,
+                Result = textEditorResult.Content.Clone(),
                 IsError = IsContentError(textEditorResult.Content),
                 ErrorCode = GetContentErrorCode(textEditorResult.Content),
                 Role = ParseRole("assistant"),

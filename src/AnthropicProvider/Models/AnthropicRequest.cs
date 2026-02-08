@@ -265,7 +265,7 @@ public record AnthropicRequest
                     Type = "server_tool_use",
                     Id = serverToolUseMsg.ToolUseId,
                     Name = serverToolUseMsg.ToolName,
-                    Input = serverToolUseMsg.Input,
+                    Input = serverToolUseMsg.Input.Clone(),
                 }
             );
         }

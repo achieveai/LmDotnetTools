@@ -794,7 +794,7 @@ public class AnthropicStreamParser
             {
                 ToolUseId = serverToolUseContent.Id,
                 ToolName = serverToolUseContent.Name,
-                Input = serverToolUseContent.Input,
+                Input = serverToolUseContent.Input.Clone(),
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -811,7 +811,7 @@ public class AnthropicStreamParser
             {
                 ToolUseId = webSearchResult.ToolUseId,
                 ToolName = "web_search",
-                Result = webSearchResult.Content,
+                Result = webSearchResult.Content.Clone(),
                 IsError = IsServerToolResultError(webSearchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
                 Role = ParseRole(_role),
@@ -830,7 +830,7 @@ public class AnthropicStreamParser
             {
                 ToolUseId = webFetchResult.ToolUseId,
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content,
+                Result = webFetchResult.Content.Clone(),
                 IsError = IsServerToolResultError(webFetchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
                 Role = ParseRole(_role),
@@ -849,7 +849,7 @@ public class AnthropicStreamParser
             {
                 ToolUseId = bashResult.ToolUseId,
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content,
+                Result = bashResult.Content.Clone(),
                 IsError = IsServerToolResultError(bashResult.Content),
                 ErrorCode = GetErrorCodeFromResult(bashResult.Content),
                 Role = ParseRole(_role),
@@ -868,7 +868,7 @@ public class AnthropicStreamParser
             {
                 ToolUseId = textEditorResult.ToolUseId,
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content,
+                Result = textEditorResult.Content.Clone(),
                 IsError = IsServerToolResultError(textEditorResult.Content),
                 ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
                 Role = ParseRole(_role),
