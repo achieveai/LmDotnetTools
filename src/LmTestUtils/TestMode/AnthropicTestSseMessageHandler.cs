@@ -185,23 +185,11 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     }
                     else
                     {
-                        // Check if built-in tools are in the request
-                        var builtInTools = DetectBuiltInTools(root);
-
-                        if (builtInTools.Contains("web_search"))
-                        {
-                            _logger.LogDebug(
-                                "Built-in tools detected ({Tools}), generating mock server tool response",
-                                string.Join(", ", builtInTools)
-                            );
-                            planToExecute = CreateWebSearchPlan(latest);
-                        }
-                        else
-                        {
-                            // Generate a simple text response
-                            _logger.LogDebug("No instructions found, generating simple text response");
-                            planToExecute = new InstructionPlan("fallback", null, [InstructionMessage.ForText(20)]);
-                        }
+                        _logger.LogDebug("No instructions found, generating simple text response");
+                        planToExecute = new InstructionPlan(
+                            "fallback",
+                            latest.Contains("\nReason:", StringComparison.Ordinal) ? 20 : null,
+                            [InstructionMessage.ForText(20)]);
                     }
                 }
             }

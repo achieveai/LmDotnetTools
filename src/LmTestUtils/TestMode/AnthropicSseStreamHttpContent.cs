@@ -138,6 +138,14 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             var contentIndex = 0;
             var serverToolUseIds = new Dictionary<string, string>();
 
+            // Emit thinking block first if reasoning is configured
+            if (_instructionPlan.ReasoningLength is int rlen && rlen > 0)
+            {
+                var thinkingText = string.Join(" ", GenerateLoremChunks(rlen, _wordsPerChunk));
+                await WriteThinkingEventsAsync(writer, thinkingText, contentIndex, cancellationToken);
+                contentIndex++;
+            }
+
             foreach (var message in _instructionPlan.Messages)
             {
                 if (message.ServerToolUse != null)
@@ -443,6 +451,58 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
                 type = "content_block_delta",
                 index = contentIndex,
                 delta = new { type = "text_delta", text = chunk },
+            };
+
+            await writer.WriteAsync("event: content_block_delta\n");
+            await writer.WriteAsync($"data: {JsonSerializer.Serialize(deltaEvent)}\n\n");
+            await writer.FlushAsync(ct);
+            await DelayAsync(ct);
+        }
+
+        // content_block_stop
+        var stopEvent = new { type = "content_block_stop", index = contentIndex };
+
+        await writer.WriteAsync("event: content_block_stop\n");
+        await writer.WriteAsync($"data: {JsonSerializer.Serialize(stopEvent)}\n\n");
+        await writer.FlushAsync(ct);
+        await DelayAsync(ct);
+    }
+
+    private async Task WriteThinkingEventsAsync(
+        StreamWriter writer,
+        string thinkingText,
+        int contentIndex,
+        CancellationToken ct
+    )
+    {
+        // content_block_start for thinking
+        var startEvent = new
+        {
+            type = "content_block_start",
+            index = contentIndex,
+            content_block = new { type = "thinking", thinking = "" },
+        };
+
+        await writer.WriteAsync("event: content_block_start\n");
+        await writer.WriteAsync($"data: {JsonSerializer.Serialize(startEvent)}\n\n");
+        await writer.FlushAsync(ct);
+        await DelayAsync(ct);
+
+        // thinking_delta events
+        var words = thinkingText.Split(' ');
+        for (var i = 0; i < words.Length; i += _wordsPerChunk)
+        {
+            var chunk = string.Join(' ', words.Skip(i).Take(Math.Min(_wordsPerChunk, words.Length - i)));
+            if (i > 0)
+            {
+                chunk = " " + chunk;
+            }
+
+            var deltaEvent = new
+            {
+                type = "content_block_delta",
+                index = contentIndex,
+                delta = new { type = "thinking_delta", thinking = chunk },
             };
 
             await writer.WriteAsync("event: content_block_delta\n");

@@ -166,6 +166,20 @@ try
 
                 var modelId = GetModelIdForProvider(providerMode);
 
+                // Filter built-in (server-side) tools based on mode's enabled tools
+                var allBuiltInTools = GetBuiltInToolsForProvider(providerMode);
+                List<object>? filteredBuiltInTools = null;
+                if (allBuiltInTools != null && mode.EnabledTools != null)
+                {
+                    var enabledToolSet = mode.EnabledTools.ToHashSet();
+                    filteredBuiltInTools = allBuiltInTools
+                        .OfType<AnthropicBuiltInTool>()
+                        .Where(t => enabledToolSet.Contains(t.Name))
+                        .Cast<object>()
+                        .ToList();
+                    if (filteredBuiltInTools.Count == 0) filteredBuiltInTools = null;
+                }
+
                 return new MultiTurnAgentLoop(
                     providerAgent,
                     filteredRegistry,
@@ -174,7 +188,7 @@ try
                     defaultOptions: new GenerateReplyOptions
                     {
                         ModelId = modelId,
-                        BuiltInTools = GetBuiltInToolsForProvider(providerMode),
+                        BuiltInTools = filteredBuiltInTools,
                     },
                     store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
