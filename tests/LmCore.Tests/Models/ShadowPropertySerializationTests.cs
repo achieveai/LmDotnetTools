@@ -106,6 +106,7 @@ public class ShadowPropertySerializationTests
             ModelId = "gpt-4",
             Temperature = 0.7f,
             MaxToken = 1000,
+            RequestResponseDumpFileName = "/tmp/request-response-dump",
             ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("function_call", "auto").Add("top_k", 50),
         };
 
@@ -132,6 +133,10 @@ public class ShadowPropertySerializationTests
 
         Assert.True(doc.RootElement.TryGetProperty("top_k", out var topK));
         Assert.Equal(50, topK.GetInt32());
+
+        // Non-serializable diagnostic property should never be emitted.
+        Assert.False(doc.RootElement.TryGetProperty("request_response_dump_file_name", out _));
+        Assert.False(doc.RootElement.TryGetProperty("RequestResponseDumpFileName", out _));
     }
 
     [Fact]
@@ -182,6 +187,26 @@ public class ShadowPropertySerializationTests
         {
             Assert.Equal(50, Convert.ToInt32(topK));
         }
+    }
+
+    [Fact]
+    public void GenerateReplyOptions_Merge_PropagatesRequestResponseDumpFileName()
+    {
+        var baseOptions = new GenerateReplyOptions
+        {
+            ModelId = "gpt-4",
+            RequestResponseDumpFileName = "/tmp/base-dump",
+        };
+
+        var overridingOptions = new GenerateReplyOptions
+        {
+            ModelId = "gpt-4.1",
+            RequestResponseDumpFileName = "/tmp/override-dump",
+        };
+
+        var merged = baseOptions.Merge(overridingOptions);
+
+        Assert.Equal("/tmp/override-dump", merged.RequestResponseDumpFileName);
     }
 
     [Fact]

@@ -172,6 +172,18 @@
       "program": "${workspaceFolder}/example/ExamplePythonMCPClient/bin/Debug/net9.0/ExamplePythonMCPClient.dll",
       "cwd": "${workspaceFolder}/example/ExamplePythonMCPClient",
       "console": "integratedTerminal"
+    },
+    {
+      "name": "LmStreaming.Sample",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/samples/LmStreaming.Sample/bin/Debug/net9.0/LmStreaming.Sample.dll",
+      "cwd": "${workspaceFolder}/samples/LmStreaming.Sample",
+      "console": "integratedTerminal",
+      "env": {
+        "ASPNETCORE_URLS": "http://localhost:5004"
+      }
     }
   ]
 }

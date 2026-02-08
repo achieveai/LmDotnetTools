@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,6 +37,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
     )
     {
         var request = ChatCompletionRequest.FromMessages(messages, options);
+        var dumpWriter = RequestResponseDumpWriter.Create(
+            options?.RequestResponseDumpFileName,
+            OpenClient.S_jsonSerializerOptions,
+            _logger
+        );
+        dumpWriter?.WriteRequest(request);
         var startTime = DateTime.UtcNow;
 
         _logger.LogDebug(
@@ -59,6 +66,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         try
         {
             response = await _client.CreateChatCompletionsAsync(request, cancellationToken)!;
+            dumpWriter?.WriteResponse(response);
         }
         catch (Exception ex)
         {
@@ -198,6 +206,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
     )
     {
         var request = ChatCompletionRequest.FromMessages(messages, options) with { Stream = true };
+        var dumpWriter = RequestResponseDumpWriter.Create(
+            options?.RequestResponseDumpFileName,
+            OpenClient.S_jsonSerializerOptions,
+            _logger
+        );
+        dumpWriter?.WriteRequest(request);
 
         _logger.LogDebug(
             "Streaming request preparation: Model={Model}, Temperature={Temperature}, MaxTokens={MaxTokens}, Stream={Stream}, ToolCount={ToolCount}",
@@ -217,12 +231,13 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         );
 
         // Return the streaming response as an IAsyncEnumerable
-        return await Task.FromResult(GenerateStreamingMessages(request, options, cancellationToken));
+        return await Task.FromResult(GenerateStreamingMessages(request, options, dumpWriter, cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
         ChatCompletionRequest request,
         GenerateReplyOptions? options,
+        RequestResponseDumpWriter? dumpWriter,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -240,6 +255,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
         await foreach (var item in response)
         {
+            dumpWriter?.AppendResponseChunk(item);
             modelId = modelId.Length == 0 ? item.Model ?? modelId : modelId;
             completionId = completionId.Length == 0 ? item.Id! : completionId;
 

@@ -198,4 +198,143 @@ public class BasicConversationTests : LoggingTestBase
             textResponse.Text
         );
     }
+
+    [Fact]
+    public async Task GenerateReplyAsync_WithRequestResponseDump_WritesRequestAndResponseFiles()
+    {
+        // Uses AnthropicTestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"anthropic-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+
+        try
+        {
+            var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+            var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+            var agent = new AnthropicAgent("TestAgent", anthropicClient);
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "claude-3-7-sonnet-20250219",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            _ = await agent.GenerateReplyAsync([new TextMessage { Role = Role.User, Text = "Hello Claude!" }], options);
+
+            Assert.True(File.Exists(requestPath));
+            Assert.True(File.Exists(responsePath));
+            Assert.Contains("\"messages\"", await File.ReadAllTextAsync(requestPath));
+            Assert.Contains("\"content\"", await File.ReadAllTextAsync(responsePath));
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateReplyStreamingAsync_WithRequestResponseDump_AppendsStreamingChunks()
+    {
+        // Uses AnthropicTestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"anthropic-stream-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+
+        try
+        {
+            var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0, wordsPerChunk: 2);
+            var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+            var agent = new AnthropicAgent("TestAgent", anthropicClient);
+
+            var messages = new[]
+            {
+                new TextMessage
+                {
+                    Role = Role.User,
+                    Text =
+                        "Hello Claude!\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"stream-dump\",\"messages\":[{\"text_message\":{\"length\":80}}]}]}<|instruction_end|>",
+                },
+            };
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "claude-3-7-sonnet-20250219",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            var stream = await agent.GenerateReplyStreamingAsync(messages, options);
+            await foreach (var _ in stream) { }
+
+            Assert.True(File.Exists(requestPath));
+            Assert.True(File.Exists(responsePath));
+            var lines = (await File.ReadAllLinesAsync(responsePath)).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+            Assert.True(lines.Count > 1);
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateReplyAsync_WithRequestResponseDump_RotatesExistingFiles()
+    {
+        // Uses AnthropicTestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"anthropic-rotate-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+        var rotatedRequestPath = $"{baseFileName}.1.request.txt";
+        var rotatedResponsePath = $"{baseFileName}.1.response.txt";
+
+        try
+        {
+            await File.WriteAllTextAsync(requestPath, "old-request");
+            await File.WriteAllTextAsync(responsePath, "old-response");
+
+            var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+            var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+            var agent = new AnthropicAgent("TestAgent", anthropicClient);
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "claude-3-7-sonnet-20250219",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            _ = await agent.GenerateReplyAsync([new TextMessage { Role = Role.User, Text = "rotation test" }], options);
+
+            Assert.True(File.Exists(rotatedRequestPath));
+            Assert.True(File.Exists(rotatedResponsePath));
+            Assert.Equal("old-request", await File.ReadAllTextAsync(rotatedRequestPath));
+            Assert.Equal("old-response", await File.ReadAllTextAsync(rotatedResponsePath));
+            Assert.Contains("\"messages\"", await File.ReadAllTextAsync(requestPath));
+            Assert.Contains("\"content\"", await File.ReadAllTextAsync(responsePath));
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    private static void CleanupDumpFiles(string baseFileName)
+    {
+        var directory = Path.GetDirectoryName(baseFileName);
+        var fileName = Path.GetFileName(baseFileName);
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.GetFiles(directory, $"{fileName}*"))
+        {
+            try
+            {
+                File.Delete(file);
+            }
+            catch
+            {
+                // Test cleanup should not hide assertion failures.
+            }
+        }
+    }
 }

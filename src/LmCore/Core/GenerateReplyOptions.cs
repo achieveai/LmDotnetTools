@@ -87,6 +87,13 @@ public record GenerateReplyOptions
     [JsonIgnore]
     public string? ThreadId { get; init; }
 
+    /// <summary>
+    ///     Optional base file name used to dump provider requests and responses.
+    ///     When set, requests are written to "{base}.request.txt" and responses to "{base}.response.txt".
+    /// </summary>
+    [JsonIgnore]
+    public string? RequestResponseDumpFileName { get; init; }
+
     [JsonIgnore]
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
         ImmutableDictionary<string, object?>.Empty;
@@ -132,6 +139,7 @@ public record GenerateReplyOptions
             BuiltInTools = other.BuiltInTools ?? BuiltInTools,
             ToolChoice = other.ToolChoice ?? ToolChoice,
             ContainerId = other.ContainerId ?? ContainerId,
+            RequestResponseDumpFileName = other.RequestResponseDumpFileName ?? RequestResponseDumpFileName,
             ExtraProperties = mergedExtraProps,
         };
     }

@@ -1,9 +1,12 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Logging;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using RequestResponseDumpWriter = AchieveAi.LmDotnetTools.LmCore.Utils.RequestResponseDumpWriter;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -14,6 +17,9 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 /// </summary>
 public class AnthropicAgent : IStreamingAgent, IDisposable
 {
+    private static readonly JsonSerializerOptions s_dumpJsonOptions =
+        AnthropicJsonSerializerOptionsFactory.CreateForProduction();
+
     private readonly IAnthropicClient _client;
     private readonly ILogger<AnthropicAgent> _logger;
     private bool _disposed;
@@ -68,6 +74,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         {
             var startTime = DateTime.UtcNow;
             var request = AnthropicRequest.FromMessages(messages, options);
+            var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
+            dumpWriter?.WriteRequest(request);
 
             _logger.LogDebug(
                 LogEventIds.RequestConversion,
@@ -79,6 +87,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             var response = await _client.CreateChatCompletionsAsync(request, cancellationToken);
+            dumpWriter?.WriteResponse(response);
 
             var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
             var promptTokens = response.Usage?.InputTokens ?? 0;
@@ -144,6 +153,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         try
         {
             var request = AnthropicRequest.FromMessages(messages, options) with { Stream = true };
+            var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
+            dumpWriter?.WriteRequest(request);
 
             _logger.LogDebug(
                 LogEventIds.RequestConversion,
@@ -155,7 +166,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Return the streaming response as an IAsyncEnumerable
-            return await Task.FromResult(GenerateStreamingMessages(request, options, cancellationToken));
+            return await Task.FromResult(GenerateStreamingMessages(request, options, dumpWriter, cancellationToken));
         }
         catch (Exception ex)
         {
@@ -175,6 +186,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
         AnthropicRequest request,
         GenerateReplyOptions? options,
+        RequestResponseDumpWriter? dumpWriter,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -205,6 +217,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
         await foreach (var streamEvent in streamEvents)
         {
+            dumpWriter?.AppendResponseChunk(streamEvent);
             IEnumerable<IMessage> messages;
             try
             {

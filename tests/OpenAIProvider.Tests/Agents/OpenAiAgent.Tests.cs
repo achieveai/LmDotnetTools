@@ -333,4 +333,148 @@ public class OpenAiAgentTests
         }
     }
 
+    [Fact]
+    public async Task GenerateReplyAsync_WithRequestResponseDump_WritesRequestAndResponseFiles()
+    {
+        // Uses TestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"openai-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+
+        try
+        {
+            var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+            var client = new OpenClient(httpClient, BaseUrl);
+            var agent = new OpenClientAgent("TestAgent", client);
+
+            var messages = new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello there" },
+            };
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "gpt-4o-mini",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            _ = await agent.GenerateReplyAsync(messages, options);
+
+            Assert.True(File.Exists(requestPath));
+            Assert.True(File.Exists(responsePath));
+            Assert.Contains("\"model\"", await File.ReadAllTextAsync(requestPath));
+            Assert.Contains("\"choices\"", await File.ReadAllTextAsync(responsePath));
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateReplyStreamingAsync_WithRequestResponseDump_AppendsStreamingChunks()
+    {
+        // Uses TestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"openai-stream-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+
+        try
+        {
+            var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0, wordsPerChunk: 2);
+            var client = new OpenClient(httpClient, BaseUrl);
+            var agent = new OpenClientAgent("TestAgent", client);
+
+            var messages = new[]
+            {
+                new TextMessage
+                {
+                    Role = Role.User,
+                    Text =
+                        "Stream test\n<|instruction_start|>{\"instruction_chain\":[{\"id_message\":\"stream-dump\",\"messages\":[{\"text_message\":{\"length\":80}}]}]}<|instruction_end|>",
+                },
+            };
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "gpt-4o-mini",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            var stream = await agent.GenerateReplyStreamingAsync(messages, options);
+            await foreach (var _ in stream) { }
+
+            Assert.True(File.Exists(requestPath));
+            Assert.True(File.Exists(responsePath));
+            var lines = (await File.ReadAllLinesAsync(responsePath)).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+            Assert.True(lines.Count > 1);
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateReplyAsync_WithRequestResponseDump_RotatesExistingFiles()
+    {
+        // Uses TestSseMessageHandler via TestModeHttpClientFactory.
+        var baseFileName = Path.Combine(Path.GetTempPath(), $"openai-rotate-dump-{Guid.NewGuid():N}");
+        var requestPath = $"{baseFileName}.request.txt";
+        var responsePath = $"{baseFileName}.response.txt";
+        var rotatedRequestPath = $"{baseFileName}.1.request.txt";
+        var rotatedResponsePath = $"{baseFileName}.1.response.txt";
+
+        try
+        {
+            await File.WriteAllTextAsync(requestPath, "old-request");
+            await File.WriteAllTextAsync(responsePath, "old-response");
+
+            var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+            var client = new OpenClient(httpClient, BaseUrl);
+            var agent = new OpenClientAgent("TestAgent", client);
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "gpt-4o-mini",
+                RequestResponseDumpFileName = baseFileName,
+            };
+
+            _ = await agent.GenerateReplyAsync([new TextMessage { Role = Role.User, Text = "rotation test" }], options);
+
+            Assert.True(File.Exists(rotatedRequestPath));
+            Assert.True(File.Exists(rotatedResponsePath));
+            Assert.Equal("old-request", await File.ReadAllTextAsync(rotatedRequestPath));
+            Assert.Equal("old-response", await File.ReadAllTextAsync(rotatedResponsePath));
+            Assert.Contains("\"model\"", await File.ReadAllTextAsync(requestPath));
+            Assert.Contains("\"choices\"", await File.ReadAllTextAsync(responsePath));
+        }
+        finally
+        {
+            CleanupDumpFiles(baseFileName);
+        }
+    }
+
+    private static void CleanupDumpFiles(string baseFileName)
+    {
+        var directory = Path.GetDirectoryName(baseFileName);
+        var fileName = Path.GetFileName(baseFileName);
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.GetFiles(directory, $"{fileName}*"))
+        {
+            try
+            {
+                File.Delete(file);
+            }
+            catch
+            {
+                // Test cleanup should not hide assertion failures.
+            }
+        }
+    }
+
 }
