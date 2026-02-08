@@ -185,9 +185,23 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     }
                     else
                     {
-                        // Generate a simple text response
-                        _logger.LogDebug("No instructions found, generating simple text response");
-                        planToExecute = new InstructionPlan("fallback", null, [InstructionMessage.ForText(20)]);
+                        // Check if built-in tools are in the request
+                        var builtInTools = DetectBuiltInTools(root);
+
+                        if (builtInTools.Contains("web_search"))
+                        {
+                            _logger.LogDebug(
+                                "Built-in tools detected ({Tools}), generating mock server tool response",
+                                string.Join(", ", builtInTools)
+                            );
+                            planToExecute = CreateWebSearchPlan(latest);
+                        }
+                        else
+                        {
+                            // Generate a simple text response
+                            _logger.LogDebug("No instructions found, generating simple text response");
+                            planToExecute = new InstructionPlan("fallback", null, [InstructionMessage.ForText(20)]);
+                        }
                     }
                 }
             }
@@ -402,6 +416,49 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     });
                 }
             }
+            else if (message.ServerToolUse is { } stu)
+            {
+                content.Add(new
+                {
+                    type = "server_tool_use",
+                    id = stu.Id ?? $"srvtoolu_{Guid.NewGuid():N}",
+                    name = stu.Name,
+                    input = stu.Input.HasValue
+                        ? JsonSerializer.Deserialize<object>(stu.Input.Value.GetRawText())
+                        : new object(),
+                });
+            }
+            else if (message.ServerToolResult is { } str)
+            {
+                content.Add(new
+                {
+                    type = "web_search_tool_result",
+                    tool_use_id = str.ToolUseId ?? $"srvtoolu_{Guid.NewGuid():N}",
+                    content = str.Result.HasValue
+                        ? JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
+                        : new object(),
+                });
+            }
+            else if (message.TextWithCitations is { } twc)
+            {
+                var text = twc.Text ?? GenerateLoremIpsum(twc.Length ?? 20);
+                var citations = twc.Citations?.Select(c => new
+                {
+                    type = c.Type,
+                    url = c.Url,
+                    title = c.Title,
+                    cited_text = c.CitedText,
+                    start_char_index = 0,
+                    end_char_index = text.Length,
+                }).ToList<object>() ?? [];
+
+                content.Add(new
+                {
+                    type = "text",
+                    text,
+                    citations,
+                });
+            }
         }
 
         // Default to a simple text response if no content was generated
@@ -448,6 +505,146 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         }
 
         return string.Join(' ', words);
+    }
+
+    /// <summary>
+    ///     Creates an instruction plan that simulates a web_search server tool flow:
+    ///     server_tool_use → server_tool_result → text_with_citations.
+    /// </summary>
+    private static InstructionPlan CreateWebSearchPlan(string userMessage)
+    {
+        var query = string.IsNullOrWhiteSpace(userMessage) ? "general knowledge" : userMessage;
+        var toolUseId = $"srvtoolu_{Guid.NewGuid():N}";
+
+        // 1. Server tool use: web_search with user's query
+        var serverToolUse = new InstructionServerToolUse
+        {
+            Id = toolUseId,
+            Name = "web_search",
+            Input = JsonDocument.Parse(JsonSerializer.Serialize(new { query })).RootElement,
+        };
+
+        // 2. Server tool result: mock search results
+        var searchResultJson = JsonSerializer.Serialize(new
+        {
+            type = "web_search_result",
+            search_results = new[]
+            {
+                new
+                {
+                    title = "Understanding " + (query.Length > 40 ? query[..40] : query),
+                    url = "https://example.com/article-1",
+                    encrypted_content = Convert.ToBase64String(
+                        System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-1")),
+                    page_age = "2 days ago",
+                },
+                new
+                {
+                    title = "Research on " + (query.Length > 40 ? query[..40] : query),
+                    url = "https://example.org/research-2",
+                    encrypted_content = Convert.ToBase64String(
+                        System.Text.Encoding.UTF8.GetBytes("mock-encrypted-content-2")),
+                    page_age = "1 week ago",
+                },
+            },
+        });
+
+        var serverToolResult = new InstructionServerToolResult
+        {
+            ToolUseId = toolUseId,
+            Name = "web_search",
+            Result = JsonDocument.Parse(searchResultJson).RootElement,
+        };
+
+        // 3. Text with citations referencing the search results
+        var citedText =
+            $"Based on recent search results, here is information about your query. " +
+            $"The first source provides a comprehensive overview of the topic with detailed analysis. " +
+            $"Additional research from a second source confirms these findings and adds further context " +
+            $"with supporting evidence and examples.";
+
+        var textWithCitations = new InstructionTextWithCitations
+        {
+            Text = citedText,
+            Citations =
+            [
+                new InstructionCitation
+                {
+                    Type = "web_search_result_location",
+                    Url = "https://example.com/article-1",
+                    Title = "Understanding " + (query.Length > 40 ? query[..40] : query),
+                    CitedText = "comprehensive overview of the topic with detailed analysis",
+                },
+                new InstructionCitation
+                {
+                    Type = "web_search_result_location",
+                    Url = "https://example.org/research-2",
+                    Title = "Research on " + (query.Length > 40 ? query[..40] : query),
+                    CitedText = "confirms these findings and adds further context",
+                },
+            ],
+        };
+
+        return new InstructionPlan(
+            "auto-web-search",
+            null,
+            [
+                InstructionMessage.ForServerToolUse(serverToolUse),
+                InstructionMessage.ForServerToolResult(serverToolResult),
+                InstructionMessage.ForTextWithCitations(textWithCitations),
+            ]
+        );
+    }
+
+    /// <summary>
+    ///     Detects built-in (server-side) tools in the request's tools array.
+    ///     Built-in tools have a "type" property (e.g., "web_search_20250305") rather than "name" + "input_schema".
+    /// </summary>
+    /// <returns>List of normalized tool names (e.g., "web_search", "code_execution").</returns>
+    private static List<string> DetectBuiltInTools(JsonElement root)
+    {
+        var builtInTools = new List<string>();
+
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return builtInTools;
+        }
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (!tool.TryGetProperty("type", out var typeProp) || typeProp.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var typeStr = typeProp.GetString();
+            if (string.IsNullOrEmpty(typeStr))
+            {
+                continue;
+            }
+
+            // Built-in tools have type like "web_search_20250305", "code_execution_20250522", etc.
+            // Function tools have type "custom" or just have name+input_schema.
+            if (typeStr.StartsWith("web_search_", StringComparison.Ordinal))
+            {
+                builtInTools.Add("web_search");
+            }
+            else if (typeStr.StartsWith("web_fetch_", StringComparison.Ordinal))
+            {
+                builtInTools.Add("web_fetch");
+            }
+            else if (typeStr.StartsWith("code_execution_", StringComparison.Ordinal))
+            {
+                builtInTools.Add("code_execution");
+            }
+        }
+
+        return builtInTools;
     }
 
     /// <summary>

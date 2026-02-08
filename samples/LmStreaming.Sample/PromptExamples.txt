@@ -137,6 +137,34 @@ When a tool is blocked in the current mode:
 
 ---
 
+## Server-Side Tool Examples (Anthropic Built-in Tools)
+
+These require `test-anthropic` mode and the "Research Assistant" mode (or any mode with built-in tools).
+
+### Web Search with Citations (single result)
+
+<|instruction_start|>{"id":"test-server-tools","messages":[{"server_tool_use":{"name":"web_search","input":{"query":"quantum computing advances"}}},{"server_tool_result":{"name":"web_search","result":{"type":"web_search_result","search_results":[{"title":"Quantum Computing Breakthroughs 2026","url":"https://example.com/quantum","encrypted_content":"bW9jaw==","page_age":"3 days ago"}]}}},{"text_with_citations":{"text":"Recent advances in quantum computing include error correction breakthroughs and new qubit architectures.","citations":[{"type":"web_search_result_location","url":"https://example.com/quantum","title":"Quantum Computing Breakthroughs 2026","cited_text":"error correction breakthroughs and new qubit architectures"}]}}]}<|instruction_end|>
+
+### Web Search with Multiple Citations
+
+<|instruction_start|>{"id":"test-multi-citations","messages":[{"server_tool_use":{"name":"web_search","input":{"query":"AI trends 2026"}}},{"server_tool_result":{"name":"web_search","result":{"type":"web_search_result","search_results":[{"title":"AI Trends Report 2026","url":"https://example.com/ai-trends","encrypted_content":"bW9jaw==","page_age":"1 day ago"},{"title":"Machine Learning Advances","url":"https://example.org/ml","encrypted_content":"bW9jaw==","page_age":"5 days ago"}]}}},{"text_with_citations":{"text":"AI continues to evolve rapidly in 2026. Large language models have become more efficient and capable. New architectures are pushing the boundaries of what's possible.","citations":[{"type":"web_search_result_location","url":"https://example.com/ai-trends","title":"AI Trends Report 2026","cited_text":"Large language models have become more efficient"},{"type":"web_search_result_location","url":"https://example.org/ml","title":"Machine Learning Advances","cited_text":"New architectures are pushing the boundaries"}]}}]}<|instruction_end|>
+
+### Multi-Turn: Mixed Function Tools + Server Tools (3 steps)
+
+Step 1: calculate + get_weather (function tools) and web_search (server tool)
+Step 2: web_search (server tool) and calculate (function tool)
+Step 3: text with citations summarizing the search results
+
+<|instruction_start|>{"instruction_chain":[{"id":"step1-calc-weather-search","id_message":"Step 1: Gathering data","messages":[{"tool_call":[{"name":"calculate","args":{"a":273.15,"operation":"add","b":100}},{"name":"get_weather","args":{"location":"Tokyo"}}]},{"server_tool_use":{"name":"web_search","input":{"query":"Tokyo climate data 2026"}}},{"server_tool_result":{"name":"web_search","result":{"type":"web_search_result","search_results":[{"title":"Tokyo Climate Report 2026","url":"https://example.com/tokyo-climate","encrypted_content":"bW9jaw==","page_age":"2 days ago"},{"title":"Japan Weather Patterns","url":"https://example.org/japan-weather","encrypted_content":"bW9jaw==","page_age":"1 week ago"}]}}}]},{"id":"step2-search-calc","id_message":"Step 2: Additional research","messages":[{"server_tool_use":{"name":"web_search","input":{"query":"Kelvin to Celsius conversion formula"}}},{"server_tool_result":{"name":"web_search","result":{"type":"web_search_result","search_results":[{"title":"Temperature Conversion Guide","url":"https://example.com/temp-conversion","encrypted_content":"bW9jaw==","page_age":"3 months ago"}]}}},{"tool_call":[{"name":"calculate","args":{"a":373.15,"operation":"add","b":-273.15}}]}]},{"id":"step3-summary","id_message":"Step 3: Summary with citations","messages":[{"text_with_citations":{"text":"Based on my research, Tokyo's current temperature is moderate. The calculation shows that 273.15 + 100 = 373.15 Kelvin, which converts to exactly 100 degrees Celsius. Tokyo's climate in 2026 continues to follow historical patterns with warm summers and mild winters.","citations":[{"type":"web_search_result_location","url":"https://example.com/tokyo-climate","title":"Tokyo Climate Report 2026","cited_text":"Tokyo's climate in 2026 continues to follow historical patterns"},{"type":"web_search_result_location","url":"https://example.com/temp-conversion","title":"Temperature Conversion Guide","cited_text":"373.15 Kelvin converts to exactly 100 degrees Celsius"}]}}]}]}<|instruction_end|>
+
+### Expected UI Components for Server Tools
+1. Web search pill - collapsible bar with magnifying glass icon showing "web_search: web_search"
+2. Text with citations - response text rendered as a paragraph
+3. Sources section - "Sources:" heading with bulleted list of clickable citation links
+4. Token usage bar - "Tokens: 100 in / 50 out" at the bottom
+
+---
+
 ## Normal Text Messages
 
 Simple text message:
