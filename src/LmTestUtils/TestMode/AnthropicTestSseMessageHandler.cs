@@ -418,13 +418,36 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             }
             else if (message.ServerToolResult is { } str)
             {
+                // Use the same name→type mapping as the streaming path
+                var resultType = str.Name switch
+                {
+                    "web_search" => "web_search_tool_result",
+                    "web_fetch" => "web_fetch_tool_result",
+                    "bash_code_execution" => "bash_code_execution_tool_result",
+                    "text_editor_code_execution" => "text_editor_code_execution_tool_result",
+                    _ => $"{str.Name}_tool_result",
+                };
+
+                object resultContent;
+                if (str.ErrorCode != null)
+                {
+                    resultContent = new { type = $"{resultType}_error", error_code = str.ErrorCode };
+                }
+                else if (str.Result.HasValue)
+                {
+                    resultContent = JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
+                        ?? new object();
+                }
+                else
+                {
+                    resultContent = new object();
+                }
+
                 content.Add(new
                 {
-                    type = "web_search_tool_result",
+                    type = resultType,
                     tool_use_id = str.ToolUseId ?? $"srvtoolu_{Guid.NewGuid():N}",
-                    content = str.Result.HasValue
-                        ? JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
-                        : new object(),
+                    content = resultContent,
                 });
             }
             else if (message.TextWithCitations is { } twc)

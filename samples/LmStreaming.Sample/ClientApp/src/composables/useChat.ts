@@ -9,6 +9,8 @@ import type {
   ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
+  ServerToolUseMessage,
+  ServerToolResultMessage,
 } from '@/types';
 import {
   MessageType,
@@ -33,6 +35,48 @@ import { useMessageMerger } from './useMessageMerger';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
+
+/**
+ * Convert a ServerToolUseMessage to ToolsCallMessage for pill display.
+ * Used by both the streaming handler and the persistence loading path.
+ */
+export function convertServerToolUse(stUse: ServerToolUseMessage): ToolsCallMessage {
+  const inputStr = typeof stUse.input === 'string' ? stUse.input : JSON.stringify(stUse.input ?? {});
+  return {
+    $type: MessageType.ToolsCall,
+    tool_calls: [{
+      function_name: stUse.tool_name,
+      function_args: inputStr,
+      tool_call_id: stUse.tool_use_id,
+    }],
+    role: stUse.role,
+    fromAgent: stUse.fromAgent,
+    generationId: stUse.generationId,
+    runId: stUse.runId,
+    parentRunId: stUse.parentRunId,
+    threadId: stUse.threadId,
+    messageOrderIdx: stUse.messageOrderIdx,
+  };
+}
+
+/**
+ * Convert a ServerToolResultMessage to ToolCallResultMessage for result attachment.
+ * Used by both the streaming handler and the persistence loading path.
+ */
+export function convertServerToolResult(stResult: ServerToolResultMessage): ToolCallResultMessage {
+  const resultStr = typeof stResult.result === 'string' ? stResult.result : JSON.stringify(stResult.result ?? {});
+  return {
+    $type: MessageType.ToolCallResult,
+    tool_call_id: stResult.tool_use_id,
+    result: stResult.is_error ? `Error (${stResult.error_code || 'unknown'}): ${resultStr}` : resultStr,
+    role: stResult.role,
+    generationId: stResult.generationId,
+    runId: stResult.runId,
+    parentRunId: stResult.parentRunId,
+    threadId: stResult.threadId,
+    messageOrderIdx: stResult.messageOrderIdx,
+  };
+}
 
 /**
  * Transport type for streaming messages
@@ -439,19 +483,8 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle server tool result → convert to ToolCallResultMessage and attach
     if (isServerToolResultMessage(msg)) {
-      const stResult = msg; // narrowed to ServerToolResultMessage
-      const resultStr = typeof stResult.result === 'string' ? stResult.result : JSON.stringify(stResult.result ?? {});
-      const converted: ToolCallResultMessage = {
-        $type: MessageType.ToolCallResult,
-        tool_call_id: stResult.tool_use_id,
-        result: stResult.is_error ? `Error (${stResult.error_code || 'unknown'}): ${resultStr}` : resultStr,
-        role: stResult.role,
-        generationId: stResult.generationId,
-        runId: stResult.runId,
-        parentRunId: stResult.parentRunId,
-        threadId: stResult.threadId,
-        messageOrderIdx: stResult.messageOrderIdx,
-      };
+      const stResult = msg;
+      const converted = convertServerToolResult(stResult);
       toolResults.value.set(stResult.tool_use_id, converted);
       log.debug('Received server tool result', { toolName: stResult.tool_name, toolUseId: stResult.tool_use_id, isError: stResult.is_error });
 
@@ -472,24 +505,8 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle server tool use → convert to ToolsCallMessage for pill display
     if (isServerToolUseMessage(msg)) {
-      const stUse = msg; // narrowed to ServerToolUseMessage
-      const inputStr = typeof stUse.input === 'string' ? stUse.input : JSON.stringify(stUse.input ?? {});
-      const converted: ToolsCallMessage = {
-        $type: MessageType.ToolsCall,
-        tool_calls: [{
-          function_name: stUse.tool_name,
-          function_args: inputStr,
-          tool_call_id: stUse.tool_use_id,
-        }],
-        role: stUse.role,
-        fromAgent: stUse.fromAgent,
-        generationId: stUse.generationId,
-        runId: stUse.runId,
-        parentRunId: stUse.parentRunId,
-        threadId: stUse.threadId,
-        messageOrderIdx: stUse.messageOrderIdx,
-      };
-      log.debug('Converted server tool use to ToolsCallMessage', { toolName: stUse.tool_name, toolUseId: stUse.tool_use_id });
+      const converted = convertServerToolUse(msg);
+      log.debug('Converted server tool use to ToolsCallMessage', { toolName: msg.tool_name, toolUseId: msg.tool_use_id });
       msg = converted;
       // Fall through to normal message handling below
     }
@@ -820,12 +837,25 @@ export function useChat(options: UseChatOptions = {}) {
           continue;
         }
 
+        // Convert server tool results → ToolCallResultMessage (same as streaming path)
+        if (isServerToolResultMessage(parsedMessage)) {
+          const converted = convertServerToolResult(parsedMessage);
+          toolResults.value.set(converted.tool_call_id, converted);
+          continue;
+        }
+
+        // Convert server tool use → ToolsCallMessage for pill display (same as streaming path)
+        let messageContent: Message = parsedMessage;
+        if (isServerToolUseMessage(parsedMessage)) {
+          messageContent = convertServerToolUse(parsedMessage);
+        }
+
         // Determine role
-        const role: 'user' | 'assistant' = parsedMessage.role === 'user' ? 'user' : 'assistant';
+        const role: 'user' | 'assistant' = messageContent.role === 'user' ? 'user' : 'assistant';
 
         // Transform test instruction messages for display
-        if (role === 'user' && isTextMessage(parsedMessage)) {
-          const textMsg = parsedMessage as TextMessage;
+        if (role === 'user' && isTextMessage(messageContent)) {
+          const textMsg = messageContent as TextMessage;
           if (isTestInstruction(textMsg.text)) {
             textMsg.text = '🧪 Test instruction sent';
           }
@@ -836,7 +866,7 @@ export function useChat(options: UseChatOptions = {}) {
           id: pm.id,
           role,
           status: 'completed',
-          content: parsedMessage,
+          content: messageContent,
           runId: pm.runId,
           parentRunId: pm.parentRunId,
           generationId: pm.generationId,

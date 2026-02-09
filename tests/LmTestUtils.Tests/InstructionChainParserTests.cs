@@ -315,4 +315,72 @@ public class InstructionChainParserTests
         Assert.Single(result[1].Messages);
         Assert.Equal("__TOOLS_LIST__", result[1].Messages[0].ExplicitText);
     }
+
+    [Fact]
+    public void ExtractInstructionChain_WithExplicitText_ParsesAsExplicitText()
+    {
+        // Arrange - {"text": "Hello"} should produce InstructionMessage with ExplicitText
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"messages": [{"text": "Hello world"}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Single(result[0].Messages);
+        Assert.Equal("Hello world", result[0].Messages[0].ExplicitText);
+        Assert.Null(result[0].Messages[0].TextLength);
+        Assert.Null(result[0].Messages[0].ToolCalls);
+    }
+
+    [Fact]
+    public void ExtractInstructionChain_WithTextAndServerTools_ParsesAll()
+    {
+        // Arrange - 4-message chain: text, server_tool_use, server_tool_result, text
+        // This mirrors the real Kimi API pattern: text → server_tool_use → result → text
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"messages": [
+                    {"text": "Let me search for that."},
+                    {"server_tool_use": {"name": "web_search", "id": "srvtoolu_test_01", "input": {"query": "test"}}},
+                    {"server_tool_result": {"name": "web_search", "tool_use_id": "srvtoolu_test_01",
+                        "result": [{"type":"web_search_result","url":"https://example.com","title":"Test"}]}},
+                    {"text": "Based on my search, here are the results."}
+                ]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Equal(4, result[0].Messages.Count);
+
+        // First: explicit text
+        Assert.Equal("Let me search for that.", result[0].Messages[0].ExplicitText);
+
+        // Second: server_tool_use
+        Assert.NotNull(result[0].Messages[1].ServerToolUse);
+        Assert.Equal("web_search", result[0].Messages[1].ServerToolUse!.Name);
+        Assert.Equal("srvtoolu_test_01", result[0].Messages[1].ServerToolUse!.Id);
+
+        // Third: server_tool_result
+        Assert.NotNull(result[0].Messages[2].ServerToolResult);
+        Assert.Equal("web_search", result[0].Messages[2].ServerToolResult!.Name);
+        Assert.Equal("srvtoolu_test_01", result[0].Messages[2].ServerToolResult!.ToolUseId);
+
+        // Fourth: explicit text
+        Assert.Equal("Based on my search, here are the results.", result[0].Messages[3].ExplicitText);
+    }
 }

@@ -218,6 +218,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             {
                 FromAgent = toolCallUpdate.FromAgent,
                 Role = toolCallUpdate.Role,
+                MessageOrderIdx = toolCallUpdate.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -251,6 +252,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = toolCallUpdate.FromAgent,
                 Role = toolCallUpdate.Role,
                 ToolCallIdx = toolCallIdx,
+                MessageOrderIdx = toolCallUpdate.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -283,6 +285,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = textUpdateMessage.FromAgent,
                 Role = textUpdateMessage.Role,
                 GenerationId = textUpdateMessage.GenerationId,
+                MessageOrderIdx = textUpdateMessage.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -323,6 +326,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 Role = reasoningUpdate.Role,
                 GenerationId = reasoningUpdate.GenerationId,
                 Visibility = ReasoningVisibility.Plain, // Default to Plain for updates
+                MessageOrderIdx = reasoningUpdate.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
