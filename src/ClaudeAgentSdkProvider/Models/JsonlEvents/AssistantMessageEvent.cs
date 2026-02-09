@@ -37,6 +37,20 @@ public record AssistantMessageEvent : JsonlEventBase
 
     [JsonPropertyName("user_type")]
     public string? UserType { get; init; }
+
+    /// <summary>
+    ///     Indicates this is an API error message (e.g., billing_error, rate_limit).
+    ///     When true, the message content typically contains the error description.
+    /// </summary>
+    [JsonPropertyName("isApiErrorMessage")]
+    public bool IsApiErrorMessage { get; init; }
+
+    /// <summary>
+    ///     The error type when IsApiErrorMessage is true.
+    ///     Known values: "billing_error" (credit balance too low)
+    /// </summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
 }
 
 /// <summary>
