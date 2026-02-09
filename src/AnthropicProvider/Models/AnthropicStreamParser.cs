@@ -154,7 +154,7 @@ public class AnthropicStreamParser
             Type = blockType,
             Id = contentBlock["id"]?.GetValue<string>(),
             Name = contentBlock["name"]?.GetValue<string>(),
-            Input = contentBlock["input"]?.AsObject(),
+            Input = contentBlock["input"] is JsonObject inputObj ? inputObj : null,
         };
 
         // Check for citations on text blocks
@@ -220,25 +220,26 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
-        if (blockType == "server_tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
+        // Don't emit ServerToolUseMessage here — defer to content_block_stop so we can
+        // include input accumulated from input_json_delta events.
+        if (blockType == "server_tool_use")
         {
-            // Store tool_use_id for correlating with results
-            _contentBlocks[index].ToolUseId = _contentBlocks[index].Id;
+            // Store tool_use_id for correlating with results (may be empty — synthetic ID generated at stop)
+            _contentBlocks[index].ToolUseId = _contentBlocks[index].Id ?? string.Empty;
 
-            var serverToolUse = new ServerToolUseMessage
+            // Store input from content_block_start if present (for non-streaming / complete input)
+            var inputNode = contentBlock["input"];
+            if (inputNode is JsonObject serverInputObj)
             {
-                ToolUseId = _contentBlocks[index].Id!,
-                ToolName = _contentBlocks[index].Name ?? string.Empty,
-                Input = contentBlock["input"] != null
-                    ? JsonSerializer.Deserialize<JsonElement>(contentBlock["input"]!.ToJsonString())
-                    : default,
-                Role = ParseRole(_role),
-                FromAgent = _messageId,
-                GenerationId = _messageId,
-            };
+                _contentBlocks[index].Input = serverInputObj;
+            }
+            else if (inputNode != null)
+            {
+                // Store as-is even if not a JsonObject (defensive for non-standard providers)
+                _contentBlocks[index].Input = inputNode;
+            }
 
-            _messages.Add(serverToolUse);
-            return [serverToolUse];
+            return [];
         }
 
         // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
@@ -378,6 +379,11 @@ public class AnthropicStreamParser
         // Check if we have a content block for this index
         if (!_contentBlocks.TryGetValue(index, out var block))
         {
+            _logger.LogWarning(
+                "content_block_stop received for unknown block index {Index}. " +
+                "This may indicate a dropped content_block_start event.",
+                index
+            );
             return [];
         }
 
@@ -385,6 +391,12 @@ public class AnthropicStreamParser
         if (block.Type == "tool_use")
         {
             return FinalizeToolUseBlock(block);
+        }
+
+        // Handle server_tool_use blocks — emit ServerToolUseMessage with accumulated input from input_json_delta
+        if (block.Type == "server_tool_use")
+        {
+            return FinalizeServerToolUseBlock(block);
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
@@ -616,6 +628,18 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
+        // For server_tool_use blocks, accumulate input but don't emit updates
+        // (the final ServerToolUseMessage with input will be emitted at content_block_stop)
+        if (block.Type == "server_tool_use")
+        {
+            if (block.JsonAccumulator.IsComplete && block.Input == null)
+            {
+                block.Input = block.JsonAccumulator.GetParsedInput();
+            }
+
+            return [];
+        }
+
         return [];
     }
 
@@ -640,6 +664,91 @@ public class AnthropicStreamParser
         var toolMessage = CreateToolsCallMessage(block);
         _messages.Add(toolMessage);
         return [toolMessage];
+    }
+
+    /// <summary>
+    ///     Finalizes a server_tool_use block, emitting the ServerToolUseMessage with
+    ///     input from either content_block_start or accumulated input_json_delta events.
+    /// </summary>
+    private List<IMessage> FinalizeServerToolUseBlock(StreamingContentBlock block)
+    {
+        // Generate a synthetic ID if none provided (e.g., Kimi doesn't send id for server_tool_use)
+        if (string.IsNullOrEmpty(block.Id))
+        {
+            block.Id = $"srvtoolu_synth_{block.Index}_{Guid.NewGuid():N}";
+            _logger.LogDebug(
+                "Generated synthetic ID {SyntheticId} for server_tool_use block {Index} (provider did not send id)",
+                block.Id,
+                block.Index
+            );
+        }
+
+        if (string.IsNullOrEmpty(block.ToolUseId))
+        {
+            block.ToolUseId = block.Id;
+        }
+
+        // If input_json_delta accumulated a complete object, it overwrites any content_block_start input.
+        // Otherwise, block.Input retains whatever was set at content_block_start (or null).
+        if (block.JsonAccumulator.IsComplete)
+        {
+            var parsedInput = block.JsonAccumulator.GetParsedInput();
+            if (parsedInput != null)
+            {
+                block.Input = parsedInput;
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "JsonAccumulator was complete but returned null for block {Index}. " +
+                    "Keeping input from content_block_start.",
+                    block.Index
+                );
+            }
+        }
+
+        JsonElement inputElement = default;
+        if (block.Input != null)
+        {
+            try
+            {
+                inputElement = JsonSerializer.Deserialize<JsonElement>(block.Input.ToJsonString());
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to deserialize input for server_tool_use block {Index} (tool: {ToolName})",
+                    block.Index,
+                    block.Name ?? "unknown"
+                );
+                inputElement = default;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to convert input JsonNode for server_tool_use block {Index} (tool: {ToolName}). " +
+                    "This may indicate a stale JsonElement from SSE document disposal.",
+                    block.Index,
+                    block.Name ?? "unknown"
+                );
+                inputElement = default;
+            }
+        }
+
+        var serverToolUse = new ServerToolUseMessage
+        {
+            ToolUseId = block.Id!,
+            ToolName = block.Name ?? string.Empty,
+            Input = inputElement,
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = _messageId,
+        };
+
+        _messages.Add(serverToolUse);
+        return [serverToolUse];
     }
 
     /// <summary>
@@ -797,24 +906,13 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
+        // Don't emit ServerToolUseMessage here — defer to content_block_stop so we can
+        // include input accumulated from input_json_delta events.
         if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
         {
             _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
-
-            var serverToolUse = new ServerToolUseMessage
-            {
-                ToolUseId = serverToolUseContent.Id,
-                ToolName = serverToolUseContent.Name,
-                Input = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
-                    ? serverToolUseContent.Input.Clone()
-                    : default,
-                Role = ParseRole(_role),
-                FromAgent = _messageId,
-                GenerationId = _messageId,
-            };
-
-            _messages.Add(serverToolUse);
-            return [serverToolUse];
+            // Input was already extracted from serverToolContent.Input and stored in the StreamingContentBlock above
+            return [];
         }
 
         // Handle web_search_tool_result
@@ -1042,6 +1140,11 @@ public class AnthropicStreamParser
         // Check if we have a content block for this index
         if (!_contentBlocks.TryGetValue(index, out var block))
         {
+            _logger.LogWarning(
+                "content_block_stop received for unknown block index {Index}. " +
+                "This may indicate a dropped content_block_start event.",
+                index
+            );
             return [];
         }
 
@@ -1049,6 +1152,12 @@ public class AnthropicStreamParser
         if (block.Type == "tool_use")
         {
             return FinalizeToolUseBlock(block);
+        }
+
+        // Handle server_tool_use blocks — emit ServerToolUseMessage with accumulated input from input_json_delta
+        if (block.Type == "server_tool_use")
+        {
+            return FinalizeServerToolUseBlock(block);
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
