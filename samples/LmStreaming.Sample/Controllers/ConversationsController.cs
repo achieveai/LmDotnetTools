@@ -12,7 +12,8 @@ namespace LmStreaming.Sample.Controllers;
 public class ConversationsController(
     IConversationStore store,
     MultiTurnAgentPool agentPool,
-    IChatModeStore modeStore) : ControllerBase
+    IChatModeStore modeStore,
+    ILogger<ConversationsController> logger) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(
@@ -100,6 +101,21 @@ public class ConversationsController(
         if (mode == null)
         {
             return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+        }
+
+        if (agentPool.IsRunInProgress(threadId))
+        {
+            logger.LogWarning(
+                "Blocked mode switch for thread {ThreadId} to mode {ModeId} because a run is in progress",
+                threadId,
+                request.ModeId);
+            return Conflict(
+                new
+                {
+                    error = "Cannot switch mode while response is streaming.",
+                    code = "mode_switch_while_streaming",
+                    threadId,
+                });
         }
 
         _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);

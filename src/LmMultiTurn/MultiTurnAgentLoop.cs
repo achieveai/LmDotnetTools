@@ -254,6 +254,19 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
             if (msg is ToolCallMessage toolCall)
             {
+                if (toolCall.ExecutionTarget != ExecutionTarget.LocalFunction)
+                {
+                    // Provider/server tools are executed remotely and should not be routed
+                    // through local tool handlers.
+                    Logger.LogDebug(
+                        "Skipping non-local tool call (executed remotely): FunctionName={FunctionName}, ToolCallId={ToolCallId}, ExecutionTarget={ExecutionTarget}",
+                        toolCall.FunctionName,
+                        toolCall.ToolCallId,
+                        toolCall.ExecutionTarget
+                    );
+                    continue;
+                }
+
                 hasToolCalls = true;
 
                 // Fail-fast: ToolCallId is required for proper correlation
@@ -349,11 +362,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCall.ToolCallId,
+                    ToolName = toolCall.FunctionName,
                     Result = JsonSerializer.Serialize(new
                     {
                         error = $"Unknown function: {toolCall.FunctionName}",
                         available_functions = _toolHandlers.Keys.ToArray(),
                     }),
+                    IsError = true,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
                     Role = Role.User,
                     FromAgent = toolCall.FromAgent,
                     GenerationId = toolCall.GenerationId,
@@ -364,7 +380,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             return new ToolCallResultMessage
             {
                 ToolCallId = toolCall.ToolCallId,
+                ToolName = toolCall.FunctionName,
                 Result = result,
+                ExecutionTarget = ExecutionTarget.LocalFunction,
                 Role = Role.User,
                 FromAgent = toolCall.FromAgent,
                 GenerationId = toolCall.GenerationId,
@@ -377,7 +395,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             return new ToolCallResultMessage
             {
                 ToolCallId = toolCall.ToolCallId,
+                ToolName = toolCall.FunctionName,
                 Result = JsonSerializer.Serialize(new { error = ex.Message }),
+                IsError = true,
+                ExecutionTarget = ExecutionTarget.LocalFunction,
                 Role = Role.User,
                 FromAgent = toolCall.FromAgent,
                 GenerationId = toolCall.GenerationId,

@@ -1,6 +1,7 @@
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -510,6 +511,21 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             await writer.FlushAsync(ct);
             await DelayAsync(ct);
         }
+
+        // Emit signature_delta to simulate Anthropic encrypted reasoning payload
+        var signatureBytes = SHA256.HashData(Encoding.UTF8.GetBytes(thinkingText));
+        var signature = Convert.ToBase64String(signatureBytes);
+        var signatureEvent = new
+        {
+            type = "content_block_delta",
+            index = contentIndex,
+            delta = new { type = "signature_delta", signature },
+        };
+
+        await writer.WriteAsync("event: content_block_delta\n");
+        await writer.WriteAsync($"data: {JsonSerializer.Serialize(signatureEvent)}\n\n");
+        await writer.FlushAsync(ct);
+        await DelayAsync(ct);
 
         // content_block_stop
         var stopEvent = new { type = "content_block_stop", index = contentIndex };

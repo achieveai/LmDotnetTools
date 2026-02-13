@@ -259,6 +259,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                         Index = toolCall.Index,
                         ToolCallId = toolCall.ToolCallId,
                         ToolCallIdx = toolCall.ToolCallIdx,
+                        ExecutionTarget = toolCall.ExecutionTarget,
                         Role = m.Role,
                         FromAgent = m.FromAgent,
                         GenerationId = m.GenerationId,
@@ -288,6 +289,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                         Index = update.Index,
                         FunctionName = update.FunctionName,
                         FunctionArgs = update.FunctionArgs,
+                        ExecutionTarget = update.ExecutionTarget,
                         JsonFragmentUpdates = update.JsonFragmentUpdates,
                         Role = m.Role,
                         FromAgent = m.FromAgent,
@@ -328,6 +330,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                     {
                         ToolCallId = result.ToolCallId,
                         Result = result.Result,
+                        ToolName = result.ToolName,
+                        IsError = result.IsError,
+                        ErrorCode = result.ErrorCode,
+                        ExecutionTarget = result.ExecutionTarget,
                         Role = m.Role,
                         FromAgent = m.FromAgent,
                         GenerationId = m.GenerationId,
@@ -551,7 +557,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                     FunctionArgs = tcm.FunctionArgs,
                     Index = tcm.Index,
                     ToolCallId = tcm.ToolCallId,
-                    ToolCallIdx = tcm.ToolCallIdx
+                    ToolCallIdx = tcm.ToolCallIdx,
+                    ExecutionTarget = tcm.ExecutionTarget,
                 })
                 .ToImmutableList();
 
@@ -578,7 +585,14 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
 
             // Convert each ToolCallResultMessage to ToolCallResult
             var toolCallResults = toolCallResultMessages
-                .Select(tcrm => new ToolCallResult(tcrm.ToolCallId, tcrm.Result))
+                .Select(tcrm => new ToolCallResult(tcrm.ToolCallId, tcrm.Result)
+                {
+                    ToolName = tcrm.ToolName,
+                    IsError = tcrm.IsError,
+                    ErrorCode = tcrm.ErrorCode,
+                    ExecutionTarget = tcrm.ExecutionTarget,
+                    ContentBlocks = tcrm.ContentBlocks,
+                })
                 .ToImmutableList();
 
             var toolsCallResultMessage = new ToolsCallResultMessage

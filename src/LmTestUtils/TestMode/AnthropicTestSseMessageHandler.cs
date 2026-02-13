@@ -669,6 +669,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         }
 
         var toolNames = new List<string>();
+        var uniqueToolNames = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var tool in tools.EnumerateArray())
         {
@@ -683,8 +684,19 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 var toolName = name.GetString();
                 if (!string.IsNullOrEmpty(toolName))
                 {
-                    toolNames.Add(toolName);
+                    if (uniqueToolNames.Add(toolName))
+                    {
+                        toolNames.Add(toolName);
+                    }
                 }
+            }
+        }
+
+        foreach (var builtInTool in DetectBuiltInTools(root))
+        {
+            if (uniqueToolNames.Add(builtInTool))
+            {
+                toolNames.Add(builtInTool);
             }
         }
 

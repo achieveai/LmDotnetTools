@@ -301,61 +301,54 @@ public class ServerToolSerializationTests
         Assert.Equal("The answer is 42.", textContent.Citations[0].CitedText);
     }
 
-    /// <summary>
-    ///     Regression: serializing a ServerToolUseMessage with default(JsonElement) Input
-    ///     via IMessageJsonConverter previously threw InvalidOperationException because
-    ///     ShadowPropertiesJsonConverter attempted to write an Undefined JsonElement.
-    /// </summary>
     [Fact]
-    public void ServerToolUseMessage_WithDefaultInput_SerializesWithoutCrash()
+    public void ProviderServerToolCallMessage_WithNullFunctionArgs_SerializesWithoutCrash()
     {
-        var message = new ServerToolUseMessage
+        var message = new ToolCallMessage
         {
-            ToolUseId = "srvtoolu_01ABC",
-            ToolName = "web_search",
+            ToolCallId = "srvtoolu_01ABC",
+            FunctionName = "web_search",
+            FunctionArgs = null,
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
         };
-
-        // Input is default(JsonElement) with ValueKind == Undefined
-        Assert.Equal(JsonValueKind.Undefined, message.Input.ValueKind);
 
         var productionOptions = JsonSerializerOptionsFactory.CreateForProduction();
         var json = JsonSerializer.Serialize<IMessage>(message, productionOptions);
 
         Assert.NotNull(json);
         var doc = JsonDocument.Parse(json);
-        Assert.Equal("srvtoolu_01ABC", doc.RootElement.GetProperty("tool_use_id").GetString());
-        Assert.Equal("web_search", doc.RootElement.GetProperty("tool_name").GetString());
+        Assert.Equal("server_tool_use", doc.RootElement.GetProperty("$type").GetString());
+        Assert.Equal("srvtoolu_01ABC", doc.RootElement.GetProperty("tool_call_id").GetString());
+        Assert.Equal("web_search", doc.RootElement.GetProperty("function_name").GetString());
         Assert.False(
-            doc.RootElement.TryGetProperty("input", out _),
-            "Undefined JsonElement 'input' should be omitted from serialization");
+            doc.RootElement.TryGetProperty("function_args", out _),
+            "Null function_args should be omitted from serialization");
     }
 
-    /// <summary>
-    ///     Regression: serializing a ServerToolResultMessage with default(JsonElement) Result
-    ///     via IMessageJsonConverter previously threw InvalidOperationException because
-    ///     ShadowPropertiesJsonConverter attempted to write an Undefined JsonElement.
-    /// </summary>
     [Fact]
-    public void ServerToolResultMessage_WithDefaultResult_SerializesWithoutCrash()
+    public void ProviderServerToolCallResultMessage_WithNullOptionalFields_SerializesWithoutCrash()
     {
-        var message = new ServerToolResultMessage
+        var message = new ToolCallResultMessage
         {
-            ToolUseId = "srvtoolu_02DEF",
-            ToolName = "web_search",
+            ToolCallId = "srvtoolu_02DEF",
+            ToolName = null,
+            Result = "{}",
+            IsError = false,
+            ErrorCode = null,
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
         };
-
-        // Result is default(JsonElement) with ValueKind == Undefined
-        Assert.Equal(JsonValueKind.Undefined, message.Result.ValueKind);
 
         var productionOptions = JsonSerializerOptionsFactory.CreateForProduction();
         var json = JsonSerializer.Serialize<IMessage>(message, productionOptions);
 
         Assert.NotNull(json);
         var doc = JsonDocument.Parse(json);
-        Assert.Equal("srvtoolu_02DEF", doc.RootElement.GetProperty("tool_use_id").GetString());
-        Assert.Equal("web_search", doc.RootElement.GetProperty("tool_name").GetString());
-        Assert.False(
-            doc.RootElement.TryGetProperty("result", out _),
-            "Undefined JsonElement 'result' should be omitted from serialization");
+        Assert.Equal("server_tool_result", doc.RootElement.GetProperty("$type").GetString());
+        Assert.Equal("srvtoolu_02DEF", doc.RootElement.GetProperty("tool_call_id").GetString());
+        Assert.Equal("{}", doc.RootElement.GetProperty("result").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("tool_name", out _));
+        Assert.False(doc.RootElement.TryGetProperty("error_code", out _));
     }
 }

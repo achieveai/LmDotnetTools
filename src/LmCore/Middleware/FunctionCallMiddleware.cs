@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -165,17 +166,30 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             // Check if this message has tool calls
             var responseToolCall = reply as ToolsCallMessage;
             var responseToolCalls = responseToolCall?.ToolCalls;
+            var localToolCalls = responseToolCalls?
+                .Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
+                .ToImmutableList();
 
-            if (responseToolCalls != null && !responseToolCalls.IsEmpty)
+            var serverToolCallCount = responseToolCalls?.Count(tc => tc.ExecutionTarget == ExecutionTarget.ProviderServer) ?? 0;
+            if (serverToolCallCount > 0)
             {
                 _logger.LogDebug(
-                    "Tool call aggregation: Processing {ToolCallCount} tool calls",
-                    responseToolCalls.Count
+                    "Skipping {ServerToolCallCount} server tool calls (ProviderServer execution target)",
+                    serverToolCallCount
+                );
+            }
+
+            if (localToolCalls != null && !localToolCalls.IsEmpty)
+            {
+                _logger.LogDebug(
+                    "Tool call aggregation: Processing {ToolCallCount} local tool calls",
+                    localToolCalls.Count
                 );
 
                 // Process the tool calls for this message
-                var result = await ExecuteToolCallsAsync(responseToolCalls, agent, cancellationToken);
-                var aggregateMessage = new ToolsCallAggregateMessage(responseToolCall!, result);
+                var result = await ExecuteToolCallsAsync(localToolCalls, agent, cancellationToken);
+                var localOnlyToolsCall = responseToolCall! with { ToolCalls = localToolCalls };
+                var aggregateMessage = new ToolsCallAggregateMessage(localOnlyToolsCall, result);
 
                 _logger.LogDebug(
                     "Tool call aggregation: Created aggregate message with {ResultCount} results",
@@ -329,7 +343,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         // Check for existing tool calls that need processing
         var lastMessage = context.Messages.Last() as ICanGetToolCalls;
-        var toolCalls = lastMessage?.GetToolCalls();
+        var toolCalls = lastMessage?
+            .GetToolCalls()
+            ?.Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction);
         var hasPendingToolCalls = toolCalls != null && toolCalls.Any();
 
         // Clone options and add functions
@@ -572,6 +588,18 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             return;
         }
 
+        // Provider/server tools are executed by the provider, not locally.
+        if (call.ExecutionTarget != ExecutionTarget.LocalFunction)
+        {
+            _logger.LogDebug(
+                "Skipping non-local tool call in pre-execution callback: FunctionName={FunctionName}, ToolCallId={ToolCallId}, ExecutionTarget={ExecutionTarget}",
+                call.FunctionName,
+                call.ToolCallId,
+                call.ExecutionTarget
+            );
+            return;
+        }
+
         // Start executing the tool call immediately and store the task
         // Note: We use CancellationToken.None here as we don't have access to the streaming cancellation token
         // in this callback. This is acceptable as tool calls should complete regardless.
@@ -586,12 +614,16 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         // Process the tool calls if needed
         var toolCalls = toolCallMessage.ToolCalls;
-        if (toolCalls != null && !toolCalls.IsEmpty && _functionMap != null)
+        var localToolCalls = toolCalls
+            .Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
+            .ToImmutableList();
+
+        if (localToolCalls != null && !localToolCalls.IsEmpty && _functionMap != null)
         {
             var toolCallResults = new List<ToolCallResult>();
             var pendingToolCallTasks = new List<Task<ToolCallResult>>();
 
-            foreach (var toolCall in toolCalls)
+            foreach (var toolCall in localToolCalls)
             {
                 // Check if we already started executing this tool call
                 if (
@@ -620,7 +652,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 _logger.LogError(
                     ex,
                     "Tool call processing error in complete message processing: ToolCallCount={ToolCallCount}",
-                    toolCalls.Count
+                    localToolCalls.Count
                 );
 
                 // Handle individual task failures
@@ -629,7 +661,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     var task = pendingToolCallTasks[i];
                     if (task.IsFaulted)
                     {
-                        var toolCall = toolCalls.ElementAt(i);
+                        var toolCall = localToolCalls.ElementAt(i);
                         _logger.LogError(
                             task.Exception,
                             "Individual tool call failed: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
@@ -652,7 +684,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             }
 
             // Clear completed tasks from the pending dictionary
-            foreach (var toolCall in toolCalls)
+            foreach (var toolCall in localToolCalls)
             {
                 if (!string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
@@ -662,8 +694,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
             if (toolCallResults.Count != 0)
             {
+                var localOnlyToolCallMessage = toolCallMessage with { ToolCalls = localToolCalls };
                 return new ToolsCallAggregateMessage(
-                    toolCallMessage,
+                    localOnlyToolCallMessage,
                     new ToolsCallResultMessage
                     {
                         ToolCallResults = [.. toolCallResults],
@@ -691,10 +724,14 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             builtMessage.ToolCalls.Count
         );
 
-        if (builtMessage.ToolCalls.Count > 0)
+        var localBuiltToolCalls = builtMessage.ToolCalls
+            .Where(tc => tc.ExecutionTarget == ExecutionTarget.LocalFunction)
+            .ToImmutableList();
+
+        if (localBuiltToolCalls.Count > 0)
         {
             // Process each tool call, using pre-executed results when available
-            foreach (var toolCall in builtMessage.ToolCalls)
+            foreach (var toolCall in localBuiltToolCalls)
             {
                 // Check if we already started executing this tool call
                 if (
@@ -738,7 +775,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 _logger.LogError(
                     ex,
                     "Tool call processing error in final message processing: ToolCallCount={ToolCallCount}",
-                    builtMessage.ToolCalls.Count
+                    localBuiltToolCalls.Count
                 );
 
                 // Handle individual task failures
@@ -747,7 +784,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     var task = pendingToolCallTasks[i];
                     if (task.IsFaulted)
                     {
-                        var toolCall = builtMessage.ToolCalls[i];
+                        var toolCall = localBuiltToolCalls[i];
                         _logger.LogError(
                             task.Exception,
                             "Individual tool call failed in final processing: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
@@ -770,7 +807,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             }
 
             // Clear completed tasks from the pending dictionary
-            foreach (var toolCall in builtMessage.ToolCalls)
+            foreach (var toolCall in localBuiltToolCalls)
             {
                 if (!string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
@@ -784,8 +821,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             toolCallResults.Count
         );
 
+        var localOnlyBuiltMessage = builtMessage with { ToolCalls = localBuiltToolCalls };
         return new ToolsCallAggregateMessage(
-            builtMessage,
+            localOnlyBuiltMessage,
             new ToolsCallResultMessage
             {
                 ToolCallResults = [.. toolCallResults],

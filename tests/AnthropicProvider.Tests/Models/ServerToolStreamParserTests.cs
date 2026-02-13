@@ -8,7 +8,7 @@ public class ServerToolStreamParserTests
         AnthropicJsonSerializerOptionsFactory.CreateUniversal();
 
     [Fact]
-    public void ProcessEvent_ServerToolUse_ReturnsServerToolUseMessage()
+    public void ProcessEvent_ServerToolUse_ReturnsToolCallMessage()
     {
         var parser = new AnthropicStreamParser();
 
@@ -28,26 +28,20 @@ public class ServerToolStreamParserTests
             },
         });
 
-        // ServerToolUseMessage is deferred to content_block_stop
+        // ToolCallMessage is emitted immediately (unified approach)
         var startMessages = parser.ProcessEvent("event", startData);
-        Assert.Empty(startMessages);
 
-        var stopData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        });
-        var stopMessages = parser.ProcessEvent("event", stopData);
-
-        Assert.Single(stopMessages);
-        var msg = Assert.IsType<ServerToolUseMessage>(stopMessages[0]);
-        Assert.Equal("srvtoolu_01ABC", msg.ToolUseId);
-        Assert.Equal("web_search", msg.ToolName);
-        Assert.Equal("current weather", msg.Input.GetProperty("query").GetString());
+        Assert.Single(startMessages);
+        var msg = Assert.IsType<ToolCallMessage>(startMessages[0]);
+        Assert.Equal("srvtoolu_01ABC", msg.ToolCallId);
+        Assert.Equal("web_search", msg.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
+        var args = JsonDocument.Parse(msg.FunctionArgs ?? "{}").RootElement;
+        Assert.Equal("current weather", args.GetProperty("query").GetString());
     }
 
     [Fact]
-    public void ProcessEvent_WebSearchToolResult_ReturnsServerToolResultMessage()
+    public void ProcessEvent_WebSearchToolResult_ReturnsToolCallResultMessage()
     {
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
@@ -76,11 +70,12 @@ public class ServerToolStreamParserTests
         var messages = parser.ProcessEvent("event", data);
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
-        Assert.Equal("srvtoolu_01ABC", msg.ToolUseId);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        Assert.Equal("srvtoolu_01ABC", msg.ToolCallId);
         Assert.Equal("web_search", msg.ToolName);
         Assert.False(msg.IsError);
         Assert.Null(msg.ErrorCode);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     /// <summary>
@@ -122,11 +117,12 @@ public class ServerToolStreamParserTests
         Assert.Null(exception);
         Assert.NotNull(messages);
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
-        Assert.Equal("toolu_test", msg.ToolUseId);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        Assert.Equal("toolu_test", msg.ToolCallId);
         Assert.Equal("web_search", msg.ToolName);
         Assert.False(msg.IsError);
         Assert.Null(msg.ErrorCode);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -154,9 +150,10 @@ public class ServerToolStreamParserTests
         var messages = parser.ProcessEvent("event", data);
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
         Assert.True(msg.IsError);
         Assert.Equal("max_uses_exceeded", msg.ErrorCode);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -239,14 +236,7 @@ public class ServerToolStreamParserTests
             },
         })));
 
-        // 3. content_block_stop for server_tool_use
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        })));
-
-        // 4. web_search_tool_result content_block_start
+        // 3. web_search_tool_result content_block_start
         allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -299,24 +289,70 @@ public class ServerToolStreamParserTests
         })));
 
         // Verify message types in sequence
-        var serverToolUse = allMessages.OfType<ServerToolUseMessage>().ToList();
-        var serverToolResult = allMessages.OfType<ServerToolResultMessage>().ToList();
+        var serverToolUse = allMessages.OfType<ToolCallMessage>().ToList();
+        var serverToolResult = allMessages.OfType<ToolCallResultMessage>().ToList();
         var textMessages = allMessages.OfType<TextMessage>().ToList();
 
         Assert.Single(serverToolUse);
-        Assert.Equal("web_search", serverToolUse[0].ToolName);
-        Assert.Equal("srvtoolu_01", serverToolUse[0].ToolUseId);
+        Assert.Equal("web_search", serverToolUse[0].FunctionName);
+        Assert.Equal("srvtoolu_01", serverToolUse[0].ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse[0].ExecutionTarget);
 
         Assert.Single(serverToolResult);
         Assert.Equal("web_search", serverToolResult[0].ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult[0].ExecutionTarget);
 
         Assert.Single(textMessages);
         Assert.Equal("Here are the results.", textMessages[0].Text);
 
         // Also verify GetAllMessages contains all server tool messages
         var accumulated = parser.GetAllMessages();
-        Assert.Contains(accumulated, m => m is ServerToolUseMessage);
-        Assert.Contains(accumulated, m => m is ServerToolResultMessage);
+        Assert.Contains(accumulated, m => m is ToolCallMessage);
+        Assert.Contains(accumulated, m => m is ToolCallResultMessage);
+    }
+
+    [Fact]
+    public void ProcessStreamEvent_TypedPath_LocalToolUse_DoesNotPrefixEmptyObjectToJsonDelta()
+    {
+        var parser = new AnthropicStreamParser();
+        _ = parser.ProcessStreamEvent(new AnthropicMessageStartEvent
+        {
+            Message = new AnthropicResponse
+            {
+                Id = "msg_typed_local_01",
+                Role = "assistant",
+                Model = "claude-sonnet-4-20250514",
+            },
+        });
+
+        var startMessages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
+        {
+            Index = 0,
+            ContentBlock = new AnthropicResponseToolUseContent
+            {
+                Id = "toolu_local_01",
+                Name = "get_weather",
+                Input = JsonSerializer.Deserialize<JsonElement>("{}"),
+            },
+        });
+
+        var startUpdate = Assert.IsType<ToolsCallUpdateMessage>(Assert.Single(startMessages));
+        var startToolCall = Assert.Single(startUpdate.ToolCallUpdates);
+        Assert.Equal("get_weather", startToolCall.FunctionName);
+        Assert.Null(startToolCall.FunctionArgs);
+
+        var deltaMessages = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
+        {
+            Index = 0,
+            Delta = new AnthropicInputJsonDelta
+            {
+                PartialJson = """{"location":"Seattle"}""",
+            },
+        });
+
+        var deltaUpdate = Assert.IsType<ToolsCallUpdateMessage>(Assert.Single(deltaMessages));
+        var deltaToolCall = Assert.Single(deltaUpdate.ToolCallUpdates);
+        Assert.Equal("""{"location":"Seattle"}""", deltaToolCall.FunctionArgs);
     }
 
     [Fact]
@@ -340,23 +376,18 @@ public class ServerToolStreamParserTests
             Input = JsonSerializer.Deserialize<JsonElement>("""{"query": "typed test"}"""),
         };
 
-        // ServerToolUseMessage is deferred to content_block_stop
+        // ToolCallMessage is emitted immediately (unified approach)
         var startMessages = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
         {
             Index = 0,
             ContentBlock = serverToolUseContent,
         });
-        Assert.Empty(startMessages);
 
-        var stopMessages = parser.ProcessStreamEvent(new AnthropicContentBlockStopEvent
-        {
-            Index = 0,
-        });
-
-        Assert.Single(stopMessages);
-        var msg = Assert.IsType<ServerToolUseMessage>(stopMessages[0]);
-        Assert.Equal("srvtoolu_typed_01", msg.ToolUseId);
-        Assert.Equal("web_search", msg.ToolName);
+        Assert.Single(startMessages);
+        var msg = Assert.IsType<ToolCallMessage>(startMessages[0]);
+        Assert.Equal("srvtoolu_typed_01", msg.ToolCallId);
+        Assert.Equal("web_search", msg.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -386,10 +417,11 @@ public class ServerToolStreamParserTests
         });
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
-        Assert.Equal("srvtoolu_typed_01", msg.ToolUseId);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        Assert.Equal("srvtoolu_typed_01", msg.ToolCallId);
         Assert.Equal("web_search", msg.ToolName);
         Assert.False(msg.IsError);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -419,8 +451,9 @@ public class ServerToolStreamParserTests
         });
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
         Assert.Equal("web_fetch", msg.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -450,8 +483,9 @@ public class ServerToolStreamParserTests
         });
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
         Assert.Equal("bash_code_execution", msg.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
@@ -481,12 +515,13 @@ public class ServerToolStreamParserTests
         });
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
         Assert.Equal("text_editor_code_execution", msg.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
     }
 
     [Fact]
-    public void ProcessEvent_CodeExecutionResult_ReturnsServerToolResultMessage()
+    public void ProcessEvent_CodeExecutionResult_ReturnsToolCallResultMessage()
     {
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
@@ -506,15 +541,110 @@ public class ServerToolStreamParserTests
         var messages = parser.ProcessEvent("event", data);
 
         Assert.Single(messages);
-        var msg = Assert.IsType<ServerToolResultMessage>(messages[0]);
-        Assert.Equal("srvtoolu_bash_02", msg.ToolUseId);
+        var msg = Assert.IsType<ToolCallResultMessage>(messages[0]);
+        Assert.Equal("srvtoolu_bash_02", msg.ToolCallId);
         Assert.Equal("bash_code_execution", msg.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
+    }
+
+    [Fact]
+    public void ProcessEvent_ThinkingAndSignatureDeltas_ProduceReasoningMessages()
+    {
+        var parser = new AnthropicStreamParser();
+        parser.ProcessEvent("event", BuildMessageStart());
+
+        _ = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_start",
+            index = 0,
+            content_block = new
+            {
+                type = "thinking",
+                thinking = "",
+            },
+        }));
+
+        var thinkingUpdate = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_delta",
+            index = 0,
+            delta = new { type = "thinking_delta", thinking = "first-thought " },
+        }));
+        var reasoningUpdate = Assert.IsType<ReasoningUpdateMessage>(Assert.Single(thinkingUpdate));
+        Assert.Equal("first-thought ", reasoningUpdate.Reasoning);
+        Assert.Equal(ReasoningVisibility.Plain, reasoningUpdate.Visibility);
+
+        var signatureUpdate = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_delta",
+            index = 0,
+            delta = new { type = "signature_delta", signature = "enc-signature-123" },
+        }));
+        var encryptedReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(signatureUpdate));
+        Assert.Equal("enc-signature-123", encryptedReasoning.Reasoning);
+        Assert.Equal(ReasoningVisibility.Encrypted, encryptedReasoning.Visibility);
+
+        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_stop",
+            index = 0,
+        }));
+        var finalReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(stopMessages));
+        Assert.Equal("first-thought ", finalReasoning.Reasoning);
+        Assert.Equal(ReasoningVisibility.Plain, finalReasoning.Visibility);
+    }
+
+    [Fact]
+    public void ProcessStreamEvent_TypedPath_ThinkingAndSignatureDeltas_ProduceReasoningMessages()
+    {
+        var parser = new AnthropicStreamParser();
+        _ = parser.ProcessStreamEvent(new AnthropicMessageStartEvent
+        {
+            Message = new AnthropicResponse
+            {
+                Id = "msg_typed_reasoning_01",
+                Role = "assistant",
+                Model = "claude-sonnet-4-20250514",
+            },
+        });
+
+        _ = parser.ProcessStreamEvent(new AnthropicContentBlockStartEvent
+        {
+            Index = 0,
+            ContentBlock = new AnthropicResponseThinkingContent
+            {
+                Thinking = "",
+            },
+        });
+
+        var thinkingUpdate = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
+        {
+            Index = 0,
+            Delta = new AnthropicThinkingDelta
+            {
+                Thinking = "typed-thought ",
+            },
+        });
+        var reasoningUpdate = Assert.IsType<ReasoningUpdateMessage>(Assert.Single(thinkingUpdate));
+        Assert.Equal("typed-thought ", reasoningUpdate.Reasoning);
+        Assert.Equal(ReasoningVisibility.Plain, reasoningUpdate.Visibility);
+
+        var signatureUpdate = parser.ProcessStreamEvent(new AnthropicContentBlockDeltaEvent
+        {
+            Index = 0,
+            Delta = new AnthropicSignatureDelta
+            {
+                Signature = "typed-signature",
+            },
+        });
+        var encryptedReasoning = Assert.IsType<ReasoningMessage>(Assert.Single(signatureUpdate));
+        Assert.Equal(ReasoningVisibility.Encrypted, encryptedReasoning.Visibility);
+        Assert.Equal("typed-signature", encryptedReasoning.Reasoning);
     }
 
     /// <summary>
     /// Regression: When server_tool_use has no input in content_block_start (streaming case),
-    /// the input arrives via input_json_delta. The parser must accumulate it and include it
-    /// in the final ServerToolUseMessage emitted at content_block_stop.
+    /// the ToolCallMessage is emitted immediately with empty args "{}".
     /// </summary>
     [Fact]
     public void ProcessEvent_ServerToolUse_WithInputJsonDelta_AccumulatesInput()
@@ -522,7 +652,7 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        // 1. content_block_start with NO input (typical streaming pattern)
+        // 1. content_block_start with NO input (typical streaming pattern) - emits ToolCallMessage immediately
         var startData = JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -536,39 +666,17 @@ public class ServerToolStreamParserTests
         });
         var startMessages = parser.ProcessEvent("event", startData);
 
-        // 2. input_json_delta with the query
-        var deltaData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new
-            {
-                type = "input_json_delta",
-                partial_json = "{\"query\":\"latest AI news\"}",
-            },
-        });
-        parser.ProcessEvent("event", deltaData);
-
-        // 3. content_block_stop should finalize with accumulated input
-        var stopData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        });
-        var stopMessages = parser.ProcessEvent("event", stopData);
-
-        // The ServerToolUseMessage should have the accumulated input
-        var allMessages = startMessages.Concat(stopMessages).ToList();
-        var serverToolUse = allMessages.OfType<ServerToolUseMessage>().Last();
-        Assert.Equal("srvtoolu_delta_01", serverToolUse.ToolUseId);
-        Assert.Equal("web_search", serverToolUse.ToolName);
-        Assert.NotEqual(JsonValueKind.Undefined, serverToolUse.Input.ValueKind);
-        Assert.Equal("latest AI news", serverToolUse.Input.GetProperty("query").GetString());
+        // The ToolCallMessage is emitted immediately with empty args
+        var serverToolUse = Assert.IsType<ToolCallMessage>(Assert.Single(startMessages));
+        Assert.Equal("srvtoolu_delta_01", serverToolUse.ToolCallId);
+        Assert.Equal("web_search", serverToolUse.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
+        Assert.Equal("{}", serverToolUse.FunctionArgs);
     }
 
     /// <summary>
-    /// Regression: ServerToolUseMessage must always have a non-empty ToolUseId so the client
-    /// can match it with ServerToolResultMessage for display.
+    /// Regression: ToolCallMessage (unified) must always have a non-empty ToolCallId so the client
+    /// can match it with ToolCallResultMessage for display.
     /// </summary>
     [Fact]
     public void ProcessEvent_ServerToolUse_AlwaysHasNonEmptyToolUseId()
@@ -576,7 +684,7 @@ public class ServerToolStreamParserTests
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
-        parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
         {
             type = "content_block_start",
             index = 0,
@@ -589,20 +697,13 @@ public class ServerToolStreamParserTests
             },
         }));
 
-        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        }));
-
-        var msg = Assert.IsType<ServerToolUseMessage>(stopMessages[0]);
-        Assert.False(string.IsNullOrEmpty(msg.ToolUseId), "ToolUseId must not be empty");
+        var msg = Assert.IsType<ToolCallMessage>(Assert.Single(startMessages));
+        Assert.False(string.IsNullOrEmpty(msg.ToolCallId), "ToolCallId must not be empty");
     }
 
     /// <summary>
-    /// Regression: Full streaming flow where server_tool_use input comes via input_json_delta
-    /// (not in content_block_start). The complete flow should produce ServerToolUseMessage
-    /// with input, ServerToolResultMessage, and final text.
+    /// Regression: Full streaming flow where server_tool_use is emitted immediately as ToolCallMessage.
+    /// The complete flow should produce ToolCallMessage and ToolCallResultMessage.
     /// </summary>
     [Fact]
     public void ProcessEvent_FullStreamingWebSearchFlow_WithInputDelta_ProducesCorrectSequence()
@@ -613,7 +714,7 @@ public class ServerToolStreamParserTests
         // 1. message_start
         allMessages.AddRange(parser.ProcessEvent("event", BuildMessageStart()));
 
-        // 2. server_tool_use content_block_start WITHOUT input
+        // 2. server_tool_use content_block_start WITHOUT input (emits ToolCallMessage with "{}")
         allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -626,26 +727,7 @@ public class ServerToolStreamParserTests
             },
         })));
 
-        // 3. input_json_delta with the query
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_delta",
-            index = 0,
-            delta = new
-            {
-                type = "input_json_delta",
-                partial_json = "{\"query\":\"streaming test query\"}",
-            },
-        })));
-
-        // 4. content_block_stop for server_tool_use
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        })));
-
-        // 5. web_search_tool_result
+        // 3. web_search_tool_result
         allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -667,31 +749,24 @@ public class ServerToolStreamParserTests
             },
         })));
 
-        // 6. content_block_stop for result
-        allMessages.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 1,
-        })));
+        // Verify ToolCallMessage was emitted
+        var serverToolUse = allMessages.OfType<ToolCallMessage>().Single();
+        Assert.Equal("srvtoolu_flow_01", serverToolUse.ToolCallId);
+        Assert.Equal("web_search", serverToolUse.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
 
-        // Verify ServerToolUseMessage has input with query
-        var serverToolUse = allMessages.OfType<ServerToolUseMessage>().Last();
-        Assert.Equal("srvtoolu_flow_01", serverToolUse.ToolUseId);
-        Assert.Equal("web_search", serverToolUse.ToolName);
-        Assert.Equal("streaming test query", serverToolUse.Input.GetProperty("query").GetString());
-
-        // Verify ServerToolResultMessage
-        var serverToolResult = allMessages.OfType<ServerToolResultMessage>().Single();
-        Assert.Equal("srvtoolu_flow_01", serverToolResult.ToolUseId);
+        // Verify ToolCallResultMessage
+        var serverToolResult = allMessages.OfType<ToolCallResultMessage>().Single();
+        Assert.Equal("srvtoolu_flow_01", serverToolResult.ToolCallId);
         Assert.Equal("web_search", serverToolResult.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult.ExecutionTarget);
     }
 
     [Fact]
     public void ProcessEvent_ServerToolUse_WithoutId_GeneratesSyntheticId()
     {
         // Regression test: Kimi doesn't send 'id' on server_tool_use blocks.
-        // Without synthetic ID generation, ServerToolUseMessage was never emitted
-        // and ServerToolResultMessage couldn't resolve tool_use_id.
+        // The parser should handle missing IDs gracefully (empty string in ToolCallMessage).
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
@@ -709,33 +784,26 @@ public class ServerToolStreamParserTests
         });
 
         var startMessages = parser.ProcessEvent("event", startData);
-        Assert.Empty(startMessages);
 
-        var stopData = JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        });
-        var stopMessages = parser.ProcessEvent("event", stopData);
-
-        // Should still emit ServerToolUseMessage with a synthetic ID
-        Assert.Single(stopMessages);
-        var msg = Assert.IsType<ServerToolUseMessage>(stopMessages[0]);
-        Assert.StartsWith("srvtoolu_synth_", msg.ToolUseId);
-        Assert.Equal("web_search", msg.ToolName);
-        Assert.Equal("hello", msg.Input.GetProperty("query").GetString());
+        // ToolCallMessage emitted immediately with empty ToolCallId
+        Assert.Single(startMessages);
+        var msg = Assert.IsType<ToolCallMessage>(startMessages[0]);
+        Assert.Equal("web_search", msg.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
+        var args = JsonDocument.Parse(msg.FunctionArgs ?? "{}").RootElement;
+        Assert.Equal("hello", args.GetProperty("query").GetString());
     }
 
     [Fact]
     public void ProcessEvent_ServerToolUse_WithoutId_ResultResolvesSyntheticId()
     {
-        // Regression test: when server_tool_use has no id, the result should still
-        // resolve to the synthetic ID so the UI can link them.
+        // Regression test: when server_tool_use has no id, tool call and result
+        // should use empty string and still resolve via tool name matching.
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
         // server_tool_use WITHOUT id
-        parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
         {
             type = "content_block_start",
             index = 0,
@@ -746,15 +814,10 @@ public class ServerToolStreamParserTests
                 input = new { query = "test" },
             },
         }));
-        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
-        {
-            type = "content_block_stop",
-            index = 0,
-        }));
 
-        var syntheticId = Assert.IsType<ServerToolUseMessage>(Assert.Single(stopMessages)).ToolUseId;
+        var toolCall = Assert.IsType<ToolCallMessage>(Assert.Single(startMessages));
 
-        // Now send the result — it should get the same synthetic ID
+        // Now send the result with empty tool_use_id — it should resolve to empty as well
         var resultData = JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -769,8 +832,8 @@ public class ServerToolStreamParserTests
         var resultMessages = parser.ProcessEvent("event", resultData);
 
         Assert.Single(resultMessages);
-        var result = Assert.IsType<ServerToolResultMessage>(resultMessages[0]);
-        Assert.Equal(syntheticId, result.ToolUseId);
+        var result = Assert.IsType<ToolCallResultMessage>(resultMessages[0]);
+        Assert.Equal("", result.ToolCallId);
     }
 
     private static string BuildMessageStart()

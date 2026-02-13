@@ -431,7 +431,7 @@ describe('MetadataPill', () => {
       expect(text).toContain('2 calls');
     });
 
-    it('should skip encrypted-only reasoning messages', () => {
+    it('should render encrypted-only reasoning messages as placeholders', () => {
       const encryptedReasoning: ReasoningMessage = {
         $type: MessageType.Reasoning,
         role: 'assistant',
@@ -450,9 +450,9 @@ describe('MetadataPill', () => {
         },
       });
 
-      // Should not display anything for encrypted-only messages
       const pillItems = wrapper.findAll('.pill-item');
-      expect(pillItems.length).toBe(0);
+      expect(pillItems.length).toBe(1);
+      expect(wrapper.text()).toContain('Encrypted reasoning');
     });
   });
 
@@ -764,6 +764,160 @@ describe('MetadataPill', () => {
     });
   });
 
+  describe('Error Tool Call Display', () => {
+    it('should show error state instead of Loading when weather tool returns error', () => {
+      const errorResult: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: 'call_err',
+        result: JSON.stringify({
+          error: 'Unknown function: get_weather',
+          available_functions: ['calculate'],
+        }),
+        role: 'tool',
+      };
+
+      const weatherToolCall: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        role: 'assistant',
+        tool_calls: [
+          {
+            tool_call_id: 'call_err',
+            function_name: 'get_weather',
+            function_args: JSON.stringify({ location: 'NYC' }),
+          },
+        ],
+      };
+
+      const mockGetResult = vi.fn((toolCallId: string | null | undefined) => {
+        if (toolCallId === 'call_err') {
+          return errorResult;
+        }
+        return null;
+      });
+
+      const wrapper = mount(MetadataPill, {
+        props: {
+          items: [weatherToolCall],
+        },
+        global: {
+          provide: {
+            getResultForToolCall: mockGetResult,
+          },
+        },
+      });
+
+      const text = wrapper.text();
+
+      // Should NOT show Loading... since we have a result (it's an error)
+      expect(text).not.toContain('Loading...');
+
+      // Should show error state with warning icon
+      expect(text).toContain('⚠️');
+
+      // Should show the error message
+      expect(text).toContain('Unknown function: get_weather');
+
+      // Should show the function name in the error label
+      expect(text).toContain('get_weather');
+    });
+
+    it('should show error state for tool with is_error flag', () => {
+      const errorResult: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: 'call_err2',
+        result: 'Tool execution failed: timeout',
+        is_error: true,
+        role: 'tool',
+      };
+
+      const toolCall: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        role: 'assistant',
+        tool_calls: [
+          {
+            tool_call_id: 'call_err2',
+            function_name: 'calculate',
+            function_args: JSON.stringify({ expression: '1/0' }),
+          },
+        ],
+      };
+
+      const mockGetResult = vi.fn((toolCallId: string | null | undefined) => {
+        if (toolCallId === 'call_err2') {
+          return errorResult;
+        }
+        return null;
+      });
+
+      const wrapper = mount(MetadataPill, {
+        props: {
+          items: [toolCall],
+        },
+        global: {
+          provide: {
+            getResultForToolCall: mockGetResult,
+          },
+        },
+      });
+
+      const text = wrapper.text();
+      expect(text).toContain('⚠️');
+      expect(text).not.toContain('Loading...');
+    });
+
+    it('should still show normal weather display when result has no error', () => {
+      const weatherResult: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: 'call_ok',
+        result: JSON.stringify({
+          location: 'Tokyo',
+          temperature: 22,
+          temperatureUnit: 'C',
+          condition: 'Sunny',
+          humidity: 40,
+        }),
+        role: 'tool',
+      };
+
+      const weatherToolCall: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        role: 'assistant',
+        tool_calls: [
+          {
+            tool_call_id: 'call_ok',
+            function_name: 'get_weather',
+            function_args: JSON.stringify({ location: 'Tokyo' }),
+          },
+        ],
+      };
+
+      const mockGetResult = vi.fn((toolCallId: string | null | undefined) => {
+        if (toolCallId === 'call_ok') {
+          return weatherResult;
+        }
+        return null;
+      });
+
+      const wrapper = mount(MetadataPill, {
+        props: {
+          items: [weatherToolCall],
+        },
+        global: {
+          provide: {
+            getResultForToolCall: mockGetResult,
+          },
+        },
+      });
+
+      const text = wrapper.text();
+      // Should show normal weather display, not error
+      expect(text).not.toContain('⚠️');
+      expect(text).toContain('Tokyo');
+      expect(text).toContain('22°C');
+      expect(text).not.toContain('Loading...');
+    });
+  });
+
   describe('Integration with Real Data', () => {
     it('should handle the ResponseSample.md weather scenario', () => {
       // This matches the actual data from ResponseSample.md line 14
@@ -884,4 +1038,3 @@ describe('MetadataPill', () => {
     });
   });
 });
-

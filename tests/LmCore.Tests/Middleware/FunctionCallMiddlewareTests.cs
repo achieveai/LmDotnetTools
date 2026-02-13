@@ -268,6 +268,120 @@ public class FunctionCallMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeAsync_WithOnlyProviderServerToolCalls_PassesThroughWithoutLocalExecution()
+    {
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        var providerServerCall = new ToolCall
+        {
+            FunctionName = "web_search",
+            FunctionArgs = """{"query":"weather"}""",
+            ToolCallId = "srv_1",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+        };
+
+        var mockAgent = new Mock<IAgent>();
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                [
+                    new ToolsCallMessage
+                    {
+                        Role = Role.Assistant,
+                        ToolCalls = [providerServerCall],
+                    },
+                ]
+            );
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "search" }],
+            new GenerateReplyOptions()
+        );
+
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        var message = Assert.Single(result);
+        var toolsCall = Assert.IsType<ToolsCallMessage>(message);
+        var call = Assert.Single(toolsCall.ToolCalls);
+        Assert.Equal("srv_1", call.ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, call.ExecutionTarget);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WithMixedLocalAndProviderServerToolCalls_AggregatesOnlyLocalToolCalls()
+    {
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        var localCallId = Guid.NewGuid().ToString();
+        const string providerCallId = "srv_2";
+
+        var mockAgent = new Mock<IAgent>();
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                [
+                    new ToolsCallMessage
+                    {
+                        Role = Role.Assistant,
+                        ToolCalls =
+                        [
+                            new ToolCall
+                            {
+                                FunctionName = "add",
+                                FunctionArgs = """{"a": 1, "b": 2}""",
+                                ToolCallId = localCallId,
+                                ExecutionTarget = ExecutionTarget.LocalFunction,
+                            },
+                            new ToolCall
+                            {
+                                FunctionName = "web_search",
+                                FunctionArgs = """{"query":"weather"}""",
+                                ToolCallId = providerCallId,
+                                ExecutionTarget = ExecutionTarget.ProviderServer,
+                            },
+                        ],
+                    },
+                ]
+            );
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "do both" }],
+            new GenerateReplyOptions()
+        );
+
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(result));
+        var aggregatedToolCalls = aggregate.ToolsCallMessage.ToolCalls;
+        var aggregatedResults = aggregate.ToolsCallResult.ToolCallResults;
+
+        var call = Assert.Single(aggregatedToolCalls);
+        Assert.Equal(localCallId, call.ToolCallId);
+        Assert.Equal(ExecutionTarget.LocalFunction, call.ExecutionTarget);
+        Assert.DoesNotContain(aggregatedToolCalls, tc => tc.ToolCallId == providerCallId);
+
+        var toolResult = Assert.Single(aggregatedResults);
+        Assert.Equal(localCallId, toolResult.ToolCallId);
+        Assert.Equal(ExecutionTarget.LocalFunction, toolResult.ExecutionTarget);
+    }
+
+    [Fact]
     public async Task InvokeStreamingAsync_ShouldExecuteFunction_WhenToolCallIsPresent()
     {
         // Arrange
@@ -1118,6 +1232,123 @@ public class FunctionCallMiddlewareTests
         // Verify the sum is correct
         Assert.Equal(expectedSum, resultValue);
         Assert.Equal(11111111101.11, resultValue, 5); // Compare with 5 decimal precision
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_WithMixedLocalAndProviderServerUpdates_OnlyExecutesLocalToolCalls()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        var localToolCallId = "call_local_1";
+        var serverToolCallId = "call_server_1";
+
+        // Create a streaming agent that returns a mix of local and provider-server tool call updates
+        var streamMessages = new List<IMessage>
+        {
+            // First update: local tool call start
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "add",
+                        FunctionArgs = "",
+                        ToolCallId = localToolCallId,
+                        Index = 0,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+            // Second update: local tool call args
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionArgs = """{"a": 3, "b": 4}""",
+                        Index = 0,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+            // Third update: server tool call start
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "web_search",
+                        FunctionArgs = "",
+                        ToolCallId = serverToolCallId,
+                        Index = 1,
+                        ExecutionTarget = ExecutionTarget.ProviderServer,
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+            // Fourth update: server tool call args
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionArgs = """{"query":"weather"}""",
+                        Index = 1,
+                        ExecutionTarget = ExecutionTarget.ProviderServer,
+                    },
+                ],
+                Role = Role.Assistant,
+            },
+        };
+
+        var mockStreamingAgent = new MockStreamingAgent(streamMessages);
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "do both" }],
+            new GenerateReplyOptions()
+        );
+
+        // Act
+        var responseStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent);
+
+        var results = new List<IMessage>();
+        await foreach (var message in responseStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert
+        Assert.NotEmpty(results);
+
+        // The final message should be a ToolsCallAggregateMessage containing only the local tool call results
+        var aggregateMessage = results.OfType<ToolsCallAggregateMessage>().LastOrDefault();
+        Assert.NotNull(aggregateMessage);
+
+        // Only local tool calls should have been executed
+        var aggregatedToolCalls = aggregateMessage.ToolsCallMessage.ToolCalls;
+        var aggregatedResults = aggregateMessage.ToolsCallResult.ToolCallResults;
+
+        // Only the local tool call should be present
+        Assert.All(aggregatedToolCalls, tc => Assert.Equal(ExecutionTarget.LocalFunction, tc.ExecutionTarget));
+        Assert.DoesNotContain(aggregatedToolCalls, tc => tc.ToolCallId == serverToolCallId);
+        Assert.Contains(aggregatedToolCalls, tc => tc.ToolCallId == localToolCallId);
+
+        // The local tool call result should contain the add result
+        var localResult = aggregatedResults.FirstOrDefault(r => r.ToolCallId == localToolCallId);
+        Assert.NotNull(localResult.Result);
+        Assert.Contains("7", localResult.Result); // 3 + 4 = 7
+
+        // Server tool call results should not be present
+        Assert.DoesNotContain(aggregatedResults, r => r.ToolCallId == serverToolCallId);
     }
 
     [Fact]

@@ -98,6 +98,11 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
     public int? CurrentIndex { get; private set; } = null;
 
     /// <summary>
+    /// The execution target of this tool call.
+    /// </summary>
+    public ExecutionTarget CurrentExecutionTarget { get; private set; } = ExecutionTarget.LocalFunction;
+
+    /// <summary>
     /// Thread identifier for conversation continuity.
     /// </summary>
     public string? ThreadId { get; set; }
@@ -160,6 +165,9 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
             CurrentIndex = streamingMessageUpdate.Index;
         }
 
+        // Update execution target
+        CurrentExecutionTarget = streamingMessageUpdate.ExecutionTarget;
+
         // Accumulate JSON fragment updates
         if (streamingMessageUpdate.JsonFragmentUpdates != null)
         {
@@ -208,6 +216,7 @@ public class ToolCallMessageBuilder : IMessageBuilder<ToolCallMessage, ToolCallU
             ToolCallId = CurrentToolCallId,
             Index = CurrentIndex,
             ToolCallIdx = ToolCallIdx,
+            ExecutionTarget = CurrentExecutionTarget,
             Role = Role,
             FromAgent = FromAgent,
             GenerationId = GenerationId,

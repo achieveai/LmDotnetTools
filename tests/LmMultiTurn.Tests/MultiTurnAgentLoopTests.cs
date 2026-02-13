@@ -182,6 +182,63 @@ public class MultiTurnAgentLoopTests
     }
 
     [Fact]
+    public async Task ExecuteRunAsync_WithProviderServerToolCall_DoesNotExecuteLocalToolHandler()
+    {
+        var providerToolCall = new ToolCallMessage
+        {
+            FunctionName = "web_search",
+            FunctionArgs = """{"query":"latest ai news"}""",
+            ToolCallId = "srvtoolu_123",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
+        };
+
+        var finalMessage = new TextMessage
+        {
+            Text = "I searched the web and found the latest updates.",
+            Role = Role.Assistant,
+        };
+
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable([providerToolCall, finalMessage])));
+
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "Find latest AI news", Role = Role.User }]);
+
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        messages.OfType<ToolCallMessage>().Should().ContainSingle(tc =>
+            tc.ToolCallId == "srvtoolu_123" && tc.ExecutionTarget == ExecutionTarget.ProviderServer);
+        messages.OfType<ToolCallResultMessage>().Should().BeEmpty();
+        messages.OfType<TextMessage>().Should().Contain(m => m.Text == "I searched the web and found the latest updates.");
+
+        _mockAgent.Verify(a => a.GenerateReplyStreamingAsync(
+            It.IsAny<IEnumerable<IMessage>>(),
+            It.IsAny<GenerateReplyOptions>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
     public async Task SendAsync_ReturnsRunAssignment()
     {
         // Arrange

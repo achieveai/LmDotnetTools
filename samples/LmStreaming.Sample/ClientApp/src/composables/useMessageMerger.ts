@@ -13,6 +13,7 @@ import {
   type Role,
   type ReasoningVisibility,
   MessageType,
+  normalizeReasoningVisibility,
   isTextUpdateMessage,
   isToolsCallUpdateMessage,
   isToolCallUpdateMessage,
@@ -258,7 +259,7 @@ export function useMessageMerger() {
         generationId: update.generationId,
         reasoning: '',
         role: update.role,
-        visibility: update.visibility || 'Plain',
+        visibility: normalizeReasoningVisibility(update.visibility) ?? 'Plain',
       };
       accumulators.value.set(genId, acc);
     }

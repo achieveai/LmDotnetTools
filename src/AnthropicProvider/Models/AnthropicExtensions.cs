@@ -111,6 +111,7 @@ public static class AnthropicExtensions
                         FunctionName = toolCallsDelta.ToolCalls[0].Name,
                         FunctionArgs = toolCallsDelta.ToolCalls[0].Input.ToString(),
                         Index = toolCallsDelta.ToolCalls[0].Index,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
                     },
@@ -190,6 +191,7 @@ public static class AnthropicExtensions
                         FunctionName = toolContent.Name,
                         FunctionArgs = toolContent.Input.ToString(),
                         ToolCallId = toolContent.Id,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
             },
@@ -203,59 +205,74 @@ public static class AnthropicExtensions
                 IsThinking = true,
             },
 
-            AnthropicResponseServerToolUseContent serverToolUse => new ServerToolUseMessage
+            AnthropicResponseServerToolUseContent serverToolUse => new ToolCallMessage
             {
-                ToolUseId = serverToolUse.Id,
-                ToolName = serverToolUse.Name,
-                Input = serverToolUse.Input.Clone(),
+                ToolCallId = serverToolUse.Id,
+                FunctionName = serverToolUse.Name,
+                FunctionArgs = serverToolUse.Input.ValueKind != JsonValueKind.Undefined
+                    ? serverToolUse.Input.ToString()
+                    : "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
             },
 
-            AnthropicWebSearchToolResultContent webSearchResult => new ServerToolResultMessage
+            AnthropicWebSearchToolResultContent webSearchResult => new ToolCallResultMessage
             {
-                ToolUseId = webSearchResult.ToolUseId,
+                ToolCallId = webSearchResult.ToolUseId,
                 ToolName = "web_search",
-                Result = webSearchResult.Content.Clone(),
+                Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webSearchResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsContentError(webSearchResult.Content),
                 ErrorCode = GetContentErrorCode(webSearchResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
             },
 
-            AnthropicWebFetchToolResultContent webFetchResult => new ServerToolResultMessage
+            AnthropicWebFetchToolResultContent webFetchResult => new ToolCallResultMessage
             {
-                ToolUseId = webFetchResult.ToolUseId,
+                ToolCallId = webFetchResult.ToolUseId,
                 ToolName = "web_fetch",
-                Result = webFetchResult.Content.Clone(),
+                Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webFetchResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsContentError(webFetchResult.Content),
                 ErrorCode = GetContentErrorCode(webFetchResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
             },
 
-            AnthropicBashCodeExecutionToolResultContent bashResult => new ServerToolResultMessage
+            AnthropicBashCodeExecutionToolResultContent bashResult => new ToolCallResultMessage
             {
-                ToolUseId = bashResult.ToolUseId,
+                ToolCallId = bashResult.ToolUseId,
                 ToolName = "bash_code_execution",
-                Result = bashResult.Content.Clone(),
+                Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? bashResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsContentError(bashResult.Content),
                 ErrorCode = GetContentErrorCode(bashResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
             },
 
-            AnthropicTextEditorCodeExecutionToolResultContent textEditorResult => new ServerToolResultMessage
+            AnthropicTextEditorCodeExecutionToolResultContent textEditorResult => new ToolCallResultMessage
             {
-                ToolUseId = textEditorResult.ToolUseId,
+                ToolCallId = textEditorResult.ToolUseId,
                 ToolName = "text_editor_code_execution",
-                Result = textEditorResult.Content.Clone(),
+                Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? textEditorResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsContentError(textEditorResult.Content),
                 ErrorCode = GetContentErrorCode(textEditorResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,

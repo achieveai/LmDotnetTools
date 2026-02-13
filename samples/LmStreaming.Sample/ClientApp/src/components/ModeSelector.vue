@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
 import ModeManagementModal from './ModeManagementModal.vue';
 
@@ -8,6 +8,7 @@ const props = defineProps<{
   currentModeId: string;
   tools: ToolDefinition[];
   isLoading?: boolean;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -30,6 +31,9 @@ const systemModes = computed(() => props.modes.filter((m) => m.isSystemDefined))
 const userModes = computed(() => props.modes.filter((m) => !m.isSystemDefined));
 
 function toggleDropdown(): void {
+  if (props.disabled || props.isLoading) {
+    return;
+  }
   dropdownOpen.value = !dropdownOpen.value;
 }
 
@@ -38,11 +42,17 @@ function closeDropdown(): void {
 }
 
 function handleSelectMode(modeId: string): void {
+  if (props.disabled) {
+    return;
+  }
   emit('select-mode', modeId);
   closeDropdown();
 }
 
 function openManageModal(): void {
+  if (props.disabled) {
+    return;
+  }
   closeDropdown();
   modalOpen.value = true;
 }
@@ -90,6 +100,16 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside);
   document.removeEventListener('keydown', handleKeydown);
 });
+
+watch(
+  () => props.disabled,
+  (isDisabled) => {
+    if (isDisabled) {
+      closeDropdown();
+      modalOpen.value = false;
+    }
+  }
+);
 </script>
 
 <template>
@@ -98,7 +118,7 @@ onUnmounted(() => {
       class="selector-btn"
       :class="{ open: dropdownOpen }"
       @click="toggleDropdown"
-      :disabled="isLoading"
+      :disabled="isLoading || disabled"
     >
       <span class="mode-label">Mode:</span>
       <span class="mode-name">{{ currentMode?.name ?? 'Loading...' }}</span>
@@ -115,6 +135,7 @@ onUnmounted(() => {
           class="menu-item"
           :class="{ active: mode.id === currentModeId }"
           @click="handleSelectMode(mode.id)"
+          :disabled="disabled"
         >
           <span class="item-name">{{ mode.name }}</span>
           <span v-if="mode.id === currentModeId" class="check-mark">✓</span>
@@ -130,6 +151,7 @@ onUnmounted(() => {
           class="menu-item"
           :class="{ active: mode.id === currentModeId }"
           @click="handleSelectMode(mode.id)"
+          :disabled="disabled"
         >
           <span class="item-name">{{ mode.name }}</span>
           <span v-if="mode.id === currentModeId" class="check-mark">✓</span>
@@ -139,7 +161,7 @@ onUnmounted(() => {
       <div class="menu-divider"></div>
 
       <!-- Manage Modes -->
-      <button class="menu-item manage-item" @click="openManageModal">
+      <button class="menu-item manage-item" @click="openManageModal" :disabled="disabled">
         Manage Modes...
       </button>
     </div>
@@ -253,6 +275,15 @@ onUnmounted(() => {
 
 .menu-item:hover {
   background: #f8f9fa;
+}
+
+.menu-item:disabled {
+  color: #9aa0a6;
+  cursor: not-allowed;
+}
+
+.menu-item:disabled:hover {
+  background: transparent;
 }
 
 .menu-item.active {

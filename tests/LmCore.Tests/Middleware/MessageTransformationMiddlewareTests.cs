@@ -758,17 +758,20 @@ public class MessageTransformationMiddlewareTests
         // TextUpdateMessages stream first, then TextWithCitationsMessage replaces them
         var middleware = new MessageTransformationMiddleware();
         var agent = new MockAgent(
-            new ServerToolUseMessage
+            new ToolCallMessage
             {
-                ToolName = "web_search",
-                ToolUseId = "srvtoolu_01",
-                Input = System.Text.Json.JsonDocument.Parse("{}").RootElement,
+                FunctionName = "web_search",
+                ToolCallId = "srvtoolu_01",
+                FunctionArgs = "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 GenerationId = "gen1"
             },
-            new ServerToolResultMessage
+            new ToolCallResultMessage
             {
-                ToolUseId = "srvtoolu_01",
+                ToolCallId = "srvtoolu_01",
                 ToolName = "web_search",
+                Result = "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 GenerationId = "gen1"
             },
             new TextUpdateMessage { Text = "Based on ", GenerationId = "gen1" },
@@ -787,10 +790,10 @@ public class MessageTransformationMiddlewareTests
         var messages = result.ToList();
         // Assert
         Assert.Equal(6, messages.Count);
-        // ServerToolUseMessage and ServerToolResultMessage go through default case
+        // ToolCallMessage and ToolCallResultMessage go through default case
         // which advances counter but doesn't set MessageOrderIdx on the message
-        Assert.IsType<ServerToolUseMessage>(messages[0]);
-        Assert.IsType<ServerToolResultMessage>(messages[1]);
+        Assert.IsType<ToolCallMessage>(messages[0]);
+        Assert.IsType<ToolCallResultMessage>(messages[1]);
         // TextUpdateMessages: share same orderIdx
         var textUpdate1 = Assert.IsType<TextUpdateMessage>(messages[2]);
         var textUpdate2 = Assert.IsType<TextUpdateMessage>(messages[3]);

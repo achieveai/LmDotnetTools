@@ -123,15 +123,13 @@ public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
             else if (expected is ToolsCallMessage expectedTool && actual is ToolsCallMessage actualTool)
             {
                 Assert.Equal(expectedTool.ToolCalls.Count, actualTool.ToolCalls.Count);
-                Assert.Equal(expectedTool.ToolCalls[0].FunctionName, actualTool.ToolCalls[0].FunctionName);
-
-                // Handle possible null FunctionArgs
-                if (expectedTool.ToolCalls[0].FunctionArgs != null && actualTool.ToolCalls[0].FunctionArgs != null)
+                for (var toolCallIndex = 0; toolCallIndex < expectedTool.ToolCalls.Count; toolCallIndex++)
                 {
-                    // Use null-forgiving operator at assignment to indicate we've verified non-null
-                    var expectedArgs = expectedTool.ToolCalls[0].FunctionArgs!;
-                    var actualArgs = actualTool.ToolCalls[0].FunctionArgs!;
-                    Assert.Contains(expectedArgs, actualArgs);
+                    var expectedToolCall = expectedTool.ToolCalls[toolCallIndex];
+                    var actualToolCall = actualTool.ToolCalls[toolCallIndex];
+
+                    Assert.Equal(expectedToolCall.FunctionName, actualToolCall.FunctionName);
+                    AssertFunctionArgsEquivalent(expectedToolCall.FunctionArgs, actualToolCall.FunctionArgs);
                 }
             }
         }
@@ -241,5 +239,40 @@ public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
                 ? property.GetString()
                 : null
             : null;
+    }
+
+    private static void AssertFunctionArgsEquivalent(string? expectedArgs, string? actualArgs)
+    {
+        if (expectedArgs == null || actualArgs == null)
+        {
+            Assert.Equal(expectedArgs, actualArgs);
+            return;
+        }
+
+        if (TryParseJsonElement(expectedArgs, out var expectedJson) && TryParseJsonElement(actualArgs, out var actualJson))
+        {
+            Assert.True(
+                JsonElement.DeepEquals(expectedJson, actualJson),
+                $"Expected JSON args '{expectedArgs}' but got '{actualArgs}'."
+            );
+            return;
+        }
+
+        Assert.Equal(expectedArgs, actualArgs);
+    }
+
+    private static bool TryParseJsonElement(string value, out JsonElement jsonElement)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(value);
+            jsonElement = doc.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            jsonElement = default;
+            return false;
+        }
     }
 }

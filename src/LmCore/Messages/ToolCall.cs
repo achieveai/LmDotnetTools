@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -28,6 +29,12 @@ public record ToolCall
     [JsonPropertyName("toolCallIdx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int ToolCallIdx { get; init; }
+
+    /// <summary>
+    ///     Distinguishes local function tools from provider-executed server tools.
+    /// </summary>
+    [JsonPropertyName("execution_target")]
+    public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
 }
 
 /// <summary>
@@ -39,21 +46,36 @@ public readonly record struct ToolCallResult
     /// <summary>
     /// Creates a text-only tool call result.
     /// </summary>
-    public ToolCallResult(string? toolCallId, string result)
+    public ToolCallResult(
+        string? toolCallId,
+        string result,
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction)
     {
         ToolCallId = toolCallId;
         Result = result;
         ContentBlocks = null;
+        ToolName = null;
+        IsError = false;
+        ErrorCode = null;
+        ExecutionTarget = executionTarget;
     }
 
     /// <summary>
     /// Creates a multi-modal tool call result with text and content blocks.
     /// </summary>
-    public ToolCallResult(string? toolCallId, string result, IList<ToolResultContentBlock>? contentBlocks)
+    public ToolCallResult(
+        string? toolCallId,
+        string result,
+        IList<ToolResultContentBlock>? contentBlocks,
+        ExecutionTarget executionTarget = ExecutionTarget.LocalFunction)
     {
         ToolCallId = toolCallId;
         Result = result;
         ContentBlocks = contentBlocks;
+        ToolName = null;
+        IsError = false;
+        ErrorCode = null;
+        ExecutionTarget = executionTarget;
     }
 
     /// <summary>
@@ -76,6 +98,32 @@ public readonly record struct ToolCallResult
     [JsonPropertyName("content")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
+
+    /// <summary>
+    /// The tool name that produced this result.
+    /// </summary>
+    [JsonPropertyName("tool_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolName { get; init; }
+
+    /// <summary>
+    /// Whether this result indicates an error.
+    /// </summary>
+    [JsonPropertyName("is_error")]
+    public bool IsError { get; init; }
+
+    /// <summary>
+    /// Optional provider/tool-specific error code.
+    /// </summary>
+    [JsonPropertyName("error_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorCode { get; init; }
+
+    /// <summary>
+    /// Distinguishes local function tools from provider-executed server tools.
+    /// </summary>
+    [JsonPropertyName("execution_target")]
+    public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
 }
 
 /// <summary>
@@ -91,6 +139,20 @@ public record ToolCallResultMessage : IMessage
 
     [JsonPropertyName("result")]
     public required string Result { get; init; }
+
+    [JsonPropertyName("tool_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolName { get; init; }
+
+    [JsonPropertyName("is_error")]
+    public bool IsError { get; init; }
+
+    [JsonPropertyName("error_code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorCode { get; init; }
+
+    [JsonPropertyName("execution_target")]
+    public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
@@ -136,7 +198,13 @@ public record ToolCallResultMessage : IMessage
     /// </summary>
     public ToolCallResult ToToolCallResult()
     {
-        return new ToolCallResult(ToolCallId, Result, ContentBlocks);
+        return new ToolCallResult(ToolCallId, Result, ContentBlocks)
+        {
+            ToolName = ToolName,
+            IsError = IsError,
+            ErrorCode = ErrorCode,
+            ExecutionTarget = ExecutionTarget,
+        };
     }
 
     /// <summary>
@@ -159,6 +227,10 @@ public record ToolCallResultMessage : IMessage
             ToolCallId = result.ToolCallId,
             Result = result.Result,
             ContentBlocks = result.ContentBlocks,
+            ToolName = result.ToolName,
+            IsError = result.IsError,
+            ErrorCode = result.ErrorCode,
+            ExecutionTarget = result.ExecutionTarget,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,
@@ -199,6 +271,12 @@ public record ToolCallUpdate
     [JsonPropertyName("function_args")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FunctionArgs { get; init; }
+
+    /// <summary>
+    ///     Distinguishes local function tools from provider-executed server tools.
+    /// </summary>
+    [JsonPropertyName("execution_target")]
+    public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
 
     /// <summary>
     ///     Structured JSON fragment updates generated from the function arguments
@@ -295,6 +373,7 @@ public record ToolCallUpdateMessage : ToolCallUpdate, IMessage
             Index = Index,
             FunctionName = FunctionName,
             FunctionArgs = FunctionArgs,
+            ExecutionTarget = ExecutionTarget,
             Role = Role,
             FromAgent = FromAgent,
             GenerationId = GenerationId,

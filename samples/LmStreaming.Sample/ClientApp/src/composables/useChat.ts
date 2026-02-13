@@ -9,8 +9,6 @@ import type {
   ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
-  ServerToolUseMessage,
-  ServerToolResultMessage,
 } from '@/types';
 import {
   MessageType,
@@ -29,54 +27,13 @@ import {
   isServerToolUseMessage,
   isServerToolResultMessage,
   isTextWithCitationsMessage,
+  normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
 import { useMessageMerger } from './useMessageMerger';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
-
-/**
- * Convert a ServerToolUseMessage to ToolsCallMessage for pill display.
- * Used by both the streaming handler and the persistence loading path.
- */
-export function convertServerToolUse(stUse: ServerToolUseMessage): ToolsCallMessage {
-  const inputStr = typeof stUse.input === 'string' ? stUse.input : JSON.stringify(stUse.input ?? {});
-  return {
-    $type: MessageType.ToolsCall,
-    tool_calls: [{
-      function_name: stUse.tool_name,
-      function_args: inputStr,
-      tool_call_id: stUse.tool_use_id,
-    }],
-    role: stUse.role,
-    fromAgent: stUse.fromAgent,
-    generationId: stUse.generationId,
-    runId: stUse.runId,
-    parentRunId: stUse.parentRunId,
-    threadId: stUse.threadId,
-    messageOrderIdx: stUse.messageOrderIdx,
-  };
-}
-
-/**
- * Convert a ServerToolResultMessage to ToolCallResultMessage for result attachment.
- * Used by both the streaming handler and the persistence loading path.
- */
-export function convertServerToolResult(stResult: ServerToolResultMessage): ToolCallResultMessage {
-  const resultStr = typeof stResult.result === 'string' ? stResult.result : JSON.stringify(stResult.result ?? {});
-  return {
-    $type: MessageType.ToolCallResult,
-    tool_call_id: stResult.tool_use_id,
-    result: stResult.is_error ? `Error (${stResult.error_code || 'unknown'}): ${resultStr}` : resultStr,
-    role: stResult.role,
-    generationId: stResult.generationId,
-    runId: stResult.runId,
-    parentRunId: stResult.parentRunId,
-    threadId: stResult.threadId,
-    messageOrderIdx: stResult.messageOrderIdx,
-  };
-}
 
 /**
  * Transport type for streaming messages
@@ -259,11 +216,6 @@ export function useChat(options: UseChatOptions = {}) {
           timestamp: msg.timestamp,
         });
       } else if (isReasoningMessage(msg.content)) {
-        // Skip encrypted-only reasoning
-        const reasoning = msg.content as ReasoningMessage;
-        if (reasoning.visibility === 'Encrypted' && !reasoning.reasoning) {
-          continue;
-        }
         // Add to pill buffer
         pillBuffer.push(msg.content as ReasoningMessage);
         pillRunId = msg.runId || null;
@@ -277,23 +229,38 @@ export function useChat(options: UseChatOptions = {}) {
         pillMessageOrderIdx = msg.messageOrderIdx || null;
       } else if (isToolCallMessage(msg.content)) {
         // Add individual tool call to pill buffer
-        // Convert ToolCallMessage to ToolsCallMessage format for consistent handling
+        // Try to merge with the previous pill buffer item if it's a ToolsCallMessage
+        // from the same generation (aggregates multiple tool calls into "Tools: N calls")
         const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
-        const toolsCallMsg: ToolsCallMessage = {
-          $type: MessageType.ToolsCall,
-          tool_calls: [{
-            tool_call_id: toolCall.tool_call_id,
-            function_name: toolCall.function_name,
-            function_args: toolCall.function_args,
-          }],
-          role: toolCall.role,
-          generationId: toolCall.generationId,
-          runId: toolCall.runId,
-          parentRunId: toolCall.parentRunId,
-          threadId: toolCall.threadId,
-          messageOrderIdx: toolCall.messageOrderIdx,
+        const newToolCallEntry = {
+          tool_call_id: toolCall.tool_call_id,
+          function_name: toolCall.function_name,
+          function_args: toolCall.function_args,
         };
-        pillBuffer.push(toolsCallMsg);
+
+        const prevItem = pillBuffer.length > 0 ? pillBuffer[pillBuffer.length - 1] : null;
+        const canMerge = prevItem &&
+          isToolsCallMessage(prevItem) &&
+          prevItem.generationId === toolCall.generationId &&
+          prevItem.runId === toolCall.runId;
+
+        if (canMerge && prevItem) {
+          // Merge into existing ToolsCallMessage
+          (prevItem as ToolsCallMessage).tool_calls.push(newToolCallEntry);
+        } else {
+          // Create new ToolsCallMessage wrapper
+          const toolsCallMsg: ToolsCallMessage = {
+            $type: MessageType.ToolsCall,
+            tool_calls: [newToolCallEntry],
+            role: toolCall.role,
+            generationId: toolCall.generationId,
+            runId: toolCall.runId,
+            parentRunId: toolCall.parentRunId,
+            threadId: toolCall.threadId,
+            messageOrderIdx: toolCall.messageOrderIdx,
+          };
+          pillBuffer.push(toolsCallMsg);
+        }
         pillRunId = msg.runId || null;
         pillParentRunId = msg.parentRunId || null;
         pillMessageOrderIdx = msg.messageOrderIdx || null;
@@ -483,30 +450,92 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle server tool result → convert to ToolCallResultMessage and attach
     if (isServerToolResultMessage(msg)) {
-      const stResult = msg;
-      const converted = convertServerToolResult(stResult);
-      toolResults.value.set(stResult.tool_use_id, converted);
-      log.debug('Received server tool result', { toolName: stResult.tool_name, toolUseId: stResult.tool_use_id, isError: stResult.is_error });
+      const stResult = msg as unknown as Record<string, unknown>;
+      const toolUseId =
+        (typeof stResult.tool_use_id === 'string' ? stResult.tool_use_id : undefined)
+        ?? (typeof stResult.tool_call_id === 'string' ? stResult.tool_call_id : undefined);
+      const toolName =
+        (typeof stResult.tool_name === 'string' ? stResult.tool_name : undefined)
+        ?? (typeof stResult.function_name === 'string' ? stResult.function_name : undefined);
+      const isError =
+        (typeof stResult.is_error === 'boolean' ? stResult.is_error : undefined)
+        ?? (typeof stResult.isError === 'boolean' ? stResult.isError : undefined)
+        ?? false;
+      const errorCode =
+        (typeof stResult.error_code === 'string' ? stResult.error_code : undefined)
+        ?? (typeof stResult.errorCode === 'string' ? stResult.errorCode : undefined)
+        ?? null;
+      const rawResult = stResult.result;
+      const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? {});
+      const converted: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: toolUseId,
+        tool_name: toolName,
+        result: isError ? `Error (${errorCode || 'unknown'}): ${resultStr}` : resultStr,
+        is_error: isError,
+        error_code: errorCode,
+        role: msg.role,
+        generationId: msg.generationId,
+        runId: msg.runId,
+        parentRunId: msg.parentRunId,
+        threadId: msg.threadId,
+        messageOrderIdx: msg.messageOrderIdx,
+      };
+      if (toolUseId) {
+        toolResults.value.set(toolUseId, converted);
+      }
+      log.debug('Received server tool result', { toolName, toolUseId, isError });
 
       // Attach to matching server tool use (converted to ToolsCallMessage)
-      for (const chatMsg of messageIndex.value.values()) {
-        if (isToolsCallMessage(chatMsg.content)) {
-          const toolsCall = chatMsg.content as ToolsCallMessage;
-          const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === stResult.tool_use_id);
-          if (matchingToolCall) {
-            matchingToolCall.result = converted.result;
-            log.info('Attached server tool result to tool call', { toolUseId: stResult.tool_use_id });
-            break;
+      if (toolUseId) {
+        for (const chatMsg of messageIndex.value.values()) {
+          if (isToolsCallMessage(chatMsg.content)) {
+            const toolsCall = chatMsg.content as ToolsCallMessage;
+            const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === toolUseId);
+            if (matchingToolCall) {
+              matchingToolCall.result = converted.result;
+              log.info('Attached server tool result to tool call', { toolUseId });
+              break;
+            }
           }
         }
+      } else {
+        log.warn('Server tool result missing tool id', { msg: stResult });
       }
       return;
     }
 
     // Handle server tool use → convert to ToolsCallMessage for pill display
     if (isServerToolUseMessage(msg)) {
-      const converted = convertServerToolUse(msg);
-      log.debug('Converted server tool use to ToolsCallMessage', { toolName: msg.tool_name, toolUseId: msg.tool_use_id });
+      const stUse = msg as unknown as Record<string, unknown>;
+      const toolName =
+        (typeof stUse.tool_name === 'string' ? stUse.tool_name : undefined)
+        ?? (typeof stUse.function_name === 'string' ? stUse.function_name : undefined);
+      const toolUseId =
+        (typeof stUse.tool_use_id === 'string' ? stUse.tool_use_id : undefined)
+        ?? (typeof stUse.tool_call_id === 'string' ? stUse.tool_call_id : undefined);
+      const rawInput = stUse.input ?? stUse.function_args ?? {};
+      const executionTarget = stUse.execution_target === 'ProviderServer' || stUse.execution_target === 'LocalFunction'
+        ? stUse.execution_target
+        : undefined;
+      const inputStr = typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput ?? {});
+      const converted: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        tool_calls: [{
+          function_name: toolName,
+          function_args: inputStr,
+          tool_call_id: toolUseId,
+          execution_target: executionTarget,
+        }],
+        role: msg.role,
+        fromAgent: msg.fromAgent,
+        generationId: msg.generationId,
+        runId: msg.runId,
+        parentRunId: msg.parentRunId,
+        threadId: msg.threadId,
+        messageOrderIdx: msg.messageOrderIdx,
+      };
+      log.debug('Converted server tool use to ToolsCallMessage', { toolName, toolUseId });
       msg = converted;
       // Fall through to normal message handling below
     }
@@ -546,6 +575,21 @@ export function useChat(options: UseChatOptions = {}) {
       log.debug('Converted text with citations to TextMessage', { citationCount: citMsg.citations?.length ?? 0 });
       msg = converted;
       // Fall through to normal message handling below
+    }
+
+    // Normalize reasoning visibility values from backend numeric enums (0/1/2)
+    if (isReasoningMessage(msg)) {
+      const normalized = normalizeReasoningVisibility(msg.visibility);
+      msg = {
+        ...msg,
+        visibility: normalized ?? msg.visibility,
+      };
+    } else if (isReasoningUpdateMessage(msg)) {
+      const normalized = normalizeReasoningVisibility(msg.visibility);
+      msg = {
+        ...msg,
+        visibility: normalized ?? msg.visibility ?? null,
+      };
     }
 
     // Determine if this is an update message that needs merging
@@ -837,25 +881,12 @@ export function useChat(options: UseChatOptions = {}) {
           continue;
         }
 
-        // Convert server tool results → ToolCallResultMessage (same as streaming path)
-        if (isServerToolResultMessage(parsedMessage)) {
-          const converted = convertServerToolResult(parsedMessage);
-          toolResults.value.set(converted.tool_call_id, converted);
-          continue;
-        }
-
-        // Convert server tool use → ToolsCallMessage for pill display (same as streaming path)
-        let messageContent: Message = parsedMessage;
-        if (isServerToolUseMessage(parsedMessage)) {
-          messageContent = convertServerToolUse(parsedMessage);
-        }
-
         // Determine role
-        const role: 'user' | 'assistant' = messageContent.role === 'user' ? 'user' : 'assistant';
+        const role: 'user' | 'assistant' = parsedMessage.role === 'user' ? 'user' : 'assistant';
 
         // Transform test instruction messages for display
-        if (role === 'user' && isTextMessage(messageContent)) {
-          const textMsg = messageContent as TextMessage;
+        if (role === 'user' && isTextMessage(parsedMessage)) {
+          const textMsg = parsedMessage as TextMessage;
           if (isTestInstruction(textMsg.text)) {
             textMsg.text = '🧪 Test instruction sent';
           }
@@ -866,7 +897,7 @@ export function useChat(options: UseChatOptions = {}) {
           id: pm.id,
           role,
           status: 'completed',
-          content: messageContent,
+          content: parsedMessage,
           runId: pm.runId,
           parentRunId: pm.parentRunId,
           generationId: pm.generationId,

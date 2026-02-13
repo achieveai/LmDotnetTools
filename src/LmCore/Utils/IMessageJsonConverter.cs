@@ -68,15 +68,28 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         using var jsonDocument = JsonDocument.ParseValue(ref reader);
         var rootElement = jsonDocument.RootElement;
 
+        var hasTypeDiscriminator = rootElement.TryGetProperty(TypeDiscriminatorPropertyName, out var typeProperty);
+        var typeDiscriminator = hasTypeDiscriminator ? typeProperty.GetString() : null;
+
+        // Backward compatibility: legacy server tool messages deserialize to unified types.
+        if (IsServerToolUseDiscriminator(typeDiscriminator) || IsLegacyServerToolUseShape(rootElement))
+        {
+            return DeserializeServerToolUse(rootElement);
+        }
+
+        if (IsServerToolResultDiscriminator(typeDiscriminator) || IsLegacyServerToolResultShape(rootElement))
+        {
+            return DeserializeServerToolResult(rootElement);
+        }
+
         // Try to find the type discriminator
         Type targetType;
-        if (rootElement.TryGetProperty(TypeDiscriminatorPropertyName, out var typeProperty))
+        if (hasTypeDiscriminator)
         {
-            var typeDiscriminator = typeProperty.GetString()!;
             // Use the new method to resolve the type from discriminator
             targetType =
-                GetTypeFromDiscriminator(typeDiscriminator)
-                ?? throw new JsonException($"Unknown type discriminator: {typeDiscriminator}");
+                GetTypeFromDiscriminator(typeDiscriminator!)
+                ?? throw new JsonException($"Unknown type discriminator: {typeDiscriminator!}");
         }
         else
         {
@@ -133,6 +146,20 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         foreach (var conv in convertersToKeep)
         {
             innerOptions.Converters.Add(conv);
+        }
+
+        if (value is ToolCallMessage toolCallMessage
+            && toolCallMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
+        {
+            WriteWithDiscriminatorOverride(writer, value, valueType, innerOptions, "server_tool_use");
+            return;
+        }
+
+        if (value is ToolCallResultMessage toolCallResultMessage
+            && toolCallResultMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
+        {
+            WriteWithDiscriminatorOverride(writer, value, valueType, innerOptions, "server_tool_result");
+            return;
         }
 
         // Serialize with innerOptions
@@ -240,16 +267,6 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "reasoning_update";
         }
 
-        if (type == typeof(ServerToolUseMessage))
-        {
-            return "server_tool_use";
-        }
-
-        if (type == typeof(ServerToolResultMessage))
-        {
-            return "server_tool_result";
-        }
-
         if (type == typeof(TextWithCitationsMessage))
         {
             return "text_with_citations";
@@ -311,6 +328,19 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         if (element.TryGetProperty("tool_call_results", out _))
         {
             return typeof(ToolsCallResultMessage);
+        }
+
+        if (element.TryGetProperty("tool_use_id", out _) && element.TryGetProperty("result", out _))
+        {
+            return typeof(ToolCallResultMessage);
+        }
+
+        if (
+            element.TryGetProperty("tool_use_id", out _)
+            && (element.TryGetProperty("input", out _) || element.TryGetProperty("tool_name", out _))
+        )
+        {
+            return typeof(ToolCallMessage);
         }
 
         if (element.TryGetProperty("tool_call_message", out _) && element.TryGetProperty("tool_call_result", out _))
@@ -376,10 +406,197 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "usage" => typeof(UsageMessage),
             "reasoning" => typeof(ReasoningMessage),
             "reasoning_update" => typeof(ReasoningUpdateMessage),
-            "server_tool_use" => typeof(ServerToolUseMessage),
-            "server_tool_result" => typeof(ServerToolResultMessage),
+            "server_tool_use" => typeof(ToolCallMessage),
+            "server_tool_result" => typeof(ToolCallResultMessage),
             "text_with_citations" => typeof(TextWithCitationsMessage),
             _ => null,
         };
+    }
+
+    private static void WriteWithDiscriminatorOverride(
+        Utf8JsonWriter writer,
+        object value,
+        Type valueType,
+        JsonSerializerOptions innerOptions,
+        string discriminator
+    )
+    {
+        var json = JsonSerializer.Serialize(value, valueType, innerOptions);
+        using var document = JsonDocument.Parse(json);
+
+        writer.WriteStartObject();
+        writer.WriteString(TypeDiscriminatorPropertyName, discriminator);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.Name == TypeDiscriminatorPropertyName)
+            {
+                continue;
+            }
+
+            property.WriteTo(writer);
+        }
+        writer.WriteEndObject();
+    }
+
+    private static bool IsServerToolUseDiscriminator(string? typeDiscriminator)
+    {
+        return string.Equals(typeDiscriminator, "server_tool_use", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(typeDiscriminator, "server_tool_use_message", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsServerToolResultDiscriminator(string? typeDiscriminator)
+    {
+        return string.Equals(typeDiscriminator, "server_tool_result", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(typeDiscriminator, "server_tool_result_message", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLegacyServerToolUseShape(JsonElement element)
+    {
+        return element.TryGetProperty("tool_use_id", out _)
+            && !element.TryGetProperty("result", out _)
+            && (element.TryGetProperty("input", out _) || element.TryGetProperty("tool_name", out _));
+    }
+
+    private static bool IsLegacyServerToolResultShape(JsonElement element)
+    {
+        return element.TryGetProperty("tool_use_id", out _) && element.TryGetProperty("result", out _);
+    }
+
+    private static ToolCallMessage DeserializeServerToolUse(JsonElement element)
+    {
+        return new ToolCallMessage
+        {
+            ToolCallId = GetStringProperty(element, "tool_call_id", "tool_use_id", "id"),
+            FunctionName = GetStringProperty(element, "function_name", "tool_name", "name"),
+            FunctionArgs = GetJsonStringProperty(element, "{}", "function_args", "input"),
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = ParseRoleProperty(element, Role.Assistant),
+            FromAgent = GetStringProperty(element, "from_agent", "fromAgent"),
+            GenerationId = GetStringProperty(element, "generation_id", "generationId"),
+            ThreadId = GetStringProperty(element, "threadId"),
+            RunId = GetStringProperty(element, "runId"),
+            ParentRunId = GetStringProperty(element, "parentRunId"),
+            MessageOrderIdx = GetIntProperty(element, "messageOrderIdx"),
+        };
+    }
+
+    private static ToolCallResultMessage DeserializeServerToolResult(JsonElement element)
+    {
+        return new ToolCallResultMessage
+        {
+            ToolCallId = GetStringProperty(element, "tool_call_id", "tool_use_id"),
+            ToolName = GetStringProperty(element, "tool_name", "function_name", "name"),
+            Result = GetJsonStringProperty(element, "{}", "result"),
+            IsError = GetBoolProperty(element, false, "is_error", "isError"),
+            ErrorCode = GetStringProperty(element, "error_code", "errorCode"),
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = ParseRoleProperty(element, Role.Assistant),
+            FromAgent = GetStringProperty(element, "from_agent", "fromAgent"),
+            GenerationId = GetStringProperty(element, "generation_id", "generationId"),
+            ThreadId = GetStringProperty(element, "threadId"),
+            RunId = GetStringProperty(element, "runId"),
+            ParentRunId = GetStringProperty(element, "parentRunId"),
+            MessageOrderIdx = GetIntProperty(element, "messageOrderIdx"),
+        };
+    }
+
+    private static string? GetStringProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            return property.ValueKind switch
+            {
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                JsonValueKind.String => property.GetString(),
+                _ => property.GetRawText(),
+            };
+        }
+
+        return null;
+    }
+
+    private static string GetJsonStringProperty(JsonElement element, string defaultValue, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            var value = property.ValueKind switch
+            {
+                JsonValueKind.Null or JsonValueKind.Undefined => defaultValue,
+                JsonValueKind.String => property.GetString(),
+                _ => property.GetRawText(),
+            };
+
+            return string.IsNullOrWhiteSpace(value) ? defaultValue : value;
+        }
+
+        return defaultValue;
+    }
+
+    private static bool GetBoolProperty(JsonElement element, bool defaultValue, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            if (property.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                return property.GetBoolean();
+            }
+
+            if (property.ValueKind == JsonValueKind.String && bool.TryParse(property.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return defaultValue;
+    }
+
+    private static int? GetIntProperty(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var intValue))
+            {
+                return intValue;
+            }
+
+            if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static Role ParseRoleProperty(JsonElement element, Role defaultRole)
+    {
+        if (!element.TryGetProperty("role", out var roleProperty) || roleProperty.ValueKind != JsonValueKind.String)
+        {
+            return defaultRole;
+        }
+
+        return Enum.TryParse<Role>(roleProperty.GetString(), ignoreCase: true, out var parsedRole)
+            ? parsedRole
+            : defaultRole;
     }
 }

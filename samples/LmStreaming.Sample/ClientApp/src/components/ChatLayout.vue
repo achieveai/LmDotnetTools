@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, provide } from 'vue';
+import { computed, ref, onMounted, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
@@ -58,6 +58,10 @@ const {
 provide('getResultForToolCall', getResultForToolCall);
 
 const sidebarCollapsed = ref(false);
+const isSwitchingMode = ref(false);
+const modeSwitchDisabled = computed(
+  () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+);
 
 // Load conversations and modes on mount
 onMounted(async () => {
@@ -125,12 +129,20 @@ async function handleDeleteConversation(threadId: string): Promise<void> {
 
 // Handle selecting a mode
 async function handleSelectMode(modeId: string): Promise<void> {
+  if (modeSwitchDisabled.value) {
+    return;
+  }
+
   if (currentThreadId.value) {
     // If there's an active conversation, switch the mode for it
+    isSwitchingMode.value = true;
     try {
+      await disconnectWebSocket();
       await switchMode(currentThreadId.value, modeId);
     } catch (e) {
       console.error('Failed to switch mode:', e);
+    } finally {
+      isSwitchingMode.value = false;
     }
   } else {
     // Just select the mode for new conversations
@@ -256,6 +268,7 @@ onMounted(() => {
               :current-mode-id="currentModeId"
               :tools="availableTools"
               :is-loading="modesLoading"
+              :disabled="modeSwitchDisabled"
               @select-mode="handleSelectMode"
               @create-mode="handleCreateMode"
               @update-mode="handleUpdateMode"

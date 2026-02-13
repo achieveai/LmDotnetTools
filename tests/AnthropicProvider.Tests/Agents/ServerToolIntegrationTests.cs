@@ -133,6 +133,54 @@ public class ServerToolIntegrationTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ToolsListPlaceholder_WithBuiltInAndFunctionTools_IncludesAllToolNames()
+    {
+        Logger.LogTrace("Starting ToolsListPlaceholder_WithBuiltInAndFunctionTools_IncludesAllToolNames");
+
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>());
+
+        var instructionChainMessage = """
+            <|instruction_start|>{"instruction_chain":[{"id_message":"tools-list","messages":[{"tools_list":{}}]}]}<|instruction_end|>
+            """;
+
+        var messages = new[]
+        {
+            new TextMessage { Role = Role.User, Text = instructionChainMessage },
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            Functions =
+            [
+                new FunctionContract
+                {
+                    Name = "get_weather",
+                    Description = "Get weather information for a location",
+                },
+                new FunctionContract
+                {
+                    Name = "calculate",
+                    Description = "Calculate a math expression",
+                },
+            ],
+        };
+
+        var responseMessages = await agent.GenerateReplyAsync(messages, options);
+        var textMessages = responseMessages.OfType<TextMessage>().Select(m => m.Text ?? string.Empty).ToList();
+        var mergedText = string.Join("\n", textMessages);
+
+        Assert.Contains("get_weather", mergedText);
+        Assert.Contains("calculate", mergedText);
+        Assert.Contains("web_search", mergedText);
+
+        Logger.LogTrace("Verified tools_list placeholder includes function tools and built-in web_search");
+    }
+
+    [Fact]
     public async Task WebSearch_NonStreaming_EndToEnd()
     {
         Logger.LogTrace("Starting WebSearch_NonStreaming_EndToEnd");
@@ -188,18 +236,20 @@ public class ServerToolIntegrationTests : LoggingTestBase
         }
 
         // Verify we got server tool messages
-        Assert.Contains(responseList, m => m is ServerToolUseMessage);
-        Assert.Contains(responseList, m => m is ServerToolResultMessage);
+        Assert.Contains(responseList, m => m is ToolCallMessage);
+        Assert.Contains(responseList, m => m is ToolCallResultMessage);
         Assert.Contains(responseList, m => m is TextMessage);
 
         // Verify specifics
-        var toolUse = responseList.OfType<ServerToolUseMessage>().First();
-        Assert.Equal("web_search", toolUse.ToolName);
-        Assert.Equal("srvtoolu_e2e_01", toolUse.ToolUseId);
+        var toolUse = responseList.OfType<ToolCallMessage>().First();
+        Assert.Equal("web_search", toolUse.FunctionName);
+        Assert.Equal("srvtoolu_e2e_01", toolUse.ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolUse.ExecutionTarget);
 
-        var toolResult = responseList.OfType<ServerToolResultMessage>().First();
+        var toolResult = responseList.OfType<ToolCallResultMessage>().First();
         Assert.Equal("web_search", toolResult.ToolName);
         Assert.False(toolResult.IsError);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
     }
 
     [Fact]
@@ -242,19 +292,27 @@ public class ServerToolIntegrationTests : LoggingTestBase
         Assert.NotEmpty(responseMessages);
 
         // Should have: text, server_tool_use, server_tool_result, text (with citations)
-        var serverToolUse = responseMessages.OfType<ServerToolUseMessage>().FirstOrDefault();
+        var serverToolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault();
         Assert.NotNull(serverToolUse);
-        Assert.Equal("web_search", serverToolUse!.ToolName);
-        Assert.Equal("srvtoolu_stream_01", serverToolUse.ToolUseId);
-        Logger.LogTrace("ServerToolUse verified: {ToolName}, Id={ToolUseId}",
-            serverToolUse.ToolName, serverToolUse.ToolUseId);
+        Assert.Equal("web_search", serverToolUse!.FunctionName);
+        Assert.Equal("srvtoolu_stream_01", serverToolUse.ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
+        Logger.LogTrace(
+            "ServerToolUse verified: {ToolName}, Id={ToolUseId}",
+            serverToolUse.FunctionName,
+            serverToolUse.ToolCallId
+        );
 
-        var serverToolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var serverToolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(serverToolResult);
         Assert.Equal("web_search", serverToolResult!.ToolName);
         Assert.False(serverToolResult.IsError);
-        Logger.LogTrace("ServerToolResult verified: {ToolName}, IsError={IsError}",
-            serverToolResult.ToolName, serverToolResult.IsError);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult.ExecutionTarget);
+        Logger.LogTrace(
+            "ServerToolResult verified: {ToolName}, IsError={IsError}",
+            serverToolResult.ToolName,
+            serverToolResult.IsError
+        );
 
         // Verify text with citations
         var citationMessages = responseMessages.OfType<TextWithCitationsMessage>().ToList();
@@ -300,10 +358,11 @@ public class ServerToolIntegrationTests : LoggingTestBase
         }
 
         // Verify error result
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
         Logger.LogTrace("Error result verified: IsError={IsError}, ErrorCode={ErrorCode}",
             toolResult.IsError, toolResult.ErrorCode);
     }
@@ -365,14 +424,16 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // Verify the streamed response contains server tool messages
         Assert.NotEmpty(responseMessages);
 
-        var serverToolUse = responseMessages.OfType<ServerToolUseMessage>().FirstOrDefault();
+        var serverToolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault();
         Assert.NotNull(serverToolUse);
-        Assert.Equal("web_search", serverToolUse!.ToolName);
-        Assert.Equal("srvtoolu_chain_01", serverToolUse.ToolUseId);
+        Assert.Equal("web_search", serverToolUse!.FunctionName);
+        Assert.Equal("srvtoolu_chain_01", serverToolUse.ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
 
-        var serverToolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var serverToolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(serverToolResult);
         Assert.Equal("web_search", serverToolResult!.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult.ExecutionTarget);
 
         var citedText = responseMessages.OfType<TextWithCitationsMessage>().FirstOrDefault();
         Assert.NotNull(citedText);
@@ -471,16 +532,18 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         Logger.LogTrace("Turn 1 complete, got {Count} messages", turn1Responses.Count);
         Assert.NotEmpty(turn1Responses);
-        Assert.Contains(turn1Responses, m => m is ServerToolUseMessage);
-        Assert.Contains(turn1Responses, m => m is ServerToolResultMessage);
+        Assert.Contains(turn1Responses, m => m is ToolCallMessage);
+        Assert.Contains(turn1Responses, m => m is ToolCallResultMessage);
 
-        // Verify the JsonElement fields are accessible after turn 1
-        var toolUse1 = turn1Responses.OfType<ServerToolUseMessage>().First();
-        var inputJson = toolUse1.Input.GetRawText();
+        // Verify the serialized payload fields are accessible after turn 1
+        var toolUse1 = turn1Responses.OfType<ToolCallMessage>().First();
+        Assert.Equal(ExecutionTarget.ProviderServer, toolUse1.ExecutionTarget);
+        var inputJson = toolUse1.FunctionArgs;
         Logger.LogTrace("Turn 1 ServerToolUse Input accessible: {Input}", inputJson);
 
-        var toolResult1 = turn1Responses.OfType<ServerToolResultMessage>().First();
-        var resultJson = toolResult1.Result.GetRawText();
+        var toolResult1 = turn1Responses.OfType<ToolCallResultMessage>().First();
+        Assert.Equal(ExecutionTarget.ProviderServer, toolResult1.ExecutionTarget);
+        var resultJson = toolResult1.Result;
         Logger.LogTrace("Turn 1 ServerToolResult Result accessible: {Result}", resultJson);
 
         // Turn 2: Build history = [original user, turn1 responses, new user message]

@@ -77,13 +77,13 @@ public class AnthropicStreamParser
                 case "ping":
                     return []; // Ignore ping events
                 default:
-                    Console.Error.WriteLine($"Unknown event type: {eventTypeFromJson}");
+                    _logger.LogWarning("Unknown SSE event type: {EventType}", eventTypeFromJson);
                     return [];
             }
         }
         catch (JsonException ex)
         {
-            Console.Error.WriteLine($"Error parsing SSE data: {ex.Message}");
+            _logger.LogError(ex, "Error parsing SSE data");
             return [];
         }
     }
@@ -212,6 +212,7 @@ public class AnthropicStreamParser
                             : null,
                         // Only include FunctionArgs if Input is available
                         FunctionArgs = input != null && input.Count > 0 ? input.ToJsonString() : null,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
             };
@@ -220,26 +221,25 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
-        // Don't emit ServerToolUseMessage here — defer to content_block_stop so we can
-        // include input accumulated from input_json_delta events.
+        // Emit ToolCallMessage immediately with ExecutionTarget.ProviderServer (unified approach)
         if (blockType == "server_tool_use")
         {
             // Store tool_use_id for correlating with results (may be empty — synthetic ID generated at stop)
             _contentBlocks[index].ToolUseId = _contentBlocks[index].Id ?? string.Empty;
 
-            // Store input from content_block_start if present (for non-streaming / complete input)
-            var inputNode = contentBlock["input"];
-            if (inputNode is JsonObject serverInputObj)
+            var serverToolUse = new ToolCallMessage
             {
-                _contentBlocks[index].Input = serverInputObj;
-            }
-            else if (inputNode != null)
-            {
-                // Store as-is even if not a JsonObject (defensive for non-standard providers)
-                _contentBlocks[index].Input = inputNode;
-            }
+                ToolCallId = _contentBlocks[index].Id!,
+                FunctionName = _contentBlocks[index].Name ?? string.Empty,
+                FunctionArgs = contentBlock["input"] != null ? contentBlock["input"]!.ToJsonString() : "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
 
-            return [];
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
         }
 
         // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
@@ -263,15 +263,14 @@ public class AnthropicStreamParser
                 }
             }
 
-            var serverToolResult = new ServerToolResultMessage
+            var serverToolResult = new ToolCallResultMessage
             {
-                ToolUseId = toolUseId,
+                ToolCallId = toolUseId,
                 ToolName = toolName,
-                Result = resultContent != null
-                    ? JsonSerializer.Deserialize<JsonElement>(resultContent.ToJsonString())
-                    : default,
+                Result = resultContent != null ? resultContent.ToJsonString() : "{}",
                 IsError = isError,
                 ErrorCode = errorCode,
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -346,19 +345,25 @@ public class AnthropicStreamParser
             case "thinking_delta":
                 {
                     var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
-                    block.Text = thinkingText; // Replace with latest thinking
+                    block.Text += thinkingText;
 
-                    // Return a TextUpdateMessage for the thinking update
-                    var thinkingUpdate = new TextUpdateMessage
+                    // Return a ReasoningUpdateMessage so UI can render thinking as metadata pills
+                    var thinkingUpdate = new ReasoningUpdateMessage
                     {
-                        Text = thinkingText,
+                        Reasoning = thinkingText,
+                        Visibility = ReasoningVisibility.Plain,
                         Role = ParseRole(_role),
                         FromAgent = _messageId,
                         GenerationId = _messageId,
-                        IsThinking = true,
                     };
 
                     return [thinkingUpdate];
+                }
+
+            case "signature_delta":
+                {
+                    var signature = delta["signature"]?.GetValue<string>() ?? string.Empty;
+                    return HandleSignatureDelta(block, signature);
                 }
 
             case "input_json_delta":
@@ -393,10 +398,10 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // Handle server_tool_use blocks — emit ServerToolUseMessage with accumulated input from input_json_delta
+        // Handle server_tool_use blocks — already emitted ToolCallMessage at content_block_start
         if (block.Type == "server_tool_use")
         {
-            return FinalizeServerToolUseBlock(block);
+            return [];
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
@@ -457,13 +462,13 @@ public class AnthropicStreamParser
         // For thinking blocks
         if (block.Type == "thinking" && !string.IsNullOrEmpty(block.Text))
         {
-            var thinkingMessage = new TextMessage
+            var thinkingMessage = new ReasoningMessage
             {
-                Text = block.Text,
+                Reasoning = block.Text,
+                Visibility = ReasoningVisibility.Plain,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                IsThinking = true,
             };
 
             _messages.Add(thinkingMessage);
@@ -621,6 +626,7 @@ public class AnthropicStreamParser
                         FunctionName = !string.IsNullOrEmpty(block.Name) ? block.Name : null,
                         // Include the raw JSON as it's being built
                         FunctionArgs = partialJson,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
             };
@@ -787,6 +793,7 @@ public class AnthropicStreamParser
                     FunctionName = functionName,
                     FunctionArgs = functionArgs,
                     ToolCallId = block.Id ?? string.Empty,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
                 },
             ],
         };
@@ -892,12 +899,14 @@ public class AnthropicStreamParser
                         Index = index,
                         // Only include FunctionName if it's available
                         FunctionName = !string.IsNullOrEmpty(toolUseTool.Name) ? toolUseTool.Name : null,
-                        // Only include FunctionArgs if available
+                        // For streaming tool_use blocks, do not emit "{}" as a placeholder.
+                        // A placeholder gets concatenated with later JSON delta fragments (e.g. "{}{...}").
                         FunctionArgs =
                             toolUseTool.Input.ValueKind != JsonValueKind.Undefined
                             && toolUseTool.Input.GetPropertyCount() > 0
                                 ? toolUseTool.Input.ToString()
-                                : "", // Use empty object for no args instead of empty string
+                                : null,
+                        ExecutionTarget = ExecutionTarget.LocalFunction,
                     },
                 ],
             };
@@ -906,27 +915,41 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
-        // Don't emit ServerToolUseMessage here — defer to content_block_stop so we can
-        // include input accumulated from input_json_delta events.
+        // Emit ToolCallMessage immediately with ExecutionTarget.ProviderServer (unified approach)
         if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
         {
             _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
-            // Input was already extracted from serverToolContent.Input and stored in the StreamingContentBlock above
-            return [];
+
+            var serverToolUse = new ToolCallMessage
+            {
+                ToolCallId = serverToolUseContent.Id,
+                FunctionName = serverToolUseContent.Name,
+                FunctionArgs = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
+                    ? serverToolUseContent.Input.ToString()
+                    : "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
         }
 
         // Handle web_search_tool_result
         if (contentBlock is AnthropicWebSearchToolResultContent webSearchResult)
         {
-            var serverToolResult = new ServerToolResultMessage
+            var serverToolResult = new ToolCallResultMessage
             {
-                ToolUseId = ResolveServerToolUseId(webSearchResult.ToolUseId, "web_search"),
+                ToolCallId = ResolveServerToolUseId(webSearchResult.ToolUseId, "web_search"),
                 ToolName = "web_search",
                 Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webSearchResult.Content.Clone()
-                    : default,
+                    ? webSearchResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsServerToolResultError(webSearchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -939,15 +962,16 @@ public class AnthropicStreamParser
         // Handle web_fetch_tool_result
         if (contentBlock is AnthropicWebFetchToolResultContent webFetchResult)
         {
-            var serverToolResult = new ServerToolResultMessage
+            var serverToolResult = new ToolCallResultMessage
             {
-                ToolUseId = ResolveServerToolUseId(webFetchResult.ToolUseId, "web_fetch"),
+                ToolCallId = ResolveServerToolUseId(webFetchResult.ToolUseId, "web_fetch"),
                 ToolName = "web_fetch",
                 Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? webFetchResult.Content.Clone()
-                    : default,
+                    ? webFetchResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsServerToolResultError(webFetchResult.Content),
                 ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -960,15 +984,16 @@ public class AnthropicStreamParser
         // Handle bash_code_execution_tool_result
         if (contentBlock is AnthropicBashCodeExecutionToolResultContent bashResult)
         {
-            var serverToolResult = new ServerToolResultMessage
+            var serverToolResult = new ToolCallResultMessage
             {
-                ToolUseId = ResolveServerToolUseId(bashResult.ToolUseId, "bash_code_execution"),
+                ToolCallId = ResolveServerToolUseId(bashResult.ToolUseId, "bash_code_execution"),
                 ToolName = "bash_code_execution",
                 Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? bashResult.Content.Clone()
-                    : default,
+                    ? bashResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsServerToolResultError(bashResult.Content),
                 ErrorCode = GetErrorCodeFromResult(bashResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -981,15 +1006,16 @@ public class AnthropicStreamParser
         // Handle text_editor_code_execution_tool_result
         if (contentBlock is AnthropicTextEditorCodeExecutionToolResultContent textEditorResult)
         {
-            var serverToolResult = new ServerToolResultMessage
+            var serverToolResult = new ToolCallResultMessage
             {
-                ToolUseId = ResolveServerToolUseId(textEditorResult.ToolUseId, "text_editor_code_execution"),
+                ToolCallId = ResolveServerToolUseId(textEditorResult.ToolUseId, "text_editor_code_execution"),
                 ToolName = "text_editor_code_execution",
                 Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
-                    ? textEditorResult.Content.Clone()
-                    : default,
+                    ? textEditorResult.Content.GetRawText()
+                    : "{}",
                 IsError = IsServerToolResultError(textEditorResult.Content),
                 ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
@@ -1071,16 +1097,16 @@ public class AnthropicStreamParser
 
     private List<IMessage> HandleThinkingDelta(StreamingContentBlock block, AnthropicThinkingDelta thinkingDelta)
     {
-        block.Text = thinkingDelta.Thinking; // Replace with latest thinking
+        block.Text += thinkingDelta.Thinking;
 
-        // Return a TextUpdateMessage for the thinking update
-        var thinkingUpdate = new TextUpdateMessage
+        // Return a ReasoningUpdateMessage so UI can render thinking as metadata pills
+        var thinkingUpdate = new ReasoningUpdateMessage
         {
-            Text = thinkingDelta.Thinking,
+            Reasoning = thinkingDelta.Thinking,
+            Visibility = ReasoningVisibility.Plain,
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            IsThinking = true,
         };
 
         return [thinkingUpdate];
@@ -1091,13 +1117,32 @@ public class AnthropicStreamParser
         return HandleJsonDelta(block, inputJsonDelta.PartialJson);
     }
 
-    private static List<IMessage> HandleSignatureDelta(
+    private List<IMessage> HandleSignatureDelta(
         StreamingContentBlock block,
         AnthropicSignatureDelta signatureDelta
     )
     {
-        // Store the signature but don't generate a message
-        return [];
+        return HandleSignatureDelta(block, signatureDelta.Signature);
+    }
+
+    private List<IMessage> HandleSignatureDelta(StreamingContentBlock block, string signature)
+    {
+        if (string.IsNullOrEmpty(signature))
+        {
+            return [];
+        }
+
+        var encryptedReasoning = new ReasoningMessage
+        {
+            Reasoning = signature,
+            Visibility = ReasoningVisibility.Encrypted,
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = _messageId,
+        };
+
+        _messages.Add(encryptedReasoning);
+        return [encryptedReasoning];
     }
 
     private List<IMessage> HandleToolCallsDelta(AnthropicToolCallsDelta toolCallsDelta)
@@ -1121,11 +1166,13 @@ public class AnthropicStreamParser
                     Index = toolCall.Index,
                     // Only include FunctionName if it's non-empty
                     FunctionName = !string.IsNullOrEmpty(toolCall.Name) ? toolCall.Name : null,
-                    // Ensure we always provide a valid JSON object, even when args are empty
+                    // Avoid emitting "{}" placeholders in streaming updates; they get prefixed
+                    // to subsequent JSON delta fragments and produce invalid args.
                     FunctionArgs =
                         toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0
                             ? toolCall.Input.ToString()
-                            : "",
+                            : null,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
                 },
             ],
         };
@@ -1154,10 +1201,10 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // Handle server_tool_use blocks — emit ServerToolUseMessage with accumulated input from input_json_delta
+        // Handle server_tool_use blocks — already emitted ToolCallMessage at content_block_start
         if (block.Type == "server_tool_use")
         {
-            return FinalizeServerToolUseBlock(block);
+            return [];
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
@@ -1203,16 +1250,16 @@ public class AnthropicStreamParser
             return [textMessage];
         }
 
-        // For thinking blocks, create a final ThinkingMessage
+        // For thinking blocks, create a final ReasoningMessage
         if (block.Type == "thinking" && !string.IsNullOrEmpty(block.Text))
         {
-            var thinkingMessage = new TextMessage
+            var thinkingMessage = new ReasoningMessage
             {
-                Text = block.Text,
+                Reasoning = block.Text,
+                Visibility = ReasoningVisibility.Plain,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                IsThinking = true,
             };
 
             _messages.Add(thinkingMessage);
@@ -1242,12 +1289,26 @@ public class AnthropicStreamParser
         return [];
     }
 
-    private static List<IMessage> HandleTypedError(AnthropicErrorEvent errorEvent)
+    private List<IMessage> HandleTypedError(AnthropicErrorEvent errorEvent)
     {
-        // Log error and return empty list
         if (errorEvent.Error != null)
         {
-            Console.Error.WriteLine($"Anthropic API error: {errorEvent.Error.Type} - {errorEvent.Error.Message}");
+            _logger.LogError(
+                "Anthropic API error: Type={ErrorType}, Message={ErrorMessage}",
+                errorEvent.Error.Type,
+                errorEvent.Error.Message
+            );
+
+            return
+            [
+                new TextMessage
+                {
+                    Text = $"[API Error: {errorEvent.Error.Type}] {errorEvent.Error.Message}",
+                    Role = Role.Assistant,
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                },
+            ];
         }
 
         return [];
@@ -1272,7 +1333,7 @@ public class AnthropicStreamParser
                 // Try to parse the accumulated JSON with each new delta
                 _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
             }
-            catch
+            catch (JsonException)
             {
                 // Parsing will fail until we have complete, valid JSON
                 // That's expected and we continue accumulation

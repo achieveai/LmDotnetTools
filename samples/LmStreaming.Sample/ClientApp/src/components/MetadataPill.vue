@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, inject, watch, nextTick } from 'vue';
 import type { ReasoningMessage, ToolsCallMessage, ToolCallResultMessage, ToolCall } from '@/types';
-import { isReasoningMessage, isToolsCallMessage } from '@/types';
+import { isReasoningMessage, isToolsCallMessage, normalizeReasoningVisibility } from '@/types';
 import { truncateText, parseWeatherData, isWeatherTool, getWeatherEmoji, formatTemperature, getRainForecast, type WeatherData } from '@/utils';
 
 const props = defineProps<{
@@ -56,7 +56,14 @@ function toggleExpand(index: number) {
  * Get summary text for a reasoning message
  */
 function getReasoningSummary(item: ReasoningMessage): string {
+  if (isEncryptedReasoning(item)) {
+    return 'Encrypted reasoning';
+  }
   return truncateText(item.reasoning, 60);
+}
+
+function isEncryptedReasoning(item: ReasoningMessage): boolean {
+  return normalizeReasoningVisibility(item.visibility) === 'Encrypted';
 }
 
 /**
@@ -115,6 +122,10 @@ function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
   // For tool calls, try to get tool-specific icon
   if (isToolsCallMessage(item) && item.tool_calls.length === 1) {
     const toolCall = item.tool_calls[0];
+    // Show warning icon for error results
+    if (isToolCallError(toolCall)) {
+      return '⚠️';
+    }
     if (isSearchTool(toolCall.function_name)) {
       return '🔍'; // Search emoji for web_search/web_fetch
     }
@@ -140,6 +151,38 @@ function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
  */
 function hasResult(toolCall: ToolCall): boolean {
   return getResult(toolCall) !== null;
+}
+
+/**
+ * Check if a tool call result is an error (either is_error flag or JSON with "error" key)
+ */
+function isToolCallError(toolCall: ToolCall): boolean {
+  const result = getResult(toolCall);
+  if (!result) return false;
+  if (result.is_error) return true;
+  try {
+    const parsed = JSON.parse(result.result);
+    return typeof parsed === 'object' && parsed !== null && 'error' in parsed;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get error message from a tool call result
+ */
+function getToolCallErrorMessage(toolCall: ToolCall): string {
+  const result = getResult(toolCall);
+  if (!result) return 'Unknown error';
+  try {
+    const parsed = JSON.parse(result.result);
+    if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+      return String(parsed.error);
+    }
+  } catch {
+    // fall through
+  }
+  return result.result;
 }
 
 /**
@@ -210,84 +253,86 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
       ref="pillItemsContainer"
     >
       <template v-for="(item, index) in props.items" :key="index">
-        <!-- Skip encrypted-only reasoning -->
-        <template v-if="!(isReasoningMessage(item) && item.visibility === 'Encrypted' && !item.reasoning)">
-          <div 
-            class="pill-item" 
-            :class="{ expanded: expandedItems.has(index) }"
-            @click="toggleExpand(index)"
-          >
-            <div class="item-header">
-              <span 
-                class="item-icon" 
-                :class="{ 'pulsing': isToolsCallMessage(item) && item.tool_calls.length === 1 && !hasResult(item.tool_calls[0]) }"
-              >
-                {{ getIcon(item) }}
-              </span>
-              
-              <!-- Reasoning item -->
-              <template v-if="isReasoningMessage(item)">
-                <span class="item-label">Thinking:</span>
-                <span class="item-summary">{{ getReasoningSummary(item) }}</span>
-              </template>
-              
-              <!-- Tool calls item -->
-              <template v-else-if="isToolsCallMessage(item)">
-                <template v-if="item.tool_calls.length === 1">
-                  <!-- Special weather display -->
-                  <template v-if="getWeatherLocation(item.tool_calls[0])">
-                    <span class="item-label weather-label">
-                      {{ getWeatherLocation(item.tool_calls[0]) }}
-                    </span>
-                    <span class="weather-summary">
-                      <template v-if="getWeatherData(item.tool_calls[0])">
-                        <span class="weather-temp">{{ formatTemperature(getWeatherData(item.tool_calls[0])!.temperature, getWeatherData(item.tool_calls[0])!.temperatureUnit) }}</span>
-                        <span class="weather-condition">{{ getRainForecast(getWeatherData(item.tool_calls[0])!.condition, getWeatherData(item.tool_calls[0])!.humidity) }}</span>
-                      </template>
-                      <span v-else class="weather-loading">Loading...</span>
-                    </span>
-                  </template>
-                  <!-- Regular tool display -->
-                  <template v-else>
-                    <span class="item-label">{{ item.tool_calls[0].function_name || 'Tool' }}:</span>
-                    <span class="item-summary">{{ getToolCallSummary(item.tool_calls[0]) }}</span>
-                  </template>
-                </template>
-                <template v-else>
-                  <span class="item-label">Tools:</span>
-                  <span class="item-summary">{{ item.tool_calls.length }} calls</span>
-                </template>
-              </template>
-              
-              <span class="expand-icon">{{ expandedItems.has(index) ? '▼' : '▶' }}</span>
-            </div>
+        <div 
+          class="pill-item" 
+          :class="{ expanded: expandedItems.has(index) }"
+          @click="toggleExpand(index)"
+        >
+          <div class="item-header">
+            <span 
+              class="item-icon" 
+              :class="{ 'pulsing': isToolsCallMessage(item) && item.tool_calls.length === 1 && !hasResult(item.tool_calls[0]) }"
+            >
+              {{ getIcon(item) }}
+            </span>
             
-            <!-- Expanded content -->
-            <div v-if="expandedItems.has(index)" class="item-content">
+            <!-- Reasoning item -->
+            <template v-if="isReasoningMessage(item)">
+              <span class="item-label">Thinking:</span>
+              <span class="item-summary">{{ getReasoningSummary(item) }}</span>
+            </template>
+            
+            <!-- Tool calls item -->
+            <template v-else-if="isToolsCallMessage(item)">
+              <template v-if="item.tool_calls.length === 1">
+                <!-- Special weather display -->
+                <template v-if="getWeatherLocation(item.tool_calls[0]) && !isToolCallError(item.tool_calls[0])">
+                  <span class="item-label weather-label">
+                    {{ getWeatherLocation(item.tool_calls[0]) }}
+                  </span>
+                  <span class="weather-summary">
+                    <template v-if="getWeatherData(item.tool_calls[0])">
+                      <span class="weather-temp">{{ formatTemperature(getWeatherData(item.tool_calls[0])!.temperature, getWeatherData(item.tool_calls[0])!.temperatureUnit) }}</span>
+                      <span class="weather-condition">{{ getRainForecast(getWeatherData(item.tool_calls[0])!.condition, getWeatherData(item.tool_calls[0])!.humidity) }}</span>
+                    </template>
+                    <span v-else class="weather-loading">Loading...</span>
+                  </span>
+                </template>
+                <!-- Error display for failed tool calls -->
+                <template v-else-if="isToolCallError(item.tool_calls[0])">
+                  <span class="item-label tool-error-label">{{ item.tool_calls[0].function_name || 'Tool' }}:</span>
+                  <span class="item-summary tool-error-summary">{{ getToolCallErrorMessage(item.tool_calls[0]) }}</span>
+                </template>
+                <!-- Regular tool display -->
+                <template v-else>
+                  <span class="item-label">{{ item.tool_calls[0].function_name || 'Tool' }}:</span>
+                  <span class="item-summary">{{ getToolCallSummary(item.tool_calls[0]) }}</span>
+                </template>
+              </template>
+              <template v-else>
+                <span class="item-label">Tools:</span>
+                <span class="item-summary">{{ item.tool_calls.length }} calls</span>
+              </template>
+            </template>
+            
+            <span class="expand-icon">{{ expandedItems.has(index) ? '▼' : '▶' }}</span>
+          </div>
+          
+          <!-- Expanded content -->
+          <div v-if="expandedItems.has(index)" class="item-content">
               <!-- Reasoning content -->
               <template v-if="isReasoningMessage(item)">
-                <pre class="reasoning-text">{{ item.reasoning }}</pre>
+                <pre class="reasoning-text">{{ isEncryptedReasoning(item) ? '[Encrypted reasoning hidden]' : item.reasoning }}</pre>
               </template>
-              
-              <!-- Tool calls content -->
-              <template v-else-if="isToolsCallMessage(item)">
-                <div v-for="(toolCall, tcIndex) in item.tool_calls" :key="tcIndex" class="tool-call">
-                  <div class="tool-call-header">
-                    <strong>{{ toolCall.function_name || 'unknown' }}</strong>
-                  </div>
-                  <div class="tool-call-args">
-                    <strong>Arguments:</strong>
-                    <pre>{{ toolCall.function_args }}</pre>
-                  </div>
-                  <div v-if="getResult(toolCall)" class="tool-call-result">
-                    <strong>Result:</strong>
-                    <pre>{{ formatResult(getResult(toolCall)!) }}</pre>
-                  </div>
+            
+            <!-- Tool calls content -->
+            <template v-else-if="isToolsCallMessage(item)">
+              <div v-for="(toolCall, tcIndex) in item.tool_calls" :key="tcIndex" class="tool-call">
+                <div class="tool-call-header">
+                  <strong>{{ toolCall.function_name || 'unknown' }}</strong>
                 </div>
-              </template>
-            </div>
+                <div class="tool-call-args">
+                  <strong>Arguments:</strong>
+                  <pre>{{ toolCall.function_args }}</pre>
+                </div>
+                <div v-if="getResult(toolCall)" class="tool-call-result">
+                  <strong>Result:</strong>
+                  <pre>{{ formatResult(getResult(toolCall)!) }}</pre>
+                </div>
+              </div>
+            </template>
           </div>
-        </template>
+        </div>
       </template>
     </div>
   </div>
@@ -466,6 +511,16 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   }
 }
 
+.tool-error-label {
+  font-weight: 600;
+  color: #d32f2f;
+}
+
+.tool-error-summary {
+  color: #d32f2f;
+  font-style: italic;
+}
+
 .expand-icon {
   color: #999;
   font-size: 10px;
@@ -529,4 +584,3 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   overflow-x: auto;
 }
 </style>
-

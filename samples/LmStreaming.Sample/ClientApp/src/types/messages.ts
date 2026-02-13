@@ -32,6 +32,11 @@ export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
 export type Role = 'none' | 'user' | 'assistant' | 'system' | 'tool';
 
 /**
+ * ExecutionTarget enum matching C# ExecutionTarget enum (JsonStringEnumConverter output)
+ */
+export type ExecutionTarget = 'LocalFunction' | 'ProviderServer';
+
+/**
  * Base message interface matching C# IMessage
  */
 export interface IMessage {
@@ -74,6 +79,7 @@ export interface ToolCall {
   tool_call_id?: string | null;
   index?: number;
   toolCallIdx?: number;
+  execution_target?: ExecutionTarget;
   result?: string | null; // Result from ToolCallResultMessage
 }
 
@@ -85,6 +91,7 @@ export interface ToolCallUpdate {
   index?: number;
   function_name?: string | null;
   function_args?: string | null;
+  execution_target?: ExecutionTarget;
 }
 
 /**
@@ -110,7 +117,11 @@ export interface ToolsCallUpdateMessage extends IMessage {
 export interface ToolCallResultMessage extends IMessage {
   $type: typeof MessageType.ToolCallResult;
   tool_call_id?: string | null;
+  tool_name?: string | null;
   result: string;
+  is_error?: boolean;
+  error_code?: string | null;
+  execution_target?: ExecutionTarget;
 }
 
 /**
@@ -147,6 +158,20 @@ export interface UsageMessage extends IMessage {
  * ReasoningVisibility matching C# ReasoningVisibility enum
  */
 export type ReasoningVisibility = 'Plain' | 'Summary' | 'Encrypted';
+export type ReasoningVisibilityValue = ReasoningVisibility | 0 | 1 | 2;
+
+/**
+ * Normalize visibility values from backend (string or numeric enum) to string labels.
+ */
+export function normalizeReasoningVisibility(
+  visibility: ReasoningVisibilityValue | null | undefined
+): ReasoningVisibility | undefined {
+  if (visibility === null || visibility === undefined) return undefined;
+  if (visibility === 'Plain' || visibility === 0) return 'Plain';
+  if (visibility === 'Summary' || visibility === 1) return 'Summary';
+  if (visibility === 'Encrypted' || visibility === 2) return 'Encrypted';
+  return undefined;
+}
 
 /**
  * ReasoningMessage matching C# ReasoningMessage.cs
@@ -154,7 +179,7 @@ export type ReasoningVisibility = 'Plain' | 'Summary' | 'Encrypted';
 export interface ReasoningMessage extends IMessage {
   $type: typeof MessageType.Reasoning;
   reasoning: string;
-  visibility?: ReasoningVisibility;
+  visibility?: ReasoningVisibilityValue;
 }
 
 /**
@@ -164,7 +189,7 @@ export interface ReasoningUpdateMessage extends IMessage {
   $type: typeof MessageType.ReasoningUpdate;
   reasoning: string;
   isUpdate: true;
-  visibility?: ReasoningVisibility | null;
+  visibility?: ReasoningVisibilityValue | null;
   chunkIdx?: number | null;
 }
 
@@ -208,6 +233,7 @@ export interface ToolCallMessage extends IMessage {
   tool_call_id?: string | null;
   function_name?: string | null;
   function_args?: string | null;
+  execution_target?: ExecutionTarget;
   result?: string | null; // Result from ToolCallResultMessage
 }
 
@@ -219,6 +245,7 @@ export interface ToolCallUpdateMessage extends IMessage {
   tool_call_id?: string | null;
   function_name?: string | null;
   function_args?: string | null;
+  execution_target?: ExecutionTarget;
   chunkIdx?: number | null;
 }
 
@@ -237,9 +264,15 @@ export interface ImageMessage extends IMessage {
  */
 export interface ServerToolUseMessage extends IMessage {
   $type: typeof MessageType.ServerToolUse;
-  tool_use_id: string;
-  tool_name: string;
+  // Legacy server_tool_use shape
+  tool_use_id?: string;
+  tool_name?: string;
   input?: unknown;
+  // Unified ToolCallMessage shape (execution_target=ProviderServer)
+  tool_call_id?: string | null;
+  function_name?: string | null;
+  function_args?: string | null;
+  execution_target?: ExecutionTarget;
 }
 
 /**
@@ -248,11 +281,18 @@ export interface ServerToolUseMessage extends IMessage {
  */
 export interface ServerToolResultMessage extends IMessage {
   $type: typeof MessageType.ServerToolResult;
-  tool_use_id: string;
-  tool_name: string;
+  // Legacy server_tool_result shape
+  tool_use_id?: string;
+  tool_name?: string;
   result?: unknown;
   is_error?: boolean;
   error_code?: string | null;
+  // Unified ToolCallResultMessage shape (execution_target=ProviderServer)
+  tool_call_id?: string | null;
+  function_name?: string | null;
+  isError?: boolean;
+  errorCode?: string | null;
+  execution_target?: ExecutionTarget;
 }
 
 /**
@@ -354,11 +394,19 @@ export function isToolCallUpdateMessage(msg: IMessage): msg is ToolCallUpdateMes
 }
 
 export function isServerToolUseMessage(msg: IMessage): msg is ServerToolUseMessage {
-  return msg.$type === MessageType.ServerToolUse;
+  return (
+    msg.$type === MessageType.ServerToolUse ||
+    (msg.$type === MessageType.ToolCall &&
+      (msg as ToolCallMessage).execution_target === 'ProviderServer')
+  );
 }
 
 export function isServerToolResultMessage(msg: IMessage): msg is ServerToolResultMessage {
-  return msg.$type === MessageType.ServerToolResult;
+  return (
+    msg.$type === MessageType.ServerToolResult ||
+    (msg.$type === MessageType.ToolCallResult &&
+      (msg as ToolCallResultMessage).execution_target === 'ProviderServer')
+  );
 }
 
 export function isTextWithCitationsMessage(msg: IMessage): msg is TextWithCitationsMessage {

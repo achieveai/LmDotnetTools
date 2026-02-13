@@ -128,6 +128,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns true when an existing agent has an active run in progress.
+    /// </summary>
+    /// <param name="threadId">The thread identifier.</param>
+    public bool IsRunInProgress(string threadId)
+    {
+        if (!_agents.TryGetValue(threadId, out var entry))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrEmpty(entry.Agent.CurrentRunId);
+    }
+
+    /// <summary>
     /// Gets the count of active agents.
     /// </summary>
     public int ActiveAgentCount => _agents.Count;

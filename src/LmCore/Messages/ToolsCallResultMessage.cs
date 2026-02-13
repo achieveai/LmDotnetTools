@@ -73,7 +73,14 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = [new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)],
+            ToolCallResults =
+            [
+                new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)
+                {
+                    ToolName = toolCall.FunctionName,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                },
+            ],
         };
     }
 
@@ -94,7 +101,11 @@ public record ToolsCallResultMessage : IMessage
             GenerationId = generationId,
             ToolCallResults =
             [
-                .. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)),
+                .. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)
+                {
+                    ToolName = r.toolCall.FunctionName,
+                    ExecutionTarget = r.toolCall.ExecutionTarget,
+                }),
             ],
         };
     }

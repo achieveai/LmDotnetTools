@@ -65,16 +65,17 @@ public class ToolCallExecutor
                 // Add an error result for this tool call
                 toolCallResults.Add(
                     new ToolCallResult(toolCall.ToolCallId, $"Tool call execution error: {ex.Message}")
+                    {
+                        ToolName = toolCall.FunctionName,
+                        ExecutionTarget = toolCall.ExecutionTarget,
+                        IsError = true,
+                    }
                 );
             }
         }
 
         var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        var successCount = toolCallResults.Count(r =>
-            !r.Result.StartsWith("Error executing function:")
-            && !r.Result.Contains("is not available")
-            && !r.Result.StartsWith("Tool call execution error:")
-        );
+        var successCount = toolCallResults.Count(r => !r.IsError);
 
         effectiveLogger.LogInformation(
             "Tool call execution completed: ToolCallCount={ToolCallCount}, SuccessCount={SuccessCount}, Duration={Duration}ms",
@@ -152,16 +153,17 @@ public class ToolCallExecutor
 
                 toolCallResults.Add(
                     new ToolCallResult(toolCall.ToolCallId, $"Tool call execution error: {ex.Message}")
+                    {
+                        ToolName = toolCall.FunctionName,
+                        ExecutionTarget = toolCall.ExecutionTarget,
+                        IsError = true,
+                    }
                 );
             }
         }
 
         var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        var successCount = toolCallResults.Count(r =>
-            !r.Result.StartsWith("Error executing function:")
-            && !r.Result.Contains("is not available")
-            && !r.Result.StartsWith("Tool call execution error:")
-        );
+        var successCount = toolCallResults.Count(r => !r.IsError);
 
         effectiveLogger.LogInformation(
             "Multi-modal tool call execution completed: ToolCallCount={ToolCallCount}, SuccessCount={SuccessCount}, Duration={Duration}ms",
@@ -221,7 +223,11 @@ public class ToolCallExecutor
                     true
                 );
 
-                var toolCallResult = new ToolCallResult(toolCall.ToolCallId, result);
+                var toolCallResult = new ToolCallResult(toolCall.ToolCallId, result)
+                {
+                    ToolName = functionName,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                };
 
                 // Notify callback that result is available
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
@@ -269,7 +275,12 @@ public class ToolCallExecutor
                 }
 
                 // Handle exceptions during function execution
-                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
+                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage)
+                {
+                    ToolName = functionName,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                    IsError = true,
+                };
 
                 // Still notify with result (containing error)
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
@@ -315,7 +326,12 @@ public class ToolCallExecutor
                 );
             }
 
-            var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
+            var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage)
+            {
+                ToolName = functionName,
+                ExecutionTarget = toolCall.ExecutionTarget,
+                IsError = true,
+            };
 
             // Still notify with result (containing error)
             if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
@@ -436,7 +452,12 @@ public class ToolCallExecutor
                     );
                 }
 
-                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
+                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage)
+                {
+                    ToolName = functionName,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                    IsError = true,
+                };
 
                 if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
                 {
@@ -471,7 +492,12 @@ public class ToolCallExecutor
             );
         }
 
-        var unavailableErrorResult = new ToolCallResult(toolCall.ToolCallId, unavailableErrorMessage);
+        var unavailableErrorResult = new ToolCallResult(toolCall.ToolCallId, unavailableErrorMessage)
+        {
+            ToolName = functionName,
+            ExecutionTarget = toolCall.ExecutionTarget,
+            IsError = true,
+        };
 
         if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
         {

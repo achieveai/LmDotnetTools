@@ -157,7 +157,8 @@ public record AnthropicRequest
                     // Server tool results must be placed in user messages as tool_result,
                     // since providers like Kimi treat server_tool_use like regular tool_use
                     // and require a matching tool_result in the next user turn.
-                    if (message is ServerToolResultMessage)
+                    if (message is ToolCallResultMessage toolCallResultMessage
+                        && toolCallResultMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
                     {
                         role = "user";
                     }
@@ -248,7 +249,8 @@ public record AnthropicRequest
                     secondaryMessage.Content.Add(toolResultContent);
                 }
             }
-            else if (message is ServerToolResultMessage serverToolResultMsg)
+            else if (message is ToolCallResultMessage toolCallResultMsg
+                && toolCallResultMsg.ExecutionTarget == ExecutionTarget.ProviderServer)
             {
                 // Server tool results must go in a user message as tool_result,
                 // since providers like Kimi treat server_tool_use as regular tool_use
@@ -258,10 +260,8 @@ public record AnthropicRequest
                     new AnthropicContent
                     {
                         Type = "tool_result",
-                        ToolUseId = serverToolResultMsg.ToolUseId,
-                        Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
-                            ? serverToolResultMsg.Result.GetRawText()
-                            : "{}",
+                        ToolUseId = toolCallResultMsg.ToolCallId,
+                        Content = toolCallResultMsg.Result,
                     }
                 );
             }
@@ -286,34 +286,29 @@ public record AnthropicRequest
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
         }
-        else if (message is ServerToolUseMessage serverToolUseMsg)
+        else if (message is ToolCallMessage singularToolCallMsg)
         {
-            // Server tool use - convert back to server_tool_use content block for history
+            var contentType = singularToolCallMsg.ExecutionTarget == ExecutionTarget.ProviderServer
+                ? "server_tool_use"
+                : "tool_use";
             anthropicMessage.Content.Add(
                 new AnthropicContent
                 {
-                    Type = "server_tool_use",
-                    Id = serverToolUseMsg.ToolUseId,
-                    Name = serverToolUseMsg.ToolName,
-                    Input = serverToolUseMsg.Input.ValueKind != JsonValueKind.Undefined
-                        ? serverToolUseMsg.Input.Clone()
-                        : default,
+                    Type = contentType,
+                    Id = singularToolCallMsg.ToolCallId,
+                    Name = singularToolCallMsg.FunctionName,
+                    Input = SafeDeserializeArgs(singularToolCallMsg.FunctionArgs),
                 }
             );
         }
-        else if (message is ServerToolResultMessage serverToolResultMsg)
+        else if (message is ToolCallResultMessage singularToolResultMsg)
         {
-            // Server tool results are sent as tool_result in user messages.
-            // Providers like Kimi treat server_tool_use as regular tool_use and require
-            // a matching tool_result response in the next user turn.
             anthropicMessage.Content.Add(
                 new AnthropicContent
                 {
                     Type = "tool_result",
-                    ToolUseId = serverToolResultMsg.ToolUseId,
-                    Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
-                        ? serverToolResultMsg.Result.GetRawText()
-                        : "{}",
+                    ToolUseId = singularToolResultMsg.ToolCallId,
+                    Content = singularToolResultMsg.Result,
                 }
             );
         }
@@ -322,13 +317,14 @@ public record AnthropicRequest
             // Handle tool calls in assistant messages
             foreach (var toolCall in toolsCallMsg.ToolCalls)
             {
+                var contentType = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use";
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
-                        Type = "tool_use",
+                        Type = contentType,
                         Id = toolCall.ToolCallId,
                         Name = toolCall.FunctionName,
-                        Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}"),
+                        Input = SafeDeserializeArgs(toolCall.FunctionArgs),
                     }
                 );
             }
@@ -376,10 +372,10 @@ public record AnthropicRequest
                 yield return (
                     new AnthropicContent
                     {
-                        Type = "tool_use",
+                        Type = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use",
                         Id = toolCall.ToolCallId,
                         Name = toolCall.FunctionName,
-                        Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}"),
+                        Input = SafeDeserializeArgs(toolCall.FunctionArgs),
                     },
                     new AnthropicContent
                     {
@@ -517,5 +513,23 @@ public record AnthropicRequest
     private static string GetJsonType(JsonSchemaObject schemaObject)
     {
         return schemaObject == null ? "string" : schemaObject.Type.GetTypeString();
+    }
+
+    private static JsonElement SafeDeserializeArgs(string? functionArgs)
+    {
+        var json = functionArgs ?? "{}";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            json = "{}";
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<JsonElement>(json);
+        }
+        catch (JsonException)
+        {
+            return JsonSerializer.Deserialize<JsonElement>("{}");
+        }
     }
 }

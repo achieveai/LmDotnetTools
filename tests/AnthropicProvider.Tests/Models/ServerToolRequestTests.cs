@@ -94,26 +94,26 @@ public class ServerToolRequestTests
     }
 
     [Fact]
-    public void FromMessages_ContainingServerToolUseMessage_RoundTrips()
+    public void FromMessages_ContainingProviderServerToolMessages_RoundTrips()
     {
         var messages = new IMessage[]
         {
             new TextMessage { Role = Role.User, Text = "What's the weather?" },
             new TextMessage { Role = Role.Assistant, Text = "Let me search." },
-            new ServerToolUseMessage
+            new ToolCallMessage
             {
-                ToolUseId = "srvtoolu_01",
-                ToolName = "web_search",
-                Input = JsonSerializer.Deserialize<JsonElement>("""{"query":"weather SF"}"""),
+                ToolCallId = "srvtoolu_01",
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"weather SF"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
-            new ServerToolResultMessage
+            new ToolCallResultMessage
             {
-                ToolUseId = "srvtoolu_01",
+                ToolCallId = "srvtoolu_01",
                 ToolName = "web_search",
-                Result = JsonSerializer.Deserialize<JsonElement>(
-                    """[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]"""
-                ),
+                Result = """[{"type":"web_search_result","url":"https://example.com","title":"Weather"}]""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
             new TextMessage { Role = Role.Assistant, Text = "The weather is sunny." },
@@ -154,7 +154,7 @@ public class ServerToolRequestTests
                             Assert.Equal("web_search", block.GetProperty("name").GetString());
                         }
 
-                        // ServerToolResultMessage is converted to tool_result in a user message,
+                        // Provider server tool results are converted to tool_result in a user message,
                         // since providers like Kimi treat server_tool_use as regular tool_use
                         // and require a matching tool_result in the next user turn.
                         if (blockType.GetString() == "tool_result"

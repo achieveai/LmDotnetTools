@@ -139,6 +139,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public int? CurrentIndex { get; private set; }
 
+    public ExecutionTarget CurrentExecutionTarget { get; private set; } = ExecutionTarget.LocalFunction;
+
     public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = [];
 
     public string? ThreadId { get; set; }
@@ -193,6 +195,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 AccumulatedArgs = update.FunctionArgs ?? "";
                 CurrentToolCallId = update.ToolCallId;
                 CurrentIndex = update.Index;
+                CurrentExecutionTarget = update.ExecutionTarget;
             }
             // Otherwise, it's an update to the current partial tool call
             else if (CurrentFunctionName != null && update.FunctionArgs != null)
@@ -210,6 +213,11 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 {
                     CurrentIndex = update.Index;
                 }
+            }
+            else if (CurrentFunctionName != null)
+            {
+                // Preserve explicit execution target updates even when args are not present.
+                CurrentExecutionTarget = update.ExecutionTarget;
             }
         }
 
@@ -263,6 +271,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 ToolCallId = CurrentToolCallId,
                 Index = CurrentIndex,
                 ToolCallIdx = CompletedToolCalls.Count, // Assign sequential index (0, 1, 2...)
+                ExecutionTarget = CurrentExecutionTarget,
             };
 
             // Add to completed tool calls
@@ -276,6 +285,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             AccumulatedArgs = "";
             CurrentToolCallId = null;
             CurrentIndex = null;
+            CurrentExecutionTarget = ExecutionTarget.LocalFunction;
         }
     }
 }

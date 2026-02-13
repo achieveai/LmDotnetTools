@@ -38,6 +38,59 @@ Search for a topic:
 Calculator then weather:
 <|instruction_start|>{"instruction_chain":[{"id":"multi-tools","id_message":"Using multiple tools","messages":[{"tool_call":[{"name":"calculate","args":{"a":32,"operation":"multiply","b":1.8}},{"name":"get_weather","args":{"location":"Tokyo"}}]}]}]}<|instruction_end|>
 
+### Pill Overflow (>3 Items in MetadataPill)
+
+MetadataPill shows "Show all N items" when there are more than 3 pill items.
+Each reasoning block = 1 item. Each tool_call message entry = 1 item.
+A single tool_call array with multiple tools = 1 item (labeled "Tools: N calls").
+
+4 pill items (reasoning + 3 separate tool_call entries — triggers "Show all 4 items"):
+<|instruction_start|>{"instruction_chain":[{"id":"pill-overflow-4","reasoning":{"length":30},"id_message":"Four pill items","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"add","b":5}}]},{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]},{"tool_call":[{"name":"calculate","args":{"a":7,"operation":"multiply","b":6}}]}]}]}<|instruction_end|>
+
+5 pill items (reasoning + 4 tool_call entries including web_search — triggers "Show all 5 items"):
+<|instruction_start|>{"instruction_chain":[{"id":"pill-overflow-5","reasoning":{"length":40},"id_message":"Five pill items","messages":[{"tool_call":[{"name":"calculate","args":{"a":100,"operation":"divide","b":4}}]},{"tool_call":[{"name":"get_weather","args":{"location":"London"}}]},{"tool_call":[{"name":"web_search","args":{"query":"temperature conversion","numResults":2}}]},{"tool_call":[{"name":"get_weather","args":{"location":"Paris"}}]}]}]}<|instruction_end|>
+
+All three tool types in one turn (calculate + get_weather + web_search as separate pills):
+<|instruction_start|>{"instruction_chain":[{"id":"all-three-tools","id_message":"All tool types","messages":[{"tool_call":[{"name":"calculate","args":{"a":42,"operation":"multiply","b":2}}]},{"tool_call":[{"name":"get_weather","args":{"location":"Chicago"}}]},{"tool_call":[{"name":"web_search","args":{"query":"best deep dish pizza","numResults":3}}]}]}]}<|instruction_end|>
+
+### Reasoning-Only Messages
+
+Tests the ThinkingPill (brain emoji, truncated preview, expand/collapse) without tool calls.
+
+Short reasoning (20 words) followed by text:
+<|instruction_start|>{"instruction_chain":[{"id":"reason-short","reasoning":{"length":20},"id_message":"Short thinking","messages":[{"text_message":{"length":30}}]}]}<|instruction_end|>
+
+Long reasoning (100 words) followed by text:
+<|instruction_start|>{"instruction_chain":[{"id":"reason-long","reasoning":{"length":100},"id_message":"Long thinking","messages":[{"text_message":{"length":50}}]}]}<|instruction_end|>
+
+### Reasoning + Tool Calls (Mixed MetadataPill)
+
+Tests reasoning and tool calls appearing as separate expandable rows in the same pill.
+
+3 pill items — reasoning + 2 tool calls (no overflow):
+<|instruction_start|>{"instruction_chain":[{"id":"mixed-3","reasoning":{"length":40},"id_message":"Mixed pill 3 items","messages":[{"tool_call":[{"name":"calculate","args":{"a":15,"operation":"add","b":25}}]},{"tool_call":[{"name":"get_weather","args":{"location":"Berlin"}}]}]}]}<|instruction_end|>
+
+5 pill items — reasoning + 4 tool calls including web_search (with overflow):
+<|instruction_start|>{"instruction_chain":[{"id":"mixed-5","reasoning":{"length":50},"id_message":"Mixed pill 5 items","messages":[{"tool_call":[{"name":"calculate","args":{"a":1,"operation":"add","b":1}}]},{"tool_call":[{"name":"web_search","args":{"query":"NYC weather history","numResults":2}}]},{"tool_call":[{"name":"get_weather","args":{"location":"NYC"}}]},{"tool_call":[{"name":"get_weather","args":{"location":"LA"}}]}]}]}<|instruction_end|>
+
+### Long Text Responses
+
+Tests streaming cursor, markdown rendering, and scroll behavior with large responses.
+
+Long text response (200 words):
+<|instruction_start|>{"instruction_chain":[{"id":"long-text","id_message":"Long response","messages":[{"text_message":{"length":200}}]}]}<|instruction_end|>
+
+Multi-turn: tool call then long text summary (300 words):
+<|instruction_start|>{"instruction_chain":[{"id":"long-turn1","id_message":"Gathering data","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Tokyo"}}]}]},{"id":"long-turn2","id_message":"Long summary","messages":[{"text_message":{"length":300}}]}]}<|instruction_end|>
+
+### Weather Emoji Conditions
+
+The mock SampleTools.GetWeather returns random conditions from:
+["Sunny", "Cloudy", "Partly Cloudy", "Rainy", "Clear"]
+
+WeatherToolPill maps each to an emoji. Send this prompt repeatedly to see different conditions:
+<|instruction_start|>{"instruction_chain":[{"id":"weather-emoji","id_message":"Weather check","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Denver"}}]}]}]}<|instruction_end|>
+
 ### Multiturn Example (multiple turns with reasoning)
 
 <|instruction_start|>{"instruction_chain":[{"id":"turn1_parallel_tools","reasoning":{"length":30},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}},{"name":"get_weather","args":{"location":"San Francisco"}}]}]},{"id":"turn2_final","reasoning":{"length":50},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]},{"text_message":{"length":50}}]},{"id":"turn3_summary","reasoning":{"length":10},"messages":[{"text_message":{"length":100}}]}]}<|instruction_end|>

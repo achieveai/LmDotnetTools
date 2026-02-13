@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
 using System.Text;
@@ -86,6 +87,7 @@ try
     {
         options.Base = "/dist/";
         options.Server.AutoRun = true;
+        options.Server.PackageDirectory = "ClientApp";
         options.Server.Port = 5173;
     });
 
@@ -168,17 +170,7 @@ try
 
                 // Filter built-in (server-side) tools based on mode's enabled tools
                 var allBuiltInTools = GetBuiltInToolsForProvider(providerMode);
-                List<object>? filteredBuiltInTools = null;
-                if (allBuiltInTools != null && mode.EnabledTools != null)
-                {
-                    var enabledToolSet = mode.EnabledTools.ToHashSet();
-                    filteredBuiltInTools = allBuiltInTools
-                        .OfType<AnthropicBuiltInTool>()
-                        .Where(t => enabledToolSet.Contains(t.Name))
-                        .Cast<object>()
-                        .ToList();
-                    if (filteredBuiltInTools.Count == 0) filteredBuiltInTools = null;
-                }
+                var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
 
                 return new MultiTurnAgentLoop(
                     providerAgent,
@@ -219,7 +211,7 @@ try
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
     {
-        _ = app.UseViteDevelopmentServer();
+        _ = app.UseViteDevelopmentServer(true);
     }
 
     // Serve static files (including Vite build output)
@@ -316,8 +308,17 @@ try
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
 
-    // Fallback for SPA routing - serve Vite-generated index.html with correct asset hashes
-    _ = app.MapFallbackToFile("dist/index.html");
+    // Fallback for SPA routing.
+    // In Development, route through Vite dev server (proxied at /dist/*).
+    if (app.Environment.IsDevelopment())
+    {
+        _ = app.MapGet("/", () => Results.Redirect("/dist/index.html", permanent: false));
+    }
+    else
+    {
+        // In non-development environments, serve the built SPA from wwwroot/dist.
+        _ = app.MapFallbackToFile("dist/index.html");
+    }
 
     app.Run();
 }

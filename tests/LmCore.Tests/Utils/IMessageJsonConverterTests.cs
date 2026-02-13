@@ -324,6 +324,7 @@ public class IMessageJsonConverterTests
         Assert.Equal(Role.Assistant, toolCallMessage.Role);
         Assert.Equal("test-agent", toolCallMessage.FromAgent);
         Assert.Equal("gen-1", toolCallMessage.GenerationId);
+        Assert.Equal(ExecutionTarget.LocalFunction, toolCallMessage.ExecutionTarget);
     }
 
     [Fact]
@@ -397,6 +398,103 @@ public class IMessageJsonConverterTests
         Assert.Equal(Role.User, toolCallResultMessage.Role);
         Assert.Equal("tool-executor", toolCallResultMessage.FromAgent);
         Assert.Equal("gen-1", toolCallResultMessage.GenerationId);
+        Assert.Equal(ExecutionTarget.LocalFunction, toolCallResultMessage.ExecutionTarget);
+        Assert.Null(toolCallResultMessage.ToolName);
+        Assert.False(toolCallResultMessage.IsError);
+        Assert.Null(toolCallResultMessage.ErrorCode);
+    }
+
+    [Fact]
+    public void Deserialize_LegacyServerToolUse_WithDiscriminator_ReturnsUnifiedToolCallMessage()
+    {
+        var json =
+            """
+            {
+              "$type": "server_tool_use",
+              "tool_use_id": "srvtoolu_1",
+              "tool_name": "web_search",
+              "input": { "query": "latest ai news" },
+              "role": "assistant"
+            }
+            """;
+
+        var options = GetOptionsWithConverter();
+
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        var toolCall = Assert.IsType<ToolCallMessage>(message);
+        Assert.Equal("srvtoolu_1", toolCall.ToolCallId);
+        Assert.Equal("web_search", toolCall.FunctionName);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolCall.ExecutionTarget);
+        var args = JsonDocument.Parse(toolCall.FunctionArgs ?? "{}").RootElement;
+        Assert.Equal("latest ai news", args.GetProperty("query").GetString());
+    }
+
+    [Fact]
+    public void Deserialize_LegacyServerToolResult_WithoutDiscriminator_ReturnsUnifiedToolCallResultMessage()
+    {
+        var json =
+            """
+            {
+              "tool_use_id": "srvtoolu_1",
+              "tool_name": "web_search",
+              "result": [{ "type": "web_search_result", "title": "A" }],
+              "is_error": false,
+              "role": "assistant"
+            }
+            """;
+
+        var options = GetOptionsWithConverter();
+
+        var message = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        var toolResult = Assert.IsType<ToolCallResultMessage>(message);
+        Assert.Equal("srvtoolu_1", toolResult.ToolCallId);
+        Assert.Equal("web_search", toolResult.ToolName);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
+        Assert.False(toolResult.IsError);
+    }
+
+    [Fact]
+    public void Serialize_ProviderServerToolCallMessage_UsesServerToolUseDiscriminator()
+    {
+        IMessage message = new ToolCallMessage
+        {
+            ToolCallId = "srvtoolu_1",
+            FunctionName = "web_search",
+            FunctionArgs = """{"query":"x"}""",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
+        };
+
+        var options = GetOptionsWithConverter();
+
+        var json = JsonSerializer.Serialize(message, options);
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.Equal("server_tool_use", root.GetProperty("$type").GetString());
+        Assert.Equal("srvtoolu_1", root.GetProperty("tool_call_id").GetString());
+    }
+
+    [Fact]
+    public void Serialize_ProviderServerToolCallResultMessage_UsesServerToolResultDiscriminator()
+    {
+        IMessage message = new ToolCallResultMessage
+        {
+            ToolCallId = "srvtoolu_1",
+            ToolName = "web_search",
+            Result = "[]",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
+        };
+
+        var options = GetOptionsWithConverter();
+
+        var json = JsonSerializer.Serialize(message, options);
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.Equal("server_tool_result", root.GetProperty("$type").GetString());
+        Assert.Equal("srvtoolu_1", root.GetProperty("tool_call_id").GetString());
     }
 
     [Theory]
@@ -452,6 +550,80 @@ public class IMessageJsonConverterTests
         // Assert
         Assert.NotNull(message);
         Assert.IsType(expectedType, message);
+    }
+
+    [Fact]
+    public void RoundTrip_ProviderServerToolCallMessage_PreservesExecutionTarget()
+    {
+        // Arrange
+        IMessage originalMessage = new ToolCallMessage
+        {
+            FunctionName = "web_search",
+            FunctionArgs = """{"query":"latest ai news"}""",
+            ToolCallId = "srvtoolu_42",
+            Index = 0,
+            ToolCallIdx = 0,
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = Role.Assistant,
+            FromAgent = "anthropic-agent",
+            GenerationId = "gen-srv-1",
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        TestContextLogger.LogDebug("Serialized ProviderServer ToolCallMessage. Json: {Json}", json);
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        var toolCallMessage = Assert.IsType<ToolCallMessage>(deserializedMessage);
+        Assert.Equal("web_search", toolCallMessage.FunctionName);
+        Assert.Equal("""{"query":"latest ai news"}""", toolCallMessage.FunctionArgs);
+        Assert.Equal("srvtoolu_42", toolCallMessage.ToolCallId);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolCallMessage.ExecutionTarget);
+        Assert.Equal(Role.Assistant, toolCallMessage.Role);
+        Assert.Equal("anthropic-agent", toolCallMessage.FromAgent);
+        Assert.Equal("gen-srv-1", toolCallMessage.GenerationId);
+    }
+
+    [Fact]
+    public void RoundTrip_ProviderServerToolCallResultMessage_PreservesExecutionTarget()
+    {
+        // Arrange
+        IMessage originalMessage = new ToolCallResultMessage
+        {
+            ToolCallId = "srvtoolu_42",
+            ToolName = "web_search",
+            Result = """[{"type":"web_search_result","title":"AI News"}]""",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            IsError = false,
+            Role = Role.Assistant,
+            FromAgent = "anthropic-agent",
+            GenerationId = "gen-srv-1",
+        };
+
+        var options = GetOptionsWithConverter();
+
+        // Act
+        var json = JsonSerializer.Serialize(originalMessage, options);
+        TestContextLogger.LogDebug("Serialized ProviderServer ToolCallResultMessage. Json: {Json}", json);
+
+        var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
+
+        // Assert
+        Assert.NotNull(deserializedMessage);
+        var toolCallResultMessage = Assert.IsType<ToolCallResultMessage>(deserializedMessage);
+        Assert.Equal("srvtoolu_42", toolCallResultMessage.ToolCallId);
+        Assert.Equal("web_search", toolCallResultMessage.ToolName);
+        Assert.Equal("""[{"type":"web_search_result","title":"AI News"}]""", toolCallResultMessage.Result);
+        Assert.Equal(ExecutionTarget.ProviderServer, toolCallResultMessage.ExecutionTarget);
+        Assert.False(toolCallResultMessage.IsError);
+        Assert.Equal(Role.Assistant, toolCallResultMessage.Role);
+        Assert.Equal("anthropic-agent", toolCallResultMessage.FromAgent);
+        Assert.Equal("gen-srv-1", toolCallResultMessage.GenerationId);
     }
 
     [Fact]
