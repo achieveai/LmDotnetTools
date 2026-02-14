@@ -88,12 +88,33 @@ public sealed class McpToolMetadataCache
     /// <summary>
     /// Gets all cached tool metadata.
     /// </summary>
-    public IReadOnlyList<ToolMetadata> Tools { get; }
+    public IReadOnlyList<ToolMetadata> Tools { get; private set; }
 
     private McpToolMetadataCache(IReadOnlyList<ToolMetadata> tools)
     {
         Tools = tools;
         _toolsByName = tools.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Creates an empty cache that can be populated with AddTool.
+    /// </summary>
+    public McpToolMetadataCache()
+    {
+        _toolsByName = new Dictionary<string, ToolMetadata>(StringComparer.OrdinalIgnoreCase);
+        Tools = Array.Empty<ToolMetadata>();
+    }
+
+    /// <summary>
+    /// Adds a tool to the cache.
+    /// </summary>
+    /// <param name="tool">The tool metadata to add.</param>
+    public void AddTool(ToolMetadata tool)
+    {
+        ArgumentNullException.ThrowIfNull(tool);
+        _toolsByName[tool.Name] = tool;
+        // Update the read-only list
+        Tools = _toolsByName.Values.ToList();
     }
 
     /// <summary>
@@ -132,6 +153,37 @@ public sealed class McpToolMetadataCache
                 var toolMetadata = CreateToolMetadata(toolType, method);
                 tools.Add(toolMetadata);
             }
+        }
+
+        return new McpToolMetadataCache(tools);
+    }
+
+    /// <summary>
+    /// Scans a single type for [McpServerTool] methods.
+    /// The type must be decorated with [McpServerToolType].
+    /// </summary>
+    /// <param name="toolType">The type to scan.</param>
+    /// <returns>A populated cache of tool metadata from the specified type.</returns>
+    public static McpToolMetadataCache ScanType(Type toolType)
+    {
+        ArgumentNullException.ThrowIfNull(toolType);
+
+        var tools = new List<ToolMetadata>();
+
+        // Check if type has [McpServerToolType] attribute
+        if (toolType.GetCustomAttribute<McpServerToolTypeAttribute>() == null)
+        {
+            return new McpToolMetadataCache(tools);
+        }
+
+        // Find all methods with [McpServerTool] attribute
+        var toolMethods = toolType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null);
+
+        foreach (var method in toolMethods)
+        {
+            var toolMetadata = CreateToolMetadata(toolType, method);
+            tools.Add(toolMetadata);
         }
 
         return new McpToolMetadataCache(tools);

@@ -866,8 +866,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             "Final MCP server configuration: {Count} servers configured",
             mcpServers?.Count ?? 0);
 
-        // Build allowed tools list
-        var allowedTools = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
+        // Build allowed tools list (configurable via options, with sensible defaults)
+        var allowedTools = _claudeOptions.AllowedTools
+            ?? "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
 
         return new ClaudeAgentSdkRequest
         {

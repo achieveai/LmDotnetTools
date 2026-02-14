@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Exceptions;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 #pragma warning disable IDE0058 // Expression value is never used
@@ -196,8 +197,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             };
 
             _logger?.LogInformation(
-                "claude-agent-sdk CLI started successfully. SessionId: {SessionId}, PID: {ProcessId}",
-                CurrentSession.SessionId,
+                "[Agent:{SessionId}] claude-agent-sdk CLI started successfully. PID: {ProcessId}",
+                CurrentSession?.SessionId,
                 _process.Id
             );
 
@@ -266,7 +267,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
             _logger?.LogInformation(
-                "Submitting to LLM - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                "[Agent:{SessionId}] Submitting to LLM - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
                 lastText ?? "(same as first)");
@@ -305,6 +307,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
+                // Check for API errors (e.g., billing_error) before processing normal messages
+                if (assistantEvent.IsApiErrorMessage)
+                {
+                    var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
+                    _logger?.LogError(
+                        "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
+                        CurrentSession?.SessionId,
+                        assistantEvent.Error,
+                        errorText);
+
+                    throw new BillingErrorException(
+                        assistantEvent.Error,
+                        errorText,
+                        CurrentSession?.SessionId);
+                }
+
                 var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                 _logger?.LogTrace(
                     "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
@@ -340,8 +358,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             else if (jsonlEvent is SystemInitEvent systemInitEvent)
             {
                 _logger?.LogInformation(
-                    "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
-                    systemInitEvent.SessionId,
+                    "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
+                    CurrentSession?.SessionId,
                     systemInitEvent.Model,
                     systemInitEvent.Tools?.Count ?? 0,
                     string.Join(", ", systemInitEvent.McpServers?.Select(s => $"{s.Name}({s.Status})") ?? [])
@@ -470,6 +488,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 if (jsonlEvent is AssistantMessageEvent assistantEvent)
                 {
+                    // Check for API errors (e.g., billing_error) before processing normal messages
+                    if (assistantEvent.IsApiErrorMessage)
+                    {
+                        var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
+                        _logger?.LogError(
+                            "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
+                            CurrentSession?.SessionId,
+                            assistantEvent.Error,
+                            errorText);
+
+                        throw new BillingErrorException(
+                            assistantEvent.Error,
+                            errorText,
+                            CurrentSession?.SessionId);
+                    }
+
                     var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                     _logger?.LogTrace(
                         "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
@@ -503,8 +537,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 else if (jsonlEvent is SystemInitEvent systemInitEvent)
                 {
                     _logger?.LogInformation(
-                        "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}",
-                        systemInitEvent.SessionId,
+                        "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}",
+                        CurrentSession?.SessionId,
                         systemInitEvent.Model,
                         systemInitEvent.Tools?.Count ?? 0);
 
@@ -575,7 +609,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
             _logger?.LogInformation(
-                "Submitting to LLM (Interactive) - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                "[Agent:{SessionId}] Submitting to LLM (Interactive) - MessageCount: {Count}, FirstText: {First}, LastText: {Last}",
+                CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
                 lastText ?? "(same as first)");
@@ -601,7 +636,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         _ = cancellationToken; // Unused - keepalive disabled
         // The claude-agent-sdk CLI expects JSONL input - empty lines cause parse errors.
         // Keepalive is not needed as the CLI process stays alive as long as stdin is open.
-        _logger?.LogTrace("Keepalive: skipped (empty lines crash CLI)");
+        _logger?.LogTrace("[Agent:{SessionId}] Keepalive: skipped (empty lines crash CLI)", CurrentSession?.SessionId);
         return Task.CompletedTask;
     }
 
@@ -616,7 +651,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             return;
         }
 
-        _logger?.LogDebug("Keepalive task started with interval: {Interval}", _options.KeepAliveInterval);
+        _logger?.LogDebug("[Agent:{SessionId}] Keepalive task started with interval: {Interval}", CurrentSession?.SessionId, _options.KeepAliveInterval);
 
         using var timer = new PeriodicTimer(_options.KeepAliveInterval);
 
@@ -638,7 +673,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             }
         }
 
-        _logger?.LogDebug("Keepalive task stopped");
+        _logger?.LogDebug("[Agent:{SessionId}] Keepalive task stopped", CurrentSession?.SessionId);
     }
 
     public void Dispose()
@@ -650,7 +685,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         try
         {
-            _logger?.LogInformation("Disposing claude-agent-sdk client");
+            _logger?.LogInformation("[Agent:{SessionId}] Disposing claude-agent-sdk client", CurrentSession?.SessionId);
 
             // Close stdin to signal process to exit gracefully
             _stdinWriter?.Close();
@@ -938,6 +973,18 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         if (_systemPromptTempFile != null)
         {
             args.Add($"--system-prompt-file \"{_systemPromptTempFile}\"");
+        }
+
+        // Disable checkpoints/snapshots if configured
+        if (_options.DisableCheckpoints)
+        {
+            args.Add("--no-checkpoints");
+        }
+
+        // Disable session persistence if configured
+        if (_options.DisableSessionPersistence)
+        {
+            args.Add("--no-session-persistence");
         }
 
         return string.Join(" ", args);
