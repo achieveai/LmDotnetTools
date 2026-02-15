@@ -183,7 +183,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         var modelId = request.Model ?? "claude-3-5-sonnet-20241022";
 
         // Create a parser to track state across events
-        var parser = new AnthropicStreamParser();
+        var parser = new AnthropicStreamParser(_logger);
 
         IAsyncEnumerable<AnthropicStreamEvent> streamEvents;
         try

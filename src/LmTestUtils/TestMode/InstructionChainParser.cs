@@ -199,9 +199,212 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 messages.Add(InstructionMessage.ForExplicitText("__TOOLS_LIST__"));
                 continue;
             }
+
+            // Check for request_url_echo - returns the request URL as text
+            if (item.TryGetProperty("request_url_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__REQUEST_URL__"));
+                continue;
+            }
+
+            // Check for request_headers_echo - returns request headers as text
+            if (item.TryGetProperty("request_headers_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__REQUEST_HEADERS__"));
+                continue;
+            }
+
+            // Check for request_params_echo - returns request body params as text
+            if (
+                item.TryGetProperty("request_params_echo", out var paramsEchoEl)
+                && paramsEchoEl.ValueKind == JsonValueKind.Object
+            )
+            {
+                List<string>? fields = null;
+                if (
+                    paramsEchoEl.TryGetProperty("fields", out var fieldsEl)
+                    && fieldsEl.ValueKind == JsonValueKind.Array
+                )
+                {
+                    fields = fieldsEl
+                        .EnumerateArray()
+                        .Where(f => f.ValueKind == JsonValueKind.String)
+                        .Select(f => f.GetString()!)
+                        .ToList();
+                }
+
+                var placeholder =
+                    fields != null && fields.Count > 0
+                        ? $"__REQUEST_PARAMS__:{string.Join(",", fields)}"
+                        : "__REQUEST_PARAMS__";
+                messages.Add(InstructionMessage.ForExplicitText(placeholder));
+                continue;
+            }
+
+            // Check for server_tool_use (built-in tools like web_search)
+            if (
+                item.TryGetProperty("server_tool_use", out var serverToolUseEl)
+                && serverToolUseEl.ValueKind == JsonValueKind.Object
+            )
+            {
+                var serverToolUse = ParseServerToolUse(serverToolUseEl);
+                if (serverToolUse != null)
+                {
+                    messages.Add(InstructionMessage.ForServerToolUse(serverToolUse));
+                    continue;
+                }
+            }
+
+            // Check for server_tool_result
+            if (
+                item.TryGetProperty("server_tool_result", out var serverToolResultEl)
+                && serverToolResultEl.ValueKind == JsonValueKind.Object
+            )
+            {
+                var serverToolResult = ParseServerToolResult(serverToolResultEl);
+                if (serverToolResult != null)
+                {
+                    messages.Add(InstructionMessage.ForServerToolResult(serverToolResult));
+                    continue;
+                }
+            }
+
+            // Check for text_with_citations
+            if (
+                item.TryGetProperty("text_with_citations", out var textWithCitationsEl)
+                && textWithCitationsEl.ValueKind == JsonValueKind.Object
+            )
+            {
+                var textWithCitations = ParseTextWithCitations(textWithCitationsEl);
+                if (textWithCitations != null)
+                {
+                    messages.Add(InstructionMessage.ForTextWithCitations(textWithCitations));
+                    continue;
+                }
+            }
         }
 
         return messages;
+    }
+
+    private static InstructionServerToolUse? ParseServerToolUse(JsonElement element)
+    {
+        var name =
+            element.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                ? nameEl.GetString() ?? string.Empty
+                : string.Empty;
+
+        if (string.IsNullOrEmpty(name))
+        {
+            return null;
+        }
+
+        var id =
+            element.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString()
+                : null;
+
+        JsonElement? input = element.TryGetProperty("input", out var inputEl) ? inputEl.Clone() : null;
+
+        return new InstructionServerToolUse { Id = id, Name = name, Input = input };
+    }
+
+    private static InstructionServerToolResult? ParseServerToolResult(JsonElement element)
+    {
+        var name =
+            element.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                ? nameEl.GetString() ?? string.Empty
+                : string.Empty;
+
+        if (string.IsNullOrEmpty(name))
+        {
+            return null;
+        }
+
+        var toolUseId =
+            element.TryGetProperty("tool_use_id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString()
+                : null;
+
+        var errorCode =
+            element.TryGetProperty("error_code", out var errorEl) && errorEl.ValueKind == JsonValueKind.String
+                ? errorEl.GetString()
+                : null;
+
+        JsonElement? result = element.TryGetProperty("result", out var resultEl) ? resultEl.Clone() : null;
+
+        return new InstructionServerToolResult
+        {
+            ToolUseId = toolUseId,
+            Name = name,
+            Result = result,
+            ErrorCode = errorCode,
+        };
+    }
+
+    private static InstructionTextWithCitations? ParseTextWithCitations(JsonElement element)
+    {
+        string? text = null;
+        int? length = null;
+
+        if (element.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
+        {
+            text = textEl.GetString();
+        }
+
+        if (
+            element.TryGetProperty("length", out var lengthEl)
+            && lengthEl.ValueKind == JsonValueKind.Number
+            && lengthEl.TryGetInt32(out var len)
+        )
+        {
+            length = Math.Max(0, len);
+        }
+
+        // Must have either text or length
+        if (text == null && length == null)
+        {
+            return null;
+        }
+
+        List<InstructionCitation>? citations = null;
+        if (element.TryGetProperty("citations", out var citationsEl) && citationsEl.ValueKind == JsonValueKind.Array)
+        {
+            citations = [];
+            foreach (var citationEl in citationsEl.EnumerateArray())
+            {
+                if (citationEl.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var type =
+                    citationEl.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
+                        ? typeEl.GetString() ?? "url_citation"
+                        : "url_citation";
+
+                var url =
+                    citationEl.TryGetProperty("url", out var urlEl) && urlEl.ValueKind == JsonValueKind.String
+                        ? urlEl.GetString()
+                        : null;
+
+                var title =
+                    citationEl.TryGetProperty("title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
+                        ? titleEl.GetString()
+                        : null;
+
+                var citedText =
+                    citationEl.TryGetProperty("cited_text", out var citedEl) && citedEl.ValueKind == JsonValueKind.String
+                        ? citedEl.GetString()
+                        : null;
+
+                citations.Add(
+                    new InstructionCitation { Type = type, Url = url, Title = title, CitedText = citedText }
+                );
+            }
+        }
+
+        return new InstructionTextWithCitations { Text = text, Length = length, Citations = citations };
     }
 
     private static List<InstructionToolCall> ParseToolCalls(JsonElement toolCallsElement)

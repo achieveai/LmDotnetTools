@@ -41,7 +41,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(message, options);
-        Console.WriteLine(json);
+        TestContextLogger.LogDebug("Serialized JSON: {Json}", json);
 
         // Assert
         var jsonDocument = JsonDocument.Parse(json);
@@ -143,7 +143,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine(json);
+        TestContextLogger.LogDebug("Serialized JSON: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -239,7 +239,7 @@ public class IMessageJsonConverterTests
         {
             // Act
             var json = JsonSerializer.Serialize(originalMessage, options);
-            Console.WriteLine($"Serialized {originalMessage.GetType().Name}: {json}");
+            TestContextLogger.LogDebug("Serialized message. MessageType: {MessageType}, Json: {Json}", originalMessage.GetType().Name, json);
 
             var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -264,7 +264,7 @@ public class IMessageJsonConverterTests
 
         // Act - Verify the message goes through our converter
         var json = JsonSerializer.Serialize<IMessage>(originalMessage, options);
-        Console.WriteLine(json);
+        TestContextLogger.LogDebug("Serialized JSON: {Json}", json);
 
         // Verify the type discriminator was added
         var jsonDocument = JsonDocument.Parse(json);
@@ -307,7 +307,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine($"Serialized ToolCallMessage: {json}");
+        TestContextLogger.LogDebug("Serialized ToolCallMessage. Json: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -347,7 +347,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine($"Serialized ToolCallUpdateMessage: {json}");
+        TestContextLogger.LogDebug("Serialized ToolCallUpdateMessage. Json: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -383,7 +383,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine($"Serialized ToolCallResultMessage: {json}");
+        TestContextLogger.LogDebug("Serialized ToolCallResultMessage. Json: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -473,7 +473,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine($"Serialized ImageMessage with media_type: {json}");
+        TestContextLogger.LogDebug("Serialized ImageMessage with media_type. Json: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
@@ -504,7 +504,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(message, options);
-        Console.WriteLine($"Serialized ImageMessage: {json}");
+        TestContextLogger.LogDebug("Serialized ImageMessage. Json: {Json}", json);
 
         // Assert
         var jsonDocument = JsonDocument.Parse(json);
@@ -617,7 +617,7 @@ public class IMessageJsonConverterTests
 
         // Act
         var json = JsonSerializer.Serialize(originalMessage, options);
-        Console.WriteLine($"Full ImageMessage JSON: {json}");
+        TestContextLogger.LogDebug("Full ImageMessage JSON: {Json}", json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 

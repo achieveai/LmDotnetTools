@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -107,11 +108,6 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             var stream =
                 root.TryGetProperty("stream", out var streamProp) && streamProp.ValueKind == JsonValueKind.True;
 
-            if (!stream)
-            {
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
-            }
-
             var model =
                 root.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String
                     ? modelProp.GetString()
@@ -120,16 +116,14 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             // Analyze full conversation for instruction chains
             var (instruction, responseCount) = _conversationAnalyzer.AnalyzeConversation(root);
 
-            HttpContent content;
+            InstructionPlan? planToExecute = instruction;
             if (instruction != null)
             {
-                // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
-                ResolveDynamicMessages(instruction, root);
+                // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)
+                ResolveDynamicMessages(instruction, root, request);
 
                 // Execute the instruction at the calculated index
                 _logger.LogInformation("Executing instruction {Index}: {Id}", responseCount + 1, instruction.IdMessage);
-
-                content = new SseStreamHttpContent(instruction, model, WordsPerChunk, ChunkDelayMs);
             }
             else
             {
@@ -147,8 +141,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                         null,
                         [InstructionMessage.ForText(5)] // "Task completed successfully"
                     );
-
-                    content = new SseStreamHttpContent(completion, model, WordsPerChunk, ChunkDelayMs);
+                    planToExecute = completion;
                 }
                 else
                 {
@@ -158,26 +151,27 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
 
                     if (plan is not null)
                     {
-                        // Resolve any dynamic message placeholders (system_prompt_echo, tools_list)
-                        ResolveDynamicMessages(plan, root);
+                        // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)
+                        ResolveDynamicMessages(plan, root, request);
 
                         _logger.LogInformation("Using single instruction mode (backward compatibility)");
-                        content = new SseStreamHttpContent(plan, model, WordsPerChunk, ChunkDelayMs);
+                        planToExecute = plan;
                     }
                     else
                     {
-                        // Generate simple response based on user message
-                        var reasoningFirst = fallbackMessage.Contains("\nReason:", StringComparison.Ordinal);
-                        content = new SseStreamHttpContent(
-                            fallbackMessage,
-                            model,
-                            reasoningFirst,
-                            WordsPerChunk,
-                            ChunkDelayMs
+                        // Generate a simple fallback instruction from user text.
+                        planToExecute = new InstructionPlan(
+                            "fallback",
+                            fallbackMessage.Contains("\nReason:", StringComparison.Ordinal) ? 20 : null,
+                            [InstructionMessage.ForExplicitText(fallbackMessage)]
                         );
                     }
                 }
             }
+
+            HttpContent content = stream
+                ? new SseStreamHttpContent(planToExecute!, model, WordsPerChunk, ChunkDelayMs)
+                : CreateNonStreamingResponse(planToExecute!, model ?? "test-model");
 
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
             response.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
@@ -209,7 +203,11 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
     /// <summary>
     ///     Resolves any dynamic message placeholders in the instruction plan using request context.
     /// </summary>
-    private static void ResolveDynamicMessages(InstructionPlan plan, JsonElement requestRoot)
+    private static void ResolveDynamicMessages(
+        InstructionPlan plan,
+        JsonElement requestRoot,
+        HttpRequestMessage request
+    )
     {
         for (var i = 0; i < plan.Messages.Count; i++)
         {
@@ -221,6 +219,21 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             else if (message.ExplicitText == "__TOOLS_LIST__")
             {
                 message.ExplicitText = ExtractToolsList(requestRoot);
+            }
+            else if (message.ExplicitText == "__REQUEST_URL__")
+            {
+                message.ExplicitText = request.RequestUri?.ToString() ?? "No request URL";
+            }
+            else if (message.ExplicitText == "__REQUEST_HEADERS__")
+            {
+                message.ExplicitText = ExtractRequestHeaders(request);
+            }
+            else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__REQUEST_PARAMS__"))
+            {
+                var fieldFilter = message.ExplicitText.Contains(':')
+                    ? message.ExplicitText.Split(':', 2)[1].Split(',')
+                    : null;
+                message.ExplicitText = ExtractRequestParams(requestRoot, fieldFilter);
             }
         }
     }
@@ -306,5 +319,151 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         }
 
         return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
+    }
+
+    /// <summary>
+    ///     Extracts request headers as a newline-separated string.
+    /// </summary>
+    private static string ExtractRequestHeaders(HttpRequestMessage request)
+    {
+        var headers = new List<string>();
+        foreach (var header in request.Headers)
+        {
+            headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+        }
+
+        if (request.Content?.Headers != null)
+        {
+            foreach (var header in request.Content.Headers)
+            {
+                headers.Add($"{header.Key}: {string.Join(", ", header.Value)}");
+            }
+        }
+
+        return headers.Count > 0 ? string.Join("\n", headers) : "No headers";
+    }
+
+    /// <summary>
+    ///     Extracts request body parameters, optionally filtered to specific fields.
+    /// </summary>
+    private static string ExtractRequestParams(JsonElement root, string[]? fields)
+    {
+        if (fields == null || fields.Length == 0)
+        {
+            return root.GetRawText();
+        }
+
+        var result = new Dictionary<string, string>();
+        foreach (var field in fields)
+        {
+            if (root.TryGetProperty(field, out var value))
+            {
+                result[field] = value.ToString();
+            }
+        }
+
+        return result.Count > 0 ? JsonSerializer.Serialize(result) : "No matching params";
+    }
+
+    private StringContent CreateNonStreamingResponse(InstructionPlan plan, string model)
+    {
+        var messageId = $"chatcmpl_{Guid.NewGuid():N}";
+        var contentParts = new List<string>();
+        var toolCalls = new List<object>();
+        string? reasoningText = null;
+
+        if (plan.ReasoningLength is int reasoningLength && reasoningLength > 0)
+        {
+            reasoningText = string.Join(" ", GenerateLoremIpsumWords(reasoningLength));
+        }
+
+        foreach (var message in plan.Messages)
+        {
+            if (!string.IsNullOrWhiteSpace(message.ExplicitText))
+            {
+                contentParts.Add(message.ExplicitText);
+                continue;
+            }
+
+            if (message.TextLength is int textLength && textLength > 0)
+            {
+                contentParts.Add(string.Join(" ", GenerateLoremIpsumWords(textLength)));
+                continue;
+            }
+
+            if (message.ToolCalls == null)
+            {
+                continue;
+            }
+
+            foreach (var toolCall in message.ToolCalls)
+            {
+                toolCalls.Add(
+                    new
+                    {
+                        id = $"call_{Guid.NewGuid():N}",
+                        type = "function",
+                        function = new
+                        {
+                            name = toolCall.Name,
+                            arguments = toolCall.ArgsJson,
+                        },
+                    }
+                );
+            }
+        }
+
+        if (contentParts.Count == 0 && toolCalls.Count == 0)
+        {
+            contentParts.Add("Response generated from instruction chain.");
+        }
+
+        var response = new
+        {
+            id = messageId,
+            @object = "chat.completion",
+            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            model,
+            choices = new[]
+            {
+                new
+                {
+                    index = 0,
+                    message = new
+                    {
+                        role = "assistant",
+                        content = string.Join("\n\n", contentParts),
+                        reasoning = reasoningText,
+                        tool_calls = toolCalls.Count > 0 ? toolCalls : null,
+                    },
+                    finish_reason = "stop",
+                },
+            },
+            usage = new
+            {
+                prompt_tokens = 100,
+                completion_tokens = 50,
+                total_tokens = 150,
+            },
+        };
+
+        var json = JsonSerializer.Serialize(response);
+        return new StringContent(json, Encoding.UTF8, "application/json");
+    }
+
+    private static IEnumerable<string> GenerateLoremIpsumWords(int wordCount)
+    {
+        var lorem = (
+            "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore "
+            + "magna aliqua ut enim ad minim veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea "
+            + "commodo consequat duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat "
+            + "nulla pariatur excepteur sint occaecat cupidatat non proident sunt in culpa qui officia deserunt mollit "
+            + "anim id est laborum"
+        ).Split(' ');
+
+        for (var i = 0; i < wordCount; i++)
+        {
+            yield return lorem[i % lorem.Length];
+        }
     }
 }

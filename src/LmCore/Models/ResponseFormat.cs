@@ -368,11 +368,22 @@ public static class JsonSchemaTypeHelper
     public static bool Contains(this Union<string, IReadOnlyList<string>> type, string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        // Note: 'type' is a struct (Union<T1, T2>) and cannot be null
 
+        // Check if it's a string type first
+        if (type.Is<string>())
+        {
+            return type.Get<string>() == value;
+        }
+
+        // Otherwise it should be a list
         var list = type.Get<IReadOnlyList<string>>();
-        ArgumentNullException.ThrowIfNull(list);
-        return type.Is<string>() ? type.Get<string>() == value : list.Contains(value);
+        if (list == null)
+        {
+            // Fallback if neither type is set
+            return false;
+        }
+
+        return list.Contains(value);
     }
 
     [SuppressMessage(
@@ -382,10 +393,21 @@ public static class JsonSchemaTypeHelper
     )]
     public static string GetTypeString(this Union<string, IReadOnlyList<string>> type)
     {
-        // Note: 'type' is a struct (Union<T1, T2>) and cannot be null
+        // Check if it's a string type first
+        if (type.Is<string>())
+        {
+            return type.Get<string>();
+        }
+
+        // Otherwise it should be a list
         var list = type.Get<IReadOnlyList<string>>();
-        ArgumentNullException.ThrowIfNull(list);
-        return type.Is<string>() ? type.Get<string>() : list.FirstOrDefault(x => x != "null") ?? "object";
+        if (list == null)
+        {
+            // Fallback if neither type is set (shouldn't happen with properly initialized Union)
+            return "object";
+        }
+
+        return list.FirstOrDefault(x => x != "null") ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

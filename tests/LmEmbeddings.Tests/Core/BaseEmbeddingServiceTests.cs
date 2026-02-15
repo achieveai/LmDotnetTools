@@ -320,13 +320,13 @@ public class BaseEmbeddingServiceTests
         private class TestEmbeddingItem
         {
             [JsonPropertyName("Vector")]
-            public float[] Vector { get; } = [];
+            public float[] Vector { get; set; } = [];
 
             [JsonPropertyName("Index")]
             public int Index { get; set; }
 
             [JsonPropertyName("Text")]
-            public string Text { get; } = "";
+            public string Text { get; set; } = "";
         }
 
         private class TestUsage

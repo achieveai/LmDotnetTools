@@ -39,55 +39,67 @@ public class FunctionRegistryFilteringTests
         _ = registry.AddProvider(
             new TestFunctionProvider(
                 "github",
-                "search_repositories",
-                "create_issue",
-                "update_issue",
-                "close_issue",
-                "create_pull_request",
-                "merge_pull_request",
-                "list_workflows",
-                "trigger_workflow"
+                true,
+                [
+                    "search_repositories",
+                    "create_issue",
+                    "update_issue",
+                    "close_issue",
+                    "create_pull_request",
+                    "merge_pull_request",
+                    "list_workflows",
+                    "trigger_workflow",
+                ]
             )
         );
 
         _ = registry.AddProvider(
             new TestFunctionProvider(
                 "filesystem",
-                "read_file",
-                "write_file",
-                "delete_file",
-                "list_directory",
-                "create_directory",
-                "move_file",
-                "copy_file",
-                "search"
+                true,
+                [
+                    "read_file",
+                    "write_file",
+                    "delete_file",
+                    "list_directory",
+                    "create_directory",
+                    "move_file",
+                    "copy_file",
+                    "search",
+                ]
             )
         );
 
         _ = registry.AddProvider(
             new TestFunctionProvider(
                 "database",
-                "execute_query",
-                "list_tables",
-                "describe_table",
-                "create_table",
-                "drop_table",
-                "backup_database",
-                "restore_database",
-                "search"
+                true,
+                [
+                    "execute_query",
+                    "list_tables",
+                    "describe_table",
+                    "create_table",
+                    "drop_table",
+                    "backup_database",
+                    "restore_database",
+                    "search",
+                ]
             )
         );
 
         _ = registry.AddProvider(
             new TestFunctionProvider(
                 "memory",
-                "store_memory",
-                "retrieve_memory",
-                "search",
-                "clear_memory",
-                "list_memories",
-                "update_memory",
-                "delete_memory"
+                true,
+                [
+                    "store_memory",
+                    "retrieve_memory",
+                    "search",
+                    "clear_memory",
+                    "list_memories",
+                    "update_memory",
+                    "delete_memory",
+                ]
             )
         );
 
@@ -111,6 +123,7 @@ public class FunctionRegistryFilteringTests
                 "store_*",
                 "trigger_*",
                 "merge_*",
+                "close_*",
             ],
             UsePrefixOnlyForCollisions = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
@@ -229,6 +242,9 @@ public class FunctionRegistryFilteringTests
         private readonly List<FunctionDescriptor> _functions;
 
         public TestFunctionProvider(string providerName, params string[] functionNames)
+            : this(providerName, false, functionNames) { }
+
+        public TestFunctionProvider(string providerName, bool useClassName, string[] functionNames)
         {
             ProviderName = providerName;
             _functions =
@@ -238,6 +254,7 @@ public class FunctionRegistryFilteringTests
                     Contract = new FunctionContract
                     {
                         Name = name,
+                        ClassName = useClassName ? providerName : null,
                         Description = $"Test function {name} from {providerName}",
                     },
                     Handler = _ => Task.FromResult($"Result from {name}"),
@@ -260,15 +277,15 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         _ = registry.AddProvider(
-            new TestFunctionProvider("GitHub", "search_repositories", "create_issue", "get_file", "list_repos")
+            new TestFunctionProvider("GitHub", true, ["search_repositories", "create_issue", "get_file", "list_repos"])
         );
 
         _ = registry.AddProvider(
-            new TestFunctionProvider("FileSystem", "read_file", "write_file", "list_directory", "search")
+            new TestFunctionProvider("FileSystem", true, ["read_file", "write_file", "list_directory", "search"])
         );
 
         _ = registry.AddProvider(
-            new TestFunctionProvider("Database", "execute_query", "list_tables", "search", "create_table")
+            new TestFunctionProvider("Database", true, ["execute_query", "list_tables", "search", "create_table"])
         );
 
         return registry;
@@ -438,8 +455,8 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         // Add providers with colliding function names
-        _ = registry.AddProvider(new TestFunctionProvider("Provider1", "commonFunc", "unique1", "filtered"));
-        _ = registry.AddProvider(new TestFunctionProvider("Provider2", "commonFunc", "unique2", "filtered"));
+        _ = registry.AddProvider(new TestFunctionProvider("Provider1", true, ["commonFunc", "unique1", "filtered"]));
+        _ = registry.AddProvider(new TestFunctionProvider("Provider2", true, ["commonFunc", "unique2", "filtered"]));
 
         var filterConfig = new FunctionFilterConfig { EnableFiltering = true, GlobalBlockedFunctions = ["filtered"] };
         _ = registry.WithFilterConfig(filterConfig);
@@ -471,8 +488,8 @@ public class FunctionRegistryFilteringTests
         // Arrange
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
-        _ = registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", "func1", "func2", "blockedFunc"));
-        _ = registry.AddProvider(new TestFunctionProvider("AnotherLongName", "func1", "func3", "blockedFunc"));
+        _ = registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", true, ["func1", "func2", "blockedFunc"]));
+        _ = registry.AddProvider(new TestFunctionProvider("AnotherLongName", true, ["func1", "func3", "blockedFunc"]));
 
         var filterConfig = new FunctionFilterConfig
         {
@@ -537,7 +554,7 @@ public class FunctionRegistryFilteringTests
             .AddFunction(
                 new FunctionContract { Name = "func1", Description = "Override" },
                 _ => Task.FromResult("overridden result"),
-                "ExplicitProvider"
+                "Explicit"
             )
             .WithFilterConfig(new FunctionFilterConfig { EnableFiltering = false });
 

@@ -240,6 +240,21 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "reasoning_update";
         }
 
+        if (type == typeof(ServerToolUseMessage))
+        {
+            return "server_tool_use";
+        }
+
+        if (type == typeof(ServerToolResultMessage))
+        {
+            return "server_tool_result";
+        }
+
+        if (type == typeof(TextWithCitationsMessage))
+        {
+            return "text_with_citations";
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -361,6 +376,9 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "usage" => typeof(UsageMessage),
             "reasoning" => typeof(ReasoningMessage),
             "reasoning_update" => typeof(ReasoningUpdateMessage),
+            "server_tool_use" => typeof(ServerToolUseMessage),
+            "server_tool_result" => typeof(ServerToolResultMessage),
+            "text_with_citations" => typeof(TextWithCitationsMessage),
             _ => null,
         };
     }

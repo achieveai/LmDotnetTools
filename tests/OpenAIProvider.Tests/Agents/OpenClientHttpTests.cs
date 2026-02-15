@@ -1,9 +1,12 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
-using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -11,16 +14,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 ///     HTTP-level unit tests for OpenClient using shared test infrastructure
 ///     Tests retry logic, performance tracking, and validation
 /// </summary>
-public class OpenClientHttpTests
+public class OpenClientHttpTests : LoggingTestBase
 {
-    private static readonly string[] fallbackKeys = ["OPENAI_API_KEY"];
-    private static readonly string[] fallbackKeysArray = ["OPENAI_API_URL"];
-    private readonly ILogger<OpenClient> _logger;
+    private readonly ILogger<OpenClient> _openClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public OpenClientHttpTests()
+    public OpenClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = TestLoggerFactory.CreateLogger<OpenClient>();
+        _openClientLogger = LoggerFactory.CreateLogger<OpenClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
@@ -28,16 +29,12 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
-
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            2,
-            successResponse,
-            HttpStatusCode.ServiceUnavailable
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
         );
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -51,7 +48,7 @@ public class OpenClientHttpTests
         Assert.NotNull(response);
         Assert.NotNull(response.Choices);
         Assert.True(response.Choices.Count > 0);
-        Assert.Equal("Test response", response.Choices![0]!.Message!.Content?.Get<string>());
+        Assert.False(string.IsNullOrWhiteSpace(response.Choices![0]!.Message!.Content?.Get<string>()));
 
         // Verify performance tracking
         var metrics = _performanceTracker.GetProviderStatistics("OpenAI");
@@ -65,7 +62,7 @@ public class OpenClientHttpTests
     public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => new OpenClient("test key", GetApiBaseUrlFromEnv()));
+        _ = Assert.Throws<ArgumentException>(() => new OpenClient("test key", GetApiBaseUrl()));
     }
 
     [Fact]
@@ -85,12 +82,12 @@ public class OpenClientHttpTests
     )
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Success", "qwen/qwen3-235b-a22b");
-
-        var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(
+            LoggerFactory,
+            statusSequence: statusCodes,
+            chunkDelayMs: 0
+        );
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -118,11 +115,8 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordMetrics()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -146,15 +140,12 @@ public class OpenClientHttpTests
     public async Task StreamingChatCompletionsAsync_WithRetryOnFailure_ShouldSucceed()
     {
         // Arrange
-        var streamingResponse = ChatCompletionTestData.CreateStreamingResponse();
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            1,
-            streamingResponse,
-            HttpStatusCode.ServiceUnavailable
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
         );
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger, RetryOptions.FastForTests);
 
         var request = new ChatCompletionRequest(
             "qwen/qwen3-235b-a22b",
@@ -180,6 +171,71 @@ public class OpenClientHttpTests
         Assert.Equal(1, metrics.SuccessfulRequests);
     }
 
+    /// <summary>
+    ///     Tests streaming with InstructionChainParser pattern.
+    ///     Uses TestSseMessageHandler for unified test setup.
+    /// </summary>
+    [Fact]
+    public async Task StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed()
+    {
+        // Arrange - Using TestSseMessageHandler with instruction chain in user message
+        Logger.LogInformation("Starting StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed test");
+
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(
+            LoggerFactory,
+            wordsPerChunk: 3,
+            chunkDelayMs: 10
+        );
+
+        // Create OpenClient with test handler - using test-mode URL
+        var client = new OpenClient(httpClient, GetApiBaseUrl(), _performanceTracker, _openClientLogger);
+
+        Logger.LogDebug("Created OpenClient with TestSseMessageHandler");
+
+        // User message with instruction chain embedded
+        var userMessage = """
+            Hello, can you help me with a task?
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Streaming test response", "messages":[{"text_message":{"length":20}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var request = new ChatCompletionRequest(
+            "test-model",
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent(userMessage) }]
+        )
+        {
+            Stream = true,
+        };
+
+        Logger.LogDebug("Created ChatCompletionRequest with instruction chain");
+
+        // Act
+        var responseStream = client.StreamingChatCompletionsAsync(request);
+        var chunks = new List<ChatCompletionResponse>();
+        var allContent = new System.Text.StringBuilder();
+
+        await foreach (var chunk in responseStream)
+        {
+            chunks.Add(chunk);
+            var content = chunk.Choices?.FirstOrDefault()?.Delta?.Content;
+            if (content != null)
+            {
+                allContent.Append(content);
+            }
+        }
+
+        Logger.LogInformation("Received {ChunkCount} chunks, total content: {Content}", chunks.Count, allContent.ToString());
+
+        // Assert
+        Assert.NotEmpty(chunks);
+        Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
+
+        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+    }
+
     public static IEnumerable<object[]> GetRetryScenarios()
     {
         // Scenario: Transient failures that should retry and eventually succeed
@@ -196,7 +252,7 @@ public class OpenClientHttpTests
             false, // should fail
         };
 
-        // Scenario: Max retries exceeded
+        // Scenario: Max retries exceeded (BaseHttpService.ExecuteHttpWithRetryAsync has maxRetries=2)
         yield return new object[]
         {
             new[]
@@ -204,9 +260,8 @@ public class OpenClientHttpTests
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
-                HttpStatusCode.ServiceUnavailable,
             },
-            false, // should fail after max retries
+            false, // should fail after max retries (1 initial + 2 retries = 3 attempts needed to exhaust)
         };
 
         // Scenario: Success on first try
@@ -217,19 +272,8 @@ public class OpenClientHttpTests
         };
     }
 
-    /// <summary>
-    ///     Helper method to get API key from environment (using shared EnvironmentHelper)
-    /// </summary>
-    private static string GetApiKeyFromEnv()
+    private static string GetApiBaseUrl()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", fallbackKeys);
-    }
-
-    /// <summary>
-    ///     Helper method to get API base URL from environment (using shared EnvironmentHelper)
-    /// </summary>
-    private static string GetApiBaseUrlFromEnv()
-    {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", fallbackKeysArray);
+        return "http://test-mode/v1";
     }
 }

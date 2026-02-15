@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -148,6 +149,27 @@ public static class AnthropicExtensions
     {
         return content switch
         {
+            // Text with citations must be checked before plain text (Citations property on base class)
+            AnthropicResponseTextContent { Citations.Count: > 0 } textWithCitations =>
+                new TextWithCitationsMessage
+                {
+                    Text = textWithCitations.Text,
+                    Citations = textWithCitations.Citations!
+                        .Select(c => new CitationInfo
+                        {
+                            Type = c.Type,
+                            Url = c.Url,
+                            Title = c.Title,
+                            CitedText = c.CitedText,
+                            StartIndex = c.StartCharIndex,
+                            EndIndex = c.EndCharIndex,
+                        })
+                        .ToImmutableList(),
+                    Role = ParseRole("assistant"),
+                    FromAgent = agentName,
+                    GenerationId = messageId,
+                },
+
             AnthropicResponseTextContent textContent => new TextMessage
             {
                 Text = textContent.Text,
@@ -181,7 +203,85 @@ public static class AnthropicExtensions
                 IsThinking = true,
             },
 
+            AnthropicResponseServerToolUseContent serverToolUse => new ServerToolUseMessage
+            {
+                ToolUseId = serverToolUse.Id,
+                ToolName = serverToolUse.Name,
+                Input = serverToolUse.Input.Clone(),
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
+
+            AnthropicWebSearchToolResultContent webSearchResult => new ServerToolResultMessage
+            {
+                ToolUseId = webSearchResult.ToolUseId,
+                ToolName = "web_search",
+                Result = webSearchResult.Content.Clone(),
+                IsError = IsContentError(webSearchResult.Content),
+                ErrorCode = GetContentErrorCode(webSearchResult.Content),
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
+
+            AnthropicWebFetchToolResultContent webFetchResult => new ServerToolResultMessage
+            {
+                ToolUseId = webFetchResult.ToolUseId,
+                ToolName = "web_fetch",
+                Result = webFetchResult.Content.Clone(),
+                IsError = IsContentError(webFetchResult.Content),
+                ErrorCode = GetContentErrorCode(webFetchResult.Content),
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
+
+            AnthropicBashCodeExecutionToolResultContent bashResult => new ServerToolResultMessage
+            {
+                ToolUseId = bashResult.ToolUseId,
+                ToolName = "bash_code_execution",
+                Result = bashResult.Content.Clone(),
+                IsError = IsContentError(bashResult.Content),
+                ErrorCode = GetContentErrorCode(bashResult.Content),
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
+
+            AnthropicTextEditorCodeExecutionToolResultContent textEditorResult => new ServerToolResultMessage
+            {
+                ToolUseId = textEditorResult.ToolUseId,
+                ToolName = "text_editor_code_execution",
+                Result = textEditorResult.Content.Clone(),
+                IsError = IsContentError(textEditorResult.Content),
+                ErrorCode = GetContentErrorCode(textEditorResult.Content),
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+            },
+
             _ => null,
         };
+    }
+
+    private static bool IsContentError(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement))
+        {
+            return typeElement.GetString()?.EndsWith("_error") == true;
+        }
+
+        return false;
+    }
+
+    private static string? GetContentErrorCode(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement))
+        {
+            return errorElement.GetString();
+        }
+
+        return null;
     }
 }

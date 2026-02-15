@@ -48,13 +48,27 @@ public abstract class BaseHttpService : IDisposable
     /// </summary>
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="operation">The operation to execute</param>
-    /// <param name="maxRetries">Maximum number of retries (default: 3)</param>
+    /// <param name="retryOptions">Retry configuration options (defaults to RetryOptions.Default)</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The result of the operation</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
     protected async Task<T> ExecuteWithRetryAsync<T>(
         Func<Task<T>> operation,
-        int maxRetries = 3,
+        RetryOptions? retryOptions = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ThrowIfDisposed();
+
+        return await HttpRetryHelper.ExecuteWithRetryAsync(operation, Logger, retryOptions, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Executes an operation with retry logic and exponential backoff (legacy overload)
+    /// </summary>
+    protected async Task<T> ExecuteWithRetryAsync<T>(
+        Func<Task<T>> operation,
+        int maxRetries,
         CancellationToken cancellationToken = default
     )
     {
@@ -69,14 +83,34 @@ public abstract class BaseHttpService : IDisposable
     /// <typeparam name="T">The return type</typeparam>
     /// <param name="httpOperation">The HTTP operation that returns an HttpResponseMessage</param>
     /// <param name="responseProcessor">Function to process the successful HTTP response</param>
-    /// <param name="maxRetries">Maximum number of retries (default: 3)</param>
+    /// <param name="retryOptions">Retry configuration options (defaults to RetryOptions.Default)</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The processed result from the HTTP response</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
     protected async Task<T> ExecuteHttpWithRetryAsync<T>(
         Func<Task<HttpResponseMessage>> httpOperation,
         Func<HttpResponseMessage, Task<T>> responseProcessor,
-        int maxRetries = 5,
+        RetryOptions? retryOptions = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+
+        return await HttpRetryHelper.ExecuteHttpWithRetryAsync(
+            httpOperation,
+            responseProcessor,
+            Logger,
+            retryOptions,
+            cancellationToken
+        );
+    }
+
+    /// <summary>
+    ///     Executes an HTTP operation with retry logic (legacy overload)
+    /// </summary>
+    protected async Task<T> ExecuteHttpWithRetryAsync<T>(
+        Func<Task<HttpResponseMessage>> httpOperation,
+        Func<HttpResponseMessage, Task<T>> responseProcessor,
+        int maxRetries,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -96,7 +130,10 @@ public abstract class BaseHttpService : IDisposable
     /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
     protected void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(GetType().Name);
+        }
     }
 
     /// <summary>

@@ -87,16 +87,40 @@ function getToolCallSummary(toolCall: ToolCall): string {
 }
 
 /**
+ * Check if a tool call is a server-side search tool
+ */
+function isSearchTool(functionName: string | null | undefined): boolean {
+  if (!functionName) return false;
+  const name = functionName.toLowerCase();
+  return name === 'web_search' || name === 'web_fetch';
+}
+
+/**
+ * Check if a tool call is a code execution tool
+ */
+function isCodeExecutionTool(functionName: string | null | undefined): boolean {
+  if (!functionName) return false;
+  const name = functionName.toLowerCase();
+  return name === 'code_execution' || name === 'bash_code_execution' || name === 'text_editor_code_execution';
+}
+
+/**
  * Get icon for message type or tool-specific icon
  */
 function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
   if (isReasoningMessage(item)) {
     return '💭'; // Thinking emoji
   }
-  
+
   // For tool calls, try to get tool-specific icon
   if (isToolsCallMessage(item) && item.tool_calls.length === 1) {
     const toolCall = item.tool_calls[0];
+    if (isSearchTool(toolCall.function_name)) {
+      return '🔍'; // Search emoji for web_search/web_fetch
+    }
+    if (isCodeExecutionTool(toolCall.function_name)) {
+      return '💻'; // Computer emoji for code execution
+    }
     if (isWeatherTool(toolCall.function_name)) {
       // For weather tools, try to get weather-specific emoji
       const weatherData = getWeatherData(toolCall);
@@ -107,7 +131,7 @@ function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
       return '🌤️';
     }
   }
-  
+
   return '🔧'; // Generic tool emoji
 }
 
@@ -276,6 +300,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   padding: 8px;
   border: 1px solid #e0e0e0;
   margin-bottom: 8px;
+  overflow: hidden;
 }
 
 .pill-header {
@@ -347,6 +372,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid transparent;
+  min-width: 0;
 }
 
 .pill-item:hover {
@@ -451,6 +477,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #e0e0e0;
+  overflow-x: auto;
 }
 
 .reasoning-text {

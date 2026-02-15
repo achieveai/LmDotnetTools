@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
 using static AchieveAi.LmDotnetTools.TestUtils.TestUtils;
@@ -21,6 +22,8 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 /// </summary>
 public class DataDrivenReasoningStreamingTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
+    private const string TestBaseUrl = "http://test-mode/v1";
     private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
     private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
     private readonly ProviderTestDataManager _dm = new();
@@ -32,30 +35,10 @@ public class DataDrivenReasoningStreamingTests
     public async Task Reasoning_RawStreaming_Playback(string testName)
     {
         var (messages, options) = _dm.LoadLmCoreRequest(testName, ProviderType.OpenAI);
+        messages = WithStreamingReasoningInstruction(messages, "raw");
 
-        // Prepare playback cassette (.stream.json)
-        var cassettePath = Path.Combine(
-            FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "OpenAI",
-            $"{testName}.stream.json"
-        );
-
-        if (!File.Exists(cassettePath))
-        {
-            Debug.WriteLine($"Cassette for {testName} not found – run creator first.");
-            return; // Skip in CI until artefacts exist
-        }
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(cassettePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var http = new HttpClient(handler);
-        var client = new OpenClient(http, GetApiBaseUrlFromEnv());
+        var http = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0, wordsPerChunk: 4);
+        var client = new OpenClient(http, TestBaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act – stream and materialise into list (NO joiner middleware)
@@ -128,30 +111,10 @@ public class DataDrivenReasoningStreamingTests
     public async Task Reasoning_JoinedStreaming_Playback(string testName)
     {
         var (messages, options) = _dm.LoadLmCoreRequest(testName, ProviderType.OpenAI);
+        messages = WithStreamingReasoningInstruction(messages, "joined");
 
-        // Prepare playback cassette (.stream.json)
-        var cassettePath = Path.Combine(
-            FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "OpenAI",
-            $"{testName}.stream.json"
-        );
-
-        if (!File.Exists(cassettePath))
-        {
-            Debug.WriteLine($"Cassette for {testName} not found – run creator first.");
-            return; // Skip in CI until artefacts exist
-        }
-
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .WithRecordPlayback(cassettePath)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var http = new HttpClient(handler);
-        var client = new OpenClient(http, GetApiBaseUrlFromEnv());
+        var http = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0, wordsPerChunk: 4);
+        var client = new OpenClient(http, TestBaseUrl);
         var baseAgent = new OpenClientAgent("TestAgent", client);
 
         // Wrap with MessageUpdateJoinerMiddleware
@@ -213,26 +176,10 @@ public class DataDrivenReasoningStreamingTests
     {
         var testName = "O4MiniReasoningStreaming"; // This test data had the filtering issues
         var (messages, options) = _dm.LoadLmCoreRequest(testName, ProviderType.OpenAI);
+        messages = WithStreamingReasoningInstruction(messages, "filtering");
 
-        // Prepare playback cassette (.stream.json)
-        var cassettePath = Path.Combine(
-            FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests",
-            "TestData",
-            "OpenAI",
-            $"{testName}.stream.json"
-        );
-
-        if (!File.Exists(cassettePath))
-        {
-            Debug.WriteLine($"Cassette for {testName} not found – skipping validation test.");
-            return;
-        }
-
-        var handler = MockHttpHandlerBuilder.Create().WithRecordPlayback(cassettePath).Build();
-
-        var http = new HttpClient(handler);
-        var client = new OpenClient(http, GetApiBaseUrlFromEnv());
+        var http = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0, wordsPerChunk: 4);
+        var client = new OpenClient(http, TestBaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Get the raw streaming response
@@ -338,6 +285,11 @@ public class DataDrivenReasoningStreamingTests
     [Fact]
     public async Task CreateBasicReasoningStreamingTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "BasicReasoningStreaming";
         await CreateStreamingArtefactsAsync(testName, "deepseek/deepseek-r1-0528:free");
     }
@@ -345,6 +297,11 @@ public class DataDrivenReasoningStreamingTests
     [Fact]
     public async Task CreateO4MiniReasoningStreamingTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "O4MiniReasoningStreaming";
         await CreateStreamingArtefactsAsync(testName, "o4-mini");
     }
@@ -427,6 +384,33 @@ public class DataDrivenReasoningStreamingTests
     private static string GetApiBaseUrlFromEnv()
     {
         return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
+    }
+
+    private static IMessage[] WithStreamingReasoningInstruction(IMessage[] messages, string id)
+    {
+        var userIndex = Array.FindIndex(messages, m => m is TextMessage tm && tm.Role == Role.User);
+        if (userIndex < 0 || messages[userIndex] is not TextMessage userMessage)
+        {
+            return messages;
+        }
+
+        var instruction =
+            "<|instruction_start|>{\"instruction_chain\":[{\"id\":\""
+            + id
+            + "\",\"reasoning\":{\"length\":32},\"messages\":[{\"text_message\":{\"length\":64}}]}]}<|instruction_end|>";
+
+        var rewritten = messages.ToArray();
+        rewritten[userIndex] = userMessage with { Text = $"{userMessage.Text}\n{instruction}" };
+        return rewritten;
     }
 
     #endregion

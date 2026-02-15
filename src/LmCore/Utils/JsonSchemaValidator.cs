@@ -68,8 +68,6 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             return new SchemaValidationResult(false, [$"Failed to parse schema: {ex.Message}"]);
         }
 
-        Console.WriteLine($"[DEBUG] Validating JSON: {json}");
-
         try
         {
             var evaluationOptions = new EvaluationOptions { OutputFormat = OutputFormat.Hierarchical };
@@ -77,8 +75,6 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             var result = jsonSchema.Evaluate(dataNode, evaluationOptions);
             var isValid = result.IsValid;
             var errors = ExtractValidationErrors(result);
-
-            Console.WriteLine($"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}");
 
             return new SchemaValidationResult(isValid, errors);
         }
@@ -121,7 +117,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
 
         var schemaText = root.ToJsonString();
-        Console.WriteLine($"[DEBUG] Generated schema text: {schemaText}");
+
         return JsonSchema.FromText(schemaText);
     }
 

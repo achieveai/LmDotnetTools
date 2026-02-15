@@ -194,6 +194,14 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         // For plural message types, convert them to singular messages
         switch (message)
         {
+            case TextWithCitationsMessage m:
+                // TextWithCitationsMessage replaces the accumulated TextUpdateMessage stream,
+                // so it must share the same messageOrderIdx identity as "text_update"
+                CheckAndHandleIdentityChange("text_update");
+                var (citationsOrderIdx, _) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = citationsOrderIdx };
+                break;
+
             case TextMessage m:
                 StartNewMessage();
                 var (textOrderIdx, _) = GetCurrentIndices();

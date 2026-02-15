@@ -35,11 +35,13 @@ public sealed class ChatWebSocketManager
     /// <param name="webSocket">The WebSocket connection</param>
     /// <param name="threadId">The thread ID for routing to the correct agent</param>
     /// <param name="mode">Optional chat mode for agent configuration</param>
+    /// <param name="recordWriter">Optional writer for recording messages to a JSONL file</param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
         ChatMode? mode,
+        StreamWriter? recordWriter,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
@@ -57,7 +59,7 @@ public sealed class ChatWebSocketManager
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Start subscription task to stream messages to client
-        var subscriptionTask = StreamMessagesToClientAsync(webSocket, agent, threadId, connectionCts.Token);
+        var subscriptionTask = StreamMessagesToClientAsync(webSocket, agent, threadId, recordWriter, connectionCts.Token);
 
         // Handle incoming messages from client
         var receiveTask = ReceiveMessagesFromClientAsync(webSocket, agent, threadId, connectionCts.Token);
@@ -93,6 +95,7 @@ public sealed class ChatWebSocketManager
         System.Net.WebSockets.WebSocket webSocket,
         IMultiTurnAgent agent,
         string threadId,
+        StreamWriter? recordWriter,
         CancellationToken ct)
     {
         try
@@ -113,10 +116,19 @@ public sealed class ChatWebSocketManager
                     endOfMessage: true,
                     ct);
 
+                if (recordWriter != null)
+                {
+                    await recordWriter.WriteLineAsync(messageJson);
+                    await recordWriter.FlushAsync();
+                }
+
                 _logger.LogDebug(
-                    "Sent message type {MessageType} to thread {ThreadId}",
+                    "Sent message type {MessageType} to thread {ThreadId}, orderIdx={MessageOrderIdx}, genId={GenerationId}, runId={RunId}",
                     message.GetType().Name,
-                    threadId);
+                    threadId,
+                    message.MessageOrderIdx,
+                    message.GenerationId,
+                    message.RunId);
 
                 // Send done signal after RunCompletedMessage
                 if (message is RunCompletedMessage)
@@ -128,6 +140,12 @@ public sealed class ChatWebSocketManager
                         WebSocketMessageType.Text,
                         endOfMessage: true,
                         ct);
+
+                    if (recordWriter != null)
+                    {
+                        await recordWriter.WriteLineAsync(doneJson);
+                        await recordWriter.FlushAsync();
+                    }
                 }
             }
         }

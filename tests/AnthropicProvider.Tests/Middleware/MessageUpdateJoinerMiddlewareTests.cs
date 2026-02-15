@@ -2,10 +2,15 @@ using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
-public class MessageUpdateJoinerMiddlewareTests
+public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
 {
+    public MessageUpdateJoinerMiddlewareTests(ITestOutputHelper output) : base(output) { }
+
     /// <summary>
     ///     Gets the path to test files
     /// </summary>
@@ -18,7 +23,12 @@ public class MessageUpdateJoinerMiddlewareTests
             ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
+        // Check for both .git directory (normal repo) and .git file (worktree)
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, ".git"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -38,7 +48,7 @@ public class MessageUpdateJoinerMiddlewareTests
         // Arrange
         // Get paths to test files
         var testFilesPath = GetTestFilesPath();
-        Console.WriteLine($"Test files path: {testFilesPath}");
+        Logger.LogTrace("Test files path: {TestFilesPath}", testFilesPath);
 
         var streamingResponsePath = Path.Combine(testFilesPath, "example_streaming_response2.txt");
         var expectedOutputPath = Path.Combine(testFilesPath, "streaming_responses2_lmcore.json");
@@ -58,7 +68,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var handler = MockHttpHandlerBuilder.Create().RespondWithStreamingFile(streamingResponsePath).Build();
 
         var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         // Create the Anthropic agent
         var agent = new AnthropicAgent("TestAgent", anthropicClient);

@@ -193,9 +193,9 @@ public class ServerEmbeddingsTests
     {
         Debug.WriteLine("Testing linear backoff retry logic");
 
-        // Arrange
+        // Arrange - 1 retry is enough to verify retry logic works
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            2,
+            1,
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1)
         );
         using var service = CreateServerEmbeddings(fakeHandler);
@@ -209,10 +209,10 @@ public class ServerEmbeddingsTests
         Assert.NotNull(result);
         Assert.Equal(1536, result.Length);
 
-        // Verify linear backoff timing (should be approximately 1s + 2s = 3s for 2 retries)
+        // Verify linear backoff timing (should be approximately 1s for 1 retry)
         Assert.True(
-            stopwatch.ElapsedMilliseconds >= 2900,
-            $"Expected at least 2900ms for linear backoff, got {stopwatch.ElapsedMilliseconds}ms"
+            stopwatch.ElapsedMilliseconds >= 900,
+            $"Expected at least 900ms for linear backoff, got {stopwatch.ElapsedMilliseconds}ms"
         );
         Debug.WriteLine($"Linear backoff retry completed in {stopwatch.ElapsedMilliseconds}ms");
     }

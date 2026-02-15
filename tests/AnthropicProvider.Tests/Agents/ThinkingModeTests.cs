@@ -2,26 +2,32 @@ using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
-public class ThinkingModeTests
+public class ThinkingModeTests : LoggingTestBase
 {
+    public ThinkingModeTests(ITestOutputHelper output) : base(output) { }
+
     [Fact]
     public void AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions()
     {
-        Console.WriteLine("Starting AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions test");
+        Logger.LogTrace("Starting AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions test");
         // Arrange
         var messages = new[]
         {
             new TextMessage { Role = Role.User, Text = "What is 1234 * 5678?" },
         };
-        Console.WriteLine("Created messages");
+        Logger.LogTrace("Created messages");
 
         // Set up thinking mode in options with an explicit budget
         var expectedBudget = 2048;
         var thinking = new AnthropicThinking(expectedBudget);
-        Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
+        Logger.LogTrace("Created thinking with budget: {BudgetTokens}", thinking.BudgetTokens);
 
         var options = new GenerateReplyOptions
         {
@@ -29,14 +35,15 @@ public class ThinkingModeTests
             Temperature = 1.0f,
             ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
-        Console.WriteLine("Created options with thinking in ExtraProperties");
+        Logger.LogTrace("Created options with thinking in ExtraProperties");
 
         // Act
-        Console.WriteLine("About to call AnthropicRequest.FromMessages");
+        Logger.LogTrace("About to call AnthropicRequest.FromMessages");
         var request = AnthropicRequest.FromMessages(messages, options);
-        Console.WriteLine(
-            $"FromMessages result - request: {(request != null ? "not null" : "null")}, Thinking: {(request?.Thinking != null ? request.Thinking.BudgetTokens.ToString() : "null")}"
-        );
+        Logger.LogTrace(
+            "FromMessages result - request: {RequestStatus}, Thinking: {ThinkingBudget}",
+            request != null ? "not null" : "null",
+            request?.Thinking != null ? request.Thinking.BudgetTokens.ToString() : "null");
 
         // Assert
         Assert.NotNull(request);
@@ -47,20 +54,15 @@ public class ThinkingModeTests
     [Fact]
     public async Task ThinkingMode_ShouldBeIncludedInRequest()
     {
-        Console.WriteLine("Starting ThinkingMode_ShouldBeIncludedInRequest test");
+        Logger.LogTrace("Starting ThinkingMode_ShouldBeIncludedInRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
-            .CaptureRequests(out var requestCapture)
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        // Arrange - Using test-mode handler with request capture
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         var thinking = new AnthropicThinking(2048);
-        Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
+        Logger.LogTrace("Created thinking with budget: {BudgetTokens}", thinking.BudgetTokens);
 
         var request = new AnthropicRequest
         {
@@ -75,11 +77,11 @@ public class ThinkingModeTests
                 },
             ],
         };
-        Console.WriteLine($"Created request with thinking: {request.Thinking?.BudgetTokens}");
+        Logger.LogTrace("Created request with thinking: {BudgetTokens}", request.Thinking?.BudgetTokens);
 
         // Act - async call with proper await
         _ = await anthropicClient.CreateChatCompletionsAsync(request);
-        Console.WriteLine("After API call - Captured thinking from request");
+        Logger.LogTrace("After API call - Captured thinking from request");
 
         // Assert using the RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -88,7 +90,7 @@ public class ThinkingModeTests
         Assert.NotNull(capturedRequest);
         Assert.NotNull(capturedRequest.Thinking);
         Assert.Equal(2048, capturedRequest.Thinking.BudgetTokens);
-        Console.WriteLine($"Verified thinking budget: {capturedRequest.Thinking.BudgetTokens}");
+        Logger.LogTrace("Verified thinking budget: {BudgetTokens}", capturedRequest.Thinking.BudgetTokens);
 
         // Also verify that the request was captured correctly
         Assert.Equal("claude-3-7-sonnet-20250219", capturedRequest.Model);
@@ -97,19 +99,14 @@ public class ThinkingModeTests
     [Fact]
     public async Task ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest()
     {
-        TestLogger.Log("Starting ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest test");
+        Logger.LogTrace("Starting ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219")
-            .CaptureRequests(out var requestCapture)
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var anthropicClient = new AnthropicClient("test-api-key", httpClient);
+        // Arrange - Using test-mode handler with request capture
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(capture: requestCapture, chunkDelayMs: 0);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", anthropicClient);
-        TestLogger.Log("Created agent and capture client");
+        Logger.LogTrace("Created agent and capture client");
 
         var messages = new[]
         {
@@ -121,7 +118,7 @@ public class ThinkingModeTests
             },
             new TextMessage { Role = Role.User, Text = "Find the files in /code that are not present in /code_old." },
         };
-        TestLogger.Log($"Created messages array with {messages.Length} messages");
+        Logger.LogTrace("Created messages array with {MessageCount} messages", messages.Length);
 
         // Create function definition for Python execution
         var pythonFunction = new FunctionContract
@@ -150,12 +147,12 @@ public class ThinkingModeTests
             Functions = [pythonFunction],
             ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
-        TestLogger.Log("Created options with thinking and function tools");
+        Logger.LogTrace("Created options with thinking and function tools");
 
         // Act
-        TestLogger.Log("About to call GenerateReplyAsync");
+        Logger.LogTrace("About to call GenerateReplyAsync");
         var response = await agent.GenerateReplyAsync(messages, options);
-        TestLogger.Log("After GenerateReplyAsync call");
+        Logger.LogTrace("After GenerateReplyAsync call");
 
         // Assert using RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
@@ -179,6 +176,6 @@ public class ThinkingModeTests
         Assert.NotNull(tools[0].Description);
         Assert.NotNull(tools[0].InputSchema);
 
-        TestLogger.Log($"Thinking budget verified: {capturedRequest.Thinking.BudgetTokens}");
+        Logger.LogTrace("Thinking budget verified: {BudgetTokens}", capturedRequest.Thinking.BudgetTokens);
     }
 }

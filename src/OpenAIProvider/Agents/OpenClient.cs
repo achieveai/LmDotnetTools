@@ -22,14 +22,15 @@ public class OpenClient : BaseHttpService, IOpenClient
         OpenAIJsonSerializerOptionsFactory.CreateForProduction();
 
     private readonly string _baseUrl;
-
     private readonly IPerformanceTracker _performanceTracker;
+    private readonly RetryOptions _retryOptions;
 
     public OpenClient(
         string apiKey,
         string baseUrl,
         IPerformanceTracker? performanceTracker = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        RetryOptions? retryOptions = null
     )
         : base(logger ?? NullLogger.Instance, CreateHttpClient(apiKey, baseUrl))
     {
@@ -39,6 +40,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
         _baseUrl = baseUrl.TrimEnd('/');
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
+        _retryOptions = retryOptions ?? RetryOptions.Default;
 
         // Log client initialization with provider details
         Logger.LogInformation(
@@ -52,7 +54,8 @@ public class OpenClient : BaseHttpService, IOpenClient
         HttpClient httpClient,
         string baseUrl,
         IPerformanceTracker? performanceTracker = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        RetryOptions? retryOptions = null
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
@@ -61,6 +64,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
         _baseUrl = baseUrl.TrimEnd('/');
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
+        _retryOptions = retryOptions ?? RetryOptions.Default;
 
         // Log client initialization with provider details
         Logger.LogInformation(
@@ -163,7 +167,8 @@ public class OpenClient : BaseHttpService, IOpenClient
 
                     return chatResponse;
                 },
-                cancellationToken: cancellationToken
+                _retryOptions,
+                cancellationToken
             );
 
             // Track successful request metrics
@@ -314,7 +319,8 @@ public class OpenClient : BaseHttpService, IOpenClient
 
                     return (httpResponse, stream);
                 },
-                cancellationToken: cancellationToken
+                _retryOptions,
+                cancellationToken
             );
 
             // Track successful setup

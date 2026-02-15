@@ -44,6 +44,30 @@ public record GenerateReplyOptions
     public ResponseFormat? ResponseFormat { get; init; }
 
     /// <summary>
+    ///     Built-in tools configuration (provider-specific).
+    ///     For Anthropic: List of AnthropicBuiltInTool (web_search, web_fetch, code_execution).
+    ///     These tools execute on the LLM provider's server, not locally.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<object>? BuiltInTools { get; init; }
+
+    /// <summary>
+    ///     Controls how the model uses tools.
+    ///     Values: "auto" (model decides), "any" (must use a tool), "none" (tools disabled),
+    ///     or a specific tool name to force that tool.
+    /// </summary>
+    [JsonPropertyName("tool_choice")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolChoice { get; init; }
+
+    /// <summary>
+    ///     Container ID for code execution (reuse sandbox across turns).
+    ///     Used with Anthropic's code_execution built-in tool.
+    /// </summary>
+    [JsonIgnore]
+    public string? ContainerId { get; init; }
+
+    /// <summary>
     ///     Run ID for tracking individual agent execution runs within a conversation.
     ///     Maps to the AG-UI runId concept.
     /// </summary>
@@ -105,6 +129,9 @@ public record GenerateReplyOptions
             MaxToken = other.MaxToken ?? MaxToken,
             StopSequence = other.StopSequence ?? StopSequence,
             Functions = other.Functions ?? Functions,
+            BuiltInTools = other.BuiltInTools ?? BuiltInTools,
+            ToolChoice = other.ToolChoice ?? ToolChoice,
+            ContainerId = other.ContainerId ?? ContainerId,
             ExtraProperties = mergedExtraProps,
         };
     }

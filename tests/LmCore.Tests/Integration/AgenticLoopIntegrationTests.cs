@@ -60,16 +60,32 @@ public class AgenticLoopIntegrationTests
         var firstResponse = await agent.GenerateReplyAsync([userMessage]);
         var firstMessages = firstResponse.ToList();
         // Assert first response has ordered messages
+        // MessageTransformationMiddleware converts ToolsCallMessage → individual ToolCallMessage
         Assert.Equal(2, firstMessages.Count);
-        var toolCallMsg = Assert.IsType<ToolsCallMessage>(firstMessages[0]);
+        var toolCallMsg = Assert.IsType<ToolCallMessage>(firstMessages[0]);
         var usageMsg = Assert.IsType<UsageMessage>(firstMessages[1]);
         // Verify ordering
         Assert.Equal(0, toolCallMsg.MessageOrderIdx);
         Assert.Equal(1, usageMsg.MessageOrderIdx);
         Assert.Equal(generationId1, toolCallMsg.GenerationId);
-        // Step 2: Execute tool calls
+        // Step 2: Execute tool calls - reconstruct ToolsCallMessage for executor
+        var toolsCallMsg = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = toolCallMsg.FunctionName,
+                    FunctionArgs = toolCallMsg.FunctionArgs,
+                    ToolCallId = toolCallMsg.ToolCallId,
+                    ToolCallIdx = toolCallMsg.ToolCallIdx,
+                },
+            ],
+            Role = toolCallMsg.Role,
+            GenerationId = toolCallMsg.GenerationId,
+        };
         var toolResultMessage = await ToolCallExecutor.ExecuteAsync(
-            toolCallMsg,
+            toolsCallMsg,
             functionMap
         );
         // Assert tool result has correct generation ID
@@ -96,7 +112,7 @@ public class AgenticLoopIntegrationTests
         var conversationHistory = new List<IMessage>
         {
             userMessage,
-            toolCallMsg,
+            toolsCallMsg,
             toolResultMessage
         };
         var finalResponse = await agent.GenerateReplyAsync(conversationHistory);
@@ -168,12 +184,37 @@ public class AgenticLoopIntegrationTests
         // Act
         var userMessage = new TextMessage { Text = "Compare weather SF vs NYC", Role = Role.User };
         // Turn 1
+        // MessageTransformationMiddleware splits ToolsCallMessage into individual ToolCallMessages
         var response1 = await agent.GenerateReplyAsync([userMessage]);
-        var msg1 = response1.Single();
-        var toolCallMsg = Assert.IsType<ToolsCallMessage>(msg1);
-        Assert.Equal(2, toolCallMsg.ToolCalls.Count);
-        Assert.Equal(0, toolCallMsg.ToolCalls[0].ToolCallIdx);
-        Assert.Equal(1, toolCallMsg.ToolCalls[1].ToolCallIdx);
+        var msgs1 = response1.ToList();
+        Assert.Equal(2, msgs1.Count);
+        var toolCall1 = Assert.IsType<ToolCallMessage>(msgs1[0]);
+        var toolCall2 = Assert.IsType<ToolCallMessage>(msgs1[1]);
+        Assert.Equal(0, toolCall1.ToolCallIdx);
+        Assert.Equal(1, toolCall2.ToolCallIdx);
+        // Reconstruct ToolsCallMessage for executor
+        var toolCallMsg = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = toolCall1.FunctionName,
+                    FunctionArgs = toolCall1.FunctionArgs,
+                    ToolCallId = toolCall1.ToolCallId,
+                    ToolCallIdx = toolCall1.ToolCallIdx,
+                },
+                new ToolCall
+                {
+                    FunctionName = toolCall2.FunctionName,
+                    FunctionArgs = toolCall2.FunctionArgs,
+                    ToolCallId = toolCall2.ToolCallId,
+                    ToolCallIdx = toolCall2.ToolCallIdx,
+                },
+            ],
+            Role = toolCall1.Role,
+            GenerationId = toolCall1.GenerationId,
+        };
         // Execute tools
         var toolResult = await ToolCallExecutor.ExecuteAsync(toolCallMsg, functionMap);
         Assert.Equal(2, toolResult.ToolCallResults.Count);

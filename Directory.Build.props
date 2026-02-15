@@ -38,6 +38,22 @@
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>
+  
+  <!-- Build and Test Logging Configuration -->
+  <PropertyGroup>
+    <!-- Log output directory (git-ignored) -->
+    <LogOutputDir>$(MSBuildThisFileDirectory).logs</LogOutputDir>
+    
+    <!-- MSBuild binary log for builds (use: dotnet build -bl) -->
+    <!-- Binary logs can be viewed with https://msbuildlog.com/ -->
+    <MSBuildBinaryLogPath>$(LogOutputDir)/build-$(MSBuildProjectName).binlog</MSBuildBinaryLogPath>
+  </PropertyGroup>
+  
+  <!-- Test logging defaults (applied when running dotnet test) -->
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true' OR $(MSBuildProjectName.EndsWith('.Tests'))">
+    <!-- TRX format for structured test results -->
+    <VSTestResultsDirectory>$(LogOutputDir)/test-results</VSTestResultsDirectory>
+  </PropertyGroup>
   <!-- Include documentation files in packages -->
   <ItemGroup>
     <!-- Main README -->

@@ -813,5 +813,75 @@ describe('MetadataPill', () => {
       expect(text).toContain('💧 Rainy');
     });
   });
+
+  describe('Layout Containment (overflow regression)', () => {
+    // Read the component CSS source at import time for regression checks.
+    // happy-dom doesn't compute scoped CSS, so we verify the source directly.
+    const componentSource = (() => {
+      const fs = require('fs');
+      const path = require('path');
+      return fs.readFileSync(
+        path.resolve(__dirname, '../../components/MetadataPill.vue'),
+        'utf-8'
+      ) as string;
+    })();
+
+    it('should have overflow hidden on .metadata-pill to contain expanded content', () => {
+      expect(componentSource).toMatch(/\.metadata-pill\s*\{[^}]*overflow:\s*hidden/);
+    });
+
+    it('should have min-width 0 on .pill-item to allow flex shrinking', () => {
+      expect(componentSource).toMatch(/\.pill-item\s*\{[^}]*min-width:\s*0/);
+    });
+
+    it('should have overflow-x auto on .item-content for horizontal scroll', () => {
+      expect(componentSource).toMatch(/\.item-content\s*\{[^}]*overflow-x:\s*auto/);
+    });
+
+    it('should contain wide pre content within .item-content when expanded', async () => {
+      const wideResult: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: 'call_wide',
+        result: JSON.stringify({
+          very_long_key_name_that_extends_content: 'a'.repeat(500),
+          another_wide_field: { nested: { deeply: { value: 'b'.repeat(300) } } },
+        }),
+        role: 'tool',
+      };
+
+      const toolCall: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        role: 'assistant',
+        tool_calls: [
+          {
+            tool_call_id: 'call_wide',
+            function_name: 'calculate',
+            function_args: JSON.stringify({ a: 273.15, operation: 'add', b: 100 }),
+          },
+        ],
+      };
+
+      const wrapper = mount(MetadataPill, {
+        props: { items: [toolCall] },
+        global: {
+          provide: {
+            getResultForToolCall: (id: string | null | undefined) =>
+              id === 'call_wide' ? wideResult : null,
+          },
+        },
+      });
+
+      // Expand the item
+      await wrapper.find('.pill-item').trigger('click');
+
+      // Verify pre elements exist inside .item-content
+      const itemContent = wrapper.find('.item-content');
+      const preElements = itemContent.findAll('pre');
+      expect(preElements.length).toBeGreaterThan(0);
+
+      // Verify the wide result text is present
+      expect(itemContent.text()).toContain('very_long_key_name_that_extends_content');
+    });
+  });
 });
 

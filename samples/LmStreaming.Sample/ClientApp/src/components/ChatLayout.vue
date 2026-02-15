@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
-import { useChat } from '@/composables/useChat';
+import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
@@ -184,8 +184,9 @@ async function handleSend(text: string): Promise<void> {
 
   // If this is a new conversation (first message), add it to the sidebar
   if (isNewConversation && currentThreadId.value) {
-    const title = text.substring(0, 50);
-    const preview = text.substring(0, 100);
+    const displayText = getDisplayText(text);
+    const title = displayText.substring(0, 50);
+    const preview = displayText.substring(0, 100);
 
     // Add to local sidebar immediately
     addOrUpdateConversation({

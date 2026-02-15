@@ -387,7 +387,7 @@ public class JsonFragmentAccumulatorTests
     [MemberData(nameof(JsonCompletionTestCases))]
     public void Test_JsonCompletionEvent(string toolName, string[] fragments, string description)
     {
-        Debug.WriteLine($"Testing: {description}");
+        TestContextLogger.LogDebug("Testing scenario: {Description}", description);
 
         var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
         var allUpdates = new List<JsonFragmentUpdate>();
@@ -398,10 +398,14 @@ public class JsonFragmentAccumulatorTests
             var updates = generator.AddFragment(fragment).ToList();
             allUpdates.AddRange(updates);
 
-            Debug.WriteLine($"Fragment: '{fragment}' -> {updates.Count} updates");
+            TestContextLogger.LogDebug(
+                "Fragment processed. Fragment: {Fragment}, UpdateCount: {UpdateCount}",
+                fragment,
+                updates.Count
+            );
             foreach (var update in updates)
             {
-                Debug.WriteLine($"  {update.Kind}: {update.Path} = {update.TextValue}");
+                TestContextLogger.LogDebug("Update emitted. Kind: {Kind}, Path: {Path}, Value: {Value}", update.Kind, update.Path, update.TextValue);
             }
         }
 
@@ -417,7 +421,7 @@ public class JsonFragmentAccumulatorTests
         Assert.NotNull(completionEvent.TextValue);
         Assert.True(completionEvent.TextValue!.Length > 0);
 
-        Debug.WriteLine($"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}");
+        TestContextLogger.LogDebug("JsonComplete emitted. Json: {Json}", completionEvent.TextValue);
     }
 
     #region Helper Methods

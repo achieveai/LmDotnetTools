@@ -24,6 +24,9 @@ import {
   isToolsCallUpdateMessage,
   isToolCallUpdateMessage,
   isToolCallMessage,
+  isServerToolUseMessage,
+  isServerToolResultMessage,
+  isTextWithCitationsMessage,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
 import { useMessageMerger } from './useMessageMerger';
@@ -95,8 +98,15 @@ function getMergeKey(msg: Message): string {
 /**
  * Check if message contains test instructions
  */
-function isTestInstruction(text: string): boolean {
+export function isTestInstruction(text: string): boolean {
   return text.includes('<|instruction_start|>') && text.includes('<|instruction_end|>');
+}
+
+/**
+ * Get display text for a message, transforming test instructions
+ */
+export function getDisplayText(text: string): string {
+  return isTestInstruction(text) ? '🧪 Test instruction sent' : text;
 }
 
 /**
@@ -334,10 +344,31 @@ export function useChat(options: UseChatOptions = {}) {
   function handleRunCompleted(msg: Message) {
     if (!isRunCompletedMessage(msg)) return;
 
-    log.debug('Run completed', { 
-      runId: msg.completedRunId, 
-      hasPending: msg.hasPendingMessages 
+    log.debug('Run completed', {
+      runId: msg.completedRunId,
+      hasPending: msg.hasPendingMessages,
+      isError: msg.isError,
     });
+
+    // If the run ended with an error, add an error message to the chat
+    if (msg.isError && msg.errorMessage) {
+      const errorId = `error-${msg.completedRunId}`;
+      const errorMsg: InternalChatMessage = {
+        id: errorId,
+        role: 'assistant',
+        status: 'completed',
+        content: {
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: `Error: ${msg.errorMessage}`,
+        },
+        isStreaming: false,
+        runId: msg.completedRunId,
+        generationId: msg.generationId,
+        timestamp: Date.now(),
+      };
+      messageIndex.value.set(errorId, errorMsg);
+    }
 
     // Mark all messages in this run as completed
     for (const message of messageIndex.value.values()) {
@@ -371,33 +402,30 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle tool call results
     if (isToolCallResultMessage(msg)) {
-      if (msg.tool_call_id) {
-        toolResults.value.set(msg.tool_call_id, msg);
-        log.debug('Received tool result', { toolCallId: msg.tool_call_id });
-        
+      const tcResult = msg; // narrowed to ToolCallResultMessage
+      if (tcResult.tool_call_id) {
+        toolResults.value.set(tcResult.tool_call_id, tcResult);
+        log.debug('Received tool result', { toolCallId: tcResult.tool_call_id });
+
         // Find the tool call message and attach the result to it
-        // Search through all messages to find the one with matching tool_call_id
         for (const chatMsg of messageIndex.value.values()) {
           if (isToolCallMessage(chatMsg.content)) {
             const toolCall = chatMsg.content as ToolCallMessage;
-            if (toolCall.tool_call_id === msg.tool_call_id) {
-              // Attach the result to the tool call message
-              toolCall.result = msg.result;
-              log.info('Attached result to tool call', { 
-                toolCallId: msg.tool_call_id,
+            if (toolCall.tool_call_id === tcResult.tool_call_id) {
+              toolCall.result = tcResult.result;
+              log.info('Attached result to tool call', {
+                toolCallId: tcResult.tool_call_id,
                 messageId: chatMsg.id
               });
               break;
             }
           } else if (isToolsCallMessage(chatMsg.content)) {
             const toolsCall = chatMsg.content as ToolsCallMessage;
-            // Check if any of the tool calls match
-            const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === msg.tool_call_id);
+            const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === tcResult.tool_call_id);
             if (matchingToolCall) {
-              // Attach the result to the matching tool call
-              matchingToolCall.result = msg.result;
-              log.info('Attached result to tool call in ToolsCallMessage', { 
-                toolCallId: msg.tool_call_id,
+              matchingToolCall.result = tcResult.result;
+              log.info('Attached result to tool call in ToolsCallMessage', {
+                toolCallId: tcResult.tool_call_id,
                 messageId: chatMsg.id
               });
               break;
@@ -408,8 +436,102 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // Handle server tool result → convert to ToolCallResultMessage and attach
+    if (isServerToolResultMessage(msg)) {
+      const stResult = msg; // narrowed to ServerToolResultMessage
+      const resultStr = typeof stResult.result === 'string' ? stResult.result : JSON.stringify(stResult.result ?? {});
+      const converted: ToolCallResultMessage = {
+        $type: MessageType.ToolCallResult,
+        tool_call_id: stResult.tool_use_id,
+        result: stResult.is_error ? `Error (${stResult.error_code || 'unknown'}): ${resultStr}` : resultStr,
+        role: stResult.role,
+        generationId: stResult.generationId,
+        runId: stResult.runId,
+        parentRunId: stResult.parentRunId,
+        threadId: stResult.threadId,
+        messageOrderIdx: stResult.messageOrderIdx,
+      };
+      toolResults.value.set(stResult.tool_use_id, converted);
+      log.debug('Received server tool result', { toolName: stResult.tool_name, toolUseId: stResult.tool_use_id, isError: stResult.is_error });
+
+      // Attach to matching server tool use (converted to ToolsCallMessage)
+      for (const chatMsg of messageIndex.value.values()) {
+        if (isToolsCallMessage(chatMsg.content)) {
+          const toolsCall = chatMsg.content as ToolsCallMessage;
+          const matchingToolCall = toolsCall.tool_calls?.find(tc => tc.tool_call_id === stResult.tool_use_id);
+          if (matchingToolCall) {
+            matchingToolCall.result = converted.result;
+            log.info('Attached server tool result to tool call', { toolUseId: stResult.tool_use_id });
+            break;
+          }
+        }
+      }
+      return;
+    }
+
+    // Handle server tool use → convert to ToolsCallMessage for pill display
+    if (isServerToolUseMessage(msg)) {
+      const stUse = msg; // narrowed to ServerToolUseMessage
+      const inputStr = typeof stUse.input === 'string' ? stUse.input : JSON.stringify(stUse.input ?? {});
+      const converted: ToolsCallMessage = {
+        $type: MessageType.ToolsCall,
+        tool_calls: [{
+          function_name: stUse.tool_name,
+          function_args: inputStr,
+          tool_call_id: stUse.tool_use_id,
+        }],
+        role: stUse.role,
+        fromAgent: stUse.fromAgent,
+        generationId: stUse.generationId,
+        runId: stUse.runId,
+        parentRunId: stUse.parentRunId,
+        threadId: stUse.threadId,
+        messageOrderIdx: stUse.messageOrderIdx,
+      };
+      log.debug('Converted server tool use to ToolsCallMessage', { toolName: stUse.tool_name, toolUseId: stUse.tool_use_id });
+      msg = converted;
+      // Fall through to normal message handling below
+    }
+
+    // Handle text with citations → convert to TextMessage with citations as markdown
+    if (isTextWithCitationsMessage(msg)) {
+      const citMsg = msg; // narrowed to TextWithCitationsMessage
+      let text = citMsg.text;
+      if (citMsg.citations?.length) {
+        const uniqueUrls = new Map<string, { title: string; url: string }>();
+        for (const cite of citMsg.citations) {
+          if (cite.url && !uniqueUrls.has(cite.url)) {
+            uniqueUrls.set(cite.url, {
+              title: cite.title || cite.url,
+              url: cite.url,
+            });
+          }
+        }
+        if (uniqueUrls.size > 0) {
+          text += '\n\n**Sources:**\n';
+          for (const { title, url } of uniqueUrls.values()) {
+            text += `- [${title}](${url})\n`;
+          }
+        }
+      }
+      const converted: TextMessage = {
+        $type: MessageType.Text,
+        text,
+        role: citMsg.role,
+        fromAgent: citMsg.fromAgent,
+        generationId: citMsg.generationId,
+        runId: citMsg.runId,
+        parentRunId: citMsg.parentRunId,
+        threadId: citMsg.threadId,
+        messageOrderIdx: citMsg.messageOrderIdx,
+      };
+      log.debug('Converted text with citations to TextMessage', { citationCount: citMsg.citations?.length ?? 0 });
+      msg = converted;
+      // Fall through to normal message handling below
+    }
+
     // Determine if this is an update message that needs merging
-    const isUpdate = isTextUpdateMessage(msg) || isReasoningUpdateMessage(msg) || 
+    const isUpdate = isTextUpdateMessage(msg) || isReasoningUpdateMessage(msg) ||
                      isToolsCallUpdateMessage(msg) || isToolCallUpdateMessage(msg);
 
     // Determine if this is a complete (non-update) content message
@@ -694,6 +816,14 @@ export function useChat(options: UseChatOptions = {}) {
 
         // Determine role
         const role: 'user' | 'assistant' = parsedMessage.role === 'user' ? 'user' : 'assistant';
+
+        // Transform test instruction messages for display
+        if (role === 'user' && isTextMessage(parsedMessage)) {
+          const textMsg = parsedMessage as TextMessage;
+          if (isTestInstruction(textMsg.text)) {
+            textMsg.text = '🧪 Test instruction sent';
+          }
+        }
 
         // Create chat message
         const chatMessage: InternalChatMessage = {

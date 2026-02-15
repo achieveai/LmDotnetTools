@@ -22,11 +22,12 @@
         "@achieveai/hitl-mcp-server@latest"
       ]
     },
-    "debugger": {
-      "command": "npx",
+    "duckdb": {
+      "command": "uvx",
       "args": [
-        "mcp-remote@latest",
-        "http://localhost:4711/sse"
+        "mcp-server-duckdb",
+        "--db-path",
+        ":memory:"
       ]
     }
   }

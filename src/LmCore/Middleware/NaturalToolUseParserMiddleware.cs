@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -306,6 +307,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     private readonly PartialToolCallDetector _partialDetector;
     private readonly SafeTextExtractor _safeTextExtractor;
     private readonly IJsonSchemaValidator? _schemaValidator;
+    private readonly ILogger<NaturalToolUseParserMiddleware>? _logger;
 
     // New parsing components
     private readonly ToolCallTextParser _textParser;
@@ -315,12 +317,14 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         IEnumerable<FunctionContract> functions,
         IJsonSchemaValidator? schemaValidator = null,
         IAgent? fallbackParser = null,
-        string? name = null
+        string? name = null,
+        ILogger<NaturalToolUseParserMiddleware>? logger = null
     )
     {
         _functions = functions ?? throw new ArgumentNullException(nameof(functions));
         _schemaValidator = schemaValidator;
         _fallbackParser = fallbackParser;
+        _logger = logger;
         Name = name ?? nameof(NaturalToolUseParserMiddleware);
 
         // Initialize parsing components
@@ -449,7 +453,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                         return [new ToolsCallMessage { ToolCalls = [toolCall], Role = Role.Assistant }];
                     }
 
-                    Console.WriteLine($"[DEBUG] Validation result: {isValid}");
+                    _logger?.LogDebug("Validation result: {IsValid}", isValid);
 
                     // Requirement 2.5 & 3.1: When no fallback agent is provided AND validation fails, throw exception immediately
                     if (_fallbackParser == null)
@@ -847,7 +851,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[DEBUG] Structured output failed for {toolName}: {ex.Message}");
+            _logger?.LogDebug(ex, "Structured output failed for {ToolName}", toolName);
             return await FallbackToUnstructuredOutput(rawText, toolName, jsonSchema, messages, cancellationToken);
         }
     }

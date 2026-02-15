@@ -145,12 +145,12 @@ public class FunctionRegistryTests
         Assert.Equal(2, contracts.Count());
         Assert.Equal(2, handlers.Count);
 
-        // Check that both functions are available with their respective keys
-        Assert.Contains("func1", handlers.Keys); // Natural function
-        Assert.Contains("TestClass-func1", handlers.Keys); // MCP function
+        // Both functions have same Contract.Name "func1", so collision detection prefixes them
+        Assert.Contains("natural-func1", handlers.Keys); // Natural function with provider prefix
+        Assert.Contains("mcp-func1", handlers.Keys); // MCP function with provider prefix
 
-        var naturalResult = await handlers["func1"]("{}");
-        var mcpResult = await handlers["TestClass-func1"]("{}");
+        var naturalResult = await handlers["natural-func1"]("{}");
+        var mcpResult = await handlers["mcp-func1"]("{}");
         Assert.Equal("natural-result", naturalResult);
         Assert.Equal("mcp-result", mcpResult);
     }
@@ -170,16 +170,15 @@ public class FunctionRegistryTests
         _ = registry.WithConflictResolution(ConflictResolution.PreferMcp);
         var (contracts, handlers) = registry.Build();
 
-        // Assert - No conflict, so both functions present
+        // Assert - No conflict (different Keys), but collision detection prefixes both
         Assert.Equal(2, contracts.Count());
         Assert.Equal(2, handlers.Count);
 
-        // Natural function with key "func1"
-        var naturalResult = await handlers["func1"]("{}");
+        // Both have same Contract.Name "func1", so collision detection prefixes with provider name
+        var naturalResult = await handlers["natural-func1"]("{}");
         Assert.Equal("natural-result", naturalResult);
 
-        // MCP function with key "TestClass-func1"
-        var mcpResult = await handlers["TestClass-func1"]("{}");
+        var mcpResult = await handlers["mcp-func1"]("{}");
         Assert.Equal("mcp-result", mcpResult);
     }
 

@@ -750,6 +750,116 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(2, messages[4].ChunkIdx);
     }
     #endregion
+    #region TextWithCitationsMessage Ordering Tests
+    [Fact]
+    public async Task Downstream_TextWithCitations_SharesOrderIdx_WithPrecedingTextUpdates()
+    {
+        // Arrange - simulates a server tool web search flow where
+        // TextUpdateMessages stream first, then TextWithCitationsMessage replaces them
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new ServerToolUseMessage
+            {
+                ToolName = "web_search",
+                ToolUseId = "srvtoolu_01",
+                Input = System.Text.Json.JsonDocument.Parse("{}").RootElement,
+                GenerationId = "gen1"
+            },
+            new ServerToolResultMessage
+            {
+                ToolUseId = "srvtoolu_01",
+                ToolName = "web_search",
+                GenerationId = "gen1"
+            },
+            new TextUpdateMessage { Text = "Based on ", GenerationId = "gen1" },
+            new TextUpdateMessage { Text = "my research", GenerationId = "gen1" },
+            new TextWithCitationsMessage
+            {
+                Text = "Based on my research, here are the findings.",
+                Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com", Title = "Example" }],
+                GenerationId = "gen1"
+            },
+            new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
+        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+        // Assert
+        Assert.Equal(6, messages.Count);
+        // ServerToolUseMessage and ServerToolResultMessage go through default case
+        // which advances counter but doesn't set MessageOrderIdx on the message
+        Assert.IsType<ServerToolUseMessage>(messages[0]);
+        Assert.IsType<ServerToolResultMessage>(messages[1]);
+        // TextUpdateMessages: share same orderIdx
+        var textUpdate1 = Assert.IsType<TextUpdateMessage>(messages[2]);
+        var textUpdate2 = Assert.IsType<TextUpdateMessage>(messages[3]);
+        Assert.Equal(textUpdate1.MessageOrderIdx, textUpdate2.MessageOrderIdx);
+        // TextWithCitationsMessage: MUST share the same orderIdx as TextUpdateMessages
+        var citationsMsg = Assert.IsType<TextWithCitationsMessage>(messages[4]);
+        Assert.Equal(textUpdate1.MessageOrderIdx, citationsMsg.MessageOrderIdx);
+        // UsageMessage: gets a new (different) orderIdx
+        var usageMsg = Assert.IsType<UsageMessage>(messages[5]);
+        Assert.NotEqual(textUpdate1.MessageOrderIdx, usageMsg.MessageOrderIdx);
+    }
+    [Fact]
+    public async Task Downstream_TextWithCitations_GetsNewOrderIdx_WhenNoPrecedingTextUpdates()
+    {
+        // Arrange - TextWithCitationsMessage without preceding TextUpdateMessages
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextMessage { Text = "First message", GenerationId = "gen1" },
+            new TextWithCitationsMessage
+            {
+                Text = "Cited text",
+                Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com" }],
+                GenerationId = "gen1"
+            }
+        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+        // Assert
+        Assert.Equal(2, messages.Count);
+        Assert.Equal(0, messages[0].MessageOrderIdx);
+        // TextWithCitationsMessage gets its own orderIdx since no preceding text_update
+        Assert.Equal(1, messages[1].MessageOrderIdx);
+    }
+    [Fact]
+    public async Task Downstream_Streaming_TextWithCitations_SharesOrderIdx_WithPrecedingTextUpdates()
+    {
+        // Arrange - streaming version of the same test
+        var middleware = new MessageTransformationMiddleware();
+        var streamingMessages = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "Hello ", GenerationId = "gen1" },
+            new TextUpdateMessage { Text = "World", GenerationId = "gen1" },
+            new TextWithCitationsMessage
+            {
+                Text = "Hello World",
+                Citations = [new CitationInfo { Type = "web_search_result_location", Url = "https://example.com" }],
+                GenerationId = "gen1"
+            },
+            new UsageMessage { Usage = new AchieveAi.LmDotnetTools.LmCore.Models.Usage(), GenerationId = "gen1" }
+        }.ToAsyncEnumerable();
+        var agent = new MockStreamingAgent(streamingMessages);
+        var context = new MiddlewareContext(Messages: [], Options: null);
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, agent);
+        var messages = await resultStream.ToListAsync();
+        // Assert
+        Assert.Equal(4, messages.Count);
+        // TextUpdateMessages share orderIdx=0
+        Assert.Equal(0, messages[0].MessageOrderIdx);
+        Assert.Equal(0, messages[1].MessageOrderIdx);
+        // TextWithCitationsMessage MUST also have orderIdx=0
+        var citationsMsg = Assert.IsType<TextWithCitationsMessage>(messages[2]);
+        Assert.Equal(0, citationsMsg.MessageOrderIdx);
+        // UsageMessage gets new orderIdx=1
+        Assert.Equal(1, messages[3].MessageOrderIdx);
+    }
+    #endregion
     #region Streaming Tests
     [Fact]
     public async Task Downstream_Streaming_AssignsOrderingToStreamingMessages()

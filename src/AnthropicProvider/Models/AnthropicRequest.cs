@@ -56,21 +56,33 @@ public record AnthropicRequest
 
     /// <summary>
     ///     Tool definitions for the request.
+    ///     Can contain both AnthropicTool (function tools) and AnthropicBuiltInTool (server-side tools).
     /// </summary>
     [JsonPropertyName("tools")]
-    public List<AnthropicTool>? Tools { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<object>? Tools { get; init; }
 
     /// <summary>
     ///     Controls how the model uses tools.
+    ///     Values: "auto", "any", "none", or specific tool name.
     /// </summary>
     [JsonPropertyName("tool_choice")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolChoice { get; init; }
 
     /// <summary>
     ///     Configuration for extended thinking mode for compatible models.
     /// </summary>
     [JsonPropertyName("thinking")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AnthropicThinking? Thinking { get; init; }
+
+    /// <summary>
+    ///     Container ID for code execution tool (reuse sandbox across turns).
+    /// </summary>
+    [JsonPropertyName("container")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Container { get; init; }
 
     /// <summary>
     ///     Creates an AnthropicRequest from a list of LmCore messages and options.
@@ -142,6 +154,14 @@ public record AnthropicRequest
                         _ => "user", // Default to user if unknown
                     };
 
+                    // Server tool results must be placed in user messages as tool_result,
+                    // since providers like Kimi treat server_tool_use like regular tool_use
+                    // and require a matching tool_result in the next user turn.
+                    if (message is ServerToolResultMessage)
+                    {
+                        role = "user";
+                    }
+
                     var anthropicMessage = new AnthropicMessage { Role = role };
 
                     AddBasicMessageContents(message, anthropicMessage);
@@ -156,6 +176,11 @@ public record AnthropicRequest
             }
         }
 
+        // Merge consecutive same-role messages (required by Anthropic API which expects alternating roles).
+        // This happens when server tool use, server tool result, and text content from a single assistant
+        // turn arrive as separate IMessage objects.
+        anthropicMessages = MergeConsecutiveSameRoleMessages(anthropicMessages);
+
         // Extract the Thinking property from ExtraProperties if present
         AnthropicThinking? thinking = null;
         if (
@@ -167,6 +192,9 @@ public record AnthropicRequest
             thinking = thinkingValue;
         }
 
+        // Combine function tools and built-in tools
+        var tools = MapFunctionsAndBuiltInTools(options?.Functions, options?.BuiltInTools);
+
         // Create the request with options
         return new AnthropicRequest
         {
@@ -177,10 +205,14 @@ public record AnthropicRequest
             Temperature = options?.Temperature ?? 0.7f,
             TopP = options?.TopP,
             Stream = false, // Set by caller if streaming is needed
-            // Add tool configuration if functions are provided
-            Tools = options?.Functions != null ? MapFunctionsToTools(options.Functions) : null,
+            // Add tool configuration
+            Tools = tools?.Count > 0 ? tools : null,
+            // Wire ToolChoice from options
+            ToolChoice = options?.ToolChoice,
             // Add thinking configuration if present
             Thinking = thinking,
+            // Add container for code execution
+            Container = options?.ContainerId,
         };
     }
 
@@ -216,6 +248,23 @@ public record AnthropicRequest
                     secondaryMessage.Content.Add(toolResultContent);
                 }
             }
+            else if (message is ServerToolResultMessage serverToolResultMsg)
+            {
+                // Server tool results must go in a user message as tool_result,
+                // since providers like Kimi treat server_tool_use as regular tool_use
+                // and require a matching tool_result in the next user turn.
+                secondaryMessage ??= new AnthropicMessage { Role = "user" };
+                secondaryMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "tool_result",
+                        ToolUseId = serverToolResultMsg.ToolUseId,
+                        Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
+                            ? serverToolResultMsg.Result.GetRawText()
+                            : "{}",
+                    }
+                );
+            }
             else
             {
                 AddBasicMessageContents(message, primaryMessage);
@@ -228,9 +277,45 @@ public record AnthropicRequest
     private static void AddBasicMessageContents(IMessage message, AnthropicMessage anthropicMessage)
     {
         // Handle different message types
-        if (message is TextMessage txtMsg)
+        if (message is TextWithCitationsMessage textWithCitationsMsg)
+        {
+            // Text with citations - include citations for context in history
+            anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = textWithCitationsMsg.Text });
+        }
+        else if (message is TextMessage txtMsg)
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
+        }
+        else if (message is ServerToolUseMessage serverToolUseMsg)
+        {
+            // Server tool use - convert back to server_tool_use content block for history
+            anthropicMessage.Content.Add(
+                new AnthropicContent
+                {
+                    Type = "server_tool_use",
+                    Id = serverToolUseMsg.ToolUseId,
+                    Name = serverToolUseMsg.ToolName,
+                    Input = serverToolUseMsg.Input.ValueKind != JsonValueKind.Undefined
+                        ? serverToolUseMsg.Input.Clone()
+                        : default,
+                }
+            );
+        }
+        else if (message is ServerToolResultMessage serverToolResultMsg)
+        {
+            // Server tool results are sent as tool_result in user messages.
+            // Providers like Kimi treat server_tool_use as regular tool_use and require
+            // a matching tool_result response in the next user turn.
+            anthropicMessage.Content.Add(
+                new AnthropicContent
+                {
+                    Type = "tool_result",
+                    ToolUseId = serverToolResultMsg.ToolUseId,
+                    Content = serverToolResultMsg.Result.ValueKind != JsonValueKind.Undefined
+                        ? serverToolResultMsg.Result.GetRawText()
+                        : "{}",
+                }
+            );
         }
         else if (message is ToolsCallMessage toolsCallMsg && toolsCallMsg.ToolCalls?.Any() == true)
         {
@@ -307,6 +392,35 @@ public record AnthropicRequest
         }
     }
 
+    /// <summary>
+    ///     Combines function contracts and built-in tools into a single list for the API request.
+    /// </summary>
+    /// <param name="functions">Function contracts to convert to tools.</param>
+    /// <param name="builtInTools">Built-in tools to include.</param>
+    /// <returns>Combined list of tools, or null if empty.</returns>
+    public static List<object>? MapFunctionsAndBuiltInTools(
+        FunctionContract[]? functions,
+        IReadOnlyList<object>? builtInTools
+    )
+    {
+        var tools = new List<object>();
+
+        // Add built-in tools first (they have priority)
+        if (builtInTools != null)
+        {
+            tools.AddRange(builtInTools);
+        }
+
+        // Add function tools
+        var functionTools = MapFunctionsToTools(functions);
+        if (functionTools != null)
+        {
+            tools.AddRange(functionTools);
+        }
+
+        return tools.Count > 0 ? tools : null;
+    }
+
     private static List<AnthropicTool>? MapFunctionsToTools(FunctionContract[]? functions)
     {
         if (functions == null || functions.Length == 0)
@@ -372,6 +486,32 @@ public record AnthropicRequest
         }
 
         return tools;
+    }
+
+    private static List<AnthropicMessage> MergeConsecutiveSameRoleMessages(List<AnthropicMessage> messages)
+    {
+        if (messages.Count <= 1)
+        {
+            return messages;
+        }
+
+        var merged = new List<AnthropicMessage> { messages[0] };
+        for (var i = 1; i < messages.Count; i++)
+        {
+            var prev = merged[^1];
+            var curr = messages[i];
+            if (prev.Role == curr.Role)
+            {
+                // Merge content blocks into the previous message
+                prev.Content.AddRange(curr.Content);
+            }
+            else
+            {
+                merged.Add(curr);
+            }
+        }
+
+        return merged;
     }
 
     private static string GetJsonType(JsonSchemaObject schemaObject)

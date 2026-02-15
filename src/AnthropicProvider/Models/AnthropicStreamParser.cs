@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 /// <summary>
@@ -14,6 +16,7 @@ public class AnthropicStreamParser
 {
     private readonly Dictionary<int, StreamingContentBlock> _contentBlocks = [];
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILogger _logger;
     private readonly List<IMessage> _messages = [];
     private string _messageId = string.Empty;
     private string _model = string.Empty;
@@ -23,9 +26,10 @@ public class AnthropicStreamParser
     /// <summary>
     ///     Creates a new instance of the AnthropicStreamParser
     /// </summary>
-    public AnthropicStreamParser()
+    public AnthropicStreamParser(ILogger? logger = null)
     {
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateUniversal();
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -153,6 +157,40 @@ public class AnthropicStreamParser
             Input = contentBlock["input"]?.AsObject(),
         };
 
+        // Check for citations on text blocks
+        if (contentBlock["citations"] != null)
+        {
+            try
+            {
+                var citationsJson = contentBlock["citations"]!.ToJsonString();
+                _logger.LogDebug(
+                    "Parsing citations from content_block_start: {CitationsJson}",
+                    citationsJson
+                );
+                _contentBlocks[index].Citations = JsonSerializer.Deserialize<List<Citation>>(
+                    citationsJson,
+                    _jsonOptions
+                );
+                _logger.LogDebug(
+                    "Parsed {CitationCount} citations for block {Index}",
+                    _contentBlocks[index].Citations?.Count ?? 0,
+                    index
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse citations from content_block_start");
+            }
+        }
+        else
+        {
+            _logger.LogDebug(
+                "No citations found on content_block_start for block {Index} (type={BlockType})",
+                index,
+                blockType
+            );
+        }
+
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
         if (blockType == "tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
         {
@@ -181,7 +219,88 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
+        // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
+        if (blockType == "server_tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
+        {
+            // Store tool_use_id for correlating with results
+            _contentBlocks[index].ToolUseId = _contentBlocks[index].Id;
+
+            var serverToolUse = new ServerToolUseMessage
+            {
+                ToolUseId = _contentBlocks[index].Id!,
+                ToolName = _contentBlocks[index].Name ?? string.Empty,
+                Input = contentBlock["input"] != null
+                    ? JsonSerializer.Deserialize<JsonElement>(contentBlock["input"]!.ToJsonString())
+                    : default,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
+        }
+
+        // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
+        if (IsServerToolResultType(blockType))
+        {
+            var rawToolUseId = contentBlock["tool_use_id"]?.GetValue<string>() ?? string.Empty;
+            var toolName = GetToolNameFromResultType(blockType);
+            var toolUseId = ResolveServerToolUseId(rawToolUseId, toolName);
+            var resultContent = contentBlock["content"];
+            var isError = false;
+            string? errorCode = null;
+
+            // Check if this is an error result (content is an object with type ending in "_error")
+            if (resultContent is JsonObject resultObj)
+            {
+                var contentType = resultObj["type"]?.GetValue<string>();
+                if (contentType?.EndsWith("_error") == true)
+                {
+                    isError = true;
+                    errorCode = resultObj["error_code"]?.GetValue<string>();
+                }
+            }
+
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = toolUseId,
+                ToolName = toolName,
+                Result = resultContent != null
+                    ? JsonSerializer.Deserialize<JsonElement>(resultContent.ToJsonString())
+                    : default,
+                IsError = isError,
+                ErrorCode = errorCode,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
         return [];
+    }
+
+    private static bool IsServerToolResultType(string blockType)
+    {
+        return blockType is "web_search_tool_result"
+            or "web_fetch_tool_result"
+            or "bash_code_execution_tool_result"
+            or "text_editor_code_execution_tool_result";
+    }
+
+    private static string GetToolNameFromResultType(string resultType)
+    {
+        return resultType switch
+        {
+            "web_search_tool_result" => "web_search",
+            "web_fetch_tool_result" => "web_fetch",
+            "bash_code_execution_tool_result" => "bash_code_execution",
+            "text_editor_code_execution_tool_result" => "text_editor_code_execution",
+            _ => resultType.Replace("_tool_result", ""),
+        };
     }
 
     private List<IMessage> HandleContentBlockDelta(JsonNode json)
@@ -268,9 +387,42 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // For text blocks, create a final TextMessage
+        // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
         {
+            // Check if we have citations - if so, create TextWithCitationsMessage
+            if (block.Citations != null && block.Citations.Count > 0)
+            {
+                var citationsMessage = new TextWithCitationsMessage
+                {
+                    Text = block.Text,
+                    Citations = block.Citations
+                        .Select(c => new CitationInfo
+                        {
+                            Type = c.Type,
+                            Url = c.Url,
+                            Title = c.Title,
+                            CitedText = c.CitedText,
+                            StartIndex = c.StartCharIndex,
+                            EndIndex = c.EndCharIndex,
+                        })
+                        .ToImmutableList(),
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                };
+
+                // Apply usage if available
+                if (_usage != null)
+                {
+                    citationsMessage = citationsMessage with { Metadata = CreateUsageMetadata() };
+                }
+
+                _messages.Add(citationsMessage);
+                return [citationsMessage];
+            }
+
+            // No citations - regular text message
             var textMessage = new TextMessage
             {
                 Text = block.Text,
@@ -584,6 +736,15 @@ public class AnthropicStreamParser
                     ? JsonNode.Parse(toolUseContent.Input.ToString())
                     : null;
         }
+        else if (contentBlock is AnthropicResponseServerToolUseContent serverToolContent)
+        {
+            id = serverToolContent.Id;
+            name = serverToolContent.Name;
+            input =
+                serverToolContent.Input.ValueKind != JsonValueKind.Undefined
+                    ? JsonNode.Parse(serverToolContent.Input.ToString())
+                    : null;
+        }
 
         // Create and store the content block
         _contentBlocks[index] = new StreamingContentBlock
@@ -594,6 +755,17 @@ public class AnthropicStreamParser
             Name = name,
             Input = input,
         };
+
+        // Check for citations on text blocks
+        if (contentBlock is AnthropicResponseTextContent textContent && textContent.Citations != null)
+        {
+            _contentBlocks[index].Citations = textContent.Citations;
+            _logger.LogDebug(
+                "Captured {CitationCount} citations from typed content_block_start for block {Index}",
+                textContent.Citations.Count,
+                index
+            );
+        }
 
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
         if (contentBlock is AnthropicResponseToolUseContent toolUseTool && !string.IsNullOrEmpty(toolUseTool.Id))
@@ -624,7 +796,133 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
+        // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
+        if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
+        {
+            _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
+
+            var serverToolUse = new ServerToolUseMessage
+            {
+                ToolUseId = serverToolUseContent.Id,
+                ToolName = serverToolUseContent.Name,
+                Input = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
+                    ? serverToolUseContent.Input.Clone()
+                    : default,
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolUse);
+            return [serverToolUse];
+        }
+
+        // Handle web_search_tool_result
+        if (contentBlock is AnthropicWebSearchToolResultContent webSearchResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = ResolveServerToolUseId(webSearchResult.ToolUseId, "web_search"),
+                ToolName = "web_search",
+                Result = webSearchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webSearchResult.Content.Clone()
+                    : default,
+                IsError = IsServerToolResultError(webSearchResult.Content),
+                ErrorCode = GetErrorCodeFromResult(webSearchResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle web_fetch_tool_result
+        if (contentBlock is AnthropicWebFetchToolResultContent webFetchResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = ResolveServerToolUseId(webFetchResult.ToolUseId, "web_fetch"),
+                ToolName = "web_fetch",
+                Result = webFetchResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? webFetchResult.Content.Clone()
+                    : default,
+                IsError = IsServerToolResultError(webFetchResult.Content),
+                ErrorCode = GetErrorCodeFromResult(webFetchResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle bash_code_execution_tool_result
+        if (contentBlock is AnthropicBashCodeExecutionToolResultContent bashResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = ResolveServerToolUseId(bashResult.ToolUseId, "bash_code_execution"),
+                ToolName = "bash_code_execution",
+                Result = bashResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? bashResult.Content.Clone()
+                    : default,
+                IsError = IsServerToolResultError(bashResult.Content),
+                ErrorCode = GetErrorCodeFromResult(bashResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
+        // Handle text_editor_code_execution_tool_result
+        if (contentBlock is AnthropicTextEditorCodeExecutionToolResultContent textEditorResult)
+        {
+            var serverToolResult = new ServerToolResultMessage
+            {
+                ToolUseId = ResolveServerToolUseId(textEditorResult.ToolUseId, "text_editor_code_execution"),
+                ToolName = "text_editor_code_execution",
+                Result = textEditorResult.Content.ValueKind != JsonValueKind.Undefined
+                    ? textEditorResult.Content.Clone()
+                    : default,
+                IsError = IsServerToolResultError(textEditorResult.Content),
+                ErrorCode = GetErrorCodeFromResult(textEditorResult.Content),
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+            };
+
+            _messages.Add(serverToolResult);
+            return [serverToolResult];
+        }
+
         return [];
+    }
+
+    private static bool IsServerToolResultError(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement))
+        {
+            var type = typeElement.GetString();
+            return type?.EndsWith("_error") == true;
+        }
+
+        return false;
+    }
+
+    private static string? GetErrorCodeFromResult(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement))
+        {
+            return errorElement.GetString();
+        }
+
+        return null;
     }
 
     private List<IMessage> HandleTypedContentBlockDelta(AnthropicContentBlockDeltaEvent contentBlockDeltaEvent)
@@ -753,9 +1051,36 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // For text blocks, create a final TextMessage
+        // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
         {
+            // Check if we have citations - if so, create TextWithCitationsMessage
+            if (block.Citations != null && block.Citations.Count > 0)
+            {
+                var citationsMessage = new TextWithCitationsMessage
+                {
+                    Text = block.Text,
+                    Citations = block.Citations
+                        .Select(c => new CitationInfo
+                        {
+                            Type = c.Type,
+                            Url = c.Url,
+                            Title = c.Title,
+                            CitedText = c.CitedText,
+                            StartIndex = c.StartCharIndex,
+                            EndIndex = c.EndCharIndex,
+                        })
+                        .ToImmutableList(),
+                    Role = ParseRole(_role),
+                    FromAgent = _messageId,
+                    GenerationId = _messageId,
+                };
+
+                _messages.Add(citationsMessage);
+                return [citationsMessage];
+            }
+
+            // No citations - regular text message
             var textMessage = new TextMessage
             {
                 Text = block.Text,
@@ -857,6 +1182,59 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
+    ///     Resolves the tool_use_id for a server tool result block.
+    ///     Always prefers the ID from the preceding server_tool_use block to ensure
+    ///     consistency between server_tool_use.id and tool_result.tool_use_id in the request.
+    ///     Providers like Kimi may provide mismatched IDs between the tool use and result blocks.
+    /// </summary>
+    private string ResolveServerToolUseId(string toolUseId, string toolName)
+    {
+        // Always try to find the matching server_tool_use block by tool name,
+        // since providers may provide different IDs in the result vs use blocks
+        foreach (var block in _contentBlocks.Values)
+        {
+            if (block.Type == "server_tool_use"
+                && block.Name == toolName
+                && !string.IsNullOrEmpty(block.ToolUseId)
+                && !block.ToolUseIdConsumed)
+            {
+                block.ToolUseIdConsumed = true;
+                if (!string.IsNullOrEmpty(toolUseId) && toolUseId != block.ToolUseId)
+                {
+                    _logger.LogDebug(
+                        "Overriding tool_use_id for {ToolName} result from {OriginalId} to {ResolvedId} to match server_tool_use block {BlockIndex}",
+                        toolName,
+                        toolUseId,
+                        block.ToolUseId,
+                        block.Index
+                    );
+                }
+                else if (string.IsNullOrEmpty(toolUseId))
+                {
+                    _logger.LogDebug(
+                        "Resolved empty tool_use_id for {ToolName} result to {ToolUseId} from server_tool_use block {BlockIndex}",
+                        toolName,
+                        block.ToolUseId,
+                        block.Index
+                    );
+                }
+
+                return block.ToolUseId;
+            }
+        }
+
+        if (string.IsNullOrEmpty(toolUseId))
+        {
+            _logger.LogWarning(
+                "Could not resolve tool_use_id for {ToolName} result - no matching server_tool_use block found",
+                toolName
+            );
+        }
+
+        return toolUseId;
+    }
+
+    /// <summary>
     ///     Helper class to track the state of a content block during streaming
     /// </summary>
     private class StreamingContentBlock
@@ -867,6 +1245,15 @@ public class AnthropicStreamParser
         public string? Id { get; set; }
         public string? Name { get; set; }
         public JsonNode? Input { get; set; }
+
+        // For server tool results - correlate tool use with result
+        public string? ToolUseId { get; set; }
+
+        // Track whether this server_tool_use block's ID has been consumed by a result
+        public bool ToolUseIdConsumed { get; set; }
+
+        // For text with citations
+        public List<Citation>? Citations { get; set; }
 
         // For accumulating partial JSON during streaming
         public InputJsonAccumulator JsonAccumulator { get; } = new();

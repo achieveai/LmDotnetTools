@@ -1,7 +1,9 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
-using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -9,14 +11,14 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 ///     HTTP-level unit tests for AnthropicClient using shared test infrastructure
 ///     Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
 /// </summary>
-public class AnthropicClientHttpTests
+public class AnthropicClientHttpTests : LoggingTestBase
 {
-    private readonly ILogger<AnthropicClient> _logger;
+    private readonly ILogger<AnthropicClient> _anthropicClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public AnthropicClientHttpTests()
+    public AnthropicClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = TestLoggerFactory.CreateLogger<AnthropicClient>();
+        _anthropicClientLogger = LoggerFactory.CreateLogger<AnthropicClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
@@ -24,15 +26,12 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Test response from Claude");
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            2,
-            successResponse,
-            HttpStatusCode.ServiceUnavailable
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
         );
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -55,7 +54,7 @@ public class AnthropicClientHttpTests
         Assert.NotNull(response);
         var textContent = response.Content[0] as AnthropicResponseTextContent;
         Assert.NotNull(textContent);
-        Assert.Equal("Test response from Claude", textContent.Text);
+        Assert.False(string.IsNullOrWhiteSpace(textContent.Text));
 
         // Verify performance tracking with Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
@@ -79,9 +78,8 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithEmptyMessages_ShouldThrowValidationException()
     {
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -102,11 +100,12 @@ public class AnthropicClientHttpTests
     )
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Success");
-        var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: statusCodes,
+            chunkDelayMs: 0
+        );
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -143,11 +142,8 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_AnthropicUsageMapping_ShouldMapTokensCorrectly()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(50, 25);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -169,29 +165,26 @@ public class AnthropicClientHttpTests
         // Assert - Verify Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
+        Assert.NotNull(response.Usage);
 
         // Anthropic InputTokens → LmCore PromptTokens, OutputTokens → CompletionTokens
-        Assert.Equal(75, metrics.TotalTokensProcessed); // 50 + 25
+        Assert.Equal(response.Usage.InputTokens + response.Usage.OutputTokens, metrics.TotalTokensProcessed);
 
         // Verify response usage
-        Assert.NotNull(response.Usage);
-        Assert.Equal(50, response.Usage.InputTokens);
-        Assert.Equal(25, response.Usage.OutputTokens);
+        Assert.True(response.Usage.InputTokens > 0);
+        Assert.True(response.Usage.OutputTokens > 0);
     }
 
     [Fact]
     public async Task StreamingChatCompletionsAsync_WithRetryOnFailure_ShouldSucceed()
     {
         // Arrange
-        var streamingEvents = CreateAnthropicStreamingResponse();
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            1,
-            string.Join("", streamingEvents),
-            HttpStatusCode.ServiceUnavailable
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
         );
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -227,15 +220,96 @@ public class AnthropicClientHttpTests
         Assert.Equal(1, metrics.SuccessfulRequests);
     }
 
+    /// <summary>
+    ///     Tests streaming with InstructionChainParser pattern.
+    ///     Uses AnthropicTestSseMessageHandler for unified test setup.
+    /// </summary>
+    [Fact]
+    public async Task StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed()
+    {
+        // Arrange - Using AnthropicTestSseMessageHandler with instruction chain in user message
+        Logger.LogInformation("Starting StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed test");
+
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            wordsPerChunk: 3,
+            chunkDelayMs: 10
+        );
+
+        // Create AnthropicClient with test handler
+        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
+
+        Logger.LogDebug("Created AnthropicClient with AnthropicTestSseMessageHandler");
+
+        // User message with instruction chain embedded
+        var userMessage = """
+            Hello Claude, can you help me with a task?
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Anthropic streaming test response", "messages":[{"text_message":{"length":20}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var request = new AnthropicRequest
+        {
+            Model = "claude-3-sonnet-20240229",
+            MaxTokens = 1000,
+            Stream = true,
+            Messages =
+            [
+                new AnthropicMessage
+                {
+                    Role = "user",
+                    Content = [new AnthropicContent { Type = "text", Text = userMessage }],
+                },
+            ],
+        };
+
+        Logger.LogDebug("Created AnthropicRequest with instruction chain");
+
+        // Act
+        var responseStream = await client.StreamingChatCompletionsAsync(request);
+        var events = new List<AnthropicStreamEvent>();
+        var allContent = new System.Text.StringBuilder();
+
+        await foreach (var streamEvent in responseStream)
+        {
+            events.Add(streamEvent);
+
+            // Extract text content from content_block_delta events
+            if (streamEvent is AnthropicContentBlockDeltaEvent deltaEvent
+                && deltaEvent.Delta is AnthropicTextDelta textDelta)
+            {
+                allContent.Append(textDelta.Text);
+            }
+        }
+
+        Logger.LogInformation(
+            "Received {EventCount} events, total content: {Content}",
+            events.Count,
+            allContent.ToString()
+        );
+
+        // Assert
+        Assert.NotEmpty(events);
+        Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
+
+        // Verify we got proper Anthropic event types
+        Assert.Contains(events, e => e.Type == "message_start");
+        Assert.Contains(events, e => e.Type == "content_block_start");
+        Assert.Contains(events, e => e.Type == "content_block_delta");
+        Assert.Contains(events, e => e.Type == "message_stop");
+
+        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+    }
+
     [Fact]
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(100, 50);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
@@ -323,7 +397,7 @@ public class AnthropicClientHttpTests
             false, // should fail
         };
 
-        // Scenario: Max retries exceeded
+        // Scenario: Max retries exceeded (BaseHttpService.ExecuteHttpWithRetryAsync has maxRetries=5)
         yield return new object[]
         {
             new[]
@@ -332,8 +406,10 @@ public class AnthropicClientHttpTests
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
             },
-            false, // should fail after max retries
+            false, // should fail after max retries (1 initial + 5 retries = 6 attempts needed to exhaust)
         };
 
         // Scenario: Success on first try
