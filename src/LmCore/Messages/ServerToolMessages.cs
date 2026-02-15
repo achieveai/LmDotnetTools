@@ -67,7 +67,10 @@ public record TextWithCitationsMessage : IMessage, ICanGetText
     /// <summary>
     ///     Gets the text content.
     /// </summary>
-    public string? GetText() => Text;
+    public string? GetText()
+    {
+        return Text;
+    }
 
     /// <summary>
     ///     The role of the message.

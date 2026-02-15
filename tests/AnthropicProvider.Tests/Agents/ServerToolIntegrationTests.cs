@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -35,8 +34,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object>
-            {
+            BuiltInTools =
+            [
                 new AnthropicWebSearchTool
                 {
                     MaxUses = 3,
@@ -49,7 +48,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
                         Timezone = "America/Los_Angeles",
                     },
                 },
-            },
+            ],
         };
 
         Logger.LogTrace("Calling GenerateReplyAsync with web_search built-in tool");
@@ -94,10 +93,10 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object>
-            {
+            BuiltInTools =
+            [
                 new AnthropicWebSearchTool { MaxUses = 5 },
-            },
+            ],
             Functions =
             [
                 new FunctionContract
@@ -153,7 +152,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
             Functions =
             [
                 new FunctionContract
@@ -218,7 +217,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         Logger.LogTrace("Calling GenerateReplyAsync with canned response");
@@ -274,7 +273,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Use streaming to collect messages
@@ -347,7 +346,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var responseMessages = new List<IMessage>();
@@ -399,7 +398,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Use streaming
@@ -464,12 +463,12 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object>
-            {
+            BuiltInTools =
+            [
                 new AnthropicWebSearchTool { MaxUses = 5 },
                 new AnthropicWebFetchTool { MaxUses = 3 },
                 new AnthropicCodeExecutionTool(),
-            },
+            ],
         };
 
         _ = await agent.GenerateReplyAsync(messages, options);
@@ -513,7 +512,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Turn 1: send instruction chain and collect response
@@ -592,101 +591,93 @@ public class ServerToolIntegrationTests : LoggingTestBase
     /// </summary>
     private static List<SseEvent> BuildWebSearchSseEvents()
     {
-        var events = new List<SseEvent>();
-
-        // message_start
-        events.Add(new SseEvent
+        var events = new List<SseEvent>
         {
-            Event = "message_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "message_start",
-                message = new
+            // message_start
+            new() {
+                Event = "message_start",
+                Data = JsonSerializer.Serialize(new
                 {
-                    id = "msg_stream_01",
-                    type = "message",
-                    role = "assistant",
-                    model = "claude-sonnet-4-20250514",
-                    content = Array.Empty<object>(),
-                    stop_reason = (string?)null,
-                    usage = new { input_tokens = 100, output_tokens = 0 },
-                },
-            }),
-        });
+                    type = "message_start",
+                    message = new
+                    {
+                        id = "msg_stream_01",
+                        type = "message",
+                        role = "assistant",
+                        model = "claude-sonnet-4-20250514",
+                        content = Array.Empty<object>(),
+                        stop_reason = (string?)null,
+                        usage = new { input_tokens = 100, output_tokens = 0 },
+                    },
+                }),
+            },
 
-        // Content block 0: text "Let me search for that."
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 0,
-                content_block = new { type = "text", text = "" },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_delta",
-                index = 0,
-                delta = new { type = "text_delta", text = "Let me search for that." },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
-        });
-
-        // Content block 1: server_tool_use (web_search)
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 1,
-                content_block = new
+            // Content block 0: text "Let me search for that."
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
                 {
-                    type = "server_tool_use",
-                    id = "srvtoolu_stream_01",
-                    name = "web_search",
-                    input = new { },
-                },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_delta",
-                index = 1,
-                delta = new { type = "input_json_delta", partial_json = "{\"query\":\"latest AI news\"}" },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
-        });
-
-        // Content block 2: web_search_tool_result
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 2,
-                content_block = new
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new { type = "text", text = "" },
+                }),
+            },
+            new() {
+                Event = "content_block_delta",
+                Data = JsonSerializer.Serialize(new
                 {
-                    type = "web_search_tool_result",
-                    tool_use_id = "srvtoolu_stream_01",
-                    content = new[]
+                    type = "content_block_delta",
+                    index = 0,
+                    delta = new { type = "text_delta", text = "Let me search for that." },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
+            },
+
+            // Content block 1: server_tool_use (web_search)
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_start",
+                    index = 1,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        id = "srvtoolu_stream_01",
+                        name = "web_search",
+                        input = new { },
+                    },
+                }),
+            },
+            new() {
+                Event = "content_block_delta",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_delta",
+                    index = 1,
+                    delta = new { type = "input_json_delta", partial_json = "{\"query\":\"latest AI news\"}" },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
+            },
+
+            // Content block 2: web_search_tool_result
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_start",
+                    index = 2,
+                    content_block = new
+                    {
+                        type = "web_search_tool_result",
+                        tool_use_id = "srvtoolu_stream_01",
+                        content = new[]
                     {
                         new
                         {
@@ -697,28 +688,26 @@ public class ServerToolIntegrationTests : LoggingTestBase
                             page_age = "2 hours ago",
                         },
                     },
-                },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
-        });
+                    },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
+            },
 
-        // Content block 3: text with citations
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 3,
-                content_block = new
+            // Content block 3: text with citations
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
                 {
-                    type = "text",
-                    text = "",
-                    citations = new[]
+                    type = "content_block_start",
+                    index = 3,
+                    content_block = new
+                    {
+                        type = "text",
+                        text = "",
+                        citations = new[]
                     {
                         new
                         {
@@ -728,41 +717,38 @@ public class ServerToolIntegrationTests : LoggingTestBase
                             cited_text = "AI developments in 2026",
                         },
                     },
-                },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_delta",
-                index = 3,
-                delta = new { type = "text_delta", text = "Based on my search, AI developments in 2026 are significant." },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 3 }),
-        });
+                    },
+                }),
+            },
+            new() {
+                Event = "content_block_delta",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_delta",
+                    index = 3,
+                    delta = new { type = "text_delta", text = "Based on my search, AI developments in 2026 are significant." },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 3 }),
+            },
 
-        // message_delta and message_stop
-        events.Add(new SseEvent
-        {
-            Event = "message_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "message_delta",
-                delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
-                usage = new { input_tokens = 200, output_tokens = 80 },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "message_stop",
-            Data = JsonSerializer.Serialize(new { type = "message_stop" }),
-        });
+            // message_delta and message_stop
+            new() {
+                Event = "message_delta",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "message_delta",
+                    delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                    usage = new { input_tokens = 200, output_tokens = 80 },
+                }),
+            },
+            new() {
+                Event = "message_stop",
+                Data = JsonSerializer.Serialize(new { type = "message_stop" }),
+            }
+        };
 
         return events;
     }
@@ -772,118 +758,108 @@ public class ServerToolIntegrationTests : LoggingTestBase
     /// </summary>
     private static List<SseEvent> BuildWebSearchErrorSseEvents()
     {
-        var events = new List<SseEvent>();
-
-        events.Add(new SseEvent
+        var events = new List<SseEvent>
         {
-            Event = "message_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "message_start",
-                message = new
+            new() {
+                Event = "message_start",
+                Data = JsonSerializer.Serialize(new
                 {
-                    id = "msg_err_01",
-                    type = "message",
-                    role = "assistant",
-                    model = "claude-sonnet-4-20250514",
-                    content = Array.Empty<object>(),
-                    stop_reason = (string?)null,
-                    usage = new { input_tokens = 50, output_tokens = 0 },
-                },
-            }),
-        });
-
-        // server_tool_use
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 0,
-                content_block = new
-                {
-                    type = "server_tool_use",
-                    id = "srvtoolu_err_01",
-                    name = "web_search",
-                    input = new { },
-                },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
-        });
-
-        // web_search_tool_result with error
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 1,
-                content_block = new
-                {
-                    type = "web_search_tool_result",
-                    tool_use_id = "srvtoolu_err_01",
-                    content = new
+                    type = "message_start",
+                    message = new
                     {
-                        type = "web_search_tool_result_error",
-                        error_code = "max_uses_exceeded",
+                        id = "msg_err_01",
+                        type = "message",
+                        role = "assistant",
+                        model = "claude-sonnet-4-20250514",
+                        content = Array.Empty<object>(),
+                        stop_reason = (string?)null,
+                        usage = new { input_tokens = 50, output_tokens = 0 },
                     },
-                },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
-        });
+                }),
+            },
 
-        // text response after error
-        events.Add(new SseEvent
-        {
-            Event = "content_block_start",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_start",
-                index = 2,
-                content_block = new { type = "text", text = "" },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "content_block_delta",
-                index = 2,
-                delta = new { type = "text_delta", text = "I was unable to search due to rate limits." },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "content_block_stop",
-            Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
-        });
+            // server_tool_use
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_start",
+                    index = 0,
+                    content_block = new
+                    {
+                        type = "server_tool_use",
+                        id = "srvtoolu_err_01",
+                        name = "web_search",
+                        input = new { },
+                    },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 0 }),
+            },
 
-        events.Add(new SseEvent
-        {
-            Event = "message_delta",
-            Data = JsonSerializer.Serialize(new
-            {
-                type = "message_delta",
-                delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
-                usage = new { input_tokens = 50, output_tokens = 20 },
-            }),
-        });
-        events.Add(new SseEvent
-        {
-            Event = "message_stop",
-            Data = JsonSerializer.Serialize(new { type = "message_stop" }),
-        });
+            // web_search_tool_result with error
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_start",
+                    index = 1,
+                    content_block = new
+                    {
+                        type = "web_search_tool_result",
+                        tool_use_id = "srvtoolu_err_01",
+                        content = new
+                        {
+                            type = "web_search_tool_result_error",
+                            error_code = "max_uses_exceeded",
+                        },
+                    },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 1 }),
+            },
+
+            // text response after error
+            new() {
+                Event = "content_block_start",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_start",
+                    index = 2,
+                    content_block = new { type = "text", text = "" },
+                }),
+            },
+            new() {
+                Event = "content_block_delta",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "content_block_delta",
+                    index = 2,
+                    delta = new { type = "text_delta", text = "I was unable to search due to rate limits." },
+                }),
+            },
+            new() {
+                Event = "content_block_stop",
+                Data = JsonSerializer.Serialize(new { type = "content_block_stop", index = 2 }),
+            },
+            new() {
+                Event = "message_delta",
+                Data = JsonSerializer.Serialize(new
+                {
+                    type = "message_delta",
+                    delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                    usage = new { input_tokens = 50, output_tokens = 20 },
+                }),
+            },
+            new() {
+                Event = "message_stop",
+                Data = JsonSerializer.Serialize(new { type = "message_stop" }),
+            }
+        };
 
         return events;
     }

@@ -240,11 +240,10 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                     && fieldsEl.ValueKind == JsonValueKind.Array
                 )
                 {
-                    fields = fieldsEl
+                    fields = [.. fieldsEl
                         .EnumerateArray()
                         .Where(f => f.ValueKind == JsonValueKind.String)
-                        .Select(f => f.GetString()!)
-                        .ToList();
+                        .Select(f => f.GetString()!)];
                 }
 
                 var placeholder =

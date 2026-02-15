@@ -57,7 +57,7 @@ public class DataDrivenMultiTurnReasoningTests
 
         // execute turn-1 (playback only to verify cassette integrity)
         var dummyResp = await agent.GenerateReplyAsync(turn1Msgs, turn1Opts);
-        Assert.True(dummyResp.Any(m => m is ReasoningMessage or ReasoningUpdateMessage));
+        Assert.Contains(dummyResp, m => m is ReasoningMessage or ReasoningUpdateMessage);
 
         // execute turn-2 – it includes ReasoningMessage from turn-1
         var resp2 = await agent.GenerateReplyAsync(turn2Msgs, turn2Opts);

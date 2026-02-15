@@ -256,7 +256,7 @@ public class FakeHttpMessageHandlerSseTests : LoggingTestBase
         // Other data lines should contain valid JSON
         foreach (var dataLine in dataLines.Take(dataLines.Count - 1))
         {
-            var jsonPart = dataLine.Substring("data:".Length).Trim();
+            var jsonPart = dataLine["data:".Length..].Trim();
 
             if (string.IsNullOrWhiteSpace(jsonPart))
             {
@@ -267,7 +267,7 @@ public class FakeHttpMessageHandlerSseTests : LoggingTestBase
             try
             {
                 using var doc = JsonDocument.Parse(jsonPart);
-                Assert.NotNull(doc.RootElement);
+                Assert.NotEqual(JsonValueKind.Undefined, doc.RootElement.ValueKind);
                 Logger.LogTrace("Parsed SSE event: {Json}", jsonPart.Length > 100 ? jsonPart[..100] + "..." : jsonPart);
             }
             catch (JsonException ex)

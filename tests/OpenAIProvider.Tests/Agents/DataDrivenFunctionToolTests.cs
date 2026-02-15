@@ -74,7 +74,7 @@ public class DataDrivenFunctionToolTests
             return messages;
         }
 
-        string instruction = testName.Contains("MultiFunctionTool", StringComparison.Ordinal)
+        var instruction = testName.Contains("MultiFunctionTool", StringComparison.Ordinal)
             ? """
               <|instruction_start|>{"instruction_chain":[{"id_message":"multi-tool","messages":[{"tool_call":[{"name":"python_mcp-list_directory","args":{"relative_path":"."}},{"name":"python_mcp-get_directory_tree","args":{"relative_path":"code"}}]}]}]}<|instruction_end|>
               """

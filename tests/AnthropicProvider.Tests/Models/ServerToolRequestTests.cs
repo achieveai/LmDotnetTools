@@ -19,10 +19,10 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object>
-            {
+            BuiltInTools =
+            [
                 new AnthropicWebSearchTool { MaxUses = 5 },
-            },
+            ],
         };
 
         var request = AnthropicRequest.FromMessages(messages, options);
@@ -53,10 +53,10 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object>
-            {
+            BuiltInTools =
+            [
                 new AnthropicWebSearchTool(),
-            },
+            ],
             Functions =
             [
                 new FunctionContract
@@ -123,7 +123,7 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var request = AnthropicRequest.FromMessages(messages, options);
@@ -205,7 +205,7 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var request = AnthropicRequest.FromMessages(messages, options);
@@ -286,7 +286,7 @@ public class ServerToolRequestTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var request = AnthropicRequest.FromMessages(messages, options);

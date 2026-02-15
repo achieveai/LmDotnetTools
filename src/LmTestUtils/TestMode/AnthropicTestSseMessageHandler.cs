@@ -27,7 +27,8 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
     public AnthropicTestSseMessageHandler()
         : this(
             LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AnthropicTestSseMessageHandler>()
-        ) { }
+        )
+    { }
 
     /// <summary>
     ///     Initializes a new instance with dependency injection.
@@ -155,7 +156,7 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
             );
 
             // Get the instruction plan to execute
-            InstructionPlan? planToExecute = instruction;
+            var planToExecute = instruction;
 
             if (planToExecute == null)
             {
@@ -428,21 +429,12 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                     _ => $"{str.Name}_tool_result",
                 };
 
-                object resultContent;
-                if (str.ErrorCode != null)
-                {
-                    resultContent = new { type = $"{resultType}_error", error_code = str.ErrorCode };
-                }
-                else if (str.Result.HasValue)
-                {
-                    resultContent = JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
-                        ?? new object();
-                }
-                else
-                {
-                    resultContent = new object();
-                }
-
+                var resultContent = str.ErrorCode != null
+                    ? (new { type = $"{resultType}_error", error_code = str.ErrorCode })
+                    : str.Result.HasValue
+                        ? JsonSerializer.Deserialize<object>(str.Result.Value.GetRawText())
+                        ?? new object()
+                        : new object();
                 content.Add(new
                 {
                     type = resultType,

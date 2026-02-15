@@ -18,7 +18,9 @@ public static class TestLoggingModuleInitializer
     ///     Initializes test logging infrastructure when the module loads.
     ///     This method runs automatically before any code in the assembly executes.
     /// </summary>
+#pragma warning disable CA2255 // ModuleInitializer is intentionally used for test logging setup
     [ModuleInitializer]
+#pragma warning restore CA2255
     public static void Initialize()
     {
         if (IsInitialized)

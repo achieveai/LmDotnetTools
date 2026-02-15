@@ -116,7 +116,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             // Analyze full conversation for instruction chains
             var (instruction, responseCount) = _conversationAnalyzer.AnalyzeConversation(root);
 
-            InstructionPlan? planToExecute = instruction;
+            var planToExecute = instruction;
             if (instruction != null)
             {
                 // Resolve any dynamic message placeholders (system_prompt_echo, tools_list, request metadata)

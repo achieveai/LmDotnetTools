@@ -133,12 +133,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <param name="threadId">The thread identifier.</param>
     public bool IsRunInProgress(string threadId)
     {
-        if (!_agents.TryGetValue(threadId, out var entry))
-        {
-            return false;
-        }
-
-        return !string.IsNullOrEmpty(entry.Agent.CurrentRunId);
+        return _agents.TryGetValue(threadId, out var entry) && !string.IsNullOrEmpty(entry.Agent.CurrentRunId);
     }
 
     /// <summary>

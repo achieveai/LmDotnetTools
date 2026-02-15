@@ -102,7 +102,7 @@ public sealed class McpToolMetadataCache
     public McpToolMetadataCache()
     {
         _toolsByName = new Dictionary<string, ToolMetadata>(StringComparer.OrdinalIgnoreCase);
-        Tools = Array.Empty<ToolMetadata>();
+        Tools = [];
     }
 
     /// <summary>
@@ -114,7 +114,7 @@ public sealed class McpToolMetadataCache
         ArgumentNullException.ThrowIfNull(tool);
         _toolsByName[tool.Name] = tool;
         // Update the read-only list
-        Tools = _toolsByName.Values.ToList();
+        Tools = [.. _toolsByName.Values];
     }
 
     /// <summary>

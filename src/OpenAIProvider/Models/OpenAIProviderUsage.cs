@@ -53,18 +53,16 @@ public record OpenAIProviderUsage
         // OpenRouter direct field takes precedence
         ReasoningTokens != 0
             ? ReasoningTokens
-            :
             // Fallback to OpenAI nested structure
-            OutputTokenDetails?.ReasoningTokens ?? 0;
+            : OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
     public int TotalCachedTokens =>
         // OpenRouter direct field takes precedence
         CachedTokens != 0
             ? CachedTokens
-            :
             // Fallback to OpenAI nested structure
-            InputTokenDetails?.CachedTokens ?? 0;
+            : InputTokenDetails?.CachedTokens ?? 0;
 
     /// <summary>
     ///     Convert to core Usage model

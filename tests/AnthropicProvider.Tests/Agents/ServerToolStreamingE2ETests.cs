@@ -56,7 +56,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var responseMessages = new List<IMessage>();
@@ -138,7 +138,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
@@ -199,7 +199,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var streamingMessages = new List<IMessage>();
@@ -231,10 +231,10 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Compare server tool message counts
-        var streamingToolUseCount = streamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
-        var streamingToolResultCount = streamingMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
-        var nonStreamingToolUseCount = nonStreamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
-        var nonStreamingToolResultCount = nonStreamingMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
+        var streamingToolUseCount = streamingMessages.OfType<ToolCallMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var streamingToolResultCount = streamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamingToolUseCount = nonStreamingMessages.OfType<ToolCallMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamingToolResultCount = nonStreamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
 
         Logger.LogInformation(
             "Comparison: Streaming(ToolUse={StreamToolUse}, ToolResult={StreamToolResult}) "
@@ -251,8 +251,8 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Assert.Equal(1, nonStreamingToolResultCount);
 
         // Compare tool use IDs and names
-        var streamToolUse = streamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).First();
-        var nonStreamToolUse = nonStreamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).First();
+        var streamToolUse = streamingMessages.OfType<ToolCallMessage>().First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        var nonStreamToolUse = nonStreamingMessages.OfType<ToolCallMessage>().First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.Equal(streamToolUse.FunctionName, nonStreamToolUse.FunctionName);
         Assert.Equal(streamToolUse.ToolCallId, nonStreamToolUse.ToolCallId);
     }
@@ -277,7 +277,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Turn 1: server tool flow via instruction chain
@@ -421,7 +421,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Should not throw despite mismatched IDs
@@ -445,11 +445,11 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Verify both messages have correct tool names despite mismatched IDs
-        var toolUse = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
         Assert.Equal("web_search", toolUse!.FunctionName);
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.Equal("web_search", toolResult!.ToolName);
     }
@@ -489,7 +489,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var responseMessages = (await agent.GenerateReplyAsync(messages, options)).ToList();
@@ -508,7 +508,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             );
         }
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -576,12 +576,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             );
         }
 
-        var toolUse = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
         Assert.Equal("web_fetch", toolUse!.FunctionName);
         Assert.Equal("srvtoolu_fetch_01", toolUse.ToolCallId);
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.Equal("web_fetch", toolResult!.ToolName);
         Assert.False(toolResult.IsError);
@@ -636,7 +636,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         var responseMessages = new List<IMessage>();
@@ -655,7 +655,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             responseMessages.Count
         );
 
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -701,7 +701,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-sonnet-4-20250514",
-            BuiltInTools = new List<object> { new AnthropicWebSearchTool() },
+            BuiltInTools = [new AnthropicWebSearchTool()],
         };
 
         // Use non-streaming to get the full JSON response body
@@ -720,7 +720,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // via the messages it produces. But to verify wire format, we inspect the handler output.
         // Since we can't easily capture the response body, verify via the parsed message properties
         // AND verify the request body doesn't contain incorrect type strings.
-        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -741,8 +741,9 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
     /// <summary>
     ///     Builds SSE events with mismatched server_tool_use ID and web_search_tool_result tool_use_id.
     /// </summary>
-    private static List<SseEvent> BuildMismatchedIdSseEvents() =>
-    [
+    private static List<SseEvent> BuildMismatchedIdSseEvents()
+    {
+        return [
         // message_start
         new SseEvent
         {
@@ -842,4 +843,5 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             Data = JsonSerializer.Serialize(new { type = "message_stop" }),
         },
     ];
+    }
 }

@@ -27,7 +27,7 @@ public static class ModeToolFilter
         // Null means "all tools enabled" for system/default modes.
         if (enabledTools == null)
         {
-            return allBuiltInTools.ToList();
+            return [.. allBuiltInTools];
         }
 
         if (enabledTools.Count == 0)

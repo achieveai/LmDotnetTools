@@ -237,7 +237,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             content_block = new
             {
                 type = "server_tool_use",
-                id = id,
+                id,
                 name = toolUse.Name,
                 input = new { },
             },
@@ -323,7 +323,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             {
                 type = resultType,
                 tool_use_id = toolUseId,
-                content = content,
+                content,
             },
         };
 
@@ -375,7 +375,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             {
                 type = "content_block_start",
                 index = contentIndex,
-                content_block = new { type = "text", text = "", citations = citations },
+                content_block = new { type = "text", text = "", citations },
             }
             : (object)
                 new
@@ -553,7 +553,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             content_block = new
             {
                 type = "tool_use",
-                id = id,
+                id,
                 name = toolCall.Name,
                 input = new { },
             },

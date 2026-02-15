@@ -155,7 +155,7 @@ public static class AnthropicExtensions
                 new TextWithCitationsMessage
                 {
                     Text = textWithCitations.Text,
-                    Citations = textWithCitations.Citations!
+                    Citations = [.. textWithCitations.Citations!
                         .Select(c => new CitationInfo
                         {
                             Type = c.Type,
@@ -164,8 +164,7 @@ public static class AnthropicExtensions
                             CitedText = c.CitedText,
                             StartIndex = c.StartCharIndex,
                             EndIndex = c.EndCharIndex,
-                        })
-                        .ToImmutableList(),
+                        })],
                     Role = ParseRole("assistant"),
                     FromAgent = agentName,
                     GenerationId = messageId,
@@ -284,21 +283,14 @@ public static class AnthropicExtensions
 
     private static bool IsContentError(JsonElement content)
     {
-        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement))
-        {
-            return typeElement.GetString()?.EndsWith("_error") == true;
-        }
-
-        return false;
+        return content.ValueKind == JsonValueKind.Object && content.TryGetProperty("type", out var typeElement)
+            && typeElement.GetString()?.EndsWith("_error") == true;
     }
 
     private static string? GetContentErrorCode(JsonElement content)
     {
-        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement))
-        {
-            return errorElement.GetString();
-        }
-
-        return null;
+        return content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement)
+            ? errorElement.GetString()
+            : null;
     }
 }

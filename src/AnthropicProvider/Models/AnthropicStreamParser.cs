@@ -413,7 +413,7 @@ public class AnthropicStreamParser
                 var citationsMessage = new TextWithCitationsMessage
                 {
                     Text = block.Text,
-                    Citations = block.Citations
+                    Citations = [.. block.Citations
                         .Select(c => new CitationInfo
                         {
                             Type = c.Type,
@@ -422,8 +422,7 @@ public class AnthropicStreamParser
                             CitedText = c.CitedText,
                             StartIndex = c.StartCharIndex,
                             EndIndex = c.EndCharIndex,
-                        })
-                        .ToImmutableList(),
+                        })],
                     Role = ParseRole(_role),
                     FromAgent = _messageId,
                     GenerationId = _messageId,
@@ -1044,12 +1043,9 @@ public class AnthropicStreamParser
 
     private static string? GetErrorCodeFromResult(JsonElement content)
     {
-        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement))
-        {
-            return errorElement.GetString();
-        }
-
-        return null;
+        return content.ValueKind == JsonValueKind.Object && content.TryGetProperty("error_code", out var errorElement)
+            ? errorElement.GetString()
+            : null;
     }
 
     private List<IMessage> HandleTypedContentBlockDelta(AnthropicContentBlockDeltaEvent contentBlockDeltaEvent)
@@ -1219,7 +1215,7 @@ public class AnthropicStreamParser
                 var citationsMessage = new TextWithCitationsMessage
                 {
                     Text = block.Text,
-                    Citations = block.Citations
+                    Citations = [.. block.Citations
                         .Select(c => new CitationInfo
                         {
                             Type = c.Type,
@@ -1228,8 +1224,7 @@ public class AnthropicStreamParser
                             CitedText = c.CitedText,
                             StartIndex = c.StartCharIndex,
                             EndIndex = c.EndCharIndex,
-                        })
-                        .ToImmutableList(),
+                        })],
                     Role = ParseRole(_role),
                     FromAgent = _messageId,
                     GenerationId = _messageId,

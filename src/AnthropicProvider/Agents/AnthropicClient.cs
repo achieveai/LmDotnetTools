@@ -269,12 +269,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         }
 
         var envUrl = Environment.GetEnvironmentVariable("ANTHROPIC_BASE_URL");
-        if (!string.IsNullOrEmpty(envUrl))
-        {
-            return envUrl.TrimEnd('/');
-        }
-
-        return DefaultBaseUrl;
+        return !string.IsNullOrEmpty(envUrl) ? envUrl.TrimEnd('/') : DefaultBaseUrl;
     }
 
     private static HttpClient CreateHttpClient(string apiKey, string? baseUrl = null)
@@ -316,7 +311,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         {
             // Remove duplicates and join
             var uniqueFeatures = betaFeatures.Distinct().ToList();
-            request.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", uniqueFeatures));
+            _ = request.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", uniqueFeatures));
         }
     }
 

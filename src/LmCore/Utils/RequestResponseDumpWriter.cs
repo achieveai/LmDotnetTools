@@ -120,7 +120,7 @@ public sealed class RequestResponseDumpWriter
         var directory = Path.GetDirectoryName(targetPath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
-            Directory.CreateDirectory(directory);
+            _ = Directory.CreateDirectory(directory);
         }
 
         if (!File.Exists(targetPath))

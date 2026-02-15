@@ -1,3 +1,4 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -15,7 +16,6 @@ using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
-using System.Text;
 using Serilog;
 using Serilog.Enrichers.CallerInfo;
 using Serilog.Events;
@@ -254,11 +254,16 @@ try
         if (recordEnabled)
         {
             var recordingsDir = Path.Combine(app.Environment.ContentRootPath, "recordings");
-            Directory.CreateDirectory(recordingsDir);
+            _ = Directory.CreateDirectory(recordingsDir);
             var sessionBaseName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}";
 
             var wsFileName = $"{sessionBaseName}.ws.jsonl";
-            recordWriter = new StreamWriter(Path.Combine(recordingsDir, wsFileName), false, new UTF8Encoding(false));
+            recordWriter = new StreamWriter(
+                Path.Combine(
+                    recordingsDir,
+                    wsFileName),
+                false,
+                new UTF8Encoding(false));
 
             requestResponseDumpFileName = Path.Combine(recordingsDir, $"{sessionBaseName}.llm");
 
