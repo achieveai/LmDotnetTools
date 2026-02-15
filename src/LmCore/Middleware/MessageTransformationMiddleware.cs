@@ -345,13 +345,13 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 }
                 break;
 
-            case ServerToolUseMessage m:
+            case ToolCallMessage m:
                 StartNewMessage();
                 var (stuOrderIdx, _) = GetCurrentIndices();
                 yield return m with { MessageOrderIdx = stuOrderIdx };
                 break;
 
-            case ServerToolResultMessage m:
+            case ToolCallResultMessage m:
                 StartNewMessage();
                 var (strOrderIdx, _) = GetCurrentIndices();
                 yield return m with { MessageOrderIdx = strOrderIdx };

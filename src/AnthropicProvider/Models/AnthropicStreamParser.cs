@@ -635,7 +635,7 @@ public class AnthropicStreamParser
         }
 
         // For server_tool_use blocks, accumulate input but don't emit updates
-        // (the final ServerToolUseMessage with input will be emitted at content_block_stop)
+        // (the final ToolCallMessage with input will be emitted at content_block_stop)
         if (block.Type == "server_tool_use")
         {
             if (block.JsonAccumulator.IsComplete && block.Input == null)
@@ -673,7 +673,7 @@ public class AnthropicStreamParser
     }
 
     /// <summary>
-    ///     Finalizes a server_tool_use block, emitting the ServerToolUseMessage with
+    ///     Finalizes a server_tool_use block, emitting the ToolCallMessage with
     ///     input from either content_block_start or accumulated input_json_delta events.
     /// </summary>
     private List<IMessage> FinalizeServerToolUseBlock(StreamingContentBlock block)
@@ -743,11 +743,14 @@ public class AnthropicStreamParser
             }
         }
 
-        var serverToolUse = new ServerToolUseMessage
+        var serverToolUse = new ToolCallMessage
         {
-            ToolUseId = block.Id!,
-            ToolName = block.Name ?? string.Empty,
-            Input = inputElement,
+            ToolCallId = block.Id!,
+            FunctionName = block.Name ?? string.Empty,
+            FunctionArgs = inputElement.ValueKind != JsonValueKind.Undefined
+                ? JsonSerializer.Serialize(inputElement)
+                : "{}",
+            ExecutionTarget = ExecutionTarget.ProviderServer,
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,

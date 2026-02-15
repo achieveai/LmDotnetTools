@@ -176,26 +176,26 @@ public class ServerToolRequestTests
     [Fact]
     public void FromMessages_FullKimiLikeFlow_ProducesCorrectMergedWireJson()
     {
-        // Full IMessage sequence: User text, Assistant text + ServerToolUseMessage,
-        // ServerToolResultMessage, Assistant text, User text
+        // Full IMessage sequence: User text, Assistant text + ToolCallMessage (server),
+        // ToolCallResultMessage (server), Assistant text, User text
         var messages = new IMessage[]
         {
             new TextMessage { Role = Role.User, Text = "Search for AI companies." },
             new TextMessage { Role = Role.Assistant, Text = "Let me search for that." },
-            new ServerToolUseMessage
+            new ToolCallMessage
             {
-                ToolUseId = "srvtoolu_kimi_01",
-                ToolName = "web_search",
-                Input = JsonSerializer.Deserialize<JsonElement>("""{"query":"top AI companies 2026"}"""),
+                ToolCallId = "srvtoolu_kimi_01",
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"top AI companies 2026"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
-            new ServerToolResultMessage
+            new ToolCallResultMessage
             {
-                ToolUseId = "srvtoolu_kimi_01",
+                ToolCallId = "srvtoolu_kimi_01",
                 ToolName = "web_search",
-                Result = JsonSerializer.Deserialize<JsonElement>(
-                    """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"AI Companies"}]"""
-                ),
+                Result = """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"AI Companies"}]""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
             new TextMessage { Role = Role.Assistant, Text = "Based on my search, here are the top AI companies." },
@@ -260,24 +260,24 @@ public class ServerToolRequestTests
     [Fact]
     public void FromMessages_WithContentNull_SerializesCorrectly()
     {
-        // ServerToolResultMessage with Result containing content: null
+        // ToolCallResultMessage with Result containing content: null
         var messages = new IMessage[]
         {
             new TextMessage { Role = Role.User, Text = "Search for something." },
-            new ServerToolUseMessage
+            new ToolCallMessage
             {
-                ToolUseId = "srvtoolu_null_01",
-                ToolName = "web_search",
-                Input = JsonSerializer.Deserialize<JsonElement>("""{"query":"test"}"""),
+                ToolCallId = "srvtoolu_null_01",
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"test"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
-            new ServerToolResultMessage
+            new ToolCallResultMessage
             {
-                ToolUseId = "srvtoolu_null_01",
+                ToolCallId = "srvtoolu_null_01",
                 ToolName = "web_search",
-                Result = JsonSerializer.Deserialize<JsonElement>(
-                    """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"Test"}]"""
-                ),
+                Result = """[{"type":"web_search_result","content":null,"url":"https://example.com","title":"Test"}]""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = Role.Assistant,
             },
             new TextMessage { Role = Role.User, Text = "What did you find?" },

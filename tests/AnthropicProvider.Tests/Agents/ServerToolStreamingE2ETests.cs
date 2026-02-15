@@ -78,8 +78,8 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // Verify 4-block structure
         // In streaming mode, text arrives as TextUpdateMessage (not TextMessage)
         var textUpdates = responseMessages.OfType<TextUpdateMessage>().ToList();
-        var serverToolUseMessages = responseMessages.OfType<ServerToolUseMessage>().ToList();
-        var serverToolResultMessages = responseMessages.OfType<ServerToolResultMessage>().ToList();
+        var serverToolUseMessages = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolResultMessages = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
         var textWithCitationsMessages = responseMessages.OfType<TextWithCitationsMessage>().ToList();
 
         Logger.LogDebug(
@@ -96,8 +96,8 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Assert.Empty(textWithCitationsMessages); // No citations in this chain
 
         var toolUse = serverToolUseMessages.First();
-        Assert.Equal("web_search", toolUse.ToolName);
-        Assert.Equal("srvtoolu_kimi_01", toolUse.ToolUseId);
+        Assert.Equal("web_search", toolUse.FunctionName);
+        Assert.Equal("srvtoolu_kimi_01", toolUse.ToolCallId);
 
         var toolResult = serverToolResultMessages.First();
         Assert.Equal("web_search", toolResult.ToolName);
@@ -158,15 +158,15 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         }
 
         // Same assertions as streaming test
-        var serverToolUseMessages = responseMessages.OfType<ServerToolUseMessage>().ToList();
-        var serverToolResultMessages = responseMessages.OfType<ServerToolResultMessage>().ToList();
+        var serverToolUseMessages = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolResultMessages = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
 
         Assert.Single(serverToolUseMessages);
         Assert.Single(serverToolResultMessages);
 
         var toolUse = serverToolUseMessages.First();
-        Assert.Equal("web_search", toolUse.ToolName);
-        Assert.Equal("srvtoolu_kimi_01", toolUse.ToolUseId);
+        Assert.Equal("web_search", toolUse.FunctionName);
+        Assert.Equal("srvtoolu_kimi_01", toolUse.ToolCallId);
 
         var toolResult = serverToolResultMessages.First();
         Assert.Equal("web_search", toolResult.ToolName);
@@ -231,10 +231,10 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Compare server tool message counts
-        var streamingToolUseCount = streamingMessages.OfType<ServerToolUseMessage>().Count();
-        var streamingToolResultCount = streamingMessages.OfType<ServerToolResultMessage>().Count();
-        var nonStreamingToolUseCount = nonStreamingMessages.OfType<ServerToolUseMessage>().Count();
-        var nonStreamingToolResultCount = nonStreamingMessages.OfType<ServerToolResultMessage>().Count();
+        var streamingToolUseCount = streamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
+        var streamingToolResultCount = streamingMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
+        var nonStreamingToolUseCount = nonStreamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
+        var nonStreamingToolResultCount = nonStreamingMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).Count();
 
         Logger.LogInformation(
             "Comparison: Streaming(ToolUse={StreamToolUse}, ToolResult={StreamToolResult}) "
@@ -251,10 +251,10 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Assert.Equal(1, nonStreamingToolResultCount);
 
         // Compare tool use IDs and names
-        var streamToolUse = streamingMessages.OfType<ServerToolUseMessage>().First();
-        var nonStreamToolUse = nonStreamingMessages.OfType<ServerToolUseMessage>().First();
-        Assert.Equal(streamToolUse.ToolName, nonStreamToolUse.ToolName);
-        Assert.Equal(streamToolUse.ToolUseId, nonStreamToolUse.ToolUseId);
+        var streamToolUse = streamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).First();
+        var nonStreamToolUse = nonStreamingMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).First();
+        Assert.Equal(streamToolUse.FunctionName, nonStreamToolUse.FunctionName);
+        Assert.Equal(streamToolUse.ToolCallId, nonStreamToolUse.ToolCallId);
     }
 
     [Fact]
@@ -445,11 +445,11 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Verify both messages have correct tool names despite mismatched IDs
-        var toolUse = responseMessages.OfType<ServerToolUseMessage>().FirstOrDefault();
+        var toolUse = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolUse);
-        Assert.Equal("web_search", toolUse!.ToolName);
+        Assert.Equal("web_search", toolUse!.FunctionName);
 
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.Equal("web_search", toolResult!.ToolName);
     }
@@ -508,7 +508,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             );
         }
 
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -576,12 +576,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             );
         }
 
-        var toolUse = responseMessages.OfType<ServerToolUseMessage>().FirstOrDefault();
+        var toolUse = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolUse);
-        Assert.Equal("web_fetch", toolUse!.ToolName);
-        Assert.Equal("srvtoolu_fetch_01", toolUse.ToolUseId);
+        Assert.Equal("web_fetch", toolUse!.FunctionName);
+        Assert.Equal("srvtoolu_fetch_01", toolUse.ToolCallId);
 
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.Equal("web_fetch", toolResult!.ToolName);
         Assert.False(toolResult.IsError);
@@ -655,7 +655,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             responseMessages.Count
         );
 
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
@@ -720,12 +720,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // via the messages it produces. But to verify wire format, we inspect the handler output.
         // Since we can't easily capture the response body, verify via the parsed message properties
         // AND verify the request body doesn't contain incorrect type strings.
-        var toolResult = responseMessages.OfType<ServerToolResultMessage>().FirstOrDefault();
+        var toolResult = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).FirstOrDefault();
         Assert.NotNull(toolResult);
         Assert.True(toolResult!.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
         Assert.Equal("web_search", toolResult.ToolName);
-        Assert.Equal("srvtoolu_err_03", toolResult.ToolUseId);
+        Assert.Equal("srvtoolu_err_03", toolResult.ToolCallId);
 
         // Verify the result content carries the error structure through
         // The ErrorCode property being set confirms the parser found the error content block
@@ -733,7 +733,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         Logger.LogInformation(
             "Wire format error structure verified: ToolName={ToolName}, ToolUseId={ToolUseId}, ErrorCode={ErrorCode}",
             toolResult.ToolName,
-            toolResult.ToolUseId,
+            toolResult.ToolCallId,
             toolResult.ErrorCode
         );
     }
