@@ -127,11 +127,17 @@ public record AnthropicRequest
 
         ArgumentNullException.ThrowIfNull(messages);
 
+        // Deduplicate ToolCallUpdateMessages with the same ToolCallId, keeping only the last
+        // occurrence. During streaming, the parser emits a preview at content_block_start and
+        // a final update at content_block_stop — both are ToolCallUpdateMessage. When these
+        // end up in history, only the final one (with accumulated args) should be serialized.
+        var deduplicatedMessages = DeduplicateToolCallUpdates(messages);
+
         // Map LmCore messages to Anthropic messages
         var anthropicMessages = new List<AnthropicMessage>();
         string? systemPrompt = null;
 
-        foreach (var message in messages)
+        foreach (var message in deduplicatedMessages)
         {
             // Extract system prompt if present
             if (message.Role == Role.System && message is TextMessage textMessage)
@@ -335,6 +341,21 @@ public record AnthropicRequest
                 }
             );
         }
+        else if (message is ToolCallUpdateMessage toolCallUpdateMsg
+            && toolCallUpdateMsg.ExecutionTarget == ExecutionTarget.ProviderServer)
+        {
+            // ToolCallUpdateMessage is the streaming equivalent of ToolCallMessage for server tools.
+            // When it appears in history (without the joiner middleware), serialize it as server_tool_use.
+            anthropicMessage.Content.Add(
+                new AnthropicContent
+                {
+                    Type = "server_tool_use",
+                    Id = toolCallUpdateMsg.ToolCallId,
+                    Name = toolCallUpdateMsg.FunctionName,
+                    Input = SafeDeserializeArgs(toolCallUpdateMsg.FunctionArgs),
+                }
+            );
+        }
         else if (message is ToolCallResultMessage singularToolResultMsg)
         {
             anthropicMessage.Content.Add(
@@ -516,6 +537,35 @@ public record AnthropicRequest
         }
 
         return tools;
+    }
+
+    private static IEnumerable<IMessage> DeduplicateToolCallUpdates(IEnumerable<IMessage> messages)
+    {
+        var messageList = messages.ToList();
+
+        // Find the last ToolCallUpdateMessage index for each ToolCallId
+        var lastUpdateIndex = new Dictionary<string, int>();
+        for (var i = 0; i < messageList.Count; i++)
+        {
+            if (messageList[i] is ToolCallUpdateMessage update && update.ToolCallId != null)
+            {
+                lastUpdateIndex[update.ToolCallId] = i;
+            }
+        }
+
+        // Yield all messages, skipping earlier ToolCallUpdateMessages that share a ToolCallId
+        for (var i = 0; i < messageList.Count; i++)
+        {
+            if (messageList[i] is ToolCallUpdateMessage update
+                && update.ToolCallId != null
+                && lastUpdateIndex.TryGetValue(update.ToolCallId, out var lastIdx)
+                && i != lastIdx)
+            {
+                continue; // Skip earlier duplicate
+            }
+
+            yield return messageList[i];
+        }
     }
 
     private static List<AnthropicMessage> MergeConsecutiveSameRoleMessages(List<AnthropicMessage> messages)

@@ -1,4 +1,7 @@
 using System.Collections.Immutable;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
@@ -36,13 +39,44 @@ public class ConversationsController(
         return Ok(result);
     }
 
+    private static readonly JsonSerializerOptions NormalizeOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        WriteIndented = false,
+        Converters = { new IMessageJsonConverter() },
+    };
+
     [HttpGet("{threadId}/messages")]
     public async Task<IActionResult> GetMessages(
         string threadId,
         CancellationToken ct = default)
     {
         var messages = await store.LoadMessagesAsync(threadId, ct);
-        return Ok(messages);
+
+        // Normalize messageJson to ensure consistent discriminators
+        // (e.g., legacy "server_tool_use" → "tool_call" with execution_target).
+        var normalized = messages
+            .Select(m =>
+            {
+                try
+                {
+                    var msg = JsonSerializer.Deserialize<IMessage>(m.MessageJson, NormalizeOptions);
+                    if (msg == null)
+                    {
+                        return m;
+                    }
+
+                    var newJson = JsonSerializer.Serialize(msg, msg.GetType(), NormalizeOptions);
+                    return m with { MessageJson = newJson };
+                }
+                catch
+                {
+                    return m;
+                }
+            })
+            .ToList();
+
+        return Ok(normalized);
     }
 
     [HttpPut("{threadId}/metadata")]

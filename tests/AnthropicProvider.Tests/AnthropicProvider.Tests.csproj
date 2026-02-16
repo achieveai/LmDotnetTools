@@ -30,4 +30,7 @@
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="TestData\**\*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

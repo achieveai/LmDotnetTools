@@ -77,25 +77,28 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         // Verify 4-block structure
         // In streaming mode, text arrives as TextUpdateMessage (not TextMessage)
+        // Server tool use arrives as ToolCallUpdateMessage (preview at start + final at stop)
         var textUpdates = responseMessages.OfType<TextUpdateMessage>().ToList();
-        var serverToolUseMessages = responseMessages.OfType<ToolCallMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
+        var serverToolUpdateMessages = responseMessages.OfType<ToolCallUpdateMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
         var serverToolResultMessages = responseMessages.OfType<ToolCallResultMessage>().Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer).ToList();
         var textWithCitationsMessages = responseMessages.OfType<TextWithCitationsMessage>().ToList();
 
         Logger.LogDebug(
-            "Message breakdown: TextUpdates={TextUpdateCount}, ServerToolUse={ToolUseCount}, "
+            "Message breakdown: TextUpdates={TextUpdateCount}, ServerToolUpdates={ToolUpdateCount}, "
             + "ServerToolResult={ResultCount}, TextWithCitations={CitationsCount}",
             textUpdates.Count,
-            serverToolUseMessages.Count,
+            serverToolUpdateMessages.Count,
             serverToolResultMessages.Count,
             textWithCitationsMessages.Count
         );
 
-        Assert.Single(serverToolUseMessages);
+        // content_block_start and content_block_stop both emit ToolCallUpdateMessage.
+        // The joiner middleware (applied externally) combines them into one ToolCallMessage.
+        Assert.Equal(2, serverToolUpdateMessages.Count);
         Assert.Single(serverToolResultMessages);
         Assert.Empty(textWithCitationsMessages); // No citations in this chain
 
-        var toolUse = serverToolUseMessages.First();
+        var toolUse = serverToolUpdateMessages.Last();
         Assert.Equal("web_search", toolUse.FunctionName);
         Assert.Equal("srvtoolu_kimi_01", toolUse.ToolCallId);
 
@@ -231,27 +234,29 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Compare server tool message counts
-        var streamingToolUseCount = streamingMessages.OfType<ToolCallMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        // Streaming emits ToolCallUpdateMessage (not ToolCallMessage), non-streaming emits ToolCallMessage
+        var streamingToolUpdateCount = streamingMessages.OfType<ToolCallUpdateMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         var streamingToolResultCount = streamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         var nonStreamingToolUseCount = nonStreamingMessages.OfType<ToolCallMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         var nonStreamingToolResultCount = nonStreamingMessages.OfType<ToolCallResultMessage>().Count(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
 
         Logger.LogInformation(
-            "Comparison: Streaming(ToolUse={StreamToolUse}, ToolResult={StreamToolResult}) "
+            "Comparison: Streaming(ToolUpdates={StreamToolUpdates}, ToolResult={StreamToolResult}) "
             + "vs NonStreaming(ToolUse={NonStreamToolUse}, ToolResult={NonStreamToolResult})",
-            streamingToolUseCount,
+            streamingToolUpdateCount,
             streamingToolResultCount,
             nonStreamingToolUseCount,
             nonStreamingToolResultCount
         );
 
-        Assert.Equal(1, streamingToolUseCount);
+        // Streaming: 2 ToolCallUpdateMessages (preview + final), non-streaming: 1 ToolCallMessage
+        Assert.Equal(2, streamingToolUpdateCount);
         Assert.Equal(1, nonStreamingToolUseCount);
         Assert.Equal(1, streamingToolResultCount);
         Assert.Equal(1, nonStreamingToolResultCount);
 
-        // Compare tool use IDs and names
-        var streamToolUse = streamingMessages.OfType<ToolCallMessage>().First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        // Compare tool use IDs and names (streaming uses last ToolCallUpdateMessage)
+        var streamToolUse = streamingMessages.OfType<ToolCallUpdateMessage>().Last(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         var nonStreamToolUse = nonStreamingMessages.OfType<ToolCallMessage>().First(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.Equal(streamToolUse.FunctionName, nonStreamToolUse.FunctionName);
         Assert.Equal(streamToolUse.ToolCallId, nonStreamToolUse.ToolCallId);
@@ -445,7 +450,8 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         );
 
         // Verify both messages have correct tool names despite mismatched IDs
-        var toolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
+        // Streaming emits ToolCallUpdateMessage, not ToolCallMessage
+        var toolUse = responseMessages.OfType<ToolCallUpdateMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
         Assert.Equal("web_search", toolUse!.FunctionName);
 
@@ -736,6 +742,112 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
             toolResult.ToolCallId,
             toolResult.ErrorCode
         );
+    }
+
+    [Fact]
+    public async Task MultiTurn_ServerToolUse_HistoryHasNoDuplicateToolCallIds()
+    {
+        Logger.LogInformation(
+            "Starting {TestName} - verifying no duplicate tool call IDs in multi-turn history",
+            nameof(MultiTurn_ServerToolUse_HistoryHasNoDuplicateToolCallIds)
+        );
+
+        var requestCapture = new RequestCapture();
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory, requestCapture, chunkDelayMs: 0
+        );
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent(
+            "TestAgent", anthropicClient, LoggerFactory.CreateLogger<AnthropicAgent>()
+        );
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            BuiltInTools = [new AnthropicWebSearchTool()],
+        };
+
+        // Turn 1: streaming response with server_tool_use
+        var turn1Messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = KimiLikeInstructionChain },
+        };
+
+        var turn1Responses = new List<IMessage>();
+        await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn1Messages, options))
+        {
+            turn1Responses.Add(msg);
+        }
+
+        // Streaming emits 2 ToolCallMessages (preview + final) with the same ID.
+        // When building multi-turn history, verify the wire format doesn't contain
+        // duplicate tool_use IDs — which would cause the API to reject the request.
+        var turn2Instruction = """
+            <|instruction_start|>{"instruction_chain": [
+                {"messages": [{"text": "Here are more details about those companies."}]}
+            ]}<|instruction_end|>
+            """;
+
+        var turn2Messages = new List<IMessage>();
+        turn2Messages.AddRange(turn1Messages);
+        turn2Messages.AddRange(turn1Responses);
+        turn2Messages.Add(new TextMessage { Role = Role.User, Text = turn2Instruction });
+
+        var turn2Responses = new List<IMessage>();
+        await foreach (var msg in await agent.GenerateReplyStreamingAsync(turn2Messages, options))
+        {
+            turn2Responses.Add(msg);
+        }
+
+        // Inspect turn 2 wire format for duplicate tool_use IDs
+        Assert.Equal(2, requestCapture.RequestCount);
+        var turn2Body = requestCapture.RequestBodies[1];
+        using var doc = JsonDocument.Parse(turn2Body);
+        var requestMessages = doc.RootElement.GetProperty("messages");
+
+        var toolUseIds = new List<string>();
+        foreach (var msg in requestMessages.EnumerateArray())
+        {
+            if (!msg.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var block in content.EnumerateArray())
+            {
+                if (!block.TryGetProperty("type", out var blockType))
+                {
+                    continue;
+                }
+
+                var typeStr = blockType.GetString();
+
+                // Collect IDs from server_tool_use blocks
+                if (typeStr == "server_tool_use"
+                    && block.TryGetProperty("id", out var id))
+                {
+                    toolUseIds.Add(id.GetString()!);
+                }
+
+                // Also collect IDs from tool_use blocks (local tools)
+                if (typeStr == "tool_use"
+                    && block.TryGetProperty("id", out var toolId))
+                {
+                    toolUseIds.Add(toolId.GetString()!);
+                }
+            }
+        }
+
+        Logger.LogInformation(
+            "Turn 2 wire format tool_use IDs: {ToolUseIds}",
+            string.Join(", ", toolUseIds)
+        );
+
+        // Critical: no duplicate tool_use IDs in the wire format
+        Assert.Equal(
+            toolUseIds.Count,
+            toolUseIds.Distinct().Count());
     }
 
     /// <summary>

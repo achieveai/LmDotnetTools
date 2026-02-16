@@ -318,7 +318,7 @@ public class ServerToolSerializationTests
 
         Assert.NotNull(json);
         var doc = JsonDocument.Parse(json);
-        Assert.Equal("server_tool_use", doc.RootElement.GetProperty("$type").GetString());
+        Assert.Equal("tool_call", doc.RootElement.GetProperty("$type").GetString());
         Assert.Equal("srvtoolu_01ABC", doc.RootElement.GetProperty("tool_call_id").GetString());
         Assert.Equal("web_search", doc.RootElement.GetProperty("function_name").GetString());
         Assert.False(
@@ -345,7 +345,7 @@ public class ServerToolSerializationTests
 
         Assert.NotNull(json);
         var doc = JsonDocument.Parse(json);
-        Assert.Equal("server_tool_result", doc.RootElement.GetProperty("$type").GetString());
+        Assert.Equal("tool_call_result", doc.RootElement.GetProperty("$type").GetString());
         Assert.Equal("srvtoolu_02DEF", doc.RootElement.GetProperty("tool_call_id").GetString());
         Assert.Equal("{}", doc.RootElement.GetProperty("result").GetString());
         Assert.False(doc.RootElement.TryGetProperty("tool_name", out _));

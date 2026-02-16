@@ -225,15 +225,17 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
-        // Emit ToolCallMessage immediately with ExecutionTarget.ProviderServer (unified approach)
+        // Emit a streaming update at content_block_start (not a full ToolCallMessage).
+        // The final ToolCallMessage with accumulated args is emitted at content_block_stop.
         if (blockType == "server_tool_use")
         {
             // Store tool_use_id for correlating with results (may be empty — synthetic ID generated at stop)
             _contentBlocks[index].ToolUseId = _contentBlocks[index].Id ?? string.Empty;
 
-            var serverToolUse = new ToolCallMessage
+            var serverToolUpdate = new ToolCallUpdateMessage
             {
                 ToolCallId = _contentBlocks[index].Id!,
+                Index = index,
                 FunctionName = _contentBlocks[index].Name ?? string.Empty,
                 FunctionArgs = contentBlock["input"] != null ? contentBlock["input"]!.ToJsonString() : "{}",
                 ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -242,8 +244,7 @@ public class AnthropicStreamParser
                 GenerationId = _messageId,
             };
 
-            _messages.Add(serverToolUse);
-            return [serverToolUse];
+            return [serverToolUpdate];
         }
 
         // Handle server tool result blocks (web_search_tool_result, web_fetch_tool_result, etc.)
@@ -375,6 +376,32 @@ public class AnthropicStreamParser
                     return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
                 }
 
+            case "citations_delta":
+                {
+                    var citationNode = delta["citation"];
+                    if (citationNode != null)
+                    {
+                        try
+                        {
+                            var citation = JsonSerializer.Deserialize<Citation>(
+                                citationNode.ToJsonString(),
+                                _jsonOptions
+                            );
+                            if (citation != null)
+                            {
+                                block.Citations ??= [];
+                                block.Citations.Add(citation);
+                            }
+                        }
+                        catch (JsonException ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to parse citation from citations_delta");
+                        }
+                    }
+
+                    return [];
+                }
+
             default:
                 // Unknown delta type, ignore
                 return [];
@@ -402,10 +429,10 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // Handle server_tool_use blocks — already emitted ToolCallMessage at content_block_start
+        // Handle server_tool_use blocks — finalize with accumulated input from input_json_delta
         if (block.Type == "server_tool_use")
         {
-            return [];
+            return FinalizeServerToolUseBlock(block);
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
@@ -503,8 +530,22 @@ public class AnthropicStreamParser
                 return [];
             }
 
-            // Create a usage message with cache metrics preserved from message_start
-            return [CreateUsageMessage()];
+            // Real Anthropic message_delta includes all usage fields (cache metrics too).
+            // Update captured cache metrics if message_delta provides them.
+            if (_usage.CacheCreationInputTokens > 0)
+            {
+                _cacheCreationTokens = _usage.CacheCreationInputTokens;
+            }
+
+            if (_usage.CacheReadInputTokens > 0)
+            {
+                _cacheReadTokens = _usage.CacheReadInputTokens;
+            }
+
+            // Create a usage message with the most up-to-date cache metrics
+            var usageMessage = CreateUsageMessage();
+            _messages.Add(usageMessage);
+            return [usageMessage];
         }
 
         return [];
@@ -770,21 +811,40 @@ public class AnthropicStreamParser
             }
         }
 
+        var finalArgs = inputElement.ValueKind != JsonValueKind.Undefined
+            ? JsonSerializer.Serialize(inputElement)
+            : "{}";
+
+        // Add finalized ToolCallMessage to _messages for GetAllMessages() (joined history).
         var serverToolUse = new ToolCallMessage
         {
             ToolCallId = block.Id!,
             FunctionName = block.Name ?? string.Empty,
-            FunctionArgs = inputElement.ValueKind != JsonValueKind.Undefined
-                ? JsonSerializer.Serialize(inputElement)
-                : "{}",
+            FunctionArgs = finalArgs,
+            ExecutionTarget = ExecutionTarget.ProviderServer,
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = _messageId,
+        };
+        _messages.Add(serverToolUse);
+
+        // Return a ToolCallUpdateMessage for streaming so the MessageUpdateJoinerMiddleware
+        // accumulates it into the builder started at content_block_start, producing exactly
+        // one ToolCallMessage. Returning a ToolCallMessage here would cause the joiner to
+        // finalize the builder AND pass through this message, creating a duplicate.
+        var finalUpdate = new ToolCallUpdateMessage
+        {
+            ToolCallId = block.Id!,
+            Index = block.Index,
+            FunctionName = block.Name ?? string.Empty,
+            FunctionArgs = finalArgs,
             ExecutionTarget = ExecutionTarget.ProviderServer,
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
         };
 
-        _messages.Add(serverToolUse);
-        return [serverToolUse];
+        return [finalUpdate];
     }
 
     /// <summary>
@@ -795,20 +855,21 @@ public class AnthropicStreamParser
         // Handle missing function name - default to empty string if not available
         var functionName = block.Name ?? string.Empty;
 
-        // Handle missing or empty arguments - use empty object instead of empty string
+        // Prefer accumulated JSON from input_json_delta events (real Anthropic API sends
+        // "input":{} in content_block_start, with actual args streamed via deltas).
+        // Fall back to block.Input from content_block_start if no deltas were received.
         var functionArgs = "{}";
-        if (block.Input != null)
+        if (block.JsonAccumulator.IsComplete)
+        {
+            var accumulated = block.JsonAccumulator.GetRawJson();
+            if (!string.IsNullOrEmpty(accumulated))
+            {
+                functionArgs = accumulated;
+            }
+        }
+        else if (block.Input != null)
         {
             functionArgs = block.Input.ToJsonString();
-        }
-        else if (block.JsonAccumulator.IsComplete)
-        {
-            functionArgs = block.JsonAccumulator.GetRawJson();
-            // Ensure we have valid JSON, not an empty string
-            if (string.IsNullOrEmpty(functionArgs))
-            {
-                functionArgs = "{}";
-            }
         }
 
         var message = new ToolsCallMessage
@@ -946,14 +1007,16 @@ public class AnthropicStreamParser
         }
 
         // Handle server_tool_use blocks (built-in tools like web_search, web_fetch)
-        // Emit ToolCallMessage immediately with ExecutionTarget.ProviderServer (unified approach)
+        // Emit a streaming update at content_block_start (not a full ToolCallMessage).
+        // The final ToolCallMessage with accumulated args is emitted at content_block_stop.
         if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
         {
             _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
 
-            var serverToolUse = new ToolCallMessage
+            var serverToolUpdate = new ToolCallUpdateMessage
             {
                 ToolCallId = serverToolUseContent.Id,
+                Index = index,
                 FunctionName = serverToolUseContent.Name,
                 FunctionArgs = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
                     ? serverToolUseContent.Input.ToString()
@@ -964,8 +1027,7 @@ public class AnthropicStreamParser
                 GenerationId = _messageId,
             };
 
-            _messages.Add(serverToolUse);
-            return [serverToolUse];
+            return [serverToolUpdate];
         }
 
         // Handle web_search_tool_result
@@ -1101,6 +1163,7 @@ public class AnthropicStreamParser
             AnthropicThinkingDelta thinkingDelta => HandleThinkingDelta(block, thinkingDelta),
             AnthropicInputJsonDelta inputJsonDelta => HandleInputJsonDelta(block, inputJsonDelta),
             AnthropicSignatureDelta signatureDelta => HandleSignatureDelta(block, signatureDelta),
+            AnthropicCitationsDelta citationsDelta => HandleCitationsDelta(block, citationsDelta),
             AnthropicToolCallsDelta toolCallsDelta => HandleToolCallsDelta(toolCallsDelta),
             _ => [],
         };
@@ -1143,6 +1206,13 @@ public class AnthropicStreamParser
     private List<IMessage> HandleInputJsonDelta(StreamingContentBlock block, AnthropicInputJsonDelta inputJsonDelta)
     {
         return HandleJsonDelta(block, inputJsonDelta.PartialJson);
+    }
+
+    private static List<IMessage> HandleCitationsDelta(StreamingContentBlock block, AnthropicCitationsDelta citationsDelta)
+    {
+        block.Citations ??= [];
+        block.Citations.Add(citationsDelta.Citation);
+        return [];
     }
 
     private List<IMessage> HandleSignatureDelta(
@@ -1229,10 +1299,10 @@ public class AnthropicStreamParser
             return FinalizeToolUseBlock(block);
         }
 
-        // Handle server_tool_use blocks — already emitted ToolCallMessage at content_block_start
+        // Handle server_tool_use blocks — finalize with accumulated input from input_json_delta
         if (block.Type == "server_tool_use")
         {
-            return [];
+            return FinalizeServerToolUseBlock(block);
         }
 
         // For text blocks, create a final TextMessage (or TextWithCitationsMessage if citations present)
@@ -1303,8 +1373,22 @@ public class AnthropicStreamParser
         {
             _usage = messageDeltaEvent.Usage;
 
-            // Create a usage message directly
-            return [CreateUsageMessage()];
+            // Real Anthropic message_delta includes all usage fields (cache metrics too).
+            // Update captured cache metrics if message_delta provides them.
+            if (_usage.CacheCreationInputTokens > 0)
+            {
+                _cacheCreationTokens = _usage.CacheCreationInputTokens;
+            }
+
+            if (_usage.CacheReadInputTokens > 0)
+            {
+                _cacheReadTokens = _usage.CacheReadInputTokens;
+            }
+
+            // Create a usage message and add to joined messages
+            var usageMessage = CreateUsageMessage();
+            _messages.Add(usageMessage);
+            return [usageMessage];
         }
 
         return [];

@@ -148,20 +148,6 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             innerOptions.Converters.Add(conv);
         }
 
-        if (value is ToolCallMessage toolCallMessage
-            && toolCallMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
-        {
-            WriteWithDiscriminatorOverride(writer, value, valueType, innerOptions, "server_tool_use");
-            return;
-        }
-
-        if (value is ToolCallResultMessage toolCallResultMessage
-            && toolCallResultMessage.ExecutionTarget == ExecutionTarget.ProviderServer)
-        {
-            WriteWithDiscriminatorOverride(writer, value, valueType, innerOptions, "server_tool_result");
-            return;
-        }
-
         // Serialize with innerOptions
         var json = JsonSerializer.Serialize(value, valueType, innerOptions);
         using var document = JsonDocument.Parse(json);

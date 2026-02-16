@@ -285,7 +285,7 @@ onMounted(() => {
           </div>
         </header>
 
-        <MessageList :display-items="displayItems" />
+        <MessageList :display-items="displayItems" :is-loading="chatLoading" />
 
         <div v-if="error" class="error-banner">
           {{ error }}

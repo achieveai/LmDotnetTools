@@ -274,6 +274,7 @@ public record AnthropicMessageDelta
 [JsonDerivedType(typeof(AnthropicThinkingDelta), "thinking_delta")]
 [JsonDerivedType(typeof(AnthropicSignatureDelta), "signature_delta")]
 [JsonDerivedType(typeof(AnthropicToolCallsDelta), "tool_calls_delta")]
+[JsonDerivedType(typeof(AnthropicCitationsDelta), "citations_delta")]
 public record AnthropicDelta
 {
     /// <summary>
@@ -289,6 +290,7 @@ public record AnthropicDelta
             AnthropicThinkingDelta => "thinking_delta",
             AnthropicSignatureDelta => "signature_delta",
             AnthropicToolCallsDelta => "tool_calls_delta",
+            AnthropicCitationsDelta => "citations_delta",
             _ => throw new InvalidOperationException("Invalid delta type"),
         };
 }
@@ -339,6 +341,19 @@ public record AnthropicSignatureDelta : AnthropicDelta
     /// </summary>
     [JsonPropertyName("signature")]
     public string Signature { get; init; } = string.Empty;
+}
+
+/// <summary>
+///     Represents a citations delta update in a streaming response.
+///     Contains a single citation from a web search result or other source.
+/// </summary>
+public record AnthropicCitationsDelta : AnthropicDelta
+{
+    /// <summary>
+    ///     The citation object.
+    /// </summary>
+    [JsonPropertyName("citation")]
+    public Citation Citation { get; init; } = new();
 }
 
 /// <summary>

@@ -4,6 +4,7 @@ import type { DisplayItem } from '@/types';
 import TextMessage from './TextMessage.vue';
 import MetadataPill from './MetadataPill.vue';
 import PendingMessage from './PendingMessage.vue';
+import AssistantTypingIndicator from './AssistantTypingIndicator.vue';
 import { logger } from '@/utils/logger';
 
 // #region agent log
@@ -13,6 +14,7 @@ log.info('MessageList component created/loaded');
 
 const props = defineProps<{
   displayItems: readonly DisplayItem[];
+  isLoading?: boolean;
 }>();
 
 const messageListRef = ref<HTMLDivElement | null>(null);
@@ -80,6 +82,14 @@ const messageGroups = computed<MessageGroup[]>(() => {
   }
   
   return groups;
+});
+
+const showTypingIndicator = computed(() => {
+  if (!props.isLoading) return false;
+  const groups = messageGroups.value;
+  if (groups.length === 0) return false;
+  // Show when the last group is a user message (assistant hasn't started responding yet)
+  return groups[groups.length - 1].role === 'user';
 });
 
 const splitGroups = computed(() => {
@@ -264,6 +274,8 @@ watch(
           </div>
         </div>
       </template>
+
+      <AssistantTypingIndicator v-if="showTypingIndicator" />
     </div>
   </div>
 </template>

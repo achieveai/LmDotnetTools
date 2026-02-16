@@ -290,8 +290,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // Verify the full message sequence
         Assert.NotEmpty(responseMessages);
 
-        // Should have: text, server_tool_use, server_tool_result, text (with citations)
-        var serverToolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault();
+        // Should have: text, server_tool_use (as ToolCallUpdateMessage), server_tool_result, text (with citations)
+        var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
+            .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
         Assert.Equal("web_search", serverToolUse!.FunctionName);
         Assert.Equal("srvtoolu_stream_01", serverToolUse.ToolCallId);
@@ -423,7 +424,8 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // Verify the streamed response contains server tool messages
         Assert.NotEmpty(responseMessages);
 
-        var serverToolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault();
+        var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
+            .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
         Assert.Equal("web_search", serverToolUse!.FunctionName);
         Assert.Equal("srvtoolu_chain_01", serverToolUse.ToolCallId);
@@ -531,11 +533,12 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         Logger.LogTrace("Turn 1 complete, got {Count} messages", turn1Responses.Count);
         Assert.NotEmpty(turn1Responses);
-        Assert.Contains(turn1Responses, m => m is ToolCallMessage);
+        Assert.Contains(turn1Responses, m => m is ToolCallUpdateMessage);
         Assert.Contains(turn1Responses, m => m is ToolCallResultMessage);
 
         // Verify the serialized payload fields are accessible after turn 1
-        var toolUse1 = turn1Responses.OfType<ToolCallMessage>().First();
+        var toolUse1 = turn1Responses.OfType<ToolCallUpdateMessage>()
+            .Last(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.Equal(ExecutionTarget.ProviderServer, toolUse1.ExecutionTarget);
         var inputJson = toolUse1.FunctionArgs;
         Logger.LogTrace("Turn 1 ServerToolUse Input accessible: {Input}", inputJson);

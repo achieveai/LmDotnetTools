@@ -24,7 +24,7 @@ function handleSend(message: string) {
       </button>
     </header>
 
-    <MessageList :display-items="displayItems" />
+    <MessageList :display-items="displayItems" :is-loading="isLoading" />
 
     <div v-if="error" class="error-banner">
       {{ error }}
