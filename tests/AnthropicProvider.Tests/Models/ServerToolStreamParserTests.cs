@@ -691,10 +691,11 @@ public class ServerToolStreamParserTests
         }));
         allMessages.AddRange(startMessages);
 
-        // Preview ToolCallUpdateMessage has empty args
+        // Preview ToolCallUpdateMessage has null args — empty "{}" must not leak into the stream
+        // because the joiner concatenates FunctionArgs and would produce "{}{"query":"..."}"
         var preview = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
         Assert.Equal("srvtoolu_delta_01", preview.ToolCallId);
-        Assert.Equal("{}", preview.FunctionArgs);
+        Assert.Null(preview.FunctionArgs);
         Assert.Equal(0, preview.Index);
 
         // 2. input_json_delta events — should NOT emit any messages
@@ -895,6 +896,68 @@ public class ServerToolStreamParserTests
         Assert.Single(resultMessages);
         var result = Assert.IsType<ToolCallResultMessage>(resultMessages[0]);
         Assert.Equal("", result.ToolCallId);
+    }
+
+    /// <summary>
+    /// Regression: the joiner (ToolCallMessageBuilder) concatenates FunctionArgs from all
+    /// ToolCallUpdateMessage chunks. If content_block_start emits "{}" as a preview,
+    /// the final accumulated args become "{}{"query":"..."}" — invalid JSON.
+    /// This test verifies the fix: preview must emit null, so accumulation produces clean JSON.
+    /// </summary>
+    [Fact]
+    public void ToolCallMessageBuilder_ServerToolUse_DoesNotPrefixEmptyObject()
+    {
+        var parser = new AnthropicStreamParser();
+        parser.ProcessEvent("event", BuildMessageStart());
+
+        // 1. content_block_start with empty input (typical streaming pattern)
+        var startMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_start",
+            index = 0,
+            content_block = new
+            {
+                type = "server_tool_use",
+                id = "srvtoolu_joiner_01",
+                name = "web_search",
+            },
+        }));
+        var preview = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
+
+        // 2. input_json_delta events
+        parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_delta",
+            index = 0,
+            delta = new { type = "input_json_delta", partial_json = "{\"query\"" },
+        }));
+        parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_delta",
+            index = 0,
+            delta = new { type = "input_json_delta", partial_json = ": \"test search\"}" },
+        }));
+
+        // 3. content_block_stop
+        var stopMessages = parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_stop",
+            index = 0,
+        }));
+        var finalUpdate = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(stopMessages));
+
+        // 4. Feed both through ToolCallMessageBuilder (simulating joiner middleware)
+        var builder = new ToolCallMessageBuilder();
+        builder.Add(preview);
+        builder.Add(finalUpdate);
+        var result = builder.Build();
+
+        // The accumulated args must be valid JSON — not "{}{"query":"test search"}"
+        Assert.NotNull(result.FunctionArgs);
+        Assert.DoesNotContain("{}{", result.FunctionArgs);
+
+        var parsed = JsonDocument.Parse(result.FunctionArgs!);
+        Assert.Equal("test search", parsed.RootElement.GetProperty("query").GetString());
     }
 
     private static string BuildMessageStart()

@@ -376,8 +376,9 @@ public class RealAnthropicResponseParsingTests
             .ToList();
         Assert.Equal(2, streamedUpdates.Count);
 
-        // First (preview at start) has empty args
-        Assert.Equal("{}", streamedUpdates[0].FunctionArgs);
+        // First (preview at start) has null args — empty "{}" must not leak into the stream
+        // because the joiner concatenates FunctionArgs strings and would produce "{}{"query":"..."}"
+        Assert.Null(streamedUpdates[0].FunctionArgs);
 
         // Second (final at stop) has accumulated args with actual query
         Assert.Contains("Alport", streamedUpdates[1].FunctionArgs!);
