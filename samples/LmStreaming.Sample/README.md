@@ -10,4 +10,4 @@ In development, open the app with `?record=1` (or `?record=true`) to enable serv
   - `samples/LmStreaming.Sample/recordings/<threadId>_<timestamp>.llm.request.txt`
   - `samples/LmStreaming.Sample/recordings/<threadId>_<timestamp>.llm.response.txt`
 
-This works for multi-turn runs and records provider calls for whichever provider mode is active (`openai`, `anthropic`, `test-anthropic`).
+This works for multi-turn runs and records provider calls for whichever provider mode is active (`openai`, `anthropic`, `test-anthropic`, `codex`).

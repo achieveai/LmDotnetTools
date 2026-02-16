@@ -22,6 +22,8 @@
     <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
+    <ProjectReference Include="..\..\src\CodexSdkProvider\AchieveAi.LmDotnetTools.CodexSdkProvider.csproj" />
+    <ProjectReference Include="..\..\src\McpServer.AspNetCore\AchieveAi.LmDotnetTools.McpServer.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
 </Project>

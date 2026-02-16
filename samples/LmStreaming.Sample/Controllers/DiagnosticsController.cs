@@ -38,6 +38,19 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
                 info["apiKeyConfigured"] = (!string.IsNullOrEmpty(
                     Environment.GetEnvironmentVariable("OPENAI_API_KEY"))).ToString();
                 break;
+            case "codex":
+                info["baseUrl"] = Environment.GetEnvironmentVariable("CODEX_BASE_URL")
+                    ?? Environment.GetEnvironmentVariable("OPENAI_BASE_URL")
+                    ?? "https://api.openai.com/v1";
+                info["model"] = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex";
+                info["apiKeyConfigured"] = (!string.IsNullOrEmpty(
+                    Environment.GetEnvironmentVariable("CODEX_API_KEY"))).ToString();
+                info["authMode"] = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CODEX_API_KEY"))
+                    ? "api_key"
+                    : "chatgpt_login";
+                info["mcpEndpointUrl"] = $"http://localhost:{GetCodexMcpPort()}/mcp";
+                info["bridgeDependencyState"] = GetBridgeDependencyState();
+                break;
             default:
                 info["baseUrl"] = "http://test-mode/v1";
                 info["model"] = "test-model";
@@ -138,5 +151,24 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
             string.Join(", ", result.Select(r => r.Type)));
 
         return Ok(result);
+    }
+
+    private static int GetCodexMcpPort()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
+            && port > 0
+            && port <= 65535)
+        {
+            return port;
+        }
+
+        return 39200;
+    }
+
+    private static string GetBridgeDependencyState()
+    {
+        var bridgeDir = Path.Combine(AppContext.BaseDirectory, "bridge");
+        var packageJson = Path.Combine(bridgeDir, "node_modules", "@openai", "codex-sdk", "package.json");
+        return System.IO.File.Exists(packageJson) ? "ready" : "not_ready";
     }
 }

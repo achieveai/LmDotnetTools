@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDisplayText, isTestInstruction, useChat } from '@/composables/useChat';
+import { MessageType } from '@/types';
 
 const wsMocks = vi.hoisted(() => ({
   createWebSocketConnection: vi.fn(),
@@ -94,5 +95,41 @@ describe('useChat mode-aware websocket lifecycle', () => {
 
     expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2);
     expect(wsMocks.createWebSocketConnection.mock.calls[1]?.[0]?.modeId).toBe('math-helper');
+  });
+
+  it('keeps reasoning pill when reasoning and text share run/generation without messageOrderIdx', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+
+    await chat.sendMessage('test message');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    options.onMessage({
+      $type: MessageType.Reasoning,
+      role: 'assistant',
+      reasoning: 'Thinking about the answer',
+      runId: 'run-1',
+      generationId: 'gen-1',
+      threadId: 'thread-1',
+    });
+
+    options.onMessage({
+      $type: MessageType.Text,
+      role: 'assistant',
+      text: 'Final answer',
+      runId: 'run-1',
+      generationId: 'gen-1',
+      threadId: 'thread-1',
+    });
+
+    const items = chat.displayItems.value;
+    expect(items.some((i) => i.type === 'pill')).toBe(true);
+    expect(
+      items.some(
+        (i) =>
+          i.type === 'assistant-message' &&
+          (i as { content?: { text?: string } }).content?.text === 'Final answer'
+      )
+    ).toBe(true);
   });
 });

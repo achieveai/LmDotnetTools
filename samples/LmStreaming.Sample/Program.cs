@@ -1,9 +1,12 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
@@ -91,6 +94,10 @@ try
         options.Server.Port = 5173;
     });
 
+    var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
+    var codexMcpPort = GetCodexMcpPort();
+    var codexMcpEndpointUrl = $"http://localhost:{codexMcpPort}/mcp";
+
     // Register the FunctionRegistry with sample tools
     _ = builder.Services.AddSingleton(sp =>
     {
@@ -98,6 +105,17 @@ try
         _ = registry.AddFunctionsFromType(typeof(SampleTools));
         return registry;
     });
+
+    if (string.Equals(providerMode, "codex", StringComparison.OrdinalIgnoreCase))
+    {
+        _ = builder.Services.AddSingleton<IFunctionProvider>(
+            new TypeFunctionProvider(typeof(SampleTools), providerName: "SampleTools"));
+        _ = builder.Services.AddMcpFunctionProviderServer(options =>
+        {
+            options.Port = codexMcpPort;
+            options.IncludeStatefulFunctions = true;
+        });
+    }
 
     // Register the FileConversationStore for conversation persistence
     var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
@@ -108,7 +126,6 @@ try
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
     // Register built-in (server-side) tool definitions for the tools API
-    var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
     var builtInTools = GetBuiltInToolsForProvider(providerMode);
     var builtInToolDefinitions = builtInTools?
         .OfType<AnthropicBuiltInTool>()
@@ -144,6 +161,17 @@ try
         return new MultiTurnAgentPool(
             (threadId, mode, requestResponseDumpFileName) =>
             {
+                if (string.Equals(providerMode, "codex", StringComparison.OrdinalIgnoreCase))
+                {
+                    return CreateCodexAgentLoop(
+                        threadId,
+                        mode,
+                        requestResponseDumpFileName,
+                        conversationStore,
+                        loggerFactory,
+                        codexMcpEndpointUrl);
+                }
+
                 var providerAgent = agentFactory();
 
                 // Create filtered function registry based on mode's enabled tools
@@ -438,6 +466,88 @@ public partial class Program
             loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
+    private static CodexAgentLoop CreateCodexAgentLoop(
+        string threadId,
+        ChatMode mode,
+        string? requestResponseDumpFileName,
+        IConversationStore conversationStore,
+        ILoggerFactory loggerFactory,
+        string mcpEndpointUrl)
+    {
+        var enabledTools = mode.EnabledTools;
+        var mcpServers = new Dictionary<string, CodexMcpServerConfig>
+        {
+            ["sample_tools"] = new CodexMcpServerConfig
+            {
+                Url = mcpEndpointUrl,
+                Enabled = true,
+                EnabledTools = enabledTools == null ? null : [.. enabledTools],
+            },
+        };
+
+        return new CodexAgentLoop(
+            CreateCodexOptions(),
+            mcpServers,
+            threadId,
+            systemPrompt: mode.SystemPrompt,
+            defaultOptions: new GenerateReplyOptions
+            {
+                ModelId = GetModelIdForProvider("codex"),
+                RequestResponseDumpFileName = requestResponseDumpFileName,
+                PromptCaching = PromptCachingMode.Auto,
+            },
+            store: conversationStore,
+            logger: loggerFactory.CreateLogger<CodexAgentLoop>(),
+            loggerFactory: loggerFactory);
+    }
+
+    private static CodexSdkOptions CreateCodexOptions()
+    {
+        var apiKey = Environment.GetEnvironmentVariable("CODEX_API_KEY");
+        var webSearchMode = Environment.GetEnvironmentVariable("CODEX_WEB_SEARCH_MODE") ?? "disabled";
+        var sandboxMode = Environment.GetEnvironmentVariable("CODEX_SANDBOX_MODE") ?? "workspace-write";
+        var approvalPolicy = Environment.GetEnvironmentVariable("CODEX_APPROVAL_POLICY") ?? "on-request";
+        var baseUrl = Environment.GetEnvironmentVariable("CODEX_BASE_URL");
+        var model = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex";
+        var networkEnabled = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_NETWORK_ACCESS_ENABLED"),
+            out var parsedNetworkEnabled)
+            ? parsedNetworkEnabled
+            : true;
+        var skipGitRepoCheck = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_SKIP_GIT_REPO_CHECK"),
+            out var parsedSkipGit)
+            ? parsedSkipGit
+            : true;
+        var emitSyntheticUpdates = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_EMIT_SYNTHETIC_MESSAGE_UPDATES"),
+            out var parsedEmitSyntheticUpdates)
+            ? parsedEmitSyntheticUpdates
+            : false;
+        // Retained as a diagnostic-only compatibility knob; raw provider streaming remains default.
+        var syntheticChunkSize = int.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_SYNTHETIC_MESSAGE_UPDATE_CHUNK_CHARS"),
+            out var parsedChunkSize)
+            ? parsedChunkSize
+            : 28;
+
+        return new CodexSdkOptions
+        {
+            Model = model,
+            ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? null : baseUrl,
+            WebSearchMode = webSearchMode,
+            SandboxMode = sandboxMode,
+            ApprovalPolicy = approvalPolicy,
+            NetworkAccessEnabled = networkEnabled,
+            SkipGitRepoCheck = skipGitRepoCheck,
+            EmitSyntheticMessageUpdates = emitSyntheticUpdates,
+            SyntheticMessageUpdateChunkChars = syntheticChunkSize,
+            ProviderMode = "codex",
+            Provider = "codex",
+        };
+    }
+
     private static string GetModelIdForProvider(string providerMode)
     {
         return providerMode.ToLowerInvariant() switch
@@ -445,6 +555,7 @@ public partial class Program
             "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
             "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
             "test-anthropic" => "claude-sonnet-4-5-20250929",
+            "codex" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
             _ => "test-model",
         };
     }
@@ -460,6 +571,18 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    private static int GetCodexMcpPort()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
+            && port > 0
+            && port <= 65535)
+        {
+            return port;
+        }
+
+        return 39200;
     }
 
     /// <summary>

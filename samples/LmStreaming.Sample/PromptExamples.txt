@@ -233,3 +233,27 @@ Reason: Reason about something
 
 For instruction chain parser details, see:
 src/LmTestUtils/TestMode/InstructionChainParser.cs
+
+---
+
+## Codex Mode Prompt Examples
+
+These prompts are for `LM_PROVIDER_MODE=codex`.
+
+### MCP Tool Usage
+
+- "Use the calculate tool to multiply 19 by 27 and show only the numeric result."
+- "Use get_weather for Seattle and summarize temperature, condition, and humidity in one sentence."
+
+### Multi-Turn Coding Workflow
+
+- "Create a short plan to add a new endpoint `/api/ping` to this sample app."
+- "Now implement the plan and explain what files changed."
+- "Run tests that are relevant and summarize any failures."
+
+### Tool Restriction by Chat Mode
+
+Switch to Math Helper mode, then ask:
+- "Use get_weather for Tokyo."
+
+Expected: the tool call should be rejected because the mode only enables `calculate`.

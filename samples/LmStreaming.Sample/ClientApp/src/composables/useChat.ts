@@ -81,19 +81,28 @@ function getMergeKey(msg: Message): string {
   const runId = msg.runId || 'default';
   const generationId = msg.generationId || 'default';
   const messageOrderIdx = msg.messageOrderIdx ?? 0;
+  const mergeKind = getMergeKind(msg);
   
   // For tool call updates, include toolCallIdx
   if (isToolCallUpdateMessage(msg) || isToolsCallUpdateMessage(msg)) {
     if (isToolCallUpdateMessage(msg)) {
       // Individual tool call - use tool_call_id as unique identifier
-      return `${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
+      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
     } else {
       // ToolsCallUpdate - use messageOrderIdx only (tools are accumulated in array)
-      return `${runId}-${generationId}-${messageOrderIdx}`;
+      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
     }
   }
   
-  return `${runId}-${generationId}-${messageOrderIdx}`;
+  return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
+}
+
+function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'other' {
+  if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
+  if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
+  if (isToolsCallMessage(msg) || isToolsCallUpdateMessage(msg)) return 'tools';
+  if (isToolCallMessage(msg) || isToolCallUpdateMessage(msg)) return 'tool';
+  return 'other';
 }
 
 /**
@@ -632,6 +641,17 @@ export function useChat(options: UseChatOptions = {}) {
       log.debug('Created new message', { mergeKey, type: msg.$type, isComplete: isCompleteMessage });
     } else {
       // Update existing message
+      if (chatMessage.content.$type !== mergedMessage.$type) {
+        log.warn('Merge key type transition', {
+          mergeKey,
+          previousType: chatMessage.content.$type,
+          nextType: mergedMessage.$type,
+          runId: msg.runId,
+          generationId: msg.generationId,
+          messageOrderIdx: msg.messageOrderIdx ?? null,
+        });
+      }
+
       chatMessage.content = mergedMessage;
       chatMessage.messageOrderIdx = msg.messageOrderIdx ?? chatMessage.messageOrderIdx;
       if (isCompleteMessage) {

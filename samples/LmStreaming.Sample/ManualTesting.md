@@ -13,6 +13,7 @@ dotnet run --project samples/LmStreaming.Sample
 # Specify provider mode
 LM_PROVIDER_MODE=test dotnet run --project samples/LmStreaming.Sample
 LM_PROVIDER_MODE=test-anthropic dotnet run --project samples/LmStreaming.Sample
+LM_PROVIDER_MODE=codex dotnet run --project samples/LmStreaming.Sample
 ```
 
 Provider modes:
@@ -22,6 +23,7 @@ Provider modes:
 | `test-anthropic` | Mock Anthropic SSE with server tools | web_search |
 | `openai` | Real OpenAI API (gpt-4o) | None |
 | `anthropic` | Real Anthropic API (claude-sonnet) | web_search |
+| `codex` | OpenAI Codex SDK (multi-turn via Node bridge) | MCP `sample_tools` (calculate, get_weather) |
 
 Chat modes (switch via dropdown, top-right):
 | Mode | Enabled Tools |
@@ -429,6 +431,71 @@ Section 3.1 tests function-tool web_search. This section tests server-tool web_s
 - **Provider:** any
 - **Steps:** Send a few messages. Click the "Clear" button (top-right, red).
 - **Validation:** All messages removed. Empty state message appears. Usage banner disappears.
+
+---
+
+## 14. Codex Raw Streaming Verification
+
+These checks require `LM_PROVIDER_MODE=codex`.
+
+### 14.1 Expected UI behavior in raw mode
+
+- **Setup:** Ensure `CODEX_EMIT_SYNTHETIC_MESSAGE_UPDATES=false`.
+- **Prompt:** Ask for a longer response (e.g., a 6-8 paragraph explanation).
+- **Validation:** If Codex emits bursty snapshots, text may appear mostly at once near turn completion. This is expected in raw provider mode.
+
+### 14.2 Verify event timing with structured logs
+
+- **Goal:** Confirm whether `text_update` events are truly incremental or arrive in a late burst.
+- **Command:**
+  ```bash
+  duckdb -c "
+  SELECT
+    \"@t\" AS ts,
+    event_type,
+    event_status,
+    provider_mode,
+    thread_id,
+    run_id,
+    generation_id,
+    bridge_request_id,
+    bridge_event_type,
+    event_sequence,
+    latency_ms
+  FROM read_json_auto('samples/LmStreaming.Sample/bin/Debug/net9.0/logs/lmstreaming-*.jsonl')
+  WHERE provider_mode = 'codex'
+    AND event_type IN ('codex.bridge.event.received', 'codex.text_update.published', 'codex.text.published')
+  ORDER BY ts, event_sequence;"
+  ```
+- **Validation:**
+  - `codex.bridge.event.received` appears for each provider event.
+  - `codex.text_update.published` appears only when upstream sends update events.
+  - If updates are bursty, most `codex.text_update.published` rows cluster close to final `codex.text.published`.
+
+### 14.3 Per-run burst check
+
+- **Command:**
+  ```bash
+  duckdb -c "
+  WITH stream AS (
+    SELECT
+      run_id,
+      event_type,
+      latency_ms
+    FROM read_json_auto('samples/LmStreaming.Sample/bin/Debug/net9.0/logs/lmstreaming-*.jsonl')
+    WHERE provider_mode = 'codex'
+      AND event_type IN ('codex.text_update.published', 'codex.text.published')
+  )
+  SELECT
+    run_id,
+    MIN(CASE WHEN event_type = 'codex.text_update.published' THEN latency_ms END) AS first_update_ms,
+    MAX(CASE WHEN event_type = 'codex.text_update.published' THEN latency_ms END) AS last_update_ms,
+    MAX(CASE WHEN event_type = 'codex.text.published' THEN latency_ms END) AS final_text_ms
+  FROM stream
+  GROUP BY run_id
+  ORDER BY final_text_ms DESC;"
+  ```
+- **Validation:** `first_update_ms` and `last_update_ms` close to `final_text_ms` indicates bursty provider timing.
 
 ---
 
