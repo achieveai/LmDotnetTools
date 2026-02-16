@@ -182,6 +182,7 @@ try
                         ModelId = modelId,
                         BuiltInTools = filteredBuiltInTools,
                         RequestResponseDumpFileName = requestResponseDumpFileName,
+                        PromptCaching = PromptCachingMode.Auto,
                     },
                     store: conversationStore,
                     logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());

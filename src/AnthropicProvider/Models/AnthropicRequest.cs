@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Caching;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -25,10 +26,35 @@ public record AnthropicRequest
     public List<AnthropicMessage> Messages { get; init; } = [];
 
     /// <summary>
-    ///     The system prompt to use for the completion.
+    ///     The system prompt as a plain string (used when caching is off).
+    /// </summary>
+    [JsonIgnore]
+    public string? System { get; init; }
+
+    /// <summary>
+    ///     The system prompt as an array of content blocks (used when caching is on).
+    ///     Takes precedence over the string System property during serialization.
+    /// </summary>
+    [JsonIgnore]
+    public List<AnthropicSystemContent>? SystemContent { get; init; }
+
+    /// <summary>
+    ///     Serialization property for the system prompt.
+    ///     Serializes as an array when SystemContent is set, otherwise as a string.
     /// </summary>
     [JsonPropertyName("system")]
-    public string? System { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonNode? SystemRaw =>
+        SystemContent is { Count: > 0 }
+            ? JsonSerializer.SerializeToNode(SystemContent, s_systemContentOptions)
+            : System != null
+                ? JsonValue.Create(System)
+                : null;
+
+    private static readonly JsonSerializerOptions s_systemContentOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
     /// <summary>
     ///     The maximum number of tokens to generate.
@@ -197,7 +223,7 @@ public record AnthropicRequest
         var tools = MapFunctionsAndBuiltInTools(options?.Functions, options?.BuiltInTools);
 
         // Create the request with options
-        return new AnthropicRequest
+        var request = new AnthropicRequest
         {
             Model = modelName,
             Messages = anthropicMessages,
@@ -215,6 +241,14 @@ public record AnthropicRequest
             // Add container for code execution
             Container = options?.ContainerId,
         };
+
+        // Apply prompt caching if enabled
+        if (options?.PromptCaching == PromptCachingMode.Auto)
+        {
+            request = PromptCachingStrategy.Apply(request);
+        }
+
+        return request;
     }
 
     private static (AnthropicMessage primaryMessage, AnthropicMessage? secondaryMessage) AddCompositeMessage(
@@ -532,4 +566,21 @@ public record AnthropicRequest
             return JsonSerializer.Deserialize<JsonElement>("{}");
         }
     }
+}
+
+/// <summary>
+///     Represents a content block in the system prompt array form.
+///     Used when prompt caching requires cache_control on the system prompt.
+/// </summary>
+public record AnthropicSystemContent
+{
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "text";
+
+    [JsonPropertyName("text")]
+    public string Text { get; init; } = string.Empty;
+
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicCacheControl? CacheControl { get; init; }
 }

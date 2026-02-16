@@ -114,7 +114,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             }
         }
 
-        // Write message_start event
+        // Write message_start event (includes cache metrics from InstructionPlan)
         await WriteSseEventAsync(
             "message_start",
             new
@@ -129,7 +129,13 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
                     content = Array.Empty<object>(),
                     stop_reason = (string?)null,
                     stop_sequence = (string?)null,
-                    usage = new { input_tokens = 100, output_tokens = 0 },
+                    usage = new
+                    {
+                        input_tokens = 100,
+                        output_tokens = 0,
+                        cache_creation_input_tokens = _instructionPlan?.CacheCreationInputTokens ?? 0,
+                        cache_read_input_tokens = _instructionPlan?.CacheReadInputTokens ?? 0,
+                    },
                 },
             }
         );

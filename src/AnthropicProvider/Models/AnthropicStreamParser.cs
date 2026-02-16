@@ -22,6 +22,9 @@ public class AnthropicStreamParser
     private string _model = string.Empty;
     private string _role = "assistant";
     private AnthropicUsage? _usage;
+    private int _cacheCreationTokens;
+    private int _cacheReadTokens;
+    private int _initialInputTokens;
 
     /// <summary>
     ///     Creates a new instance of the AnthropicStreamParser
@@ -126,10 +129,11 @@ public class AnthropicStreamParser
         _model = message["model"]?.GetValue<string>() ?? string.Empty;
         _role = message["role"]?.GetValue<string>() ?? "assistant";
 
-        // Get usage if available
+        // Get usage if available (message_start contains cache metrics)
         if (message["usage"] != null)
         {
             _usage = JsonSerializer.Deserialize<AnthropicUsage>(message["usage"]!.ToJsonString(), _jsonOptions);
+            CaptureInitialCacheMetrics();
         }
 
         // No messages to return yet
@@ -499,21 +503,8 @@ public class AnthropicStreamParser
                 return [];
             }
 
-            // Create a usage message directly instead of an empty TextUpdateMessage with metadata
-            var usageMessage = new UsageMessage
-            {
-                Usage = new Usage
-                {
-                    PromptTokens = _usage.InputTokens,
-                    CompletionTokens = _usage.OutputTokens,
-                    TotalTokens = _usage.InputTokens + _usage.OutputTokens,
-                },
-                Role = ParseRole(_role),
-                FromAgent = _messageId,
-                GenerationId = _messageId,
-            };
-
-            return [usageMessage];
+            // Create a usage message with cache metrics preserved from message_start
+            return [CreateUsageMessage()];
         }
 
         return [];
@@ -548,42 +539,79 @@ public class AnthropicStreamParser
     // Shared helper methods
 
     /// <summary>
+    ///     Captures cache metrics from the initial message_start usage before they get
+    ///     overwritten by message_delta (which only contains output tokens).
+    /// </summary>
+    private void CaptureInitialCacheMetrics()
+    {
+        if (_usage == null)
+        {
+            return;
+        }
+
+        _cacheCreationTokens = _usage.CacheCreationInputTokens;
+        _cacheReadTokens = _usage.CacheReadInputTokens;
+        _initialInputTokens = _usage.InputTokens;
+    }
+
+    /// <summary>
     ///     Creates usage metadata for consistent structure across message types
     /// </summary>
     private ImmutableDictionary<string, object> CreateUsageMetadata()
     {
-        return _usage == null
-            ? ImmutableDictionary<string, object>.Empty
-            : ImmutableDictionary<string, object>.Empty.Add(
-                "usage",
-                new
-                {
-                    _usage.InputTokens,
-                    _usage.OutputTokens,
-                    TotalTokens = _usage.InputTokens + _usage.OutputTokens,
-                }
-            );
+        if (_usage == null)
+        {
+            return ImmutableDictionary<string, object>.Empty;
+        }
+
+        var inputTokens = _usage.InputTokens > 0 ? _usage.InputTokens : _initialInputTokens;
+        return ImmutableDictionary<string, object>.Empty.Add(
+            "usage",
+            new
+            {
+                InputTokens = inputTokens,
+                _usage.OutputTokens,
+                TotalTokens = inputTokens + _usage.OutputTokens,
+            }
+        );
     }
 
     /// <summary>
-    ///     Creates a usage message from the current usage data
+    ///     Creates a usage message from the current usage data, including cache metrics
+    ///     captured from message_start.
     /// </summary>
     private UsageMessage CreateUsageMessage(string? generationId = null)
     {
-        return _usage == null
-            ? throw new InvalidOperationException("Cannot create usage message without usage data")
-            : new UsageMessage
-            {
-                Usage = new Usage
-                {
-                    PromptTokens = _usage.InputTokens,
-                    CompletionTokens = _usage.OutputTokens,
-                    TotalTokens = _usage.InputTokens + _usage.OutputTokens,
-                },
-                Role = ParseRole(_role),
-                FromAgent = _messageId,
-                GenerationId = generationId ?? _messageId,
-            };
+        if (_usage == null)
+        {
+            throw new InvalidOperationException("Cannot create usage message without usage data");
+        }
+
+        // message_delta overwrites _usage but only has OutputTokens;
+        // use _initialInputTokens captured from message_start when InputTokens is 0
+        var inputTokens = _usage.InputTokens > 0 ? _usage.InputTokens : _initialInputTokens;
+        var usage = new Usage
+        {
+            PromptTokens = inputTokens,
+            CompletionTokens = _usage.OutputTokens,
+            TotalTokens = inputTokens + _usage.OutputTokens,
+            InputTokenDetails = _cacheReadTokens > 0
+                ? new InputTokenDetails { CachedTokens = _cacheReadTokens }
+                : null,
+        };
+
+        if (_cacheCreationTokens > 0)
+        {
+            usage = usage.SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens);
+        }
+
+        return new UsageMessage
+        {
+            Usage = usage,
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = generationId ?? _messageId,
+        };
     }
 
     /// <summary>
@@ -823,8 +851,9 @@ public class AnthropicStreamParser
         _model = messageStartEvent.Message.Model;
         _role = messageStartEvent.Message.Role;
 
-        // Get usage if available
+        // Get usage if available (message_start contains cache metrics)
         _usage = messageStartEvent.Message.Usage;
+        CaptureInitialCacheMetrics();
 
         // No messages to return yet
         return [];

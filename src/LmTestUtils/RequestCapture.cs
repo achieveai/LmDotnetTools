@@ -145,9 +145,50 @@ public class AnthropicRequestCapture
             : [];
 
     /// <summary>
-    ///     Gets the system message if present
+    ///     Gets the system message text if present.
+    ///     Handles both string form and array form (when prompt caching converts to content blocks).
     /// </summary>
-    public string? System => _requestJson.TryGetProperty("system", out var system) ? system.GetString() : null;
+    public string? System
+    {
+        get
+        {
+            if (!_requestJson.TryGetProperty("system", out var system))
+            {
+                return null;
+            }
+
+            if (system.ValueKind == JsonValueKind.String)
+            {
+                return system.GetString();
+            }
+
+            // Array form: extract text from first content block
+            if (system.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var block in system.EnumerateArray())
+                {
+                    if (block.TryGetProperty("text", out var text))
+                    {
+                        return text.GetString();
+                    }
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     Whether the system prompt is in array form (indicates prompt caching is active).
+    /// </summary>
+    public bool SystemIsArray =>
+        _requestJson.TryGetProperty("system", out var s) && s.ValueKind == JsonValueKind.Array;
+
+    /// <summary>
+    ///     Gets the raw system JsonElement for detailed inspection (cache_control, etc.).
+    /// </summary>
+    public JsonElement? SystemRaw =>
+        _requestJson.TryGetProperty("system", out var s) ? s : null;
 
     /// <summary>
     ///     Gets the tools from the request
@@ -162,6 +203,7 @@ public class AnthropicRequestCapture
                     Name = tool.TryGetProperty("name", out var name) ? name.GetString() : null,
                     Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
                     InputSchema = tool.TryGetProperty("input_schema", out var schema) ? schema : null,
+                    HasCacheControl = tool.TryGetProperty("cache_control", out _),
                 })
             : [];
 
@@ -308,6 +350,7 @@ public class ToolCapture
     public string? Name { get; set; }
     public string? Description { get; set; }
     public object? InputSchema { get; set; }
+    public bool HasCacheControl { get; set; }
 
     /// <summary>
     ///     Checks if the tool has the specified property in its input schema

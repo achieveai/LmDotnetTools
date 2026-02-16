@@ -138,6 +138,20 @@ public sealed class ChatWebSocketManager
                     message.GenerationId,
                     message.RunId);
 
+                // Log cache metrics when usage message is received
+                if (message is UsageMessage usageMsg)
+                {
+                    var u = usageMsg.Usage;
+                    var cacheCreation = u.GetExtraProperty<int>("cache_creation_input_tokens");
+                    _logger.LogInformation(
+                        "Cache: read={CacheRead}, created={CacheCreation}, uncached_input={Input}, output={Output}, total={Total}",
+                        u.TotalCachedTokens,
+                        cacheCreation,
+                        u.PromptTokens,
+                        u.CompletionTokens,
+                        u.TotalTokens);
+                }
+
                 // Send done signal after RunCompletedMessage
                 if (message is RunCompletedMessage)
                 {

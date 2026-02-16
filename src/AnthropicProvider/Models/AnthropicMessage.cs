@@ -85,6 +85,14 @@ public record AnthropicContent
     /// </summary>
     [JsonPropertyName("content")]
     public string? Content { get; init; }
+
+    /// <summary>
+    ///     Cache control directive for prompt caching.
+    ///     When set, marks the end of a cacheable prefix.
+    /// </summary>
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicCacheControl? CacheControl { get; init; }
 }
 
 /// <summary>

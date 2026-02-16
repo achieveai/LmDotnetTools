@@ -16,6 +16,16 @@ public sealed class InstructionPlan(string idMessage, int? reasoningLength, List
     public string IdMessage { get; } = idMessage;
     public int? ReasoningLength { get; } = reasoningLength;
     public List<InstructionMessage> Messages { get; } = messages;
+
+    /// <summary>
+    ///     Simulated cache creation input tokens for the message_start usage event.
+    /// </summary>
+    public int CacheCreationInputTokens { get; set; }
+
+    /// <summary>
+    ///     Simulated cache read input tokens for the message_start usage event.
+    /// </summary>
+    public int CacheReadInputTokens { get; set; }
 }
 
 public sealed class InstructionMessage

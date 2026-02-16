@@ -25,6 +25,14 @@ public record AnthropicTool
     /// </summary>
     [JsonPropertyName("input_schema")]
     public JsonObject? InputSchema { get; init; }
+
+    /// <summary>
+    ///     Cache control directive for prompt caching.
+    ///     When set on the last tool, caches all tool definitions.
+    /// </summary>
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicCacheControl? CacheControl { get; init; }
 }
 
 /// <summary>

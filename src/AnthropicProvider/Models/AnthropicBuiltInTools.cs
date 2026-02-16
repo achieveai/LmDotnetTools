@@ -19,6 +19,14 @@ public abstract record AnthropicBuiltInTool
     /// </summary>
     [JsonPropertyName("name")]
     public abstract string Name { get; }
+
+    /// <summary>
+    ///     Cache control directive for prompt caching.
+    ///     When set on the last tool, caches all tool definitions.
+    /// </summary>
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicCacheControl? CacheControl { get; init; }
 }
 
 /// <summary>

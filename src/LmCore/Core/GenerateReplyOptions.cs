@@ -88,6 +88,14 @@ public record GenerateReplyOptions
     public string? ThreadId { get; init; }
 
     /// <summary>
+    ///     Controls prompt caching behavior for providers that support it.
+    ///     When Auto, the provider applies cache breakpoints to reduce
+    ///     token processing for repeated content (system prompt, tools, history).
+    /// </summary>
+    [JsonIgnore]
+    public PromptCachingMode PromptCaching { get; init; } = PromptCachingMode.Off;
+
+    /// <summary>
     ///     Optional base file name used to dump provider requests and responses.
     ///     When set, requests are written to "{base}.request.txt" and responses to "{base}.response.txt".
     /// </summary>
@@ -139,6 +147,7 @@ public record GenerateReplyOptions
             BuiltInTools = other.BuiltInTools ?? BuiltInTools,
             ToolChoice = other.ToolChoice ?? ToolChoice,
             ContainerId = other.ContainerId ?? ContainerId,
+            PromptCaching = other.PromptCaching != PromptCachingMode.Off ? other.PromptCaching : PromptCaching,
             RequestResponseDumpFileName = other.RequestResponseDumpFileName ?? RequestResponseDumpFileName,
             ExtraProperties = mergedExtraProps,
         };
