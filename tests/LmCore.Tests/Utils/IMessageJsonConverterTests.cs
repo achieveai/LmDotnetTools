@@ -456,7 +456,7 @@ public class IMessageJsonConverterTests
     }
 
     [Fact]
-    public void Serialize_ProviderServerToolCallMessage_UsesServerToolUseDiscriminator()
+    public void Serialize_ProviderServerToolCallMessage_UsesToolCallDiscriminator()
     {
         IMessage message = new ToolCallMessage
         {
@@ -472,12 +472,15 @@ public class IMessageJsonConverterTests
         var json = JsonSerializer.Serialize(message, options);
         var root = JsonDocument.Parse(json).RootElement;
 
-        Assert.Equal("server_tool_use", root.GetProperty("$type").GetString());
+        // Server tool calls use the same "tool_call" discriminator as local tool calls,
+        // with execution_target distinguishing them.
+        Assert.Equal("tool_call", root.GetProperty("$type").GetString());
         Assert.Equal("srvtoolu_1", root.GetProperty("tool_call_id").GetString());
+        Assert.Equal("ProviderServer", root.GetProperty("execution_target").GetString());
     }
 
     [Fact]
-    public void Serialize_ProviderServerToolCallResultMessage_UsesServerToolResultDiscriminator()
+    public void Serialize_ProviderServerToolCallResultMessage_UsesToolCallResultDiscriminator()
     {
         IMessage message = new ToolCallResultMessage
         {
@@ -493,8 +496,11 @@ public class IMessageJsonConverterTests
         var json = JsonSerializer.Serialize(message, options);
         var root = JsonDocument.Parse(json).RootElement;
 
-        Assert.Equal("server_tool_result", root.GetProperty("$type").GetString());
+        // Server tool results use the same "tool_call_result" discriminator as local tool results,
+        // with execution_target distinguishing them.
+        Assert.Equal("tool_call_result", root.GetProperty("$type").GetString());
         Assert.Equal("srvtoolu_1", root.GetProperty("tool_call_id").GetString());
+        Assert.Equal("ProviderServer", root.GetProperty("execution_target").GetString());
     }
 
     [Theory]

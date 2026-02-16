@@ -237,7 +237,12 @@ public class AnthropicStreamParser
                 ToolCallId = _contentBlocks[index].Id!,
                 Index = index,
                 FunctionName = _contentBlocks[index].Name ?? string.Empty,
-                FunctionArgs = contentBlock["input"] != null ? contentBlock["input"]!.ToJsonString() : "{}",
+                // For streaming server_tool_use blocks, do not emit "{}" as a placeholder.
+                // A placeholder gets concatenated with later JSON delta fragments (e.g. "{}{...}").
+                FunctionArgs = contentBlock["input"] is { } inputNode
+                    && inputNode.AsObject().Count > 0
+                        ? inputNode.ToJsonString()
+                        : null,
                 ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
@@ -1018,9 +1023,12 @@ public class AnthropicStreamParser
                 ToolCallId = serverToolUseContent.Id,
                 Index = index,
                 FunctionName = serverToolUseContent.Name,
+                // For streaming server_tool_use blocks, do not emit "{}" as a placeholder.
+                // A placeholder gets concatenated with later JSON delta fragments (e.g. "{}{...}").
                 FunctionArgs = serverToolUseContent.Input.ValueKind != JsonValueKind.Undefined
-                    ? serverToolUseContent.Input.ToString()
-                    : "{}",
+                    && serverToolUseContent.Input.GetPropertyCount() > 0
+                        ? serverToolUseContent.Input.ToString()
+                        : null,
                 ExecutionTarget = ExecutionTarget.ProviderServer,
                 Role = ParseRole(_role),
                 FromAgent = _messageId,

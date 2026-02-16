@@ -66,6 +66,9 @@ public class ConversationsController(
                         return m;
                     }
 
+                    // Fix legacy "{}{"query":"..."}" args from the content_block_start bug.
+                    msg = FixLegacyDoubledArgs(msg);
+
                     var newJson = JsonSerializer.Serialize(msg, msg.GetType(), NormalizeOptions);
                     return m with { MessageJson = newJson };
                 }
@@ -154,5 +157,29 @@ public class ConversationsController(
 
         _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
         return Ok(new { modeId = mode.Id, modeName = mode.Name });
+    }
+
+    /// <summary>
+    /// Fixes legacy persisted messages where content_block_start leaked "{}" into FunctionArgs,
+    /// producing invalid JSON like {}{"query":"..."}.
+    /// </summary>
+    private static IMessage FixLegacyDoubledArgs(IMessage msg)
+    {
+        return msg switch
+        {
+            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) =>
+                tc with { FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!) },
+            _ => msg,
+        };
+    }
+
+    private static bool NeedsArgsFix(string? args)
+    {
+        return args is not null && args.StartsWith("{}{", StringComparison.Ordinal);
+    }
+
+    private static string StripLeadingEmptyObject(string args)
+    {
+        return args[2..]; // Remove leading "{}"
     }
 }
