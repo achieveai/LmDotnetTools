@@ -9,15 +9,12 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
   </ItemGroup>
-  <ItemGroup>
-    <None Include="Bridge\**\*" Pack="true" PackagePath="bridge\" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
   <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>AchieveAi.LmDotnetTools.CodexSdkProvider</PackageId>
-    <Description>OpenAI Codex SDK provider for LmDotnetTools using Node.js bridge process.</Description>
+    <Description>OpenAI Codex App Server provider for LmDotnetTools using direct C# JSON-RPC transport.</Description>
     <PackageTags>$(PackageTags);codex;agent-sdk;provider</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>

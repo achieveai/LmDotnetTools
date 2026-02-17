@@ -1,50 +1,65 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.CodexSdkProvider.Bootstrap;
+using System.Text.RegularExpressions;
+using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
+using AchieveAi.LmDotnetTools.CodexSdkProvider.Transport;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 
 public sealed class CodexSdkClient : ICodexSdkClient
 {
+    private static readonly Regex VersionRegex = new(@"\b(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\b", RegexOptions.Compiled);
+
     private readonly CodexSdkOptions _options;
     private readonly ILogger<CodexSdkClient>? _logger;
-    private readonly CodexBridgeDependencyInstaller _installer;
     private readonly JsonSerializerOptions _json;
-
-    private Process? _process;
-    private StreamWriter? _stdin;
-    private StreamReader? _stdout;
-    private StreamReader? _stderr;
-    private Task? _stderrTask;
     private readonly SemaphoreSlim _operationLock = new(1, 1);
+    private readonly object _runStateLock = new();
+    private readonly Dictionary<string, InternalToolSpan> _internalToolSpans = new(StringComparer.Ordinal);
+
+    private CodexAppServerTransport? _transport;
+    private ActiveRunState? _activeRun;
+    private CodexBridgeInitOptions? _startupOptions;
+    private Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? _dynamicToolExecutor;
+    private int _isShuttingDown;
     private bool _disposed;
 
-    public bool IsRunning => _process is { HasExited: false };
+    public bool IsRunning => _transport is { IsRunning: true };
 
     public string? CurrentCodexThreadId { get; private set; }
+
+    public string? CurrentTurnId { get; private set; }
 
     public string DependencyState { get; private set; } = "unknown";
 
     public CodexSdkClient(
         CodexSdkOptions options,
-        ILogger<CodexSdkClient>? logger = null,
-        CodexBridgeDependencyInstaller? installer = null)
+        ILogger<CodexSdkClient>? logger = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger;
-        _installer = installer ?? new CodexBridgeDependencyInstaller();
         _json = new JsonSerializerOptions
         {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         };
     }
 
-    public async Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
+    public void ConfigureDynamicToolExecutor(
+        Func<CodexDynamicToolCallRequest, CancellationToken, Task<CodexDynamicToolCallResponse>>? executor)
+    {
+        _dynamicToolExecutor = executor;
+    }
+
+    public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
+    {
+        return StartOrResumeThreadAsync(options, ct);
+    }
+
+    public async Task StartOrResumeThreadAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -57,114 +72,82 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 return;
             }
 
-            var bridgeScript = ResolveBridgeScriptPath();
-            var bridgeDir = Path.GetDirectoryName(bridgeScript)
-                ?? throw new InvalidOperationException("Bridge script directory could not be determined.");
+            _ = Interlocked.Exchange(ref _isShuttingDown, 0);
 
-            var nodePath = _options.NodeJsPath ?? "node";
-            var npmPath = _options.NpmPath ?? "npm";
+            var effectiveOptions = ResolveEffectiveOptions(options);
+            var codexCliVersion = await EnsureCodexCliVersionAsync(ct);
 
-            if (_options.AutoInstallBridgeDependencies)
+            var workingDirectory = effectiveOptions.WorkingDirectory
+                ?? _options.WorkingDirectory
+                ?? Directory.GetCurrentDirectory();
+            var transport = new CodexAppServerTransport(_options, _logger);
+            transport.Closed += OnTransportClosed;
+
+            await transport.StartAsync(
+                workingDirectory,
+                effectiveOptions.ApiKey,
+                effectiveOptions.BaseUrl,
+                HandleServerRequestAsync,
+                HandleServerNotification,
+                ct);
+
+            _transport = transport;
+            _startupOptions = effectiveOptions;
+
+            var startupTimeout = TimeSpan.FromMilliseconds(_options.AppServerStartupTimeoutMs);
+            await transport.SendRequestAsync(
+                "initialize",
+                new
+                {
+                    clientInfo = new
+                    {
+                        name = "lm-dotnet-tools-codex-client",
+                        version = "0.3.0",
+                    },
+                    capabilities = new
+                    {
+                        experimentalApi = true,
+                    },
+                },
+                ct,
+                startupTimeout);
+
+            await transport.SendNotificationAsync("initialized", null, ct);
+
+            JsonElement threadResponse;
+            if (!string.IsNullOrWhiteSpace(effectiveOptions.ThreadId))
             {
-                await _installer.EnsureInstalledAsync(bridgeDir, npmPath, _logger, ct);
-                DependencyState = "ready";
+                threadResponse = await transport.SendRequestAsync(
+                    "thread/resume",
+                    BuildThreadResumeParams(effectiveOptions),
+                    ct);
             }
             else
             {
-                DependencyState = "skipped";
+                threadResponse = await transport.SendRequestAsync(
+                    "thread/start",
+                    BuildThreadStartParams(effectiveOptions),
+                    ct);
             }
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = nodePath,
-                Arguments = $"\"{bridgeScript}\"",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = options.WorkingDirectory ?? _options.WorkingDirectory ?? Directory.GetCurrentDirectory(),
-            };
-
-            _process = Process.Start(psi)
-                ?? throw new InvalidOperationException("Failed to start Codex bridge process.");
-
-            _stdin = new StreamWriter(_process.StandardInput.BaseStream, new System.Text.UTF8Encoding(false))
-            {
-                AutoFlush = true,
-            };
-            _stdout = _process.StandardOutput;
-            _stderr = _process.StandardError;
-            _stderrTask = Task.Run(() => MonitorStdErrAsync(ct), CancellationToken.None);
+            CurrentCodexThreadId = ExtractThreadId(threadResponse) ?? effectiveOptions.ThreadId;
+            CurrentTurnId = null;
+            DependencyState = "ready";
 
             _logger?.LogInformation(
-                "{event_type} {event_status} {provider} {provider_mode} {model}",
-                "codex.bridge.start",
-                "started",
+                "{event_type} {event_status} {provider} {provider_mode} {codex_cli_path} {codex_cli_version} {codex_thread_id}",
+                "codex.app_server.ready",
+                "completed",
                 _options.Provider,
                 _options.ProviderMode,
-                options.Model ?? _options.Model);
-
-            var requestId = Guid.NewGuid().ToString("N");
-            var initReq = new CodexBridgeRequest
-            {
-                Type = "init",
-                RequestId = requestId,
-                Options = options,
-            };
-
-            await WriteAsync(initReq, ct);
-
-            var timeout = TimeSpan.FromMilliseconds(_options.ProcessTimeoutMs);
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(timeout);
-
-            while (true)
-            {
-                var line = await _stdout.ReadLineAsync(timeoutCts.Token);
-                if (line is null)
-                {
-                    throw new InvalidOperationException("Codex bridge stdout closed before ready signal.");
-                }
-
-                var msg = JsonSerializer.Deserialize<CodexBridgeResponse>(line, _json);
-                if (msg is null)
-                {
-                    continue;
-                }
-
-                if (msg.Type == "ready" && msg.RequestId == requestId)
-                {
-                    _logger?.LogInformation(
-                        "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id}",
-                        "codex.bridge.ready",
-                        "completed",
-                        _options.Provider,
-                        _options.ProviderMode,
-                        requestId);
-                    break;
-                }
-
-                if (msg.Type is "fatal" or "run_failed")
-                {
-                    throw new InvalidOperationException($"Codex bridge init failed: {msg.Error}");
-                }
-            }
+                _options.CodexCliPath,
+                codexCliVersion,
+                CurrentCodexThreadId);
         }
-        catch (Exception ex)
+        catch
         {
             DependencyState = "failed";
-            _logger?.LogError(
-                ex,
-                "{event_type} {event_status} {provider} {provider_mode} {error_code} {exception_type}",
-                "codex.bridge.start",
-                "failed",
-                _options.Provider,
-                _options.ProviderMode,
-                "bridge_start_failed",
-                ex.GetType().Name);
-
-            await ShutdownAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+            await ShutdownInternalAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             throw;
         }
         finally
@@ -179,14 +162,26 @@ public sealed class CodexSdkClient : ICodexSdkClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
-        if (!IsRunning || _stdin is null || _stdout is null)
+        var transport = _transport;
+        if (transport is null || !transport.IsRunning)
         {
-            throw new InvalidOperationException("Codex bridge is not running. Call EnsureStartedAsync first.");
+            throw new InvalidOperationException("Codex app-server is not running. Call StartOrResumeThreadAsync first.");
+        }
+
+        if (string.IsNullOrWhiteSpace(CurrentCodexThreadId))
+        {
+            throw new InvalidOperationException("Codex thread is not initialized.");
         }
 
         var requestId = Guid.NewGuid().ToString("N");
+        var runState = new ActiveRunState(requestId);
+        if (!TryActivateRun(runState))
+        {
+            throw new InvalidOperationException("A Codex run is already in progress.");
+        }
 
         var start = Stopwatch.StartNew();
+
         _logger?.LogInformation(
             "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {codex_thread_id}",
             "codex.bridge.run.started",
@@ -196,83 +191,122 @@ public sealed class CodexSdkClient : ICodexSdkClient
             requestId,
             CurrentCodexThreadId);
 
-        await WriteAsync(new CodexBridgeRequest
+        var runTask = ExecuteTurnAsync(transport, input, runState, requestId, start, ct);
+        try
         {
-            Type = "run",
-            RequestId = requestId,
-            Input = input,
-        }, ct);
-
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            var line = await _stdout.ReadLineAsync(ct);
-            if (line is null)
+            await foreach (var envelope in runState.ReadAllEventsAsync(ct))
             {
-                throw new InvalidOperationException("Codex bridge stdout closed while streaming run events.");
+                yield return envelope;
             }
 
-            var msg = JsonSerializer.Deserialize<CodexBridgeResponse>(line, _json);
-            if (msg is null || msg.RequestId != requestId)
-            {
-                continue;
-            }
-
-            switch (msg.Type)
-            {
-                case "event" when msg.Event.HasValue:
-                {
-                    var eventPayload = msg.Event.Value;
-                    if (TryExtractThreadId(eventPayload, out var threadId))
-                    {
-                        CurrentCodexThreadId = threadId;
-                    }
-
-                    yield return new CodexTurnEventEnvelope
-                    {
-                        Type = "event",
-                        Event = eventPayload,
-                        RequestId = requestId,
-                        ThreadId = CurrentCodexThreadId,
-                    };
-                    break;
-                }
-                case "run_completed":
-                {
-                    if (!string.IsNullOrEmpty(msg.ThreadId))
-                    {
-                        CurrentCodexThreadId = msg.ThreadId;
-                    }
-
-                    _logger?.LogInformation(
-                        "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {codex_thread_id} {latency_ms}",
-                        "codex.bridge.run.completed",
-                        "completed",
-                        _options.Provider,
-                        _options.ProviderMode,
-                        requestId,
-                        CurrentCodexThreadId,
-                        start.ElapsedMilliseconds);
-                    yield break;
-                }
-                case "run_failed":
-                {
-                    _logger?.LogError(
-                        "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {codex_thread_id} {error_code} {latency_ms}",
-                        "codex.bridge.run.failed",
-                        "failed",
-                        _options.Provider,
-                        _options.ProviderMode,
-                        requestId,
-                        CurrentCodexThreadId,
-                        msg.ErrorCode ?? "run_failed",
-                        start.ElapsedMilliseconds);
-                    throw new InvalidOperationException(msg.Error ?? "Codex bridge run failed.");
-                }
-                case "fatal":
-                    throw new InvalidOperationException(msg.Error ?? "Codex bridge fatal error.");
-            }
+            await runTask;
         }
+        finally
+        {
+            DeactivateRun(runState);
+        }
+    }
+
+    private async Task ExecuteTurnAsync(
+        CodexAppServerTransport transport,
+        string input,
+        ActiveRunState runState,
+        string requestId,
+        Stopwatch start,
+        CancellationToken ct)
+    {
+        try
+        {
+            var turnStart = await transport.SendRequestAsync(
+                "turn/start",
+                BuildTurnStartParams(CurrentCodexThreadId!, input),
+                ct);
+
+            var turnId = ExtractTurnId(turnStart);
+            if (!string.IsNullOrWhiteSpace(turnId))
+            {
+                runState.SetTurnId(turnId);
+                CurrentTurnId = turnId;
+            }
+
+            if (runState.TryConsumePendingInterrupt() && !string.IsNullOrWhiteSpace(turnId))
+            {
+                await TryInterruptTurnInternalAsync(transport, turnId, CancellationToken.None);
+            }
+
+            var immediateStatus = ExtractTurnStatus(turnStart);
+            if (!string.IsNullOrWhiteSpace(immediateStatus) && IsTerminalTurnStatus(immediateStatus))
+            {
+                if (IsTurnFailureStatus(immediateStatus))
+                {
+                    throw new InvalidOperationException(ExtractTurnErrorMessage(turnStart) ?? "Codex turn failed.");
+                }
+
+                runState.TryComplete(turnId);
+            }
+
+            var completedTurnId = await WaitForTurnCompletionAsync(transport, runState, turnId, requestId, ct);
+            if (!string.IsNullOrWhiteSpace(completedTurnId))
+            {
+                CurrentTurnId = completedTurnId;
+            }
+
+            _logger?.LogInformation(
+                "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {codex_thread_id} {latency_ms}",
+                "codex.bridge.run.completed",
+                "completed",
+                _options.Provider,
+                _options.ProviderMode,
+                requestId,
+                CurrentCodexThreadId,
+                start.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await InterruptTurnAsync(CancellationToken.None);
+            runState.TryFail(new OperationCanceledException("Codex turn was cancelled."));
+            throw;
+        }
+        catch (Exception ex)
+        {
+            runState.TryFail(ex);
+            _logger?.LogError(
+                ex,
+                "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {codex_thread_id} {error_code} {latency_ms}",
+                "codex.bridge.run.failed",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode,
+                requestId,
+                CurrentCodexThreadId,
+                "run_failed",
+                start.ElapsedMilliseconds);
+            throw;
+        }
+    }
+
+    public async Task InterruptTurnAsync(CancellationToken ct = default)
+    {
+        var transport = _transport;
+        if (transport is null || !transport.IsRunning)
+        {
+            return;
+        }
+
+        var run = GetActiveRun();
+        if (run == null)
+        {
+            return;
+        }
+
+        var turnId = run.TurnId;
+        if (!string.IsNullOrWhiteSpace(turnId))
+        {
+            await TryInterruptTurnInternalAsync(transport, turnId, ct);
+            return;
+        }
+
+        run.MarkPendingInterrupt();
     }
 
     public async Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken ct = default)
@@ -280,60 +314,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
         await _operationLock.WaitAsync(ct);
         try
         {
-            if (_process == null)
-            {
-                return;
-            }
-
-            if (_stdin is not null && IsRunning)
-            {
-                try
-                {
-                    await WriteAsync(new CodexBridgeRequest
-                    {
-                        Type = "shutdown",
-                        RequestId = Guid.NewGuid().ToString("N"),
-                    }, ct);
-                }
-                catch
-                {
-                    // Ignore shutdown write errors.
-                }
-            }
-
-            var wait = timeout ?? TimeSpan.FromSeconds(5);
-            if (IsRunning)
-            {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeoutCts.CancelAfter(wait);
-                try
-                {
-                    await _process.WaitForExitAsync(timeoutCts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-            }
-
-            _logger?.LogInformation(
-                "{event_type} {event_status} {provider} {provider_mode} {codex_thread_id}",
-                "codex.bridge.shutdown",
-                "completed",
-                _options.Provider,
-                _options.ProviderMode,
-                CurrentCodexThreadId);
+            await ShutdownInternalAsync(timeout ?? TimeSpan.FromSeconds(5), ct);
         }
         finally
         {
-            _stdin?.Dispose();
-            _stdout?.Dispose();
-            _stderr?.Dispose();
-            _process?.Dispose();
-            _stdin = null;
-            _stdout = null;
-            _stderr = null;
-            _process = null;
             _operationLock.Release();
         }
     }
@@ -351,90 +335,1818 @@ public sealed class CodexSdkClient : ICodexSdkClient
         GC.SuppressFinalize(this);
     }
 
-    private async Task MonitorStdErrAsync(CancellationToken ct)
+    private async Task ShutdownInternalAsync(TimeSpan timeout, CancellationToken ct)
     {
-        if (_stderr is null)
+        var transport = _transport;
+        if (transport == null)
         {
             return;
         }
 
-        while (!ct.IsCancellationRequested)
+        _ = Interlocked.Exchange(ref _isShuttingDown, 1);
+        _transport = null;
+        transport.Closed -= OnTransportClosed;
+
+        try
         {
-            var line = await _stderr.ReadLineAsync(ct);
-            if (line is null)
+            var run = GetActiveRun();
+            if (!string.IsNullOrWhiteSpace(run?.TurnId))
+            {
+                await TryInterruptTurnInternalAsync(transport, run.TurnId!, CancellationToken.None);
+            }
+
+            await transport.StopAsync(timeout, ct);
+            await transport.DisposeAsync();
+        }
+        finally
+        {
+            var run = GetActiveRun();
+            run?.TryFail(new InvalidOperationException("Codex client shut down before run completion."));
+            ClearActiveRun();
+
+            _logger?.LogInformation(
+                "{event_type} {event_status} {provider} {provider_mode} {codex_thread_id} {turn_id}",
+                "codex.app_server.shutdown",
+                "completed",
+                _options.Provider,
+                _options.ProviderMode,
+                CurrentCodexThreadId,
+                CurrentTurnId);
+
+            _ = Interlocked.Exchange(ref _isShuttingDown, 0);
+        }
+    }
+
+    private void OnTransportClosed(Exception? exception)
+    {
+        _transport = null;
+
+        if (exception != null)
+        {
+            if (Interlocked.CompareExchange(ref _isShuttingDown, 0, 0) == 1)
+            {
+                _logger?.LogInformation(
+                    exception,
+                    "{event_type} {event_status} {provider} {provider_mode} {error_code}",
+                    "codex.app_server.exit",
+                    "completed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    "app_server_stopped");
+            }
+            else
+            {
+                DependencyState = "failed";
+                _logger?.LogError(
+                    exception,
+                    "{event_type} {event_status} {provider} {provider_mode} {error_code}",
+                    "codex.app_server.exit",
+                    "failed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    "app_server_exited");
+            }
+        }
+
+        var run = GetActiveRun();
+        if (run != null)
+        {
+            run.TryFail(exception ?? new InvalidOperationException("Codex app-server exited before run completion."));
+            ClearActiveRun();
+        }
+    }
+
+    private void HandleServerNotification(string method, JsonElement? parameters)
+    {
+        if (string.Equals(method, "thread/started", StringComparison.Ordinal)
+            || string.Equals(method, "thread.started", StringComparison.Ordinal))
+        {
+            var threadId = ExtractThreadId(parameters);
+            if (!string.IsNullOrWhiteSpace(threadId))
+            {
+                CurrentCodexThreadId = threadId;
+            }
+        }
+
+        var run = GetActiveRun();
+        if (run == null)
+        {
+            return;
+        }
+
+        if (string.Equals(method, "turn/started", StringComparison.Ordinal)
+            || string.Equals(method, "turn.started", StringComparison.Ordinal))
+        {
+            var turnId = ExtractTurnId(parameters);
+            if (!string.IsNullOrWhiteSpace(turnId))
+            {
+                run.SetTurnId(turnId);
+                CurrentTurnId = turnId;
+
+                if (run.TryConsumePendingInterrupt())
+                {
+                    var transport = _transport;
+                    if (transport != null)
+                    {
+                        _ = Task.Run(() => TryInterruptTurnInternalAsync(transport, turnId, CancellationToken.None));
+                    }
+                }
+            }
+        }
+
+        var suppressOriginalNotification = TryHandleInternalToolNotification(method, parameters, run);
+        if (suppressOriginalNotification)
+        {
+            return;
+        }
+
+        if (!ShouldForwardToActiveRun(method, parameters, run))
+        {
+            return;
+        }
+
+        var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
+        if (!string.IsNullOrWhiteSpace(eventTurnId))
+        {
+            CurrentTurnId = eventTurnId;
+        }
+
+        run.TryWriteEvent(new CodexTurnEventEnvelope
+        {
+            Type = "event",
+            Event = CreateRunEvent(method, parameters),
+            RequestId = run.RequestId,
+            ThreadId = CurrentCodexThreadId,
+            TurnId = eventTurnId,
+        });
+
+        if (string.Equals(method, "turn/completed", StringComparison.Ordinal)
+            || string.Equals(method, "turn.completed", StringComparison.Ordinal))
+        {
+            var status = ExtractTurnStatus(parameters);
+            if (IsTurnFailureStatus(status))
+            {
+                run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+            }
+            else
+            {
+                run.TryComplete(eventTurnId);
+            }
+        }
+        else if (IsTurnFailureNotification(method))
+        {
+            run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+        }
+        else if (string.Equals(method, "turn/updated", StringComparison.Ordinal)
+                 || string.Equals(method, "turn.updated", StringComparison.Ordinal))
+        {
+            var status = ExtractTurnStatus(parameters);
+            if (!string.IsNullOrWhiteSpace(status) && IsTerminalTurnStatus(status))
+            {
+                if (IsTurnFailureStatus(status))
+                {
+                    run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? $"Codex turn {status}."));
+                }
+                else
+                {
+                    run.TryComplete(eventTurnId);
+                }
+            }
+        }
+    }
+
+    private async Task<JsonElement> HandleServerRequestAsync(string method, JsonElement? parameters, CancellationToken ct)
+    {
+        return method switch
+        {
+            "item/commandExecution/requestApproval" => SerializeToElement(new { decision = BuildDefaultCommandApprovalDecision() }),
+            "item/fileChange/requestApproval" => SerializeToElement(new { decision = BuildDefaultFileApprovalDecision() }),
+            "item/tool/requestUserInput" => SerializeToElement(new { answers = new Dictionary<string, string>() }),
+            "item/tool/call" => await HandleDynamicToolCallAsync(parameters, ct),
+            "account/chatgptAuthTokens/refresh" => CreateEmptyObject(),
+            _ => throw new InvalidOperationException($"Unsupported App Server request method '{method}'."),
+        };
+    }
+
+    private async Task<JsonElement> HandleDynamicToolCallAsync(JsonElement? parameters, CancellationToken ct)
+    {
+        var toolName = GetPropertyString(parameters, "tool") ?? string.Empty;
+        var stopwatch = Stopwatch.StartNew();
+        var request = new CodexDynamicToolCallRequest
+        {
+            ThreadId = GetPropertyString(parameters, "threadId"),
+            TurnId = GetPropertyString(parameters, "turnId"),
+            CallId = GetPropertyString(parameters, "callId"),
+            Tool = toolName,
+            Arguments = GetPropertyElement(parameters, "arguments") ?? CreateEmptyObject(),
+        };
+        EmitDynamicToolLifecycleEvent("item/started", request, null, null);
+
+        _logger?.LogInformation(
+            "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id}",
+            "codex.dynamic_tool.requested",
+            "started",
+            _options.Provider,
+            _options.ProviderMode,
+            toolName,
+            request.CallId,
+            request.ThreadId,
+            request.TurnId);
+
+        CodexDynamicToolCallResponse response;
+        if (_dynamicToolExecutor == null)
+        {
+            response = BuildToolBridgeFailure("Dynamic tool bridge is not configured.");
+        }
+        else
+        {
+            try
+            {
+                response = await _dynamicToolExecutor(request, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "{event_type} {event_status} {provider} {provider_mode} {tool_name}",
+                    "codex.dynamic_tool.execution",
+                    "failed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    toolName);
+
+                response = BuildToolBridgeFailure(ex.Message);
+            }
+        }
+
+        _logger?.LogInformation(
+            "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id} {decision} {latency_ms}",
+            response.Success ? "codex.dynamic_tool.completed" : "codex.dynamic_tool.denied",
+            response.Success ? "completed" : "failed",
+            _options.Provider,
+            _options.ProviderMode,
+            toolName,
+            request.CallId,
+            request.ThreadId,
+            request.TurnId,
+            response.Success ? "allow" : "deny",
+            stopwatch.ElapsedMilliseconds);
+        EmitDynamicToolLifecycleEvent("item/completed", request, response, stopwatch.ElapsedMilliseconds);
+
+        return SerializeToElement(new
+        {
+            success = response.Success,
+            contentItems = NormalizeToolResponseItems(response.ContentItems),
+        });
+    }
+
+    private async Task TryInterruptTurnInternalAsync(CodexAppServerTransport transport, string turnId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(CurrentCodexThreadId) || string.IsNullOrWhiteSpace(turnId))
+        {
+            return;
+        }
+
+        try
+        {
+            await transport.SendRequestAsync(
+                "turn/interrupt",
+                new
+                {
+                    threadId = CurrentCodexThreadId,
+                    turnId,
+                },
+                ct,
+                TimeSpan.FromSeconds(30));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "{event_type} {event_status} {provider} {provider_mode} {turn_id}",
+                "codex.app_server.interrupt",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode,
+                turnId);
+        }
+    }
+
+    private async Task<string> EnsureCodexCliVersionAsync(CancellationToken ct)
+    {
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(_options.AppServerStartupTimeoutMs, 5_000));
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = _options.CodexCliPath,
+            Arguments = "--version",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException(
+                $"Failed to start Codex CLI '{_options.CodexCliPath}'. Ensure it is installed and on PATH.");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+
+        var stdOutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var stdErrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
+        await process.WaitForExitAsync(timeoutCts.Token);
+
+        var stdOut = await stdOutTask;
+        var stdErr = await stdErrTask;
+        var combined = string.Join(Environment.NewLine, [stdOut, stdErr]).Trim();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Codex CLI version check failed (exit={process.ExitCode}): {Truncate(combined)}");
+        }
+
+        var detectedVersion = ExtractVersion(combined);
+        if (string.IsNullOrWhiteSpace(detectedVersion))
+        {
+            throw new InvalidOperationException(
+                $"Could not parse Codex CLI version from output: {Truncate(combined)}");
+        }
+
+        if (CompareVersion(detectedVersion, _options.CodexCliMinVersion) < 0)
+        {
+            throw new InvalidOperationException(
+                $"Codex CLI version '{detectedVersion}' is below minimum required '{_options.CodexCliMinVersion}'.");
+        }
+
+        return detectedVersion;
+    }
+
+    private CodexBridgeInitOptions ResolveEffectiveOptions(CodexBridgeInitOptions options)
+    {
+        return options with
+        {
+            Model = string.IsNullOrWhiteSpace(options.Model) ? _options.Model : options.Model,
+            ApprovalPolicy = string.IsNullOrWhiteSpace(options.ApprovalPolicy) ? _options.ApprovalPolicy : options.ApprovalPolicy,
+            SandboxMode = string.IsNullOrWhiteSpace(options.SandboxMode) ? _options.SandboxMode : options.SandboxMode,
+            WebSearchMode = string.IsNullOrWhiteSpace(options.WebSearchMode) ? _options.WebSearchMode : options.WebSearchMode,
+            WorkingDirectory = string.IsNullOrWhiteSpace(options.WorkingDirectory) ? _options.WorkingDirectory : options.WorkingDirectory,
+            BaseInstructions = string.IsNullOrWhiteSpace(options.BaseInstructions) ? null : options.BaseInstructions,
+            DeveloperInstructions = string.IsNullOrWhiteSpace(options.DeveloperInstructions) ? null : options.DeveloperInstructions,
+            ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile) ? null : options.ModelInstructionsFile,
+            BaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl) ? _options.BaseUrl : options.BaseUrl,
+            ApiKey = string.IsNullOrWhiteSpace(options.ApiKey) ? _options.ApiKey : options.ApiKey,
+        };
+    }
+
+    private object BuildThreadStartParams(CodexBridgeInitOptions options)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["model"] = options.Model,
+            ["approvalPolicy"] = options.ApprovalPolicy,
+            ["sandbox"] = options.SandboxMode,
+            ["cwd"] = options.WorkingDirectory,
+            ["config"] = BuildConfig(options),
+            ["baseInstructions"] = options.BaseInstructions,
+            ["developerInstructions"] = options.DeveloperInstructions,
+            ["experimentalRawEvents"] = false,
+        };
+
+        if (options.DynamicTools is { Count: > 0 })
+        {
+            parameters["dynamicTools"] = options.DynamicTools.Select(tool =>
+            {
+                object inputSchema = tool.InputSchema.ValueKind == JsonValueKind.Undefined
+                    ? new Dictionary<string, object?>
+                    {
+                        ["type"] = "object",
+                        ["additionalProperties"] = true,
+                    }
+                    : tool.InputSchema;
+
+                return new Dictionary<string, object?>
+                {
+                    ["name"] = tool.Name,
+                    ["description"] = tool.Description ?? string.Empty,
+                    ["inputSchema"] = inputSchema,
+                };
+            }).ToArray();
+        }
+
+        return parameters;
+    }
+
+    private object BuildThreadResumeParams(CodexBridgeInitOptions options)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["threadId"] = options.ThreadId,
+            ["model"] = options.Model,
+            ["approvalPolicy"] = options.ApprovalPolicy,
+            ["sandbox"] = options.SandboxMode,
+            ["cwd"] = options.WorkingDirectory,
+            ["config"] = BuildConfig(options),
+            ["baseInstructions"] = options.BaseInstructions,
+            ["developerInstructions"] = options.DeveloperInstructions,
+        };
+    }
+
+    private static object BuildTurnStartParams(string threadId, string input)
+    {
+        return new
+        {
+            threadId,
+            input = new[]
+            {
+                new
+                {
+                    type = "text",
+                    text = input,
+                    text_elements = Array.Empty<object>(),
+                },
+            },
+        };
+    }
+
+    private static Dictionary<string, object?> BuildConfig(CodexBridgeInitOptions options)
+    {
+        var config = new Dictionary<string, object?>
+        {
+            ["sandbox_workspace_write"] = new
+            {
+                network_access = options.NetworkAccessEnabled,
+            },
+        };
+
+        if (!string.IsNullOrWhiteSpace(options.WebSearchMode))
+        {
+            config["web_search"] = options.WebSearchMode;
+            config["tools"] = new
+            {
+                web_search = !string.Equals(options.WebSearchMode, "disabled", StringComparison.OrdinalIgnoreCase),
+            };
+        }
+
+        if (options.McpServers is { Count: > 0 })
+        {
+            config["mcp_servers"] = options.McpServers;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ModelInstructionsFile))
+        {
+            config["model_instructions_file"] = options.ModelInstructionsFile;
+        }
+
+        return config;
+    }
+
+    private string BuildDefaultCommandApprovalDecision()
+    {
+        var policy = _startupOptions?.ApprovalPolicy ?? _options.ApprovalPolicy;
+        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase)
+            ? "decline"
+            : "acceptForSession";
+    }
+
+    private string BuildDefaultFileApprovalDecision()
+    {
+        var policy = _startupOptions?.ApprovalPolicy ?? _options.ApprovalPolicy;
+        return string.Equals(policy, "never", StringComparison.OrdinalIgnoreCase)
+            ? "decline"
+            : "acceptForSession";
+    }
+
+    private bool TryHandleInternalToolNotification(string method, JsonElement? parameters, ActiveRunState run)
+    {
+        if (!_options.ExposeCodexInternalToolsAsToolMessages)
+        {
+            return false;
+        }
+
+        if (IsItemStartedMethod(method) || IsItemCompletedMethod(method))
+        {
+            if (!TryParseInternalToolItem(parameters, out var item, out var toolName, out var toolCallId))
+            {
+                return false;
+            }
+
+            var eventThreadId = ExtractThreadId(parameters) ?? CurrentCodexThreadId;
+            var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
+            var sourceMethod = IsItemStartedMethod(method) ? "item/started" : "item/completed";
+
+            if (IsItemStartedMethod(method))
+            {
+                var arguments = BuildInternalToolArguments(toolName, item, sourceMethod);
+                EmitInternalToolCall(run, toolCallId, toolName, arguments, sourceMethod, eventThreadId, eventTurnId);
+            }
+            else
+            {
+                var arguments = BuildInternalToolArguments(toolName, item, sourceMethod);
+                var completion = BuildInternalToolCompletion(toolName, item, sourceMethod);
+                EmitInternalToolResult(
+                    run,
+                    toolCallId,
+                    toolName,
+                    arguments,
+                    completion.Status,
+                    completion.Result,
+                    completion.Error,
+                    sourceMethod,
+                    eventThreadId,
+                    eventTurnId);
+            }
+
+            return true;
+        }
+
+        if (IsWebSearchBeginMethod(method) || IsWebSearchEndMethod(method))
+        {
+            var eventPayload = GetPropertyElement(parameters, "msg")
+                               ?? GetPropertyElement(parameters, "event")
+                               ?? parameters?.Clone()
+                               ?? CreateEmptyObject();
+            var toolCallId = GetPropertyString(eventPayload, "call_id")
+                             ?? GetPropertyString(eventPayload, "callId")
+                             ?? GetPropertyString(eventPayload, "id");
+            if (string.IsNullOrWhiteSpace(toolCallId))
+            {
+                _logger?.LogWarning(
+                    "{event_type} {event_status} {provider} {provider_mode} {method} {reason}",
+                    "codex.internal_tool.mapping_failed",
+                    "failed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    method,
+                    "missing_call_id");
+                return false;
+            }
+
+            const string toolName = "web_search";
+            var eventThreadId = ExtractThreadId(parameters) ?? CurrentCodexThreadId;
+            var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
+
+            if (IsWebSearchBeginMethod(method))
+            {
+                var arguments = BuildInternalToolArguments(toolName, eventPayload, "codex/event/web_search_begin");
+                EmitInternalToolCall(
+                    run,
+                    toolCallId,
+                    toolName,
+                    arguments,
+                    "codex/event/web_search_begin",
+                    eventThreadId,
+                    eventTurnId);
+            }
+            else
+            {
+                var arguments = BuildInternalToolArguments(toolName, eventPayload, "codex/event/web_search_end");
+                var completion = BuildInternalToolCompletion(toolName, eventPayload, "codex/event/web_search_end");
+                EmitInternalToolResult(
+                    run,
+                    toolCallId,
+                    toolName,
+                    arguments,
+                    completion.Status,
+                    completion.Result,
+                    completion.Error,
+                    "codex/event/web_search_end",
+                    eventThreadId,
+                    eventTurnId);
+            }
+        }
+
+        return false;
+    }
+
+    private void EmitInternalToolCall(
+        ActiveRunState run,
+        string toolCallId,
+        string toolName,
+        JsonElement arguments,
+        string sourceMethod,
+        string? threadId,
+        string? turnId)
+    {
+        InternalToolSpan span;
+        var now = DateTimeOffset.UtcNow;
+        lock (_runStateLock)
+        {
+            if (!_internalToolSpans.TryGetValue(toolCallId, out span!))
+            {
+                span = new InternalToolSpan
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = toolName,
+                };
+                _internalToolSpans[toolCallId] = span;
+            }
+
+            span.ToolName = toolName;
+            span.ArgumentsJson = arguments;
+            span.HasArguments = true;
+
+            if (span.CallEmitted)
+            {
+                _logger?.LogDebug(
+                    "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {source_event}",
+                    "codex.internal_tool.duplicate_ignored",
+                    "ignored",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    toolName,
+                    toolCallId,
+                    sourceMethod);
+                return;
+            }
+
+            span.CallEmitted = true;
+            span.StartedAt = now;
+            span.StartSource = sourceMethod;
+        }
+
+        _logger?.LogInformation(
+            "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id} {source_event}",
+            "codex.internal_tool.call.emitted",
+            "started",
+            _options.Provider,
+            _options.ProviderMode,
+            toolName,
+            toolCallId,
+            threadId,
+            turnId,
+            sourceMethod);
+
+        EmitInternalToolLifecycleEvent(
+            run,
+            "item/started",
+            toolCallId,
+            toolName,
+            arguments,
+            result: null,
+            error: null,
+            threadId,
+            turnId);
+    }
+
+    private void EmitInternalToolResult(
+        ActiveRunState run,
+        string toolCallId,
+        string toolName,
+        JsonElement arguments,
+        string status,
+        JsonElement result,
+        JsonElement? error,
+        string sourceMethod,
+        string? threadId,
+        string? turnId)
+    {
+        InternalToolSpan span;
+        var now = DateTimeOffset.UtcNow;
+        var emitSynthesizedStart = false;
+        lock (_runStateLock)
+        {
+            if (!_internalToolSpans.TryGetValue(toolCallId, out span!))
+            {
+                span = new InternalToolSpan
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = toolName,
+                };
+                _internalToolSpans[toolCallId] = span;
+            }
+
+            span.ToolName = toolName;
+            if (!span.HasArguments)
+            {
+                span.ArgumentsJson = arguments;
+                span.HasArguments = true;
+            }
+
+            if (!span.CallEmitted)
+            {
+                span.CallEmitted = true;
+                span.StartedAt = now;
+                span.StartSource = $"{sourceMethod}:synthetic";
+                emitSynthesizedStart = true;
+            }
+
+            if (span.ResultEmitted)
+            {
+                _logger?.LogDebug(
+                    "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {source_event}",
+                    "codex.internal_tool.duplicate_ignored",
+                    "ignored",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    toolName,
+                    toolCallId,
+                    sourceMethod);
+                return;
+            }
+
+            span.ResultEmitted = true;
+            span.CompletedAt = now;
+            span.EndSource = sourceMethod;
+            span.Status = status;
+            span.ResultJson = result;
+            span.HasResult = true;
+        }
+
+        if (emitSynthesizedStart)
+        {
+            _logger?.LogInformation(
+                "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id} {source_event}",
+                "codex.internal_tool.synthesized_start",
+                "started",
+                _options.Provider,
+                _options.ProviderMode,
+                toolName,
+                toolCallId,
+                threadId,
+                turnId,
+                sourceMethod);
+
+            EmitInternalToolLifecycleEvent(
+                run,
+                "item/started",
+                toolCallId,
+                toolName,
+                span.ArgumentsJson,
+                result: null,
+                error: null,
+                threadId,
+                turnId);
+        }
+
+        var normalizedStatus = string.Equals(status, "success", StringComparison.OrdinalIgnoreCase)
+            ? "completed"
+            : "failed";
+        var elapsedMs = span.StartedAt == default
+            ? 0L
+            : Math.Max(0L, (long)(span.CompletedAt - span.StartedAt).TotalMilliseconds);
+
+        _logger?.LogInformation(
+            "{event_type} {event_status} {provider} {provider_mode} {tool_name} {tool_call_id} {thread_id} {turn_id} {source_event} {status} {latency_ms}",
+            "codex.internal_tool.result.emitted",
+            string.Equals(status, "success", StringComparison.OrdinalIgnoreCase) ? "completed" : "failed",
+            _options.Provider,
+            _options.ProviderMode,
+            toolName,
+            toolCallId,
+            threadId,
+            turnId,
+            sourceMethod,
+            status,
+            elapsedMs);
+
+        EmitInternalToolLifecycleEvent(
+            run,
+            "item/completed",
+            toolCallId,
+            toolName,
+            span.ArgumentsJson,
+            result,
+            error,
+            threadId,
+            turnId,
+            normalizedStatus);
+    }
+
+    private void EmitInternalToolLifecycleEvent(
+        ActiveRunState run,
+        string eventType,
+        string toolCallId,
+        string toolName,
+        JsonElement arguments,
+        JsonElement? result,
+        JsonElement? error,
+        string? threadId,
+        string? turnId,
+        string status = "inProgress")
+    {
+        var eventThreadId = threadId ?? CurrentCodexThreadId;
+        var eventTurnId = turnId ?? run.TurnId;
+        object? resultValue = result.HasValue ? result.Value : null;
+        object? errorValue = error.HasValue ? error.Value : null;
+
+        var eventParams = SerializeToElement(new
+        {
+            threadId = eventThreadId,
+            turnId = eventTurnId,
+            item = new
+            {
+                type = "toolCall",
+                id = toolCallId,
+                tool = toolName,
+                server = "codex_internal",
+                status,
+                arguments,
+                result = resultValue,
+                error = errorValue,
+            },
+        });
+
+        if (!ShouldForwardToActiveRun(eventType, eventParams, run))
+        {
+            return;
+        }
+
+        run.TryWriteEvent(new CodexTurnEventEnvelope
+        {
+            Type = "event",
+            Event = CreateRunEvent(eventType, eventParams),
+            RequestId = run.RequestId,
+            ThreadId = eventThreadId,
+            TurnId = eventTurnId,
+        });
+    }
+
+    private InternalToolCompletion BuildInternalToolCompletion(string toolName, JsonElement payload, string sourceMethod)
+    {
+        var hasError = TryGetProperty(payload, "error", out var errorElement)
+                       && errorElement.ValueKind != JsonValueKind.Null
+                       && errorElement.ValueKind != JsonValueKind.Undefined;
+        var status = NormalizeInternalToolStatus(GetPropertyString(payload, "status"), hasError);
+
+        var result = new Dictionary<string, object?>
+        {
+            ["status"] = status,
+            ["source"] = sourceMethod,
+        };
+
+        AddToolSpecificFields(result, toolName, payload, isResultPayload: true);
+        result["raw"] = payload;
+
+        JsonElement? error = null;
+        if (!string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            var message = ExtractErrorMessage(payload)
+                          ?? $"Codex internal tool '{toolName}' completed with status '{status}'.";
+            var errorObject = new Dictionary<string, object?>
+            {
+                ["message"] = message,
+                ["status"] = status,
+            };
+            if (hasError)
+            {
+                errorObject["raw"] = errorElement;
+            }
+
+            error = SerializeToElement(errorObject);
+        }
+
+        return new InternalToolCompletion
+        {
+            Status = status,
+            Result = SerializeToElement(result),
+            Error = error,
+        };
+    }
+
+    private JsonElement BuildInternalToolArguments(string toolName, JsonElement payload, string sourceMethod)
+    {
+        var arguments = new Dictionary<string, object?>
+        {
+            ["source"] = sourceMethod,
+        };
+
+        AddToolSpecificFields(arguments, toolName, payload, isResultPayload: false);
+        arguments["raw"] = payload;
+
+        return SerializeToElement(arguments);
+    }
+
+    private static void AddToolSpecificFields(
+        Dictionary<string, object?> destination,
+        string toolName,
+        JsonElement payload,
+        bool isResultPayload)
+    {
+        switch (toolName)
+        {
+            case "web_search":
+                AddStringField(destination, payload, "query");
+                AddStringField(destination, payload, "action");
+                AddStringField(destination, payload, "target_url", "target_url", "targetUrl", "url");
+                if (isResultPayload)
+                {
+                    AddStringField(destination, payload, "opened_url", "opened_url", "openedUrl", "url");
+                    AddRawField(destination, payload, "matches", "matches", "resultMatches");
+                    AddRawField(destination, payload, "snippets", "snippets", "results");
+                }
+                else
+                {
+                    AddRawField(destination, payload, "filters", "filters");
+                }
+
+                break;
+
+            case "command_execution":
+                AddStringField(destination, payload, "command");
+                AddStringField(destination, payload, "cwd", "cwd", "workingDirectory");
+                AddIntField(destination, payload, "timeout_ms", "timeout_ms", "timeoutMs");
+                if (isResultPayload)
+                {
+                    AddIntField(destination, payload, "exit_code", "exit_code", "exitCode");
+                    AddStringField(destination, payload, "stdout_excerpt", "stdout_excerpt", "stdout", "output");
+                    AddStringField(destination, payload, "stderr_excerpt", "stderr_excerpt", "stderr");
+                }
+
+                break;
+
+            case "file_change":
+                AddStringField(destination, payload, "decision", "decision", "action");
+                AddRawField(destination, payload, "changes", "changes", "patch", "files", "paths");
+                break;
+
+            case "todo_list":
+                AddStringField(destination, payload, "operation", "operation", "action");
+                AddRawField(destination, payload, "items", "items", "todos");
+                break;
+        }
+    }
+
+    private static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (TryGetProperty(payload, candidate, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                destination[targetName] = value.GetString();
+                return;
+            }
+        }
+    }
+
+    private static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (!TryGetProperty(payload, candidate, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
+            {
+                destination[targetName] = intValue;
+                return;
+            }
+
+            if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out intValue))
+            {
+                destination[targetName] = intValue;
+                return;
+            }
+        }
+    }
+
+    private static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (TryGetProperty(payload, candidate, out var value))
+            {
+                destination[targetName] = value;
+                return;
+            }
+        }
+    }
+
+    private static bool TryParseInternalToolItem(
+        JsonElement? parameters,
+        out JsonElement item,
+        out string toolName,
+        out string toolCallId)
+    {
+        item = default;
+        toolName = string.Empty;
+        toolCallId = string.Empty;
+
+        if (!parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!TryGetProperty(parameters.Value, "item", out var itemElement)
+            || itemElement.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!TryGetProperty(itemElement, "type", out var typeElement)
+            || typeElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var normalizedTool = NormalizeInternalToolName(typeElement.GetString());
+        if (normalizedTool == null)
+        {
+            return false;
+        }
+
+        var callId = GetPropertyString(itemElement, "id")
+                     ?? GetPropertyString(itemElement, "call_id")
+                     ?? GetPropertyString(itemElement, "callId");
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            return false;
+        }
+
+        item = itemElement.Clone();
+        toolName = normalizedTool;
+        toolCallId = callId;
+        return true;
+    }
+
+    private static string NormalizeInternalToolStatus(string? status, bool hasError)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return hasError ? "error" : "success";
+        }
+
+        return status switch
+        {
+            "completed" => hasError ? "error" : "success",
+            "success" => "success",
+            "failed" => "error",
+            "error" => "error",
+            "interrupted" => "cancelled",
+            "cancelled" => "cancelled",
+            "canceled" => "cancelled",
+            "timed_out" => "timed_out",
+            "timeout" => "timed_out",
+            _ => hasError ? "error" : "success",
+        };
+    }
+
+    private static string? NormalizeInternalToolName(string? itemType)
+    {
+        return itemType switch
+        {
+            "webSearch" => "web_search",
+            "web_search" => "web_search",
+            "commandExecution" => "command_execution",
+            "command_execution" => "command_execution",
+            "fileChange" => "file_change",
+            "file_change" => "file_change",
+            "todoList" => "todo_list",
+            "todo_list" => "todo_list",
+            _ => null,
+        };
+    }
+
+    private static bool IsItemStartedMethod(string method)
+    {
+        return string.Equals(method, "item/started", StringComparison.Ordinal)
+               || string.Equals(method, "item.started", StringComparison.Ordinal);
+    }
+
+    private static bool IsItemCompletedMethod(string method)
+    {
+        return string.Equals(method, "item/completed", StringComparison.Ordinal)
+               || string.Equals(method, "item.completed", StringComparison.Ordinal);
+    }
+
+    private static bool IsWebSearchBeginMethod(string method)
+    {
+        return string.Equals(method, "codex/event/web_search_begin", StringComparison.Ordinal)
+               || string.Equals(method, "codex.event.web_search_begin", StringComparison.Ordinal);
+    }
+
+    private static bool IsWebSearchEndMethod(string method)
+    {
+        return string.Equals(method, "codex/event/web_search_end", StringComparison.Ordinal)
+               || string.Equals(method, "codex.event.web_search_end", StringComparison.Ordinal);
+    }
+
+    private static bool TryGetProperty(JsonElement root, string propertyName, out JsonElement value)
+    {
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(propertyName, out value))
+        {
+            value = value.Clone();
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string? ExtractErrorMessage(JsonElement payload)
+    {
+        if (TryGetProperty(payload, "error", out var error))
+        {
+            if (error.ValueKind == JsonValueKind.String)
+            {
+                return error.GetString();
+            }
+
+            if (error.ValueKind == JsonValueKind.Object
+                && TryGetProperty(error, "message", out var message)
+                && message.ValueKind == JsonValueKind.String)
+            {
+                return message.GetString();
+            }
+        }
+
+        if (TryGetProperty(payload, "message", out var fallbackMessage)
+            && fallbackMessage.ValueKind == JsonValueKind.String)
+        {
+            return fallbackMessage.GetString();
+        }
+
+        return null;
+    }
+
+    private bool ShouldForwardToActiveRun(string method, JsonElement? parameters, ActiveRunState run)
+    {
+        if (string.Equals(method, "thread/started", StringComparison.Ordinal)
+            || string.Equals(method, "thread.started", StringComparison.Ordinal)
+            || string.Equals(method, "error", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var eventTurnId = ExtractTurnId(parameters);
+        if (string.IsNullOrWhiteSpace(eventTurnId))
+        {
+            return true;
+        }
+
+        var activeTurnId = run.TurnId;
+        var shouldForward = string.IsNullOrWhiteSpace(activeTurnId)
+                            || string.Equals(activeTurnId, eventTurnId, StringComparison.Ordinal);
+        if (!shouldForward)
+        {
+            _logger?.LogWarning(
+                "{event_type} {event_status} {provider} {provider_mode} {method} {reason} {active_turn_id} {event_turn_id}",
+                "codex.app_server.notification",
+                "dropped",
+                _options.Provider,
+                _options.ProviderMode,
+                method,
+                "turn_mismatch",
+                activeTurnId,
+                eventTurnId);
+        }
+
+        return shouldForward;
+    }
+
+    private async Task<string?> WaitForTurnCompletionAsync(
+        CodexAppServerTransport transport,
+        ActiveRunState runState,
+        string? turnId,
+        string requestId,
+        CancellationToken ct)
+    {
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(_options.TurnCompletionTimeoutMs, 1_000));
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        try
+        {
+            return await runState.Completion.Task.WaitAsync(linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            var activeTurnId = runState.TurnId ?? turnId;
+            _logger?.LogWarning(
+                "{event_type} {event_status} {provider} {provider_mode} {bridge_request_id} {turn_id} {timeout_ms}",
+                "codex.turn.timeout",
+                "timed_out",
+                _options.Provider,
+                _options.ProviderMode,
+                requestId,
+                activeTurnId,
+                timeout.TotalMilliseconds);
+
+            if (!string.IsNullOrWhiteSpace(activeTurnId))
+            {
+                await TryInterruptTurnInternalAsync(transport, activeTurnId, CancellationToken.None);
+            }
+
+            var gracePeriod = TimeSpan.FromMilliseconds(Math.Max(_options.TurnInterruptGracePeriodMs, 250));
+            using var graceCts = new CancellationTokenSource(gracePeriod);
+            using var graceLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, graceCts.Token);
+            try
+            {
+                return await runState.Completion.Task.WaitAsync(graceLinkedCts.Token);
+            }
+            catch (OperationCanceledException) when (graceCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Codex turn '{activeTurnId ?? "unknown"}' did not complete after timeout {timeout.TotalMilliseconds}ms " +
+                    $"and interrupt grace {gracePeriod.TotalMilliseconds}ms.");
+            }
+        }
+    }
+
+    private bool TryActivateRun(ActiveRunState run)
+    {
+        lock (_runStateLock)
+        {
+            if (_activeRun != null)
+            {
+                return false;
+            }
+
+            _activeRun = run;
+            _internalToolSpans.Clear();
+            return true;
+        }
+    }
+
+    private void DeactivateRun(ActiveRunState run)
+    {
+        lock (_runStateLock)
+        {
+            if (ReferenceEquals(_activeRun, run))
+            {
+                _activeRun = null;
+                _internalToolSpans.Clear();
+            }
+        }
+    }
+
+    private ActiveRunState? GetActiveRun()
+    {
+        lock (_runStateLock)
+        {
+            return _activeRun;
+        }
+    }
+
+    private void ClearActiveRun()
+    {
+        lock (_runStateLock)
+        {
+            _activeRun = null;
+            _internalToolSpans.Clear();
+        }
+    }
+
+    private JsonElement SerializeToElement<T>(T value)
+    {
+        return JsonSerializer.SerializeToElement(value, _json);
+    }
+
+    private static JsonElement CreateRunEvent(string eventType, JsonElement? parameters)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", eventType);
+
+            if (parameters.HasValue)
+            {
+                if (parameters.Value.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in parameters.Value.EnumerateObject())
+                    {
+                        property.WriteTo(writer);
+                    }
+                }
+                else
+                {
+                    writer.WritePropertyName("params");
+                    parameters.Value.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+    }
+
+    private static string? ExtractVersion(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = VersionRegex.Match(value);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        return $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
+    }
+
+    private static int CompareVersion(string left, string right)
+    {
+        var leftParts = ParseVersion(left);
+        var rightParts = ParseVersion(right);
+
+        for (var index = 0; index < 3; index++)
+        {
+            var compare = leftParts[index].CompareTo(rightParts[index]);
+            if (compare != 0)
+            {
+                return compare;
+            }
+        }
+
+        return 0;
+    }
+
+    private static int[] ParseVersion(string version)
+    {
+        var match = VersionRegex.Match(version ?? string.Empty);
+        if (!match.Success)
+        {
+            throw new InvalidOperationException($"Invalid version string '{version}'.");
+        }
+
+        return
+        [
+            int.Parse(match.Groups["major"].Value),
+            int.Parse(match.Groups["minor"].Value),
+            int.Parse(match.Groups["patch"].Value),
+        ];
+    }
+
+    private static bool IsInProgress(string status)
+    {
+        return string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "inProgress", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "inprogress", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTerminalTurnStatus(string status)
+    {
+        return !IsInProgress(status);
+    }
+
+    private static bool IsTurnFailureStatus(string? status)
+    {
+        return string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTurnFailureNotification(string method)
+    {
+        return string.Equals(method, "turn/failed", StringComparison.Ordinal)
+               || string.Equals(method, "turn.failed", StringComparison.Ordinal)
+               || string.Equals(method, "turn/interrupted", StringComparison.Ordinal)
+               || string.Equals(method, "turn.interrupted", StringComparison.Ordinal)
+               || string.Equals(method, "turn/cancelled", StringComparison.Ordinal)
+               || string.Equals(method, "turn.cancelled", StringComparison.Ordinal)
+               || string.Equals(method, "turn/canceled", StringComparison.Ordinal)
+               || string.Equals(method, "turn.canceled", StringComparison.Ordinal);
+    }
+
+    private static string? ExtractThreadId(JsonElement? root)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty("threadId", out var threadIdProp)
+            && threadIdProp.ValueKind == JsonValueKind.String)
+        {
+            return threadIdProp.GetString();
+        }
+
+        if (root.Value.TryGetProperty("thread_id", out var threadIdSnake)
+            && threadIdSnake.ValueKind == JsonValueKind.String)
+        {
+            return threadIdSnake.GetString();
+        }
+
+        if (root.Value.TryGetProperty("thread", out var threadProp)
+            && threadProp.ValueKind == JsonValueKind.Object
+            && threadProp.TryGetProperty("id", out var idProp)
+            && idProp.ValueKind == JsonValueKind.String)
+        {
+            return idProp.GetString();
+        }
+
+        return null;
+    }
+
+    private static string? ExtractTurnId(JsonElement? root)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty("turnId", out var turnIdProp)
+            && turnIdProp.ValueKind == JsonValueKind.String)
+        {
+            return turnIdProp.GetString();
+        }
+
+        if (root.Value.TryGetProperty("turn_id", out var turnIdSnake)
+            && turnIdSnake.ValueKind == JsonValueKind.String)
+        {
+            return turnIdSnake.GetString();
+        }
+
+        if (root.Value.TryGetProperty("turn", out var turnProp)
+            && turnProp.ValueKind == JsonValueKind.Object
+            && turnProp.TryGetProperty("id", out var idProp)
+            && idProp.ValueKind == JsonValueKind.String)
+        {
+            return idProp.GetString();
+        }
+
+        return null;
+    }
+
+    private static string? ExtractTurnStatus(JsonElement? root)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty("status", out var statusProp)
+            && statusProp.ValueKind == JsonValueKind.String)
+        {
+            return statusProp.GetString();
+        }
+
+        if (root.Value.TryGetProperty("turn", out var turnProp)
+            && turnProp.ValueKind == JsonValueKind.Object
+            && turnProp.TryGetProperty("status", out var turnStatus)
+            && turnStatus.ValueKind == JsonValueKind.String)
+        {
+            return turnStatus.GetString();
+        }
+
+        return null;
+    }
+
+    private static string? ExtractTurnErrorMessage(JsonElement? root)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty("error", out var errorProp)
+            && errorProp.ValueKind == JsonValueKind.Object
+            && errorProp.TryGetProperty("message", out var messageProp)
+            && messageProp.ValueKind == JsonValueKind.String)
+        {
+            return messageProp.GetString();
+        }
+
+        if (root.Value.TryGetProperty("turn", out var turnProp)
+            && turnProp.ValueKind == JsonValueKind.Object
+            && turnProp.TryGetProperty("error", out var turnErrorProp)
+            && turnErrorProp.ValueKind == JsonValueKind.Object
+            && turnErrorProp.TryGetProperty("message", out var turnMessageProp)
+            && turnMessageProp.ValueKind == JsonValueKind.String)
+        {
+            return turnMessageProp.GetString();
+        }
+
+        return null;
+    }
+
+    private static string? GetPropertyString(JsonElement? root, string propertyName)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String)
+        {
+            return property.GetString();
+        }
+
+        return null;
+    }
+
+    private static JsonElement? GetPropertyElement(JsonElement? root, string propertyName)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.Value.TryGetProperty(propertyName, out var property))
+        {
+            return property.Clone();
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<object> NormalizeToolResponseItems(IReadOnlyList<CodexDynamicToolContentItem> items)
+    {
+        var normalized = new List<object>();
+        foreach (var item in items)
+        {
+            if (string.Equals(item.Type, "input_image", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.Type, "inputImage", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(item.ImageUrl))
+                {
+                    continue;
+                }
+
+                normalized.Add(new
+                {
+                    type = "inputImage",
+                    imageUrl = item.ImageUrl,
+                });
+                continue;
+            }
+
+            normalized.Add(new
+            {
+                type = "inputText",
+                text = item.Text ?? string.Empty,
+            });
+        }
+
+        if (normalized.Count == 0)
+        {
+            normalized.Add(new
+            {
+                type = "inputText",
+                text = string.Empty,
+            });
+        }
+
+        return normalized;
+    }
+
+    private void EmitDynamicToolLifecycleEvent(
+        string eventType,
+        CodexDynamicToolCallRequest request,
+        CodexDynamicToolCallResponse? response,
+        long? durationMs)
+    {
+        var run = GetActiveRun();
+        if (run == null)
+        {
+            return;
+        }
+
+        var eventTurnId = request.TurnId ?? run.TurnId;
+        var eventThreadId = request.ThreadId ?? CurrentCodexThreadId;
+        var callId = string.IsNullOrWhiteSpace(request.CallId)
+            ? $"dynamic-call-{Guid.NewGuid():N}"
+            : request.CallId;
+
+        var eventParams = SerializeToElement(new
+        {
+            threadId = eventThreadId,
+            turnId = eventTurnId,
+            item = new
+            {
+                type = "dynamicToolCall",
+                id = callId,
+                tool = request.Tool,
+                status = response == null ? "inProgress" : response.Success ? "completed" : "failed",
+                arguments = request.Arguments,
+                result = response is { Success: true } ? BuildDynamicToolResultPayload(response) : null,
+                error = response is { Success: false } ? BuildDynamicToolErrorPayload(response) : null,
+                durationMs = response == null ? null : durationMs,
+            },
+        });
+
+        if (!ShouldForwardToActiveRun(eventType, eventParams, run))
+        {
+            return;
+        }
+
+        run.TryWriteEvent(new CodexTurnEventEnvelope
+        {
+            Type = "event",
+            Event = CreateRunEvent(eventType, eventParams),
+            RequestId = run.RequestId,
+            ThreadId = eventThreadId,
+            TurnId = eventTurnId,
+        });
+    }
+
+    private static object BuildDynamicToolResultPayload(CodexDynamicToolCallResponse response)
+    {
+        return new
+        {
+            content = NormalizeToolResponseItems(response.ContentItems),
+            structuredContent = (object?)null,
+        };
+    }
+
+    private static object BuildDynamicToolErrorPayload(CodexDynamicToolCallResponse response)
+    {
+        var message = response.ContentItems
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Text))
+            ?.Text
+            ?? "Dynamic tool call failed.";
+
+        return new
+        {
+            message,
+        };
+    }
+
+    private static CodexDynamicToolCallResponse BuildToolBridgeFailure(string message)
+    {
+        return new CodexDynamicToolCallResponse
+        {
+            Success = false,
+            ContentItems =
+            [
+                new CodexDynamicToolContentItem
+                {
+                    Type = "input_text",
+                    Text = message,
+                },
+            ],
+        };
+    }
+
+    private static JsonElement CreateEmptyObject()
+    {
+        using var doc = JsonDocument.Parse("{}");
+        return doc.RootElement.Clone();
+    }
+
+    private static string Truncate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return value.Length <= 2_000 ? value : value[..2_000];
+    }
+
+    private sealed class InternalToolCompletion
+    {
+        public string Status { get; init; } = "success";
+
+        public JsonElement Result { get; init; }
+
+        public JsonElement? Error { get; init; }
+    }
+
+    private sealed class InternalToolSpan
+    {
+        public string ToolCallId { get; init; } = string.Empty;
+
+        public string ToolName { get; set; } = string.Empty;
+
+        public JsonElement ArgumentsJson { get; set; }
+
+        public bool HasArguments { get; set; }
+
+        public DateTimeOffset StartedAt { get; set; }
+
+        public DateTimeOffset CompletedAt { get; set; }
+
+        public JsonElement ResultJson { get; set; }
+
+        public bool HasResult { get; set; }
+
+        public string? Status { get; set; }
+
+        public string? StartSource { get; set; }
+
+        public string? EndSource { get; set; }
+
+        public bool CallEmitted { get; set; }
+
+        public bool ResultEmitted { get; set; }
+    }
+
+    private sealed class ActiveRunState
+    {
+        private readonly object _stateLock = new();
+        private readonly Channel<CodexTurnEventEnvelope> _events = Channel.CreateUnbounded<CodexTurnEventEnvelope>(
+            new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false,
+            });
+
+        private bool _completed;
+        private bool _pendingInterrupt;
+        private string? _turnId;
+
+        public ActiveRunState(string requestId)
+        {
+            RequestId = requestId;
+            Completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public string RequestId { get; }
+
+        public TaskCompletionSource<string?> Completion { get; }
+
+        public string? TurnId
+        {
+            get
+            {
+                lock (_stateLock)
+                {
+                    return _turnId;
+                }
+            }
+        }
+
+        public void SetTurnId(string? turnId)
+        {
+            if (string.IsNullOrWhiteSpace(turnId))
             {
                 return;
             }
 
-            _logger?.LogDebug(
-                "{event_type} {event_status} {provider} {provider_mode} {message}",
-                "codex.bridge.stderr",
-                "observed",
-                _options.Provider,
-                _options.ProviderMode,
-                line);
+            lock (_stateLock)
+            {
+                _turnId = turnId;
+            }
         }
-    }
 
-    private async Task WriteAsync(CodexBridgeRequest request, CancellationToken ct)
-    {
-        if (_stdin is null)
+        public void MarkPendingInterrupt()
         {
-            throw new InvalidOperationException("Bridge stdin is not available.");
+            lock (_stateLock)
+            {
+                _pendingInterrupt = true;
+            }
         }
 
-        var line = JsonSerializer.Serialize(request, _json);
-        await _stdin.WriteLineAsync(line);
-        await _stdin.FlushAsync(ct);
-    }
-
-    private string ResolveBridgeScriptPath()
-    {
-        if (!string.IsNullOrWhiteSpace(_options.BridgeScriptPath))
+        public bool TryConsumePendingInterrupt()
         {
-            return _options.BridgeScriptPath;
+            lock (_stateLock)
+            {
+                if (!_pendingInterrupt)
+                {
+                    return false;
+                }
+
+                _pendingInterrupt = false;
+                return true;
+            }
         }
 
-        var candidate = Path.Combine(AppContext.BaseDirectory, "bridge", "codex-bridge.mjs");
-        if (File.Exists(candidate))
+        public void TryWriteEvent(CodexTurnEventEnvelope eventEnvelope)
         {
-            return candidate;
+            _ = _events.Writer.TryWrite(eventEnvelope);
         }
 
-        candidate = Path.Combine(AppContext.BaseDirectory, "Bridge", "codex-bridge.mjs");
-        if (File.Exists(candidate))
+        public IAsyncEnumerable<CodexTurnEventEnvelope> ReadAllEventsAsync(CancellationToken ct)
         {
-            return candidate;
+            return _events.Reader.ReadAllAsync(ct);
         }
 
-        throw new FileNotFoundException(
-            "Could not find codex-bridge.mjs. Ensure bridge files are copied to output directory.",
-            candidate);
-    }
-
-    private static bool TryExtractThreadId(JsonElement eventElement, out string? threadId)
-    {
-        threadId = null;
-
-        if (!eventElement.TryGetProperty("type", out var typeProp)
-            || typeProp.ValueKind != JsonValueKind.String)
+        public void TryComplete(string? turnId)
         {
-            return false;
+            lock (_stateLock)
+            {
+                if (_completed)
+                {
+                    return;
+                }
+
+                _completed = true;
+                _turnId = string.IsNullOrWhiteSpace(turnId) ? _turnId : turnId;
+            }
+
+            _ = Completion.TrySetResult(_turnId);
+            _events.Writer.TryComplete();
         }
 
-        var type = typeProp.GetString();
-        if (!string.Equals(type, "thread.started", StringComparison.Ordinal))
+        public void TryFail(Exception exception)
         {
-            return false;
-        }
+            lock (_stateLock)
+            {
+                if (_completed)
+                {
+                    return;
+                }
 
-        if (!eventElement.TryGetProperty("thread_id", out var threadIdProp)
-            || threadIdProp.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
+                _completed = true;
+            }
 
-        threadId = threadIdProp.GetString();
-        return !string.IsNullOrEmpty(threadId);
+            _ = Completion.TrySetException(exception);
+            _events.Writer.TryComplete();
+        }
     }
 }

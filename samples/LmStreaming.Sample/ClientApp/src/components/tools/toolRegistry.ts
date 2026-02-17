@@ -14,6 +14,10 @@ const toolComponents: Record<string, Component> = {
   calculate: CalculatorToolPill,
   get_weather: WeatherToolPill,
   weather: WeatherToolPill,
+  web_search: ToolCallPill,
+  command_execution: ToolCallPill,
+  file_change: ToolCallPill,
+  todo_list: ToolCallPill,
 };
 
 /**

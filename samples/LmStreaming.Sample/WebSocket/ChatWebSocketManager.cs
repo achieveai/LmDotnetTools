@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
 
@@ -50,10 +51,16 @@ public sealed class ChatWebSocketManager
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
+        var codexSessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            ? Path.GetFileName(requestResponseDumpFileName)
+            : $"{threadId}-{Guid.NewGuid():N}";
+        using var logScope = LogContext.PushProperty("codex_session_id", codexSessionId);
+
         _logger.LogInformation(
-            "WebSocket connection started for thread {ThreadId} with mode {ModeId}",
+            "WebSocket connection started for thread {ThreadId} with mode {ModeId} and session {CodexSessionId}",
             threadId,
-            mode?.Id ?? "default");
+            mode?.Id ?? "default",
+            codexSessionId);
 
         // Get or create agent for this thread with the specified mode
         var agent = mode != null

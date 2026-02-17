@@ -17,6 +17,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
 
+    public sealed record RunStateInfo(
+        bool IsInProgress,
+        string? CurrentRunId,
+        bool AgentIsRunning,
+        bool RunTaskCompleted,
+        bool IsStale);
+
     /// <summary>
     /// Wrapper to track agent and its background task.
     /// </summary>
@@ -133,7 +140,33 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <param name="threadId">The thread identifier.</param>
     public bool IsRunInProgress(string threadId)
     {
-        return _agents.TryGetValue(threadId, out var entry) && !string.IsNullOrEmpty(entry.Agent.CurrentRunId);
+        return GetRunStateInfo(threadId).IsInProgress;
+    }
+
+    public RunStateInfo GetRunStateInfo(string threadId)
+    {
+        if (!_agents.TryGetValue(threadId, out var entry))
+        {
+            return new RunStateInfo(
+                IsInProgress: false,
+                CurrentRunId: null,
+                AgentIsRunning: false,
+                RunTaskCompleted: true,
+                IsStale: false);
+        }
+
+        var currentRunId = entry.Agent.CurrentRunId;
+        var hasRunId = !string.IsNullOrWhiteSpace(currentRunId);
+        var runTaskCompleted = entry.RunTask.IsCompleted;
+        var agentIsRunning = entry.Agent.IsRunning;
+        var isInProgress = hasRunId && agentIsRunning && !runTaskCompleted;
+        var isStale = hasRunId && !isInProgress;
+        return new RunStateInfo(
+            IsInProgress: isInProgress,
+            CurrentRunId: currentRunId,
+            AgentIsRunning: agentIsRunning,
+            RunTaskCompleted: runTaskCompleted,
+            IsStale: isStale);
     }
 
     /// <summary>

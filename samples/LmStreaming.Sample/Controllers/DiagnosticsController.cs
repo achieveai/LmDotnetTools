@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using LmStreaming.Sample.Models;
@@ -10,12 +13,14 @@ namespace LmStreaming.Sample.Controllers;
 [Route("api/diagnostics")]
 public class DiagnosticsController(ILogger<DiagnosticsController> logger) : ControllerBase
 {
+    private static readonly Regex SemVerRegex = new(@"\b(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\b", RegexOptions.Compiled);
+
     /// <summary>
     ///     Returns the active provider configuration so you can verify
     ///     which LLM backend the service is connected to.
     /// </summary>
     [HttpGet("provider-info")]
-    public IActionResult GetProviderInfo()
+    public async Task<IActionResult> GetProviderInfo()
     {
         var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
         var info = new Dictionary<string, string?>
@@ -39,6 +44,7 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
                     Environment.GetEnvironmentVariable("OPENAI_API_KEY"))).ToString();
                 break;
             case "codex":
+                var requestAborted = HttpContext?.RequestAborted ?? CancellationToken.None;
                 info["baseUrl"] = Environment.GetEnvironmentVariable("CODEX_BASE_URL")
                     ?? Environment.GetEnvironmentVariable("OPENAI_BASE_URL")
                     ?? "https://api.openai.com/v1";
@@ -48,8 +54,41 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
                 info["authMode"] = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CODEX_API_KEY"))
                     ? "api_key"
                     : "chatgpt_login";
-                info["mcpEndpointUrl"] = $"http://localhost:{GetCodexMcpPort()}/mcp";
-                info["bridgeDependencyState"] = GetBridgeDependencyState();
+                var effectiveMcpPort = GetEffectiveCodexMcpPort();
+                info["mcpPortEffective"] = effectiveMcpPort.ToString();
+                info["mcpEndpointUrl"] = $"http://localhost:{effectiveMcpPort}/mcp";
+                info["rpcTraceEnabled"] = GetRpcTraceEnabled().ToString();
+
+                var codexCliPath = Environment.GetEnvironmentVariable("CODEX_CLI_PATH") ?? "codex";
+                var startupTimeoutMs = int.TryParse(
+                    Environment.GetEnvironmentVariable("CODEX_APP_SERVER_STARTUP_TIMEOUT_MS"),
+                    out var parsedStartupTimeoutMs)
+                    ? parsedStartupTimeoutMs
+                    : 30000;
+
+                info["codexCliPath"] = codexCliPath;
+
+                var (codexCliDetected, codexCliVersion, codexCliError) = await ProbeCodexCliAsync(
+                    codexCliPath,
+                    startupTimeoutMs,
+                    requestAborted);
+                info["codexCliDetected"] = codexCliDetected.ToString();
+                info["codexCliVersion"] = codexCliVersion;
+
+                var appServerHandshakeOk = false;
+                var appServerLastError = codexCliError;
+                if (codexCliDetected)
+                {
+                    var (handshakeOk, handshakeError) = await ProbeAppServerHandshakeAsync(
+                        codexCliPath,
+                        startupTimeoutMs,
+                        requestAborted);
+                    appServerHandshakeOk = handshakeOk;
+                    appServerLastError = handshakeError;
+                }
+
+                info["appServerHandshakeOk"] = appServerHandshakeOk.ToString();
+                info["appServerLastError"] = appServerLastError;
                 break;
             default:
                 info["baseUrl"] = "http://test-mode/v1";
@@ -66,6 +105,7 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
 
         return Ok(info);
     }
+
     [HttpPost("logs")]
     public IActionResult IngestLogs([FromBody] ClientLogBatch batch)
     {
@@ -153,7 +193,19 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
         return Ok(result);
     }
 
-    private static int GetCodexMcpPort()
+    private static int GetEffectiveCodexMcpPort()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT_EFFECTIVE"), out var effectivePort)
+            && effectivePort > 0
+            && effectivePort <= 65535)
+        {
+            return effectivePort;
+        }
+
+        return GetConfiguredCodexMcpPort();
+    }
+
+    private static int GetConfiguredCodexMcpPort()
     {
         if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
             && port > 0
@@ -165,10 +217,207 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
         return 39200;
     }
 
-    private static string GetBridgeDependencyState()
+    private static bool GetRpcTraceEnabled()
     {
-        var bridgeDir = Path.Combine(AppContext.BaseDirectory, "bridge");
-        var packageJson = Path.Combine(bridgeDir, "node_modules", "@openai", "codex-sdk", "package.json");
-        return System.IO.File.Exists(packageJson) ? "ready" : "not_ready";
+        return bool.TryParse(Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_ENABLED"), out var enabled)
+               && enabled;
+    }
+
+    private static async Task<(bool Detected, string? Version, string? Error)> ProbeCodexCliAsync(
+        string codexCliPath,
+        int timeoutMs,
+        CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = codexCliPath,
+            Arguments = "--version",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                return (false, null, $"Failed to start Codex CLI '{codexCliPath}'.");
+            }
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(timeoutMs, 1000)));
+
+            var stdOutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stdErrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
+            await process.WaitForExitAsync(timeoutCts.Token);
+
+            var stdOut = await stdOutTask;
+            var stdErr = await stdErrTask;
+            var output = string.Join(Environment.NewLine, [stdOut, stdErr]).Trim();
+
+            if (process.ExitCode != 0)
+            {
+                return (false, null, $"Codex CLI '--version' exited with code {process.ExitCode}: {Truncate(output)}");
+            }
+
+            var match = SemVerRegex.Match(output);
+            if (!match.Success)
+            {
+                return (false, null, $"Could not parse Codex CLI version from output: {Truncate(output)}");
+            }
+
+            var version = $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
+            return (true, version, null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return (false, null, "Codex CLI probe cancelled.");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, null, "Codex CLI probe timed out.");
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ex.Message);
+        }
+    }
+
+    private static async Task<(bool Ok, string? Error)> ProbeAppServerHandshakeAsync(
+        string codexCliPath,
+        int timeoutMs,
+        CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = codexCliPath,
+            Arguments = "app-server --listen stdio://",
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+
+        Process? process = null;
+        try
+        {
+            process = Process.Start(psi);
+            if (process == null)
+            {
+                return (false, $"Failed to start Codex App Server using '{codexCliPath}'.");
+            }
+
+            using var writer = new StreamWriter(process.StandardInput.BaseStream, new UTF8Encoding(false))
+            {
+                AutoFlush = true,
+            };
+
+            var initializeRequest = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "initialize",
+                @params = new
+                {
+                    clientInfo = new
+                    {
+                        name = "lm-dotnet-tools-diagnostics",
+                        version = "0.1.0",
+                    },
+                    capabilities = new
+                    {
+                        experimentalApi = true,
+                    },
+                },
+            });
+            await writer.WriteLineAsync(initializeRequest);
+            await writer.WriteLineAsync("""{"jsonrpc":"2.0","method":"initialized"}""");
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(timeoutMs, 1_000)));
+
+            while (true)
+            {
+                var line = await process.StandardOutput.ReadLineAsync(timeoutCts.Token);
+                if (line == null)
+                {
+                    var stderr = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
+                    return (false, $"App Server stdout closed before initialize response. stderr: {Truncate(stderr)}");
+                }
+
+                using var json = JsonDocument.Parse(line);
+                var root = json.RootElement;
+                if (!root.TryGetProperty("id", out var idProp)
+                    || idProp.ValueKind != JsonValueKind.Number
+                    || idProp.GetInt32() != 1)
+                {
+                    continue;
+                }
+
+                if (root.TryGetProperty("result", out _))
+                {
+                    return (true, null);
+                }
+
+                if (root.TryGetProperty("error", out var errorProp)
+                    && errorProp.ValueKind == JsonValueKind.Object
+                    && errorProp.TryGetProperty("message", out var messageProp)
+                    && messageProp.ValueKind == JsonValueKind.String)
+                {
+                    return (false, messageProp.GetString());
+                }
+
+                return (false, $"Unexpected initialize response: {Truncate(line)}");
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return (false, "App Server handshake cancelled.");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, "App Server handshake timed out.");
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+        finally
+        {
+            if (process != null)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // Ignore kill failures in diagnostics probing.
+                }
+
+                process.Dispose();
+            }
+        }
+    }
+
+    private static string Truncate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return value.Length <= 500 ? value : value[..500];
     }
 }

@@ -1,11 +1,14 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
+using AchieveAi.LmDotnetTools.CodexSdkProvider.Tools;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -22,17 +25,51 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     private readonly IReadOnlyDictionary<string, CodexMcpServerConfig> _mcpServers;
     private readonly ILoggerFactory? _loggerFactory;
     private readonly Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? _clientFactory;
+    private readonly CodexToolPolicyEngine _toolPolicy;
+    private readonly CodexDynamicToolBridge? _dynamicToolBridge;
     private readonly Dictionary<string, string> _agentMessageAccumulator = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _reasoningAccumulator = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Usage> _latestUsageByTurn = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _activeMessageOrderByKey = new(StringComparer.Ordinal);
     private ICodexSdkClient? _client;
     private string? _codexThreadId;
-    private bool _systemPromptApplied;
+    private string? _generatedModelInstructionsFile;
     private int _nextMessageOrderIdx;
 
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
+        string threadId,
+        string? systemPrompt = null,
+        GenerateReplyOptions? defaultOptions = null,
+        int inputChannelCapacity = 100,
+        int outputChannelCapacity = 1000,
+        IConversationStore? store = null,
+        ILogger<CodexAgentLoop>? logger = null,
+        ILoggerFactory? loggerFactory = null,
+        Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null)
+        : this(
+            options,
+            mcpServers,
+            functionRegistry: null,
+            enabledTools: null,
+            threadId,
+            systemPrompt,
+            defaultOptions,
+            inputChannelCapacity,
+            outputChannelCapacity,
+            store,
+            logger,
+            loggerFactory,
+            clientFactory)
+    {
+    }
+
+    public CodexAgentLoop(
+        CodexSdkOptions options,
+        IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
+        FunctionRegistry? functionRegistry,
+        IReadOnlyList<string>? enabledTools,
         string threadId,
         string? systemPrompt = null,
         GenerateReplyOptions? defaultOptions = null,
@@ -56,6 +93,29 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
+
+        IReadOnlyList<FunctionContract> dynamicContracts = [];
+        IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase);
+        if (functionRegistry != null && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)
+        {
+            var (contracts, handlers) = functionRegistry.Build();
+            dynamicContracts = contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name)).ToList();
+            dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(handlers, StringComparer.OrdinalIgnoreCase);
+        }
+
+        _toolPolicy = new CodexToolPolicyEngine(
+            _mcpServers,
+            dynamicContracts.Select(static c => c.Name),
+            enabledTools);
+
+        if (dynamicContracts.Count > 0 && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)
+        {
+            _dynamicToolBridge = new CodexDynamicToolBridge(
+                dynamicContracts,
+                dynamicHandlers,
+                _toolPolicy,
+                _loggerFactory?.CreateLogger<CodexDynamicToolBridge>());
+        }
     }
 
     protected override async Task OnBeforeRunAsync()
@@ -65,11 +125,37 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             return;
         }
 
+        if (_client != null)
+        {
+            await _client.DisposeAsync();
+            _client = null;
+        }
+
         _client = _clientFactory != null
             ? _clientFactory(_options, _loggerFactory?.CreateLogger<CodexSdkClient>())
             : new CodexSdkClient(_options, _loggerFactory?.CreateLogger<CodexSdkClient>());
 
-        await _client.EnsureStartedAsync(
+        if (_dynamicToolBridge != null)
+        {
+            _client.ConfigureDynamicToolExecutor((request, token) => _dynamicToolBridge.ExecuteAsync(request, token));
+        }
+        else
+        {
+            _client.ConfigureDynamicToolExecutor(null);
+        }
+
+        var (baseInstructions, developerInstructions, modelInstructionsFile) = ResolveInstructions();
+        var effectiveWebSearchMode = _toolPolicy.IsBuiltInAllowed("web_search")
+            ? _options.WebSearchMode
+            : "disabled";
+        var effectiveMcpServers = _options.ToolBridgeMode == CodexToolBridgeMode.Dynamic
+            ? new Dictionary<string, CodexMcpServerConfig>()
+            : _mcpServers;
+        var dynamicTools = _options.ToolBridgeMode == CodexToolBridgeMode.Mcp
+            ? null
+            : _dynamicToolBridge?.GetToolSpecs();
+
+        await _client.StartOrResumeThreadAsync(
             new CodexBridgeInitOptions
             {
                 Model = _options.Model,
@@ -77,9 +163,14 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 SandboxMode = _options.SandboxMode,
                 SkipGitRepoCheck = _options.SkipGitRepoCheck,
                 NetworkAccessEnabled = _options.NetworkAccessEnabled,
-                WebSearchMode = _options.WebSearchMode,
+                WebSearchMode = effectiveWebSearchMode,
                 WorkingDirectory = _options.WorkingDirectory,
-                McpServers = _mcpServers,
+                McpServers = effectiveMcpServers,
+                BaseInstructions = baseInstructions,
+                DeveloperInstructions = developerInstructions,
+                ModelInstructionsFile = modelInstructionsFile,
+                DynamicTools = dynamicTools,
+                ToolBridgeMode = _options.ToolBridgeMode.ToString().ToLowerInvariant(),
                 BaseUrl = _options.BaseUrl,
                 ApiKey = _options.ApiKey,
                 ThreadId = _codexThreadId,
@@ -97,6 +188,18 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
     protected override async Task OnDisposeAsync()
     {
+        if (!string.IsNullOrWhiteSpace(_generatedModelInstructionsFile))
+        {
+            try
+            {
+                File.Delete(_generatedModelInstructionsFile);
+            }
+            catch
+            {
+                // Best effort cleanup for temporary instructions file.
+            }
+        }
+
         if (_client != null)
         {
             await _client.DisposeAsync();
@@ -120,6 +223,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             }
 
             var assignment = StartRun(batch);
+            var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {
                 Assignment = assignment,
@@ -137,6 +241,18 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 assignment.GenerationId,
                 string.Join(",", assignment.InputIds ?? []));
 
+            Logger.LogInformation(
+                "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {batch_input_count} {queued_input_count}",
+                "codex.turn.queue",
+                "observed",
+                _options.Provider,
+                _options.ProviderMode,
+                ThreadId,
+                assignment.RunId,
+                assignment.GenerationId,
+                batch.Count,
+                queueDepth);
+
             foreach (var input in batch)
             {
                 foreach (var msg in input.Input.Messages)
@@ -146,8 +262,10 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             }
 
             var streamMetrics = new RunStreamMetrics();
+            var runTimer = Stopwatch.StartNew();
             try
             {
+                await OnBeforeRunAsync();
                 await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, ct);
 
                 await CompleteRunAsync(
@@ -171,6 +289,17 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     streamMetrics.BridgeEventCount,
                     streamMetrics.ItemUpdatedCount,
                     streamMetrics.ItemCompletedCount);
+
+                Logger.LogInformation(
+                    "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {run_age_ms}",
+                    "codex.turn.latency",
+                    "completed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    ThreadId,
+                    assignment.RunId,
+                    assignment.GenerationId,
+                    runTimer.ElapsedMilliseconds);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -189,6 +318,17 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     streamMetrics.ItemCompletedCount,
                     "turn_failed",
                     ex.GetType().Name);
+
+                Logger.LogWarning(
+                    "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {run_age_ms}",
+                    "codex.turn.latency",
+                    "failed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    ThreadId,
+                    assignment.RunId,
+                    assignment.GenerationId,
+                    runTimer.ElapsedMilliseconds);
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -217,53 +357,66 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         var eventSequence = 0;
         _nextMessageOrderIdx = 0;
         _activeMessageOrderByKey.Clear();
+        _latestUsageByTurn.Clear();
 
-        await foreach (var envelope in _client.RunStreamingAsync(prompt, ct))
+        try
         {
-            eventSequence++;
-            var bridgeEventType = ExtractEventType(envelope.Event);
-            streamMetrics.BridgeEventCount = eventSequence;
-            if (string.Equals(bridgeEventType, "item.updated", StringComparison.Ordinal))
+            await foreach (var envelope in _client.RunStreamingAsync(prompt, ct))
             {
-                streamMetrics.ItemUpdatedCount++;
-            }
-            else if (string.Equals(bridgeEventType, "item.completed", StringComparison.Ordinal))
-            {
-                streamMetrics.ItemCompletedCount++;
-            }
+                eventSequence++;
+                var bridgeEventType = ExtractEventType(envelope.Event);
+                streamMetrics.BridgeEventCount = eventSequence;
+                if (string.Equals(bridgeEventType, "item.updated", StringComparison.Ordinal)
+                    || string.Equals(bridgeEventType, "item/agentMessage/delta", StringComparison.Ordinal)
+                    || string.Equals(bridgeEventType, "item/reasoning/textDelta", StringComparison.Ordinal)
+                    || string.Equals(bridgeEventType, "item/reasoning/summaryTextDelta", StringComparison.Ordinal))
+                {
+                    streamMetrics.ItemUpdatedCount++;
+                }
+                else if (string.Equals(bridgeEventType, "item.completed", StringComparison.Ordinal)
+                         || string.Equals(bridgeEventType, "item/completed", StringComparison.Ordinal))
+                {
+                    streamMetrics.ItemCompletedCount++;
+                }
 
-            Logger.LogInformation(
-                "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {input_id} {bridge_request_id} {codex_thread_id} {model} {latency_ms} {event_sequence} {bridge_event_type} {event_timestamp_ms}",
-                "codex.bridge.event.received",
-                "received",
-                _options.Provider,
-                _options.ProviderMode,
-                ThreadId,
-                runId,
-                generationId,
-                string.Empty,
-                envelope.RequestId,
-                envelope.ThreadId ?? _codexThreadId,
-                _options.Model,
-                runStopwatch.ElapsedMilliseconds,
-                eventSequence,
-                bridgeEventType,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-
-            var messages = ConvertEventToMessages(envelope.Event, runId, generationId);
-            foreach (var message in messages)
-            {
-                AddToHistory(message);
-                await PublishToAllAsync(message, ct);
-                LogStreamingPublishTelemetry(
-                    message,
+                Logger.LogInformation(
+                    "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {input_id} {bridge_request_id} {codex_thread_id} {model} {latency_ms} {event_sequence} {bridge_event_type} {event_timestamp_ms}",
+                    "codex.bridge.event.received",
+                    "received",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    ThreadId,
                     runId,
                     generationId,
+                    string.Empty,
                     envelope.RequestId,
-                    envelope.ThreadId,
+                    envelope.ThreadId ?? _codexThreadId,
+                    _options.Model,
                     runStopwatch.ElapsedMilliseconds,
-                    eventSequence);
+                    eventSequence,
+                    bridgeEventType,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+                var messages = ConvertEventToMessages(envelope.Event, runId, generationId);
+                foreach (var message in messages)
+                {
+                    AddToHistory(message);
+                    await PublishToAllAsync(message, ct);
+                    LogStreamingPublishTelemetry(
+                        message,
+                        runId,
+                        generationId,
+                        envelope.RequestId,
+                        envelope.ThreadId,
+                        runStopwatch.ElapsedMilliseconds,
+                        eventSequence);
+                }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await _client.InterruptTurnAsync(CancellationToken.None);
+            throw;
         }
     }
 
@@ -345,22 +498,20 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             return [];
         }
 
-        var eventType = typeProp.GetString();
+        var eventType = typeProp.GetString() ?? string.Empty;
         switch (eventType)
         {
             case "thread.started":
-                if (eventElement.TryGetProperty("thread_id", out var threadIdProp))
-                {
-                    _codexThreadId = threadIdProp.GetString();
-                    if (!string.IsNullOrWhiteSpace(_codexThreadId))
-                    {
-                        _systemPromptApplied = true;
-                    }
-                }
+            case "thread/started":
+                _codexThreadId = ExtractThreadId(eventElement, _codexThreadId);
+                return [];
 
+            case "thread/tokenUsage/updated":
+                RecordTurnUsage(eventElement);
                 return [];
 
             case "turn.completed":
+            case "turn/completed":
                 return [CreateUsageMessage(eventElement, runId, generationId, NextMessageOrderIdx())];
 
             case "turn.failed":
@@ -380,7 +531,16 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             case "item.started":
             case "item.updated":
             case "item.completed":
+            case "item/started":
+            case "item/completed":
                 return ConvertItemEvent(eventType, eventElement, runId, generationId);
+
+            case "item/agentMessage/delta":
+                return ConvertAgentMessageDeltaEvent(eventElement, runId, generationId);
+
+            case "item/reasoning/textDelta":
+            case "item/reasoning/summaryTextDelta":
+                return ConvertReasoningDeltaEvent(eventElement, runId, generationId);
 
             default:
                 return [];
@@ -389,6 +549,13 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
     private List<IMessage> ConvertItemEvent(string eventType, JsonElement eventElement, string runId, string generationId)
     {
+        var normalizedEventType = eventType switch
+        {
+            "item/started" => "item.started",
+            "item/completed" => "item.completed",
+            _ => eventType,
+        };
+
         if (!eventElement.TryGetProperty("item", out var itemElement)
             || !itemElement.TryGetProperty("type", out var itemTypeProp)
             || itemTypeProp.ValueKind != JsonValueKind.String)
@@ -396,26 +563,64 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             return [];
         }
 
-        var itemType = itemTypeProp.GetString();
+        var itemType = NormalizeItemType(itemTypeProp.GetString());
         var itemId = itemElement.TryGetProperty("id", out var id) ? id.GetString() : null;
 
         switch (itemType)
         {
             case "agent_message":
-                return ConvertAgentMessage(eventType, itemElement, itemId, runId, generationId);
+                return ConvertAgentMessage(normalizedEventType, itemElement, itemId, runId, generationId);
 
             case "reasoning":
-                return ConvertReasoningMessage(eventType, itemElement, itemId, runId, generationId);
+                return ConvertReasoningMessage(normalizedEventType, itemElement, itemId, runId, generationId);
 
             case "mcp_tool_call":
-                return ConvertToolCallMessage(eventType, itemElement, itemId, runId, generationId);
+            case "tool_call":
+            case "dynamic_tool_call":
+                return ConvertToolCallMessage(normalizedEventType, itemElement, itemId, runId, generationId);
 
             case "command_execution":
             case "file_change":
             case "todo_list":
             case "web_search":
+                if (_options.ExposeCodexInternalToolsAsToolMessages)
+                {
+                    var toolMessages = ConvertInternalToolItemToToolMessage(
+                        normalizedEventType,
+                        itemType,
+                        itemElement,
+                        itemId,
+                        runId,
+                        generationId);
+                    if (toolMessages.Count > 0)
+                    {
+                        return toolMessages;
+                    }
+
+                    if (!_options.EmitLegacyInternalToolReasoningSummaries)
+                    {
+                        return [];
+                    }
+                }
+
+                return normalizedEventType == "item.completed"
+                    ?
+                    [
+                        new ReasoningMessage
+                        {
+                            Role = Role.Assistant,
+                            ThreadId = ThreadId,
+                            RunId = runId,
+                            GenerationId = generationId,
+                            MessageOrderIdx = NextMessageOrderIdx(),
+                            Visibility = ReasoningVisibility.Summary,
+                            Reasoning = BuildSummary(itemType, itemElement),
+                        },
+                    ]
+                    : [];
+
             case "error":
-                return eventType == "item.completed"
+                return normalizedEventType == "item.completed"
                     ?
                     [
                         new ReasoningMessage
@@ -432,6 +637,18 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     : [];
 
             default:
+                Logger.LogInformation(
+                    "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {codex_item_type} {bridge_event_type} {item_id}",
+                    "codex.item.unmapped",
+                    "ignored",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    ThreadId,
+                    runId,
+                    generationId,
+                    itemType,
+                    normalizedEventType,
+                    itemId ?? string.Empty);
                 return [];
         }
     }
@@ -532,7 +749,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         string runId,
         string generationId)
     {
-        var text = itemElement.TryGetProperty("text", out var textProp) ? textProp.GetString() : null;
+        var text = ExtractReasoningText(itemElement);
         if (string.IsNullOrWhiteSpace(text))
         {
             return [];
@@ -678,7 +895,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             return [];
         }
 
-        var status = itemElement.TryGetProperty("status", out var statusProp) ? statusProp.GetString() : "completed";
+        var status = itemElement.TryGetProperty("status", out var statusProp) ? NormalizeStatus(statusProp.GetString()) : "completed";
         var isError = string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
             || (itemElement.TryGetProperty("error", out var errorProp) && errorProp.ValueKind != JsonValueKind.Null);
         var completionOrderIdx = GetOrCreateMessageOrderIdx(toolMessageKey);
@@ -726,6 +943,248 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         return resultMessages;
     }
 
+    private List<IMessage> ConvertInternalToolItemToToolMessage(
+        string eventType,
+        string toolName,
+        JsonElement itemElement,
+        string? itemId,
+        string runId,
+        string generationId)
+    {
+        if (eventType is not ("item.started" or "item.completed"))
+        {
+            return [];
+        }
+
+        var callId = itemId;
+        if (string.IsNullOrWhiteSpace(callId)
+            && itemElement.TryGetProperty("call_id", out var callIdSnake)
+            && callIdSnake.ValueKind == JsonValueKind.String)
+        {
+            callId = callIdSnake.GetString();
+        }
+
+        if (string.IsNullOrWhiteSpace(callId)
+            && itemElement.TryGetProperty("callId", out var callIdCamel)
+            && callIdCamel.ValueKind == JsonValueKind.String)
+        {
+            callId = callIdCamel.GetString();
+        }
+
+        if (string.IsNullOrWhiteSpace(callId))
+        {
+            Logger.LogWarning(
+                "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id} {codex_item_type} {reason}",
+                "codex.internal_tool.mapping_failed",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode,
+                ThreadId,
+                runId,
+                generationId,
+                toolName,
+                "missing_call_id");
+            return [];
+        }
+
+        var source = eventType == "item.started" ? "item/started" : "item/completed";
+        var arguments = BuildInternalToolArgumentsPayload(toolName, itemElement, source);
+        var status = itemElement.TryGetProperty("status", out var statusProp) && statusProp.ValueKind == JsonValueKind.String
+            ? NormalizeStatus(statusProp.GetString())
+            : "completed";
+
+        var completionStatus = status switch
+        {
+            "completed" => "success",
+            "failed" => "error",
+            "interrupted" => "cancelled",
+            _ => "success",
+        };
+
+        var result = eventType == "item.completed"
+            ? BuildInternalToolResultPayload(toolName, itemElement, source, completionStatus)
+            : (JsonElement?)null;
+        var error = eventType == "item.completed"
+            ? BuildInternalToolErrorPayload(toolName, itemElement, completionStatus)
+            : null;
+
+        var normalizedItem = JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+        {
+            ["id"] = callId,
+            ["type"] = "toolCall",
+            ["tool"] = toolName,
+            ["server"] = "codex_internal",
+            ["status"] = eventType == "item.started"
+                ? "inProgress"
+                : error.HasValue ? "failed" : "completed",
+            ["arguments"] = arguments,
+            ["result"] = result.HasValue ? result.Value : null,
+            ["error"] = error.HasValue ? error.Value : null,
+        });
+
+        return ConvertToolCallMessage(eventType, normalizedItem, callId, runId, generationId);
+    }
+
+    private static JsonElement BuildInternalToolArgumentsPayload(string toolName, JsonElement itemElement, string source)
+    {
+        var arguments = new Dictionary<string, object?>
+        {
+            ["source"] = source,
+        };
+
+        AddInternalToolFields(arguments, toolName, itemElement, isResultPayload: false);
+        arguments["raw"] = itemElement;
+        return JsonSerializer.SerializeToElement(arguments);
+    }
+
+    private static JsonElement BuildInternalToolResultPayload(
+        string toolName,
+        JsonElement itemElement,
+        string source,
+        string status)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["source"] = source,
+            ["status"] = status,
+        };
+
+        AddInternalToolFields(result, toolName, itemElement, isResultPayload: true);
+        result["raw"] = itemElement;
+        return JsonSerializer.SerializeToElement(result);
+    }
+
+    private static JsonElement? BuildInternalToolErrorPayload(string toolName, JsonElement itemElement, string status)
+    {
+        if (itemElement.TryGetProperty("error", out var explicitError)
+            && explicitError.ValueKind != JsonValueKind.Null
+            && explicitError.ValueKind != JsonValueKind.Undefined)
+        {
+            var error = new Dictionary<string, object?>
+            {
+                ["status"] = status,
+                ["raw"] = explicitError,
+                ["message"] = explicitError.ValueKind == JsonValueKind.String
+                    ? explicitError.GetString()
+                    : explicitError.TryGetProperty("message", out var messageProp) && messageProp.ValueKind == JsonValueKind.String
+                        ? messageProp.GetString()
+                        : $"Codex internal tool '{toolName}' failed.",
+            };
+            return JsonSerializer.SerializeToElement(error);
+        }
+
+        if (string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+        {
+            ["status"] = status,
+            ["message"] = $"Codex internal tool '{toolName}' completed with status '{status}'.",
+        });
+    }
+
+    private static void AddInternalToolFields(
+        Dictionary<string, object?> destination,
+        string toolName,
+        JsonElement itemElement,
+        bool isResultPayload)
+    {
+        switch (toolName)
+        {
+            case "web_search":
+                AddStringField(destination, itemElement, "query");
+                AddStringField(destination, itemElement, "action");
+                AddStringField(destination, itemElement, "target_url", "target_url", "targetUrl", "url");
+                if (isResultPayload)
+                {
+                    AddStringField(destination, itemElement, "opened_url", "opened_url", "openedUrl", "url");
+                    AddRawField(destination, itemElement, "matches", "matches", "resultMatches");
+                    AddRawField(destination, itemElement, "snippets", "snippets", "results");
+                }
+                else
+                {
+                    AddRawField(destination, itemElement, "filters", "filters");
+                }
+
+                break;
+
+            case "command_execution":
+                AddStringField(destination, itemElement, "command");
+                AddStringField(destination, itemElement, "cwd", "cwd", "workingDirectory");
+                AddIntField(destination, itemElement, "timeout_ms", "timeout_ms", "timeoutMs");
+                if (isResultPayload)
+                {
+                    AddIntField(destination, itemElement, "exit_code", "exit_code", "exitCode");
+                    AddStringField(destination, itemElement, "stdout_excerpt", "stdout_excerpt", "stdout", "output");
+                    AddStringField(destination, itemElement, "stderr_excerpt", "stderr_excerpt", "stderr");
+                }
+
+                break;
+
+            case "file_change":
+                AddStringField(destination, itemElement, "decision", "decision", "action");
+                AddRawField(destination, itemElement, "changes", "changes", "patch", "files", "paths");
+                break;
+
+            case "todo_list":
+                AddStringField(destination, itemElement, "operation", "operation", "action");
+                AddRawField(destination, itemElement, "items", "items", "todos");
+                break;
+        }
+    }
+
+    private static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (payload.TryGetProperty(candidate, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                destination[targetName] = value.GetString();
+                return;
+            }
+        }
+    }
+
+    private static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (!payload.TryGetProperty(candidate, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
+            {
+                destination[targetName] = intValue;
+                return;
+            }
+
+            if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out intValue))
+            {
+                destination[targetName] = intValue;
+                return;
+            }
+        }
+    }
+
+    private static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
+    {
+        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        foreach (var candidate in names)
+        {
+            if (payload.TryGetProperty(candidate, out var value))
+            {
+                destination[targetName] = value;
+                return;
+            }
+        }
+    }
+
     private UsageMessage CreateUsageMessage(JsonElement eventElement, string runId, string generationId, int messageOrderIdx)
     {
         var usage = new Usage();
@@ -745,6 +1204,15 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 TotalTokens = inputTokens + outputTokens,
                 InputTokenDetails = new InputTokenDetails { CachedTokens = cachedInputTokens },
             };
+        }
+        else
+        {
+            var turnId = ExtractTurnId(eventElement);
+            if (!string.IsNullOrWhiteSpace(turnId)
+                && _latestUsageByTurn.TryGetValue(turnId, out var latestUsage))
+            {
+                usage = latestUsage;
+            }
         }
 
         return new UsageMessage
@@ -836,16 +1304,282 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         };
     }
 
+    private (string? BaseInstructions, string? DeveloperInstructions, string? ModelInstructionsFile) ResolveInstructions()
+    {
+        var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions)
+            ? null
+            : _options.BaseInstructions;
+        var developerInstructions = !string.IsNullOrWhiteSpace(SystemPrompt)
+            ? SystemPrompt
+            : string.IsNullOrWhiteSpace(_options.DeveloperInstructions)
+                ? null
+                : _options.DeveloperInstructions;
+        var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
+            ? null
+            : _options.ModelInstructionsFile;
+
+        if (string.IsNullOrWhiteSpace(modelInstructionsFile)
+            && !string.IsNullOrWhiteSpace(developerInstructions)
+            && developerInstructions.Length > _options.UseModelInstructionsFileThresholdChars)
+        {
+            _generatedModelInstructionsFile ??= CreateModelInstructionsFile(developerInstructions);
+            modelInstructionsFile = _generatedModelInstructionsFile;
+            developerInstructions = null;
+        }
+
+        return (baseInstructions, developerInstructions, modelInstructionsFile);
+    }
+
+    private static string CreateModelInstructionsFile(string developerInstructions)
+    {
+        var tempFilePath = Path.Combine(
+            Path.GetTempPath(),
+            $"codex-model-instructions-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(tempFilePath, developerInstructions);
+        return tempFilePath;
+    }
+
+    private List<IMessage> ConvertAgentMessageDeltaEvent(JsonElement eventElement, string runId, string generationId)
+    {
+        var itemId = eventElement.TryGetProperty("itemId", out var itemIdProp) && itemIdProp.ValueKind == JsonValueKind.String
+            ? itemIdProp.GetString()
+            : null;
+        var delta = eventElement.TryGetProperty("delta", out var deltaProp) && deltaProp.ValueKind == JsonValueKind.String
+            ? deltaProp.GetString()
+            : null;
+        if (string.IsNullOrEmpty(delta))
+        {
+            return [];
+        }
+
+        var key = itemId ?? $"agent_message:{runId}";
+        var orderIdx = GetOrCreateMessageOrderIdx($"agent:{key}");
+        var existing = _agentMessageAccumulator.TryGetValue(key, out var currentText) ? currentText : string.Empty;
+        _agentMessageAccumulator[key] = existing + delta;
+
+        return
+        [
+            new TextUpdateMessage
+            {
+                Role = Role.Assistant,
+                ThreadId = ThreadId,
+                RunId = runId,
+                GenerationId = generationId,
+                MessageOrderIdx = orderIdx,
+                Text = delta,
+            },
+        ];
+    }
+
+    private List<IMessage> ConvertReasoningDeltaEvent(JsonElement eventElement, string runId, string generationId)
+    {
+        var itemId = eventElement.TryGetProperty("itemId", out var itemIdProp) && itemIdProp.ValueKind == JsonValueKind.String
+            ? itemIdProp.GetString()
+            : null;
+        var delta = eventElement.TryGetProperty("delta", out var deltaProp) && deltaProp.ValueKind == JsonValueKind.String
+            ? deltaProp.GetString()
+            : null;
+        if (string.IsNullOrEmpty(delta))
+        {
+            return [];
+        }
+
+        var key = itemId ?? $"reasoning:{runId}";
+        var orderIdx = GetOrCreateMessageOrderIdx($"reasoning:{key}");
+        var existing = _reasoningAccumulator.TryGetValue(key, out var currentText) ? currentText : string.Empty;
+        _reasoningAccumulator[key] = existing + delta;
+
+        return
+        [
+            new ReasoningUpdateMessage
+            {
+                Role = Role.Assistant,
+                ThreadId = ThreadId,
+                RunId = runId,
+                GenerationId = generationId,
+                MessageOrderIdx = orderIdx,
+                Visibility = ReasoningVisibility.Summary,
+                Reasoning = delta,
+            },
+        ];
+    }
+
+    private void RecordTurnUsage(JsonElement eventElement)
+    {
+        var turnId = ExtractTurnId(eventElement);
+        if (string.IsNullOrWhiteSpace(turnId))
+        {
+            return;
+        }
+
+        if (!eventElement.TryGetProperty("tokenUsage", out var tokenUsage)
+            || tokenUsage.ValueKind != JsonValueKind.Object
+            || !tokenUsage.TryGetProperty("last", out var lastUsage)
+            || lastUsage.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        var inputTokens = GetInt32(lastUsage, "inputTokens");
+        var outputTokens = GetInt32(lastUsage, "outputTokens");
+        var cachedInputTokens = GetInt32(lastUsage, "cachedInputTokens");
+        var reasoningOutputTokens = GetInt32(lastUsage, "reasoningOutputTokens");
+
+        _latestUsageByTurn[turnId] = new Usage
+        {
+            PromptTokens = inputTokens,
+            CompletionTokens = outputTokens,
+            TotalTokens = inputTokens + outputTokens,
+            InputTokenDetails = new InputTokenDetails
+            {
+                CachedTokens = cachedInputTokens,
+            },
+            OutputTokenDetails = new OutputTokenDetails
+            {
+                ReasoningTokens = reasoningOutputTokens,
+            },
+        };
+    }
+
+    private static int GetInt32(JsonElement obj, string propertyName)
+    {
+        if (!obj.TryGetProperty(propertyName, out var property))
+        {
+            return 0;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number => property.TryGetInt32(out var value) ? value : 0,
+            JsonValueKind.String => int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0,
+            _ => 0,
+        };
+    }
+
+    private static string? ExtractThreadId(JsonElement eventElement, string? fallbackThreadId)
+    {
+        if (eventElement.TryGetProperty("thread_id", out var threadIdProp)
+            && threadIdProp.ValueKind == JsonValueKind.String)
+        {
+            return threadIdProp.GetString() ?? fallbackThreadId;
+        }
+
+        if (eventElement.TryGetProperty("threadId", out var threadIdCamel)
+            && threadIdCamel.ValueKind == JsonValueKind.String)
+        {
+            return threadIdCamel.GetString() ?? fallbackThreadId;
+        }
+
+        if (eventElement.TryGetProperty("thread", out var threadObj)
+            && threadObj.ValueKind == JsonValueKind.Object
+            && threadObj.TryGetProperty("id", out var threadIdObj)
+            && threadIdObj.ValueKind == JsonValueKind.String)
+        {
+            return threadIdObj.GetString() ?? fallbackThreadId;
+        }
+
+        return fallbackThreadId;
+    }
+
+    private static string? ExtractTurnId(JsonElement eventElement)
+    {
+        if (eventElement.TryGetProperty("turn_id", out var turnIdProp)
+            && turnIdProp.ValueKind == JsonValueKind.String)
+        {
+            return turnIdProp.GetString();
+        }
+
+        if (eventElement.TryGetProperty("turnId", out var turnIdCamel)
+            && turnIdCamel.ValueKind == JsonValueKind.String)
+        {
+            return turnIdCamel.GetString();
+        }
+
+        if (eventElement.TryGetProperty("turn", out var turnObj)
+            && turnObj.ValueKind == JsonValueKind.Object
+            && turnObj.TryGetProperty("id", out var turnIdObj)
+            && turnIdObj.ValueKind == JsonValueKind.String)
+        {
+            return turnIdObj.GetString();
+        }
+
+        return null;
+    }
+
+    private static string NormalizeItemType(string? itemType)
+    {
+        return itemType switch
+        {
+            "agentMessage" => "agent_message",
+            "mcpToolCall" => "mcp_tool_call",
+            "toolCall" => "tool_call",
+            "dynamicToolCall" => "dynamic_tool_call",
+            "tool_call" => "tool_call",
+            "dynamic_tool_call" => "dynamic_tool_call",
+            "commandExecution" => "command_execution",
+            "fileChange" => "file_change",
+            "todoList" => "todo_list",
+            "webSearch" => "web_search",
+            "userMessage" => "user_message",
+            null => string.Empty,
+            _ => itemType,
+        };
+    }
+
+    private static string NormalizeStatus(string? status)
+    {
+        return status switch
+        {
+            "inProgress" => "in_progress",
+            "completed" => "completed",
+            "failed" => "failed",
+            "interrupted" => "interrupted",
+            null => "completed",
+            _ => status,
+        };
+    }
+
+    private static string? ExtractReasoningText(JsonElement itemElement)
+    {
+        if (itemElement.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
+        {
+            return textProp.GetString();
+        }
+
+        if (itemElement.TryGetProperty("summary", out var summaryProp) && summaryProp.ValueKind == JsonValueKind.Array)
+        {
+            var summaryLines = summaryProp
+                .EnumerateArray()
+                .Where(static line => line.ValueKind == JsonValueKind.String)
+                .Select(static line => line.GetString())
+                .Where(static line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
+            if (summaryLines.Count > 0)
+            {
+                return string.Join(Environment.NewLine, summaryLines);
+            }
+        }
+
+        if (itemElement.TryGetProperty("content", out var contentProp) && contentProp.ValueKind == JsonValueKind.Array)
+        {
+            var contentLines = contentProp
+                .EnumerateArray()
+                .Where(static line => line.ValueKind == JsonValueKind.String)
+                .Select(static line => line.GetString())
+                .Where(static line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
+            if (contentLines.Count > 0)
+            {
+                return string.Join(Environment.NewLine, contentLines);
+            }
+        }
+
+        return null;
+    }
+
     private string BuildPrompt(IReadOnlyList<QueuedInput> inputs)
     {
         var sb = new StringBuilder();
-
-        if (!_systemPromptApplied && !string.IsNullOrWhiteSpace(SystemPrompt))
-        {
-            _ = sb.AppendLine(SystemPrompt);
-            _ = sb.AppendLine();
-            _systemPromptApplied = true;
-        }
 
         foreach (var input in inputs)
         {
@@ -932,7 +1666,6 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         if (metadata?.Properties?.TryGetValue(CodexThreadIdProperty, out var value) == true)
         {
             _codexThreadId = value?.ToString();
-            _systemPromptApplied = !string.IsNullOrWhiteSpace(_codexThreadId);
         }
 
         return recovered;

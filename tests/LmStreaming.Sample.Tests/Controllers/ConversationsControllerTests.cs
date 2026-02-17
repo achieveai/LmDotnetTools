@@ -68,6 +68,35 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task SwitchMode_ReturnsOk_WhenRunStateIsStale()
+    {
+        await using var pool = CreatePool();
+        var modeStore = new Mock<IChatModeStore>();
+        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SystemChatModes.GetById("math-helper"));
+
+        var threadId = "thread-stale";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.CurrentRunId = "run-stale";
+        agent.IsRunning = false;
+
+        var controller = new ConversationsController(
+            Mock.Of<IConversationStore>(),
+            pool,
+            modeStore.Object,
+            NullLogger<ConversationsController>.Instance);
+
+        var result = await controller.SwitchMode(
+            threadId,
+            new SwitchModeRequest { ModeId = "math-helper" },
+            CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        pool.GetAgentMode(threadId)!.Id.Should().Be("math-helper");
+    }
+
+    [Fact]
     public async Task SwitchMode_ReturnsNotFound_WhenModeDoesNotExist()
     {
         await using var pool = CreatePool();

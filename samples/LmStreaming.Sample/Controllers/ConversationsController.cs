@@ -140,12 +140,17 @@ public class ConversationsController(
             return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
         }
 
-        if (agentPool.IsRunInProgress(threadId))
+        var runState = agentPool.GetRunStateInfo(threadId);
+        if (runState.IsInProgress)
         {
             logger.LogWarning(
-                "Blocked mode switch for thread {ThreadId} to mode {ModeId} because a run is in progress",
+                "Blocked mode switch for thread {ThreadId} to mode {ModeId} because a run is in progress. CurrentRunId={CurrentRunId}, AgentIsRunning={AgentIsRunning}, RunTaskCompleted={RunTaskCompleted}, IsStale={IsStale}",
                 threadId,
-                request.ModeId);
+                request.ModeId,
+                runState.CurrentRunId,
+                runState.AgentIsRunning,
+                runState.RunTaskCompleted,
+                runState.IsStale);
             return Conflict(
                 new
                 {

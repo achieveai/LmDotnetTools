@@ -1,4 +1,6 @@
 using System.Text;
+using System.Net;
+using System.Net.Sockets;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
@@ -95,7 +97,8 @@ try
     });
 
     var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
-    var codexMcpPort = GetCodexMcpPort();
+    var codexMcpPort = ResolveCodexMcpPort();
+    Environment.SetEnvironmentVariable("CODEX_MCP_PORT_EFFECTIVE", codexMcpPort.ToString());
     var codexMcpEndpointUrl = $"http://localhost:{codexMcpPort}/mcp";
 
     // Register the FunctionRegistry with sample tools
@@ -166,6 +169,7 @@ try
                     return CreateCodexAgentLoop(
                         threadId,
                         mode,
+                        functionRegistry,
                         requestResponseDumpFileName,
                         conversationStore,
                         loggerFactory,
@@ -469,12 +473,19 @@ public partial class Program
     private static CodexAgentLoop CreateCodexAgentLoop(
         string threadId,
         ChatMode mode,
+        FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
         string mcpEndpointUrl)
     {
         var enabledTools = mode.EnabledTools;
+        var codexOptions = CreateCodexOptions(requestResponseDumpFileName, threadId);
+        if (enabledTools is { Count: > 0 } && !enabledTools.Contains("web_search", StringComparer.OrdinalIgnoreCase))
+        {
+            codexOptions = codexOptions with { WebSearchMode = "disabled" };
+        }
+
         var mcpServers = new Dictionary<string, CodexMcpServerConfig>
         {
             ["sample_tools"] = new CodexMcpServerConfig
@@ -486,8 +497,10 @@ public partial class Program
         };
 
         return new CodexAgentLoop(
-            CreateCodexOptions(),
+            codexOptions,
             mcpServers,
+            functionRegistry,
+            enabledTools,
             threadId,
             systemPrompt: mode.SystemPrompt,
             defaultOptions: new GenerateReplyOptions
@@ -501,14 +514,30 @@ public partial class Program
             loggerFactory: loggerFactory);
     }
 
-    private static CodexSdkOptions CreateCodexOptions()
+    private static CodexSdkOptions CreateCodexOptions(string? requestResponseDumpFileName, string threadId)
     {
+        var codexCliPath = Environment.GetEnvironmentVariable("CODEX_CLI_PATH") ?? "codex";
+        var codexCliMinVersion = Environment.GetEnvironmentVariable("CODEX_CLI_MIN_VERSION") ?? "0.101.0";
         var apiKey = Environment.GetEnvironmentVariable("CODEX_API_KEY");
         var webSearchMode = Environment.GetEnvironmentVariable("CODEX_WEB_SEARCH_MODE") ?? "disabled";
         var sandboxMode = Environment.GetEnvironmentVariable("CODEX_SANDBOX_MODE") ?? "workspace-write";
         var approvalPolicy = Environment.GetEnvironmentVariable("CODEX_APPROVAL_POLICY") ?? "on-request";
         var baseUrl = Environment.GetEnvironmentVariable("CODEX_BASE_URL");
         var model = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex";
+        var baseInstructions = Environment.GetEnvironmentVariable("CODEX_BASE_INSTRUCTIONS");
+        var developerInstructions = Environment.GetEnvironmentVariable("CODEX_DEVELOPER_INSTRUCTIONS");
+        var modelInstructionsFile = Environment.GetEnvironmentVariable("CODEX_MODEL_INSTRUCTIONS_FILE");
+        var toolBridgeModeRaw = Environment.GetEnvironmentVariable("CODEX_TOOL_BRIDGE_MODE") ?? "hybrid";
+        var exposeInternalToolsAsToolMessages = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_EXPOSE_INTERNAL_TOOLS_AS_TOOL_MESSAGES"),
+            out var parsedExposeInternalToolsAsToolMessages)
+            ? parsedExposeInternalToolsAsToolMessages
+            : true;
+        var emitLegacyInternalToolReasoningSummaries = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_EMIT_LEGACY_INTERNAL_TOOL_REASONING_SUMMARIES"),
+            out var parsedEmitLegacyInternalToolReasoningSummaries)
+            ? parsedEmitLegacyInternalToolReasoningSummaries
+            : false;
         var networkEnabled = bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_NETWORK_ACCESS_ENABLED"),
             out var parsedNetworkEnabled)
@@ -530,9 +559,59 @@ public partial class Program
             out var parsedChunkSize)
             ? parsedChunkSize
             : 28;
+        var modelInstructionsThresholdChars = int.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_MODEL_INSTRUCTIONS_THRESHOLD_CHARS"),
+            out var parsedModelInstructionsThresholdChars)
+            ? parsedModelInstructionsThresholdChars
+            : 8000;
+        var appServerStartupTimeoutMs = int.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_APP_SERVER_STARTUP_TIMEOUT_MS"),
+            out var parsedAppServerStartupTimeoutMs)
+            ? parsedAppServerStartupTimeoutMs
+            : 30000;
+        var turnCompletionTimeoutMs = int.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_TURN_COMPLETION_TIMEOUT_MS"),
+            out var parsedTurnCompletionTimeoutMs)
+            ? parsedTurnCompletionTimeoutMs
+            : 120000;
+        var turnInterruptGracePeriodMs = int.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_TURN_INTERRUPT_GRACE_PERIOD_MS"),
+            out var parsedTurnInterruptGracePeriodMs)
+            ? parsedTurnInterruptGracePeriodMs
+            : 5000;
+        var rpcTraceEnabledFromEnv = bool.TryParse(
+            Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_ENABLED"),
+            out var parsedRpcTraceEnabled)
+            && parsedRpcTraceEnabled;
+        var rpcTraceFileFromEnv = Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_FILE");
+
+        var toolBridgeMode = Enum.TryParse<CodexToolBridgeMode>(toolBridgeModeRaw, ignoreCase: true, out var parsedToolBridgeMode)
+            ? parsedToolBridgeMode
+            : CodexToolBridgeMode.Hybrid;
+
+        var sessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            ? Path.GetFileName(requestResponseDumpFileName)
+            : $"{threadId}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}";
+        var traceFilePath = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            ? $"{requestResponseDumpFileName}.codex.rpc.jsonl"
+            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv)
+                ? null
+                : rpcTraceFileFromEnv;
+        var enableRpcTrace = rpcTraceEnabledFromEnv || !string.IsNullOrWhiteSpace(requestResponseDumpFileName);
+        if (enableRpcTrace && string.IsNullOrWhiteSpace(traceFilePath))
+        {
+            var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(logsDir);
+            traceFilePath = Path.Combine(logsDir, $"codex-rpc-{sessionId}.jsonl");
+        }
 
         return new CodexSdkOptions
         {
+            CodexCliPath = codexCliPath,
+            CodexCliMinVersion = codexCliMinVersion,
+            AppServerStartupTimeoutMs = appServerStartupTimeoutMs,
+            TurnCompletionTimeoutMs = turnCompletionTimeoutMs,
+            TurnInterruptGracePeriodMs = turnInterruptGracePeriodMs,
             Model = model,
             ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
             BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? null : baseUrl,
@@ -541,8 +620,18 @@ public partial class Program
             ApprovalPolicy = approvalPolicy,
             NetworkAccessEnabled = networkEnabled,
             SkipGitRepoCheck = skipGitRepoCheck,
+            BaseInstructions = string.IsNullOrWhiteSpace(baseInstructions) ? null : baseInstructions,
+            DeveloperInstructions = string.IsNullOrWhiteSpace(developerInstructions) ? null : developerInstructions,
+            ModelInstructionsFile = string.IsNullOrWhiteSpace(modelInstructionsFile) ? null : modelInstructionsFile,
+            UseModelInstructionsFileThresholdChars = modelInstructionsThresholdChars,
+            ToolBridgeMode = toolBridgeMode,
+            ExposeCodexInternalToolsAsToolMessages = exposeInternalToolsAsToolMessages,
+            EmitLegacyInternalToolReasoningSummaries = emitLegacyInternalToolReasoningSummaries,
             EmitSyntheticMessageUpdates = emitSyntheticUpdates,
             SyntheticMessageUpdateChunkChars = syntheticChunkSize,
+            EnableRpcTrace = enableRpcTrace,
+            RpcTraceFilePath = traceFilePath,
+            CodexSessionId = sessionId,
             ProviderMode = "codex",
             Provider = "codex",
         };
@@ -573,16 +662,61 @@ public partial class Program
         };
     }
 
-    private static int GetCodexMcpPort()
+    private static int ResolveCodexMcpPort()
     {
         if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
             && port > 0
             && port <= 65535)
         {
-            return port;
+            if (IsPortAvailable(port))
+            {
+                return port;
+            }
+
+            var fallbackPort = FindFreeTcpPort();
+            Log.Warning(
+                "Configured CODEX_MCP_PORT {ConfiguredPort} is already in use. Falling back to port {FallbackPort}.",
+                port,
+                fallbackPort);
+            return fallbackPort;
         }
 
-        return 39200;
+        const int defaultPort = 39200;
+        if (IsPortAvailable(defaultPort))
+        {
+            return defaultPort;
+        }
+
+        var fallback = FindFreeTcpPort();
+        Log.Warning(
+            "Default CODEX_MCP_PORT {DefaultPort} is already in use. Falling back to port {FallbackPort}.",
+            defaultPort,
+            fallback);
+        return fallback;
+    }
+
+    private static bool IsPortAvailable(int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    private static int FindFreeTcpPort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var assignedPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return assignedPort;
     }
 
     /// <summary>

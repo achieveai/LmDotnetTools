@@ -1,12 +1,23 @@
 namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 
+public enum CodexToolBridgeMode
+{
+    Mcp,
+    Dynamic,
+    Hybrid,
+}
+
 public record CodexSdkOptions
 {
-    public string? NodeJsPath { get; init; }
+    public string CodexCliPath { get; init; } = "codex";
 
-    public string? NpmPath { get; init; }
+    public string CodexCliMinVersion { get; init; } = "0.101.0";
 
-    public string? BridgeScriptPath { get; init; }
+    public int AppServerStartupTimeoutMs { get; init; } = 30_000;
+
+    public int TurnCompletionTimeoutMs { get; init; } = 120_000;
+
+    public int TurnInterruptGracePeriodMs { get; init; } = 5_000;
 
     public string Model { get; init; } = "gpt-5.3-codex";
 
@@ -26,9 +37,27 @@ public record CodexSdkOptions
 
     public string? WorkingDirectory { get; init; }
 
-    public int ProcessTimeoutMs { get; init; } = 600_000;
+    public string? BaseInstructions { get; init; }
 
-    public bool AutoInstallBridgeDependencies { get; init; } = true;
+    public string? DeveloperInstructions { get; init; }
+
+    public string? ModelInstructionsFile { get; init; }
+
+    public int UseModelInstructionsFileThresholdChars { get; init; } = 8_000;
+
+    public CodexToolBridgeMode ToolBridgeMode { get; init; } = CodexToolBridgeMode.Hybrid;
+
+    public bool EnableRpcTrace { get; init; }
+
+    public string? RpcTraceFilePath { get; init; }
+
+    public string? CodexSessionId { get; init; }
+
+    public bool ExposeCodexInternalToolsAsToolMessages { get; init; } = true;
+
+    public bool EmitLegacyInternalToolReasoningSummaries { get; init; } = false;
+
+    public int ProcessTimeoutMs { get; init; } = 600_000;
 
     public string Provider { get; init; } = "codex";
 

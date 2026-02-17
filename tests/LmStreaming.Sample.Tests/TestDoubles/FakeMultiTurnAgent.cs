@@ -47,8 +47,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
     public Task RunAsync(CancellationToken ct = default)
     {
-        _ = ct;
-        return Task.CompletedTask;
+        return Task.Delay(Timeout.InfiniteTimeSpan, ct);
     }
 
     public Task StopAsync(TimeSpan? timeout = null)
