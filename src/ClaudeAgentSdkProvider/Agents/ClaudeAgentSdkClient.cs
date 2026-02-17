@@ -953,7 +953,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         if (!string.IsNullOrEmpty(request.AllowedTools))
         {
-            args.Add($"--allowedTools {request.AllowedTools}");
+            // Use --tools to restrict which built-in tools are available to the model.
+            // Note: --allowedTools only controls permission bypass, not tool availability.
+            args.Add($"--tools \"{request.AllowedTools}\"");
         }
 
         if (request.McpServers != null && request.McpServers.Count > 0)

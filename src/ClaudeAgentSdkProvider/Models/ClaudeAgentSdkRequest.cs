@@ -31,7 +31,8 @@ public record ClaudeAgentSdkRequest
     public string? SessionId { get; init; }
 
     /// <summary>
-    ///     Comma-separated list of allowed tools
+    ///     Comma-separated list of built-in tools available to the agent.
+    ///     Passed as the --tools CLI flag to restrict which tools the model can see and use.
     /// </summary>
     public string? AllowedTools { get; init; }
 
