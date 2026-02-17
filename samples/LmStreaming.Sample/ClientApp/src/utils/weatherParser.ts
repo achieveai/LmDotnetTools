@@ -15,36 +15,86 @@ export interface WeatherData {
  * Parse weather data from a tool result JSON string
  */
 export function parseWeatherData(resultJson: string): WeatherData | null {
-  try {
-    let data = resultJson;
-    
-    // Handle double-encoded JSON (common from backend)
-    // The backend may send JSON as a quoted string
-    if (resultJson.startsWith('"') && resultJson.endsWith('"')) {
-      // First parse to unwrap the outer quotes and handle escape sequences
-      data = JSON.parse(resultJson);
+  function parseJsonIfPossible(value: unknown): unknown {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return value;
     }
-    
-    // Now parse the actual JSON data
-    const parsed = JSON.parse(data);
-    
-    // Validate required fields
-    if (!parsed.location || typeof parsed.temperature !== 'number' || !parsed.condition) {
+  }
+
+  function findWeatherObject(value: unknown, depth = 0): Record<string, unknown> | null {
+    if (depth > 6 || value == null) return null;
+
+    const parsedValue = parseJsonIfPossible(value);
+
+    if (Array.isArray(parsedValue)) {
+      for (const entry of parsedValue) {
+        const found = findWeatherObject(entry, depth + 1);
+        if (found) return found;
+      }
       return null;
     }
-    
+
+    if (typeof parsedValue === 'string') {
+      // Continue unwrapping double-encoded JSON strings.
+      if (parsedValue === value) {
+        return null;
+      }
+      return findWeatherObject(parsedValue, depth + 1);
+    }
+
+    if (typeof parsedValue !== 'object') {
+      return null;
+    }
+
+    const obj = parsedValue as Record<string, unknown>;
+    if (
+      typeof obj.location === 'string'
+      && typeof obj.temperature === 'number'
+      && typeof obj.condition === 'string'
+    ) {
+      return obj;
+    }
+
+    // MCP-style shape: {"content":[{"type":"text","text":"\"{...}\""}], ...}
+    if (Array.isArray(obj.content)) {
+      const fromContent = findWeatherObject(obj.content, depth + 1);
+      if (fromContent) return fromContent;
+    }
+
+    if (obj.structured_content != null) {
+      const fromStructured = findWeatherObject(obj.structured_content, depth + 1);
+      if (fromStructured) return fromStructured;
+    }
+
+    if (obj.text != null) {
+      const fromText = findWeatherObject(obj.text, depth + 1);
+      if (fromText) return fromText;
+    }
+
+    return null;
+  }
+
+  try {
+    const parsed = findWeatherObject(resultJson);
+    if (!parsed) {
+      return null;
+    }
+
     return {
-      location: parsed.location,
-      temperature: parsed.temperature,
-      temperatureUnit: parsed.temperatureUnit || 'F',
-      condition: parsed.condition,
-      humidity: parsed.humidity,
-      windSpeed: parsed.windSpeed,
-      windUnit: parsed.windUnit,
+      location: String(parsed.location),
+      temperature: parsed.temperature as number,
+      temperatureUnit: typeof parsed.temperatureUnit === 'string' ? parsed.temperatureUnit : 'F',
+      condition: String(parsed.condition),
+      humidity: typeof parsed.humidity === 'number' ? parsed.humidity : undefined,
+      windSpeed: typeof parsed.windSpeed === 'number' ? parsed.windSpeed : undefined,
+      windUnit: typeof parsed.windUnit === 'string' ? parsed.windUnit : undefined,
     };
-  } catch (error) {
-    // Log error for debugging (optional)
-    // console.error('Failed to parse weather data:', error);
+  } catch {
     return null;
   }
 }
@@ -109,4 +159,3 @@ export function getRainForecast(condition: string, humidity?: number): string {
   
   return condition;
 }
-

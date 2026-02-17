@@ -76,7 +76,10 @@ public class CodexAgentLoopTests
         messages.OfType<ToolCallMessage>().Should().ContainSingle(m =>
             m.FunctionName == "calculate" && m.ExecutionTarget == ExecutionTarget.ProviderServer);
         messages.OfType<ToolCallResultMessage>().Should().ContainSingle(m =>
-            m.ToolCallId == "tool_1" && !m.IsError && m.ExecutionTarget == ExecutionTarget.ProviderServer);
+            m.ToolCallId == "tool_1"
+            && !m.IsError
+            && m.ExecutionTarget == ExecutionTarget.ProviderServer
+            && m.Result == "10");
         messages.OfType<ReasoningUpdateMessage>().Should().ContainSingle();
         messages.OfType<TextMessage>().Should().ContainSingle(m => m.Text == "The result is 10.");
         messages.OfType<UsageMessage>().Should().ContainSingle();

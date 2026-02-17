@@ -684,7 +684,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         var completionOrderIdx = GetOrCreateMessageOrderIdx(toolMessageKey);
 
         var resultString = itemElement.TryGetProperty("result", out var resultProp)
-            ? resultProp.GetRawText()
+            ? ExtractCanonicalToolResult(resultProp)
             : itemElement.TryGetProperty("error", out var errProp)
                 ? errProp.GetRawText()
                 : "{}";
@@ -791,6 +791,36 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         }
 
         return null;
+    }
+
+    private static string ExtractCanonicalToolResult(JsonElement resultProp)
+    {
+        if (resultProp.ValueKind == JsonValueKind.String)
+        {
+            return resultProp.GetString() ?? string.Empty;
+        }
+
+        // Codex MCP tool results are often wrapped as:
+        // {"content":[{"type":"text","text":"..."}], "structured_content": ...}
+        if (resultProp.ValueKind == JsonValueKind.Object
+            && resultProp.TryGetProperty("content", out var contentProp)
+            && contentProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in contentProp.EnumerateArray())
+            {
+                if (entry.ValueKind == JsonValueKind.Object
+                    && entry.TryGetProperty("type", out var typeProp)
+                    && typeProp.ValueKind == JsonValueKind.String
+                    && string.Equals(typeProp.GetString(), "text", StringComparison.Ordinal)
+                    && entry.TryGetProperty("text", out var textProp)
+                    && textProp.ValueKind == JsonValueKind.String)
+                {
+                    return textProp.GetString() ?? string.Empty;
+                }
+            }
+        }
+
+        return resultProp.GetRawText();
     }
 
     private static string BuildSummary(string itemType, JsonElement item)
