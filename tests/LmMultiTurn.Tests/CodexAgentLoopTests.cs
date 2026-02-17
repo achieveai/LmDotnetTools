@@ -6,14 +6,18 @@ using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace LmMultiTurn.Tests;
 
-public class CodexAgentLoopTests
+public class CodexAgentLoopTests : LoggingTestBase
 {
+    public CodexAgentLoopTests(ITestOutputHelper output) : base(output) { }
     [Fact]
     public async Task ExecuteRunAsync_MapsCodexEvents_ToMessages()
     {
@@ -59,7 +63,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-1",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -127,7 +131,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-internal-1",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -190,7 +194,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-internal-2",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -252,7 +256,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-2",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -307,7 +311,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-3",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -358,7 +362,7 @@ public class CodexAgentLoopTests
             threadId: "thread-4",
             systemPrompt: "System instructions should go to developerInstructions",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -404,7 +408,7 @@ public class CodexAgentLoopTests
                          threadId: "thread-5",
                          systemPrompt: "this is a long system prompt exceeding threshold",
                          clientFactory: (_, _) => fakeClient,
-                         logger: NullLogger<CodexAgentLoop>.Instance))
+                         logger: LoggerFactory.CreateLogger<CodexAgentLoop>()))
         {
             using var cts = new CancellationTokenSource();
             _ = loop.RunAsync(cts.Token);
@@ -498,7 +502,7 @@ public class CodexAgentLoopTests
             enabledTools: null,
             threadId: "thread-6",
             clientFactory: (_, _) => fakeClient,
-            logger: NullLogger<CodexAgentLoop>.Instance);
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
 
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -522,6 +526,56 @@ public class CodexAgentLoopTests
             && m.Usage.CompletionTokens == 2
             && m.Usage.InputTokenDetails!.CachedTokens == 1
             && m.Usage.OutputTokenDetails!.ReasoningTokens == 1);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_PersistsLatestRunId_AndCodexThreadId()
+    {
+        var fakeClient = new FakeCodexClient(
+        [
+            Event("thread.started", """{"type":"thread.started","thread_id":"codex_thread_persist_1"}"""),
+            Event("turn.completed", """
+                {
+                  "type":"turn.completed",
+                  "usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":1}
+                }
+                """),
+        ]);
+
+        var store = new InMemoryConversationStore();
+        await using var loop = new CodexAgentLoop(
+            new CodexSdkOptions(),
+            new Dictionary<string, CodexMcpServerConfig>(),
+            functionRegistry: null,
+            enabledTools: null,
+            threadId: "thread-persist-1",
+            store: store,
+            clientFactory: (_, _) => fakeClient,
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([
+            new TextMessage { Role = Role.User, Text = "hello" },
+        ]);
+
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        var runCompleted = messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
+        var metadata = await store.LoadMetadataAsync("thread-persist-1", CancellationToken.None);
+        metadata.Should().NotBeNull();
+        metadata!.CurrentRunId.Should().BeNull();
+        metadata.LatestRunId.Should().Be(runCompleted.CompletedRunId);
+        metadata.Properties.Should().NotBeNull();
+        metadata.Properties!.TryGetValue("codex_thread_id", out var codexThreadId).Should().BeTrue();
+        codexThreadId?.ToString().Should().Be("codex_thread_persist_1");
 
         await cts.CancelAsync();
     }

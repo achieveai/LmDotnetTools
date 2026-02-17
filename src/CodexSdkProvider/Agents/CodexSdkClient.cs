@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
@@ -12,8 +11,6 @@ namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 
 public sealed class CodexSdkClient : ICodexSdkClient
 {
-    private static readonly Regex VersionRegex = new(@"\b(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\b", RegexOptions.Compiled);
-
     private readonly CodexSdkOptions _options;
     private readonly ILogger<CodexSdkClient>? _logger;
     private readonly JsonSerializerOptions _json;
@@ -75,7 +72,12 @@ public sealed class CodexSdkClient : ICodexSdkClient
             _ = Interlocked.Exchange(ref _isShuttingDown, 0);
 
             var effectiveOptions = ResolveEffectiveOptions(options);
-            var codexCliVersion = await EnsureCodexCliVersionAsync(ct);
+            var timeout = TimeSpan.FromMilliseconds(Math.Max(_options.AppServerStartupTimeoutMs, 5_000));
+            var codexCliVersion = await CodexVersionChecker.EnsureCodexCliVersionAsync(
+                _options.CodexCliPath,
+                _options.CodexCliMinVersion,
+                timeout,
+                ct);
 
             var workingDirectory = effectiveOptions.WorkingDirectory
                 ?? _options.WorkingDirectory
@@ -130,7 +132,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
                     ct);
             }
 
-            CurrentCodexThreadId = ExtractThreadId(threadResponse) ?? effectiveOptions.ThreadId;
+            CurrentCodexThreadId = CodexEventParser.ExtractThreadId(threadResponse) ?? effectiveOptions.ThreadId;
             CurrentTurnId = null;
             DependencyState = "ready";
 
@@ -222,7 +224,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 BuildTurnStartParams(CurrentCodexThreadId!, input),
                 ct);
 
-            var turnId = ExtractTurnId(turnStart);
+            var turnId = CodexEventParser.ExtractTurnId(turnStart);
             if (!string.IsNullOrWhiteSpace(turnId))
             {
                 runState.SetTurnId(turnId);
@@ -234,12 +236,12 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 await TryInterruptTurnInternalAsync(transport, turnId, CancellationToken.None);
             }
 
-            var immediateStatus = ExtractTurnStatus(turnStart);
-            if (!string.IsNullOrWhiteSpace(immediateStatus) && IsTerminalTurnStatus(immediateStatus))
+            var immediateStatus = CodexEventParser.ExtractTurnStatus(turnStart);
+            if (!string.IsNullOrWhiteSpace(immediateStatus) && CodexEventParser.IsTerminalTurnStatus(immediateStatus))
             {
-                if (IsTurnFailureStatus(immediateStatus))
+                if (CodexEventParser.IsTurnFailureStatus(immediateStatus))
                 {
-                    throw new InvalidOperationException(ExtractTurnErrorMessage(turnStart) ?? "Codex turn failed.");
+                    throw new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(turnStart) ?? "Codex turn failed.");
                 }
 
                 runState.TryComplete(turnId);
@@ -421,7 +423,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         if (string.Equals(method, "thread/started", StringComparison.Ordinal)
             || string.Equals(method, "thread.started", StringComparison.Ordinal))
         {
-            var threadId = ExtractThreadId(parameters);
+            var threadId = CodexEventParser.ExtractThreadId(parameters);
             if (!string.IsNullOrWhiteSpace(threadId))
             {
                 CurrentCodexThreadId = threadId;
@@ -437,7 +439,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         if (string.Equals(method, "turn/started", StringComparison.Ordinal)
             || string.Equals(method, "turn.started", StringComparison.Ordinal))
         {
-            var turnId = ExtractTurnId(parameters);
+            var turnId = CodexEventParser.ExtractTurnId(parameters);
             if (!string.IsNullOrWhiteSpace(turnId))
             {
                 run.SetTurnId(turnId);
@@ -465,7 +467,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             return;
         }
 
-        var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
+        var eventTurnId = CodexEventParser.ExtractTurnId(parameters) ?? run.TurnId;
         if (!string.IsNullOrWhiteSpace(eventTurnId))
         {
             CurrentTurnId = eventTurnId;
@@ -483,29 +485,29 @@ public sealed class CodexSdkClient : ICodexSdkClient
         if (string.Equals(method, "turn/completed", StringComparison.Ordinal)
             || string.Equals(method, "turn.completed", StringComparison.Ordinal))
         {
-            var status = ExtractTurnStatus(parameters);
-            if (IsTurnFailureStatus(status))
+            var status = CodexEventParser.ExtractTurnStatus(parameters);
+            if (CodexEventParser.IsTurnFailureStatus(status))
             {
-                run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+                run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
             }
             else
             {
                 run.TryComplete(eventTurnId);
             }
         }
-        else if (IsTurnFailureNotification(method))
+        else if (CodexEventParser.IsTurnFailureNotification(method))
         {
-            run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
+            run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? "Codex turn failed."));
         }
         else if (string.Equals(method, "turn/updated", StringComparison.Ordinal)
                  || string.Equals(method, "turn.updated", StringComparison.Ordinal))
         {
-            var status = ExtractTurnStatus(parameters);
-            if (!string.IsNullOrWhiteSpace(status) && IsTerminalTurnStatus(status))
+            var status = CodexEventParser.ExtractTurnStatus(parameters);
+            if (!string.IsNullOrWhiteSpace(status) && CodexEventParser.IsTerminalTurnStatus(status))
             {
-                if (IsTurnFailureStatus(status))
+                if (CodexEventParser.IsTurnFailureStatus(status))
                 {
-                    run.TryFail(new InvalidOperationException(ExtractTurnErrorMessage(parameters) ?? $"Codex turn {status}."));
+                    run.TryFail(new InvalidOperationException(CodexEventParser.ExtractTurnErrorMessage(parameters) ?? $"Codex turn {status}."));
                 }
                 else
                 {
@@ -523,22 +525,22 @@ public sealed class CodexSdkClient : ICodexSdkClient
             "item/fileChange/requestApproval" => SerializeToElement(new { decision = BuildDefaultFileApprovalDecision() }),
             "item/tool/requestUserInput" => SerializeToElement(new { answers = new Dictionary<string, string>() }),
             "item/tool/call" => await HandleDynamicToolCallAsync(parameters, ct),
-            "account/chatgptAuthTokens/refresh" => CreateEmptyObject(),
+            "account/chatgptAuthTokens/refresh" => CodexEventParser.CreateEmptyObject(),
             _ => throw new InvalidOperationException($"Unsupported App Server request method '{method}'."),
         };
     }
 
     private async Task<JsonElement> HandleDynamicToolCallAsync(JsonElement? parameters, CancellationToken ct)
     {
-        var toolName = GetPropertyString(parameters, "tool") ?? string.Empty;
+        var toolName = CodexEventParser.GetPropertyString(parameters, "tool") ?? string.Empty;
         var stopwatch = Stopwatch.StartNew();
         var request = new CodexDynamicToolCallRequest
         {
-            ThreadId = GetPropertyString(parameters, "threadId"),
-            TurnId = GetPropertyString(parameters, "turnId"),
-            CallId = GetPropertyString(parameters, "callId"),
+            ThreadId = CodexEventParser.GetPropertyString(parameters, "threadId"),
+            TurnId = CodexEventParser.GetPropertyString(parameters, "turnId"),
+            CallId = CodexEventParser.GetPropertyString(parameters, "callId"),
             Tool = toolName,
-            Arguments = GetPropertyElement(parameters, "arguments") ?? CreateEmptyObject(),
+            Arguments = CodexEventParser.GetPropertyElement(parameters, "arguments") ?? CodexEventParser.CreateEmptyObject(),
         };
         EmitDynamicToolLifecycleEvent("item/started", request, null, null);
 
@@ -630,58 +632,6 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 _options.ProviderMode,
                 turnId);
         }
-    }
-
-    private async Task<string> EnsureCodexCliVersionAsync(CancellationToken ct)
-    {
-        var timeout = TimeSpan.FromMilliseconds(Math.Max(_options.AppServerStartupTimeoutMs, 5_000));
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = _options.CodexCliPath,
-            Arguments = "--version",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException(
-                $"Failed to start Codex CLI '{_options.CodexCliPath}'. Ensure it is installed and on PATH.");
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(timeout);
-
-        var stdOutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-        var stdErrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
-
-        await process.WaitForExitAsync(timeoutCts.Token);
-
-        var stdOut = await stdOutTask;
-        var stdErr = await stdErrTask;
-        var combined = string.Join(Environment.NewLine, [stdOut, stdErr]).Trim();
-
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"Codex CLI version check failed (exit={process.ExitCode}): {Truncate(combined)}");
-        }
-
-        var detectedVersion = ExtractVersion(combined);
-        if (string.IsNullOrWhiteSpace(detectedVersion))
-        {
-            throw new InvalidOperationException(
-                $"Could not parse Codex CLI version from output: {Truncate(combined)}");
-        }
-
-        if (CompareVersion(detectedVersion, _options.CodexCliMinVersion) < 0)
-        {
-            throw new InvalidOperationException(
-                $"Codex CLI version '{detectedVersion}' is below minimum required '{_options.CodexCliMinVersion}'.");
-        }
-
-        return detectedVersion;
     }
 
     private CodexBridgeInitOptions ResolveEffectiveOptions(CodexBridgeInitOptions options)
@@ -826,18 +776,18 @@ public sealed class CodexSdkClient : ICodexSdkClient
             return false;
         }
 
-        if (IsItemStartedMethod(method) || IsItemCompletedMethod(method))
+        if (CodexEventParser.IsItemStartedMethod(method) || CodexEventParser.IsItemCompletedMethod(method))
         {
-            if (!TryParseInternalToolItem(parameters, out var item, out var toolName, out var toolCallId))
+            if (!CodexEventParser.TryParseInternalToolItem(parameters, out var item, out var toolName, out var toolCallId))
             {
                 return false;
             }
 
-            var eventThreadId = ExtractThreadId(parameters) ?? CurrentCodexThreadId;
-            var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
-            var sourceMethod = IsItemStartedMethod(method) ? "item/started" : "item/completed";
+            var eventThreadId = CodexEventParser.ExtractThreadId(parameters) ?? CurrentCodexThreadId;
+            var eventTurnId = CodexEventParser.ExtractTurnId(parameters) ?? run.TurnId;
+            var sourceMethod = CodexEventParser.IsItemStartedMethod(method) ? "item/started" : "item/completed";
 
-            if (IsItemStartedMethod(method))
+            if (CodexEventParser.IsItemStartedMethod(method))
             {
                 var arguments = BuildInternalToolArguments(toolName, item, sourceMethod);
                 EmitInternalToolCall(run, toolCallId, toolName, arguments, sourceMethod, eventThreadId, eventTurnId);
@@ -862,15 +812,15 @@ public sealed class CodexSdkClient : ICodexSdkClient
             return true;
         }
 
-        if (IsWebSearchBeginMethod(method) || IsWebSearchEndMethod(method))
+        if (CodexEventParser.IsWebSearchBeginMethod(method) || CodexEventParser.IsWebSearchEndMethod(method))
         {
-            var eventPayload = GetPropertyElement(parameters, "msg")
-                               ?? GetPropertyElement(parameters, "event")
+            var eventPayload = CodexEventParser.GetPropertyElement(parameters, "msg")
+                               ?? CodexEventParser.GetPropertyElement(parameters, "event")
                                ?? parameters?.Clone()
-                               ?? CreateEmptyObject();
-            var toolCallId = GetPropertyString(eventPayload, "call_id")
-                             ?? GetPropertyString(eventPayload, "callId")
-                             ?? GetPropertyString(eventPayload, "id");
+                               ?? CodexEventParser.CreateEmptyObject();
+            var toolCallId = CodexEventParser.GetPropertyString(eventPayload, "call_id")
+                             ?? CodexEventParser.GetPropertyString(eventPayload, "callId")
+                             ?? CodexEventParser.GetPropertyString(eventPayload, "id");
             if (string.IsNullOrWhiteSpace(toolCallId))
             {
                 _logger?.LogWarning(
@@ -885,10 +835,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
             }
 
             const string toolName = "web_search";
-            var eventThreadId = ExtractThreadId(parameters) ?? CurrentCodexThreadId;
-            var eventTurnId = ExtractTurnId(parameters) ?? run.TurnId;
+            var eventThreadId = CodexEventParser.ExtractThreadId(parameters) ?? CurrentCodexThreadId;
+            var eventTurnId = CodexEventParser.ExtractTurnId(parameters) ?? run.TurnId;
 
-            if (IsWebSearchBeginMethod(method))
+            if (CodexEventParser.IsWebSearchBeginMethod(method))
             {
                 var arguments = BuildInternalToolArguments(toolName, eventPayload, "codex/event/web_search_begin");
                 EmitInternalToolCall(
@@ -1166,10 +1116,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private InternalToolCompletion BuildInternalToolCompletion(string toolName, JsonElement payload, string sourceMethod)
     {
-        var hasError = TryGetProperty(payload, "error", out var errorElement)
+        var hasError = CodexEventParser.TryGetProperty(payload, "error", out var errorElement)
                        && errorElement.ValueKind != JsonValueKind.Null
                        && errorElement.ValueKind != JsonValueKind.Undefined;
-        var status = NormalizeInternalToolStatus(GetPropertyString(payload, "status"), hasError);
+        var status = CodexEventParser.NormalizeInternalToolStatus(CodexEventParser.GetPropertyString(payload, "status"), hasError);
 
         var result = new Dictionary<string, object?>
         {
@@ -1177,13 +1127,13 @@ public sealed class CodexSdkClient : ICodexSdkClient
             ["source"] = sourceMethod,
         };
 
-        AddToolSpecificFields(result, toolName, payload, isResultPayload: true);
+        CodexEventParser.AddToolSpecificFields(result, toolName, payload, isResultPayload: true);
         result["raw"] = payload;
 
         JsonElement? error = null;
         if (!string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
         {
-            var message = ExtractErrorMessage(payload)
+            var message = CodexEventParser.ExtractErrorMessage(payload)
                           ?? $"Codex internal tool '{toolName}' completed with status '{status}'.";
             var errorObject = new Dictionary<string, object?>
             {
@@ -1213,257 +1163,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
             ["source"] = sourceMethod,
         };
 
-        AddToolSpecificFields(arguments, toolName, payload, isResultPayload: false);
+        CodexEventParser.AddToolSpecificFields(arguments, toolName, payload, isResultPayload: false);
         arguments["raw"] = payload;
 
         return SerializeToElement(arguments);
-    }
-
-    private static void AddToolSpecificFields(
-        Dictionary<string, object?> destination,
-        string toolName,
-        JsonElement payload,
-        bool isResultPayload)
-    {
-        switch (toolName)
-        {
-            case "web_search":
-                AddStringField(destination, payload, "query");
-                AddStringField(destination, payload, "action");
-                AddStringField(destination, payload, "target_url", "target_url", "targetUrl", "url");
-                if (isResultPayload)
-                {
-                    AddStringField(destination, payload, "opened_url", "opened_url", "openedUrl", "url");
-                    AddRawField(destination, payload, "matches", "matches", "resultMatches");
-                    AddRawField(destination, payload, "snippets", "snippets", "results");
-                }
-                else
-                {
-                    AddRawField(destination, payload, "filters", "filters");
-                }
-
-                break;
-
-            case "command_execution":
-                AddStringField(destination, payload, "command");
-                AddStringField(destination, payload, "cwd", "cwd", "workingDirectory");
-                AddIntField(destination, payload, "timeout_ms", "timeout_ms", "timeoutMs");
-                if (isResultPayload)
-                {
-                    AddIntField(destination, payload, "exit_code", "exit_code", "exitCode");
-                    AddStringField(destination, payload, "stdout_excerpt", "stdout_excerpt", "stdout", "output");
-                    AddStringField(destination, payload, "stderr_excerpt", "stderr_excerpt", "stderr");
-                }
-
-                break;
-
-            case "file_change":
-                AddStringField(destination, payload, "decision", "decision", "action");
-                AddRawField(destination, payload, "changes", "changes", "patch", "files", "paths");
-                break;
-
-            case "todo_list":
-                AddStringField(destination, payload, "operation", "operation", "action");
-                AddRawField(destination, payload, "items", "items", "todos");
-                break;
-        }
-    }
-
-    private static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
-    {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
-        foreach (var candidate in names)
-        {
-            if (TryGetProperty(payload, candidate, out var value) && value.ValueKind == JsonValueKind.String)
-            {
-                destination[targetName] = value.GetString();
-                return;
-            }
-        }
-    }
-
-    private static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
-    {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
-        foreach (var candidate in names)
-        {
-            if (!TryGetProperty(payload, candidate, out var value))
-            {
-                continue;
-            }
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
-            {
-                destination[targetName] = intValue;
-                return;
-            }
-
-            if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out intValue))
-            {
-                destination[targetName] = intValue;
-                return;
-            }
-        }
-    }
-
-    private static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
-    {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
-        foreach (var candidate in names)
-        {
-            if (TryGetProperty(payload, candidate, out var value))
-            {
-                destination[targetName] = value;
-                return;
-            }
-        }
-    }
-
-    private static bool TryParseInternalToolItem(
-        JsonElement? parameters,
-        out JsonElement item,
-        out string toolName,
-        out string toolCallId)
-    {
-        item = default;
-        toolName = string.Empty;
-        toolCallId = string.Empty;
-
-        if (!parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (!TryGetProperty(parameters.Value, "item", out var itemElement)
-            || itemElement.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (!TryGetProperty(itemElement, "type", out var typeElement)
-            || typeElement.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        var normalizedTool = NormalizeInternalToolName(typeElement.GetString());
-        if (normalizedTool == null)
-        {
-            return false;
-        }
-
-        var callId = GetPropertyString(itemElement, "id")
-                     ?? GetPropertyString(itemElement, "call_id")
-                     ?? GetPropertyString(itemElement, "callId");
-        if (string.IsNullOrWhiteSpace(callId))
-        {
-            return false;
-        }
-
-        item = itemElement.Clone();
-        toolName = normalizedTool;
-        toolCallId = callId;
-        return true;
-    }
-
-    private static string NormalizeInternalToolStatus(string? status, bool hasError)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return hasError ? "error" : "success";
-        }
-
-        return status switch
-        {
-            "completed" => hasError ? "error" : "success",
-            "success" => "success",
-            "failed" => "error",
-            "error" => "error",
-            "interrupted" => "cancelled",
-            "cancelled" => "cancelled",
-            "canceled" => "cancelled",
-            "timed_out" => "timed_out",
-            "timeout" => "timed_out",
-            _ => hasError ? "error" : "success",
-        };
-    }
-
-    private static string? NormalizeInternalToolName(string? itemType)
-    {
-        return itemType switch
-        {
-            "webSearch" => "web_search",
-            "web_search" => "web_search",
-            "commandExecution" => "command_execution",
-            "command_execution" => "command_execution",
-            "fileChange" => "file_change",
-            "file_change" => "file_change",
-            "todoList" => "todo_list",
-            "todo_list" => "todo_list",
-            _ => null,
-        };
-    }
-
-    private static bool IsItemStartedMethod(string method)
-    {
-        return string.Equals(method, "item/started", StringComparison.Ordinal)
-               || string.Equals(method, "item.started", StringComparison.Ordinal);
-    }
-
-    private static bool IsItemCompletedMethod(string method)
-    {
-        return string.Equals(method, "item/completed", StringComparison.Ordinal)
-               || string.Equals(method, "item.completed", StringComparison.Ordinal);
-    }
-
-    private static bool IsWebSearchBeginMethod(string method)
-    {
-        return string.Equals(method, "codex/event/web_search_begin", StringComparison.Ordinal)
-               || string.Equals(method, "codex.event.web_search_begin", StringComparison.Ordinal);
-    }
-
-    private static bool IsWebSearchEndMethod(string method)
-    {
-        return string.Equals(method, "codex/event/web_search_end", StringComparison.Ordinal)
-               || string.Equals(method, "codex.event.web_search_end", StringComparison.Ordinal);
-    }
-
-    private static bool TryGetProperty(JsonElement root, string propertyName, out JsonElement value)
-    {
-        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(propertyName, out value))
-        {
-            value = value.Clone();
-            return true;
-        }
-
-        value = default;
-        return false;
-    }
-
-    private static string? ExtractErrorMessage(JsonElement payload)
-    {
-        if (TryGetProperty(payload, "error", out var error))
-        {
-            if (error.ValueKind == JsonValueKind.String)
-            {
-                return error.GetString();
-            }
-
-            if (error.ValueKind == JsonValueKind.Object
-                && TryGetProperty(error, "message", out var message)
-                && message.ValueKind == JsonValueKind.String)
-            {
-                return message.GetString();
-            }
-        }
-
-        if (TryGetProperty(payload, "message", out var fallbackMessage)
-            && fallbackMessage.ValueKind == JsonValueKind.String)
-        {
-            return fallbackMessage.GetString();
-        }
-
-        return null;
     }
 
     private bool ShouldForwardToActiveRun(string method, JsonElement? parameters, ActiveRunState run)
@@ -1475,7 +1178,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             return true;
         }
 
-        var eventTurnId = ExtractTurnId(parameters);
+        var eventTurnId = CodexEventParser.ExtractTurnId(parameters);
         if (string.IsNullOrWhiteSpace(eventTurnId))
         {
             return true;
@@ -1630,230 +1333,6 @@ public sealed class CodexSdkClient : ICodexSdkClient
         return document.RootElement.Clone();
     }
 
-    private static string? ExtractVersion(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        var match = VersionRegex.Match(value);
-        if (!match.Success)
-        {
-            return null;
-        }
-
-        return $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
-    }
-
-    private static int CompareVersion(string left, string right)
-    {
-        var leftParts = ParseVersion(left);
-        var rightParts = ParseVersion(right);
-
-        for (var index = 0; index < 3; index++)
-        {
-            var compare = leftParts[index].CompareTo(rightParts[index]);
-            if (compare != 0)
-            {
-                return compare;
-            }
-        }
-
-        return 0;
-    }
-
-    private static int[] ParseVersion(string version)
-    {
-        var match = VersionRegex.Match(version ?? string.Empty);
-        if (!match.Success)
-        {
-            throw new InvalidOperationException($"Invalid version string '{version}'.");
-        }
-
-        return
-        [
-            int.Parse(match.Groups["major"].Value),
-            int.Parse(match.Groups["minor"].Value),
-            int.Parse(match.Groups["patch"].Value),
-        ];
-    }
-
-    private static bool IsInProgress(string status)
-    {
-        return string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "inProgress", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "inprogress", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTerminalTurnStatus(string status)
-    {
-        return !IsInProgress(status);
-    }
-
-    private static bool IsTurnFailureStatus(string? status)
-    {
-        return string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "interrupted", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTurnFailureNotification(string method)
-    {
-        return string.Equals(method, "turn/failed", StringComparison.Ordinal)
-               || string.Equals(method, "turn.failed", StringComparison.Ordinal)
-               || string.Equals(method, "turn/interrupted", StringComparison.Ordinal)
-               || string.Equals(method, "turn.interrupted", StringComparison.Ordinal)
-               || string.Equals(method, "turn/cancelled", StringComparison.Ordinal)
-               || string.Equals(method, "turn.cancelled", StringComparison.Ordinal)
-               || string.Equals(method, "turn/canceled", StringComparison.Ordinal)
-               || string.Equals(method, "turn.canceled", StringComparison.Ordinal);
-    }
-
-    private static string? ExtractThreadId(JsonElement? root)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("threadId", out var threadIdProp)
-            && threadIdProp.ValueKind == JsonValueKind.String)
-        {
-            return threadIdProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("thread_id", out var threadIdSnake)
-            && threadIdSnake.ValueKind == JsonValueKind.String)
-        {
-            return threadIdSnake.GetString();
-        }
-
-        if (root.Value.TryGetProperty("thread", out var threadProp)
-            && threadProp.ValueKind == JsonValueKind.Object
-            && threadProp.TryGetProperty("id", out var idProp)
-            && idProp.ValueKind == JsonValueKind.String)
-        {
-            return idProp.GetString();
-        }
-
-        return null;
-    }
-
-    private static string? ExtractTurnId(JsonElement? root)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("turnId", out var turnIdProp)
-            && turnIdProp.ValueKind == JsonValueKind.String)
-        {
-            return turnIdProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn_id", out var turnIdSnake)
-            && turnIdSnake.ValueKind == JsonValueKind.String)
-        {
-            return turnIdSnake.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
-            && turnProp.ValueKind == JsonValueKind.Object
-            && turnProp.TryGetProperty("id", out var idProp)
-            && idProp.ValueKind == JsonValueKind.String)
-        {
-            return idProp.GetString();
-        }
-
-        return null;
-    }
-
-    private static string? ExtractTurnStatus(JsonElement? root)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("status", out var statusProp)
-            && statusProp.ValueKind == JsonValueKind.String)
-        {
-            return statusProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
-            && turnProp.ValueKind == JsonValueKind.Object
-            && turnProp.TryGetProperty("status", out var turnStatus)
-            && turnStatus.ValueKind == JsonValueKind.String)
-        {
-            return turnStatus.GetString();
-        }
-
-        return null;
-    }
-
-    private static string? ExtractTurnErrorMessage(JsonElement? root)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("error", out var errorProp)
-            && errorProp.ValueKind == JsonValueKind.Object
-            && errorProp.TryGetProperty("message", out var messageProp)
-            && messageProp.ValueKind == JsonValueKind.String)
-        {
-            return messageProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
-            && turnProp.ValueKind == JsonValueKind.Object
-            && turnProp.TryGetProperty("error", out var turnErrorProp)
-            && turnErrorProp.ValueKind == JsonValueKind.Object
-            && turnErrorProp.TryGetProperty("message", out var turnMessageProp)
-            && turnMessageProp.ValueKind == JsonValueKind.String)
-        {
-            return turnMessageProp.GetString();
-        }
-
-        return null;
-    }
-
-    private static string? GetPropertyString(JsonElement? root, string propertyName)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String)
-        {
-            return property.GetString();
-        }
-
-        return null;
-    }
-
-    private static JsonElement? GetPropertyElement(JsonElement? root, string propertyName)
-    {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty(propertyName, out var property))
-        {
-            return property.Clone();
-        }
-
-        return null;
-    }
-
     private static IReadOnlyList<object> NormalizeToolResponseItems(IReadOnlyList<CodexDynamicToolContentItem> items)
     {
         var normalized = new List<object>();
@@ -1980,22 +1459,6 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 },
             ],
         };
-    }
-
-    private static JsonElement CreateEmptyObject()
-    {
-        using var doc = JsonDocument.Parse("{}");
-        return doc.RootElement.Clone();
-    }
-
-    private static string Truncate(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return value.Length <= 2_000 ? value : value[..2_000];
     }
 
     private sealed class InternalToolCompletion

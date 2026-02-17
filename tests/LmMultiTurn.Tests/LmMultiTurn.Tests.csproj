@@ -27,5 +27,6 @@
     <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
 </Project>
