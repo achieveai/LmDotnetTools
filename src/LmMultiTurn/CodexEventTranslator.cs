@@ -75,18 +75,18 @@ internal sealed class CodexEventTranslator
                 return [CreateUsageMessage(eventElement, runId, generationId, NextMessageOrderIdx())];
 
             case "turn.failed":
-            {
-                var err = ExtractErrorMessage(eventElement) ?? "Codex turn failed";
-                throw new InvalidOperationException(err);
-            }
+                {
+                    var err = ExtractErrorMessage(eventElement) ?? "Codex turn failed";
+                    throw new InvalidOperationException(err);
+                }
 
             case "error":
-            {
-                var err = eventElement.TryGetProperty("message", out var msg)
-                    ? msg.GetString()
-                    : "Codex stream error";
-                throw new InvalidOperationException(err);
-            }
+                {
+                    var err = eventElement.TryGetProperty("message", out var msg)
+                        ? msg.GetString()
+                        : "Codex stream error";
+                    throw new InvalidOperationException(err);
+                }
 
             case "item.started":
             case "item.updated":
@@ -237,13 +237,9 @@ internal sealed class CodexEventTranslator
                 : string.Empty;
             var (delta, accumulated) = AppendAndDiff(existing, text);
             _agentMessageAccumulator[key] = accumulated;
-            if (string.IsNullOrEmpty(delta))
-            {
-                return [];
-            }
-
-            return
-            [
+            return string.IsNullOrEmpty(delta)
+                ? []
+                : [
                 new TextUpdateMessage
                 {
                     Role = Role.Assistant,
@@ -286,7 +282,7 @@ internal sealed class CodexEventTranslator
             }
         }
 
-        _agentMessageAccumulator.Remove(key);
+        _ = _agentMessageAccumulator.Remove(key);
 
         messages.Add(
             new TextMessage
@@ -323,13 +319,9 @@ internal sealed class CodexEventTranslator
             var existing = _reasoningAccumulator.TryGetValue(key, out var snapshot) ? snapshot : string.Empty;
             var (delta, accumulated) = AppendAndDiff(existing, text);
             _reasoningAccumulator[key] = accumulated;
-            if (string.IsNullOrEmpty(delta))
-            {
-                return [];
-            }
-
-            return
-            [
+            return string.IsNullOrEmpty(delta)
+                ? []
+                : [
                 new ReasoningUpdateMessage
                 {
                     Role = Role.Assistant,
@@ -369,7 +361,7 @@ internal sealed class CodexEventTranslator
             }
         }
 
-        _reasoningAccumulator.Remove(key);
+        _ = _reasoningAccumulator.Remove(key);
         messages.Add(
             new ReasoningMessage
             {
@@ -760,15 +752,12 @@ internal sealed class CodexEventTranslator
 
     public static string? ExtractErrorMessage(JsonElement eventElement)
     {
-        if (eventElement.TryGetProperty("error", out var errorObj)
+        return eventElement.TryGetProperty("error", out var errorObj)
             && errorObj.ValueKind == JsonValueKind.Object
             && errorObj.TryGetProperty("message", out var msgProp)
-            && msgProp.ValueKind == JsonValueKind.String)
-        {
-            return msgProp.GetString();
-        }
-
-        return null;
+            && msgProp.ValueKind == JsonValueKind.String
+            ? msgProp.GetString()
+            : null;
     }
 
     public static string ExtractCanonicalToolResult(JsonElement resultProp)
@@ -839,52 +828,34 @@ internal sealed class CodexEventTranslator
 
     public static string? ExtractThreadId(JsonElement eventElement, string? fallbackThreadId)
     {
-        if (eventElement.TryGetProperty("thread_id", out var threadIdProp)
-            && threadIdProp.ValueKind == JsonValueKind.String)
-        {
-            return threadIdProp.GetString() ?? fallbackThreadId;
-        }
-
-        if (eventElement.TryGetProperty("threadId", out var threadIdCamel)
-            && threadIdCamel.ValueKind == JsonValueKind.String)
-        {
-            return threadIdCamel.GetString() ?? fallbackThreadId;
-        }
-
-        if (eventElement.TryGetProperty("thread", out var threadObj)
+        return eventElement.TryGetProperty("thread_id", out var threadIdProp)
+            && threadIdProp.ValueKind == JsonValueKind.String
+            ? threadIdProp.GetString() ?? fallbackThreadId
+            : eventElement.TryGetProperty("threadId", out var threadIdCamel)
+            && threadIdCamel.ValueKind == JsonValueKind.String
+            ? threadIdCamel.GetString() ?? fallbackThreadId
+            : eventElement.TryGetProperty("thread", out var threadObj)
             && threadObj.ValueKind == JsonValueKind.Object
             && threadObj.TryGetProperty("id", out var threadIdObj)
-            && threadIdObj.ValueKind == JsonValueKind.String)
-        {
-            return threadIdObj.GetString() ?? fallbackThreadId;
-        }
-
-        return fallbackThreadId;
+            && threadIdObj.ValueKind == JsonValueKind.String
+            ? threadIdObj.GetString() ?? fallbackThreadId
+            : fallbackThreadId;
     }
 
     public static string? ExtractTurnId(JsonElement eventElement)
     {
-        if (eventElement.TryGetProperty("turn_id", out var turnIdProp)
-            && turnIdProp.ValueKind == JsonValueKind.String)
-        {
-            return turnIdProp.GetString();
-        }
-
-        if (eventElement.TryGetProperty("turnId", out var turnIdCamel)
-            && turnIdCamel.ValueKind == JsonValueKind.String)
-        {
-            return turnIdCamel.GetString();
-        }
-
-        if (eventElement.TryGetProperty("turn", out var turnObj)
+        return eventElement.TryGetProperty("turn_id", out var turnIdProp)
+            && turnIdProp.ValueKind == JsonValueKind.String
+            ? turnIdProp.GetString()
+            : eventElement.TryGetProperty("turnId", out var turnIdCamel)
+            && turnIdCamel.ValueKind == JsonValueKind.String
+            ? turnIdCamel.GetString()
+            : eventElement.TryGetProperty("turn", out var turnObj)
             && turnObj.ValueKind == JsonValueKind.Object
             && turnObj.TryGetProperty("id", out var turnIdObj)
-            && turnIdObj.ValueKind == JsonValueKind.String)
-        {
-            return turnIdObj.GetString();
-        }
-
-        return null;
+            && turnIdObj.ValueKind == JsonValueKind.String
+            ? turnIdObj.GetString()
+            : null;
     }
 
     public static string NormalizeItemType(string? itemType)
@@ -951,17 +922,14 @@ internal sealed class CodexEventTranslator
 
     public static int GetInt32(JsonElement obj, string propertyName)
     {
-        if (!obj.TryGetProperty(propertyName, out var property))
-        {
-            return 0;
-        }
-
-        return property.ValueKind switch
-        {
-            JsonValueKind.Number => property.TryGetInt32(out var value) ? value : 0,
-            JsonValueKind.String => int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0,
-            _ => 0,
-        };
+        return !obj.TryGetProperty(propertyName, out var property)
+            ? 0
+            : property.ValueKind switch
+            {
+                JsonValueKind.Number => property.TryGetInt32(out var value) ? value : 0,
+                JsonValueKind.String => int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0,
+                _ => 0,
+            };
     }
 
     #endregion
@@ -1016,16 +984,13 @@ internal sealed class CodexEventTranslator
             return JsonSerializer.SerializeToElement(error);
         }
 
-        if (string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        return JsonSerializer.SerializeToElement(new Dictionary<string, object?>
-        {
-            ["status"] = status,
-            ["message"] = $"Codex internal tool '{toolName}' completed with status '{status}'.",
-        });
+        return string.Equals(status, "success", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+            {
+                ["status"] = status,
+                ["message"] = $"Codex internal tool '{toolName}' completed with status '{status}'.",
+            });
     }
 
     public static void AddInternalToolFields(
@@ -1075,12 +1040,14 @@ internal sealed class CodexEventTranslator
                 AddStringField(destination, itemElement, "operation", "operation", "action");
                 AddRawField(destination, itemElement, "items", "items", "todos");
                 break;
+            default:
+                break;
         }
     }
 
     public static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (payload.TryGetProperty(candidate, out var value) && value.ValueKind == JsonValueKind.String)
@@ -1093,7 +1060,7 @@ internal sealed class CodexEventTranslator
 
     public static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (!payload.TryGetProperty(candidate, out var value))
@@ -1117,7 +1084,7 @@ internal sealed class CodexEventTranslator
 
     public static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (payload.TryGetProperty(candidate, out var value))
