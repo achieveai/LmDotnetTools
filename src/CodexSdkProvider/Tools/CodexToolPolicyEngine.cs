@@ -26,12 +26,7 @@ public sealed class CodexToolPolicyEngine
 
     public bool IsBuiltInAllowed(string toolName)
     {
-        if (string.IsNullOrWhiteSpace(toolName))
-        {
-            return false;
-        }
-
-        return _enabledTools == null || _enabledTools.Contains(toolName);
+        return !string.IsNullOrWhiteSpace(toolName) && (_enabledTools == null || _enabledTools.Contains(toolName));
     }
 
     public bool IsMcpToolAllowed(string? serverName, string? toolName)
@@ -56,33 +51,18 @@ public sealed class CodexToolPolicyEngine
             return false;
         }
 
-        if (server.EnabledTools is { Count: > 0 }
-            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (server.DisabledTools is { Count: > 0 }
-            && server.DisabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
+        return server.EnabledTools is { Count: > 0 }
+            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase)
+            ? false
+            : server.DisabledTools is not
+            { Count: > 0 }
+            || !server.DisabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase);
     }
 
     public bool IsDynamicToolAllowed(string? toolName)
     {
-        if (string.IsNullOrWhiteSpace(toolName))
-        {
-            return false;
-        }
-
-        if (!_dynamicToolNames.Contains(toolName))
-        {
-            return false;
-        }
-
-        return _enabledTools == null || _enabledTools.Contains(toolName);
+        return string.IsNullOrWhiteSpace(toolName)
+            ? false
+            : _dynamicToolNames.Contains(toolName) && (_enabledTools == null || _enabledTools.Contains(toolName));
     }
 }

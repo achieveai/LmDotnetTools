@@ -97,7 +97,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             _startupOptions = effectiveOptions;
 
             var startupTimeout = TimeSpan.FromMilliseconds(_options.AppServerStartupTimeoutMs);
-            await transport.SendRequestAsync(
+            _ = await transport.SendRequestAsync(
                 "initialize",
                 new
                 {
@@ -154,7 +154,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
         finally
         {
-            _operationLock.Release();
+            _ = _operationLock.Release();
         }
     }
 
@@ -320,7 +320,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
         finally
         {
-            _operationLock.Release();
+            _ = _operationLock.Release();
         }
     }
 
@@ -611,7 +611,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
         try
         {
-            await transport.SendRequestAsync(
+            _ = await transport.SendRequestAsync(
                 "turn/interrupt",
                 new
                 {
@@ -1593,7 +1593,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             }
 
             _ = Completion.TrySetResult(_turnId);
-            _events.Writer.TryComplete();
+            _ = _events.Writer.TryComplete();
         }
 
         public void TryFail(Exception exception)
@@ -1609,7 +1609,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             }
 
             _ = Completion.TrySetException(exception);
-            _events.Writer.TryComplete();
+            _ = _events.Writer.TryComplete();
         }
     }
 }
