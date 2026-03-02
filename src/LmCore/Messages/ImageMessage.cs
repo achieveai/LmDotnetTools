@@ -269,12 +269,58 @@ public static partial class ImageMessageExtensions
         try
         {
             var bytes = Convert.FromBase64String(base64Data);
-            return BinaryData.FromBytes(bytes, mimeType);
+            var detectedMimeType = DetectImageMimeType(bytes, mimeType);
+            return BinaryData.FromBytes(bytes, detectedMimeType);
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Detects the MIME type of an image from its byte content using magic bytes.
+    /// Also normalizes non-standard MIME types (e.g. image/jpg -> image/jpeg).
+    /// </summary>
+    public static string DetectImageMimeType(byte[] bytes, string fallbackMimeType)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+
+        if (bytes.Length >= 8)
+        {
+            // PNG: 89 50 4E 47
+            if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            {
+                return "image/png";
+            }
+
+            // JPEG: FF D8 FF
+            if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+            {
+                return "image/jpeg";
+            }
+
+            // GIF: 47 49 46 38
+            if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38)
+            {
+                return "image/gif";
+            }
+
+            // WebP: 52 49 46 46 ... 57 45 42 50
+            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            {
+                return "image/webp";
+            }
+        }
+
+        // Normalize non-standard MIME types
+        if (string.Equals(fallbackMimeType, "image/jpg", StringComparison.OrdinalIgnoreCase))
+        {
+            return "image/jpeg";
+        }
+
+        return fallbackMimeType ?? "application/octet-stream";
     }
 
     // Create BinaryData with explicit mime type
