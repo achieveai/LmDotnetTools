@@ -988,10 +988,14 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             args.Add("--no-session-persistence");
         }
 
-        if (!string.IsNullOrEmpty(request.ReasoningEffort))
-        {
-            args.Add($"--reasoning-effort {request.ReasoningEffort}");
-        }
+        // NOTE: --reasoning-effort is NOT supported by claude-agent-sdk CLI (as of v0.1.55).
+        // Passing it causes "error: unknown option" and the process exits immediately.
+        // Claude's reasoning effort is controlled internally by the model, not via CLI flags.
+        // When CLI support is added, uncomment:
+        // if (!string.IsNullOrEmpty(request.ReasoningEffort))
+        // {
+        //     args.Add($"--reasoning-effort {request.ReasoningEffort}");
+        // }
 
         return string.Join(" ", args);
     }
