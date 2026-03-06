@@ -52,6 +52,10 @@ public sealed record CodexBridgeInitOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolBridgeMode { get; init; }
 
+    [JsonPropertyName("disabled_features")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? DisabledFeatures { get; init; }
+
     [JsonPropertyName("base_url")]
     public string? BaseUrl { get; init; }
 
