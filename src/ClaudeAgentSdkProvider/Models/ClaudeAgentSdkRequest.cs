@@ -70,4 +70,9 @@ public record ClaudeAgentSdkRequest
     ///     Setting sources
     /// </summary>
     public string SettingSources { get; init; } = "";
+
+    /// <summary>
+    ///     Reasoning effort level (low, medium, high, xhigh)
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
 }

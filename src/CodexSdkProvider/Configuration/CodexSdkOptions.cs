@@ -73,6 +73,8 @@ public record CodexSdkOptions
 
     public int ProcessTimeoutMs { get; init; } = 600_000;
 
+    public string? ReasoningEffort { get; init; }
+
     public string Provider { get; init; } = "codex";
 
     public string ProviderMode { get; init; } = "codex";

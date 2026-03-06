@@ -64,6 +64,10 @@ public sealed record CodexBridgeInitOptions
 
     [JsonPropertyName("thread_id")]
     public string? ThreadId { get; init; }
+
+    [JsonPropertyName("reasoning_effort")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningEffort { get; init; }
 }
 
 public sealed record CodexTurnEventEnvelope

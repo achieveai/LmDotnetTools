@@ -941,7 +941,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             $"--input-format {request.InputFormat}",
             $"--model {request.ModelId}",
             $"--max-turns {request.MaxTurns}",
-            $"--max-thinking-tokens {request.MaxThinkingTokens}",
             $"--permission-mode {request.PermissionMode}",
             $"--setting-sources \"{request.SettingSources}\"",
         };
@@ -987,6 +986,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         if (_options.DisableSessionPersistence)
         {
             args.Add("--no-session-persistence");
+        }
+
+        if (!string.IsNullOrEmpty(request.ReasoningEffort))
+        {
+            args.Add($"--reasoning-effort {request.ReasoningEffort}");
         }
 
         return string.Join(" ", args);

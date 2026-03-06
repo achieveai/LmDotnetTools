@@ -171,6 +171,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 BaseUrl = _options.BaseUrl,
                 ApiKey = _options.ApiKey,
                 ThreadId = _codexThreadId,
+                ReasoningEffort = _options.ReasoningEffort,
             });
 
         Logger.LogInformation(

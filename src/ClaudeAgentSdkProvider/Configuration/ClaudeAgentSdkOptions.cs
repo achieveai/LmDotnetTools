@@ -89,4 +89,10 @@ public record ClaudeAgentSdkOptions
     ///     Sessions will not be saved to disk and cannot be resumed.
     /// </summary>
     public bool DisableSessionPersistence { get; init; }
+
+    /// <summary>
+    ///     Reasoning effort level (low, medium, high, xhigh).
+    ///     Passed as --reasoning-effort CLI flag.
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
 }
