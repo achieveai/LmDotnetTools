@@ -159,6 +159,24 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Set environment variable for stream close timeout (in seconds)
             startInfo.Environment["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300";
 
+            // Map reasoning effort to MAX_THINKING_TOKENS env var
+            // (CLI doesn't support --reasoning-effort flag as of v0.1.55)
+            var thinkingTokens = request.ReasoningEffort?.ToLowerInvariant() switch
+            {
+                "low" => "2048",
+                "medium" => "4096",
+                "high" => "8192",
+                "xhigh" => "16384",
+                _ => null
+            };
+            if (thinkingTokens != null)
+            {
+                startInfo.Environment["MAX_THINKING_TOKENS"] = thinkingTokens;
+                _logger?.LogInformation(
+                    "Reasoning effort '{Effort}' mapped to MAX_THINKING_TOKENS={Tokens}",
+                    request.ReasoningEffort, thinkingTokens);
+            }
+
             // 6. Start process
             _process = Process.Start(startInfo);
             if (_process == null)
@@ -988,14 +1006,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             args.Add("--no-session-persistence");
         }
 
-        // NOTE: --reasoning-effort is NOT supported by claude-agent-sdk CLI (as of v0.1.55).
-        // Passing it causes "error: unknown option" and the process exits immediately.
-        // Claude's reasoning effort is controlled internally by the model, not via CLI flags.
-        // When CLI support is added, uncomment:
-        // if (!string.IsNullOrEmpty(request.ReasoningEffort))
-        // {
-        //     args.Add($"--reasoning-effort {request.ReasoningEffort}");
-        // }
+        // NOTE: Reasoning effort is passed via MAX_THINKING_TOKENS env var in StartAsync,
+        // not as a CLI flag (--reasoning-effort is not supported as of v0.1.55).
 
         return string.Join(" ", args);
     }
