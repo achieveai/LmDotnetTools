@@ -80,9 +80,9 @@ onMounted(async () => {
 
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
-  // Disconnect current WebSocket
+  // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
-  clearMessages();
+  await clearMessages();
 
   // Create new thread (without adding to sidebar yet)
   const newThreadId = createNewConversation();
@@ -93,9 +93,9 @@ async function handleNewChat(): Promise<void> {
 async function handleSelectConversation(threadId: string): Promise<void> {
   if (threadId === currentThreadId.value) return;
 
-  // Disconnect current WebSocket
+  // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
-  clearMessages();
+  await clearMessages();
 
   // Switch to selected conversation
   selectConversation(threadId);

@@ -1229,6 +1229,173 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal("func2", toolsCall2.ToolCalls[0].FunctionName);
     }
     [Fact]
+    public async Task Upstream_PreservesReasoningMessage_WhenCreatingToolCallAggregate()
+    {
+        // Arrange: A generation that has ReasoningMessage + ToolCall + ToolCallResult
+        // This simulates a thinking model that reasons, then calls a tool.
+        // The ReasoningMessage must survive upstream aggregation.
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            // System + user messages (no GenerationId, pass through)
+            new TextMessage { Text = "System prompt", Role = Role.System },
+            new TextMessage { Text = "User question", Role = Role.User },
+            // Assistant turn with thinking + tool call (same GenerationId)
+            new ReasoningMessage
+            {
+                Reasoning = "Let me think about this...",
+                Visibility = ReasoningVisibility.Plain,
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ReasoningMessage
+            {
+                Reasoning = "encrypted-signature-blob",
+                Visibility = ReasoningVisibility.Encrypted,
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolCallMessage
+            {
+                FunctionName = "search_books",
+                FunctionArgs = "{\"query\":\"hematosis\"}",
+                ToolCallId = "call_1",
+                ToolCallIdx = 0,
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_1",
+                Result = "Found: Hematosis is the process of gas exchange in lungs.",
+                GenerationId = "gen1",
+                MessageOrderIdx = 3,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        // System + User pass through individually (no GenerationId)
+        Assert.Equal(3, receivedMessages.Count);
+        Assert.IsType<TextMessage>(receivedMessages[0]); // System
+        Assert.IsType<TextMessage>(receivedMessages[1]); // User
+
+        // The gen1 group should be a CompositeMessage containing reasoning + aggregate
+        var composite = Assert.IsType<CompositeMessage>(receivedMessages[2]);
+        Assert.Equal(3, composite.Messages.Count);
+
+        // Verify reasoning messages are preserved
+        var plainReasoning = Assert.IsType<ReasoningMessage>(composite.Messages[0]);
+        Assert.Equal("Let me think about this...", plainReasoning.Reasoning);
+        Assert.Equal(ReasoningVisibility.Plain, plainReasoning.Visibility);
+
+        var encryptedReasoning = Assert.IsType<ReasoningMessage>(composite.Messages[1]);
+        Assert.Equal("encrypted-signature-blob", encryptedReasoning.Reasoning);
+        Assert.Equal(ReasoningVisibility.Encrypted, encryptedReasoning.Visibility);
+
+        // Verify tool call aggregate is also present
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(composite.Messages[2]);
+        Assert.Equal("search_books", aggregate.ToolsCallMessage.ToolCalls[0].FunctionName);
+        Assert.Equal("Found: Hematosis is the process of gas exchange in lungs.",
+            aggregate.ToolsCallResult.ToolCallResults[0].Result);
+    }
+
+    [Fact]
+    public async Task Upstream_PreservesTextMessage_WhenCreatingToolCallAggregate()
+    {
+        // Arrange: A generation that has TextMessage + ToolCall + ToolCallResult
+        // This simulates an assistant that says "I'll search..." then calls a tool.
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new TextMessage
+            {
+                Text = "I'll search for that.",
+                Role = Role.Assistant,
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolCallMessage
+            {
+                FunctionName = "search_books",
+                FunctionArgs = "{\"query\":\"test\"}",
+                ToolCallId = "call_1",
+                ToolCallIdx = 0,
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_1",
+                Result = "result",
+                GenerationId = "gen1",
+                MessageOrderIdx = 2,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert: Should produce CompositeMessage with text + aggregate (not just aggregate)
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Single(receivedMessages);
+        var composite = Assert.IsType<CompositeMessage>(receivedMessages[0]);
+        Assert.Equal(2, composite.Messages.Count);
+        Assert.IsType<TextMessage>(composite.Messages[0]);
+        Assert.Equal("I'll search for that.", ((TextMessage)composite.Messages[0]).Text);
+        Assert.IsType<ToolsCallAggregateMessage>(composite.Messages[1]);
+    }
+
+    [Fact]
+    public async Task Upstream_ProducesPlainAggregate_WhenNoNonToolMessages_WithSingularToolMessages()
+    {
+        // Arrange: Singular ToolCallMessage + ToolCallResultMessage (no reasoning/text).
+        // After AggregateToolMessages converts them to plural form, the fix's else branch
+        // should produce a bare ToolsCallAggregateMessage (NOT wrapped in CompositeMessage).
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolCallMessage
+            {
+                FunctionName = "search",
+                FunctionArgs = "{\"q\":\"test\"}",
+                ToolCallId = "call_1",
+                ToolCallIdx = 0,
+                GenerationId = "gen1",
+                MessageOrderIdx = 0,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call_1",
+                Result = "result",
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+        };
+        var agent = new MockAgent();
+        var context = new MiddlewareContext(Messages: inputMessages, Options: null);
+
+        // Act
+        await middleware.InvokeAsync(context, agent);
+
+        // Assert: Should be a bare ToolsCallAggregateMessage, not a CompositeMessage
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Single(receivedMessages);
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(receivedMessages[0]);
+        Assert.Equal("search", aggregate.ToolsCallMessage.ToolCalls[0].FunctionName);
+        Assert.Equal("result", aggregate.ToolsCallResult.ToolCallResults[0].Result);
+    }
+
+    [Fact]
     public async Task Upstream_HandlesSingleToolCallMessage()
     {
         // Arrange

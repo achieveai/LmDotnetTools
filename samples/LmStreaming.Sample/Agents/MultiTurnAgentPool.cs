@@ -12,7 +12,8 @@ namespace LmStreaming.Sample.Agents;
 public sealed class MultiTurnAgentPool : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, AgentEntry> _agents = new();
-    private readonly Func<string, ChatMode, string?, IMultiTurnAgent> _agentFactory;
+    private readonly ConcurrentDictionary<string, object> _creationLocks = new();
+    private readonly Func<string, ChatMode, string?, AgentCreationResult> _agentFactory;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
@@ -25,6 +26,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         bool IsStale);
 
     /// <summary>
+    /// Result from the agent factory, including the agent and any owned resources
+    /// (e.g., MCP clients) that should be disposed with the agent.
+    /// </summary>
+    public sealed record AgentCreationResult(
+        IMultiTurnAgent Agent,
+        IReadOnlyList<IAsyncDisposable>? OwnedResources = null);
+
+    /// <summary>
     /// Wrapper to track agent and its background task.
     /// </summary>
     private sealed class AgentEntry : IAsyncDisposable
@@ -34,6 +43,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         public required CancellationTokenSource Cts { get; init; }
         public required ChatMode Mode { get; init; }
         public string? RequestResponseDumpFileName { get; init; }
+        public IReadOnlyList<IAsyncDisposable>? OwnedResources { get; init; }
 
         public async ValueTask DisposeAsync()
         {
@@ -48,6 +58,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             }
 
             await Agent.DisposeAsync();
+
+            if (OwnedResources != null)
+            {
+                foreach (var resource in OwnedResources)
+                {
+                    try
+                    {
+                        await resource.DisposeAsync();
+                    }
+                    catch
+                    {
+                        // Ignore cleanup errors for owned resources
+                    }
+                }
+            }
+
             Cts.Dispose();
         }
     }
@@ -55,10 +81,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <summary>
     /// Creates a new MultiTurnAgentPool with mode-aware agent factory.
     /// </summary>
-    /// <param name="agentFactory">Factory function that creates an IMultiTurnAgent for a given threadId and ChatMode</param>
+    /// <param name="agentFactory">Factory function that creates an AgentCreationResult for a given threadId and ChatMode</param>
     /// <param name="logger">Logger for pool operations</param>
     public MultiTurnAgentPool(
-        Func<string, ChatMode, string?, IMultiTurnAgent> agentFactory,
+        Func<string, ChatMode, string?, AgentCreationResult> agentFactory,
         ILogger<MultiTurnAgentPool> logger)
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
@@ -96,9 +122,17 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         ArgumentException.ThrowIfNullOrEmpty(threadId);
         ArgumentNullException.ThrowIfNull(mode);
 
-        var entry = _agents.GetOrAdd(
-            threadId,
-            id => CreateAgentEntry(id, mode, requestResponseDumpFileName));
+        // Use per-key lock to prevent concurrent factory invocations for the same threadId.
+        // ConcurrentDictionary.GetOrAdd does not guarantee the factory runs at most once,
+        // which would leak disposable resources (MCP clients) from the losing invocation.
+        var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
+        AgentEntry entry;
+        lock (lockObj)
+        {
+            entry = _agents.GetOrAdd(
+                threadId,
+                id => CreateAgentEntry(id, mode, requestResponseDumpFileName));
+        }
 
         if (!string.IsNullOrWhiteSpace(requestResponseDumpFileName)
             && !string.Equals(
@@ -205,12 +239,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             mode.Id,
             mode.Name);
 
-        // Remove existing agent (waits for graceful shutdown)
-        await RemoveAgentAsync(threadId);
+        // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
+        var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
+        AgentEntry? oldEntry = null;
+        AgentEntry entry;
+        lock (lockObj)
+        {
+            _agents.TryRemove(threadId, out oldEntry);
+            entry = CreateAgentEntry(threadId, mode, requestResponseDumpFileName: null);
+            _agents[threadId] = entry;
+        }
 
-        // Create new agent with the specified mode
-        var entry = CreateAgentEntry(threadId, mode, requestResponseDumpFileName: null);
-        _agents[threadId] = entry;
+        // Dispose old entry outside the lock to avoid blocking concurrent operations
+        if (oldEntry != null)
+        {
+            _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
+            await oldEntry.DisposeAsync();
+        }
 
         return entry.Agent;
     }
@@ -224,7 +269,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             mode.Name,
             !string.IsNullOrWhiteSpace(requestResponseDumpFileName));
 
-        var agent = _agentFactory(threadId, mode, requestResponseDumpFileName);
+        var result = _agentFactory(threadId, mode, requestResponseDumpFileName);
+        var agent = result.Agent;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
         // Start the agent's background run loop
@@ -251,6 +297,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             Cts = cts,
             Mode = mode,
             RequestResponseDumpFileName = requestResponseDumpFileName,
+            OwnedResources = result.OwnedResources,
         };
     }
 

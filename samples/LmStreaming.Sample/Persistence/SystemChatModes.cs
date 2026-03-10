@@ -13,6 +13,11 @@ public static class SystemChatModes
     public const string DefaultModeId = "default";
 
     /// <summary>
+    /// The medical knowledge mode ID.
+    /// </summary>
+    public const string MedicalKnowledgeModeId = "medical-knowledge";
+
+    /// <summary>
     /// Gets all system-defined chat modes.
     /// </summary>
     public static IReadOnlyList<ChatMode> All { get; } =
@@ -57,6 +62,20 @@ public static class SystemChatModes
             Description = "An assistant that can search the web for up-to-date information using server-side web search.",
             SystemPrompt = "You are a research assistant with access to web search. When the user asks questions that require up-to-date information, current events, or facts you're unsure about, use your web search capability to find accurate answers. Cite your sources when providing information from web searches.",
             EnabledTools = ["calculate", "get_weather", "web_search"],
+            IsSystemDefined = true,
+            CreatedAt = 0,
+            UpdatedAt = 0,
+        },
+        new ChatMode
+        {
+            Id = MedicalKnowledgeModeId,
+            Name = "Medical Knowledge Assistant",
+            Description = "A medical knowledge assistant that can search textbooks and reference materials to answer clinical questions.",
+            SystemPrompt = "You are a medical knowledge assistant with access to textbook search tools. "
+                + "When answering questions, use the book search tools to find relevant passages from medical textbooks. "
+                + "Cite the source (book, chapter, page) for each fact you reference. "
+                + "Be precise, evidence-based, and acknowledge uncertainty when the literature is unclear.",
+            EnabledTools = [], // No local/built-in tools; only MCP book search tools
             IsSystemDefined = true,
             CreatedAt = 0,
             UpdatedAt = 0,

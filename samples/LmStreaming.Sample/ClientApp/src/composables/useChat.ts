@@ -225,54 +225,71 @@ export function useChat(options: UseChatOptions = {}) {
           timestamp: msg.timestamp,
         });
       } else if (isReasoningMessage(msg.content)) {
-        // Add to pill buffer
-        pillBuffer.push(msg.content as ReasoningMessage);
-        pillRunId = msg.runId || null;
-        pillParentRunId = msg.parentRunId || null;
-        pillMessageOrderIdx = msg.messageOrderIdx || null;
-      } else if (isToolsCallMessage(msg.content)) {
-        // Add to pill buffer (multi-tool-call message)
-        pillBuffer.push(msg.content as ToolsCallMessage);
-        pillRunId = msg.runId || null;
-        pillParentRunId = msg.parentRunId || null;
-        pillMessageOrderIdx = msg.messageOrderIdx || null;
-      } else if (isToolCallMessage(msg.content)) {
-        // Add individual tool call to pill buffer
-        // Try to merge with the previous pill buffer item if it's a ToolsCallMessage
-        // from the same generation (aggregates multiple tool calls into "Tools: N calls")
-        const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
-        const newToolCallEntry = {
-          tool_call_id: toolCall.tool_call_id,
-          function_name: toolCall.function_name,
-          function_args: toolCall.function_args,
-        };
+        const reasoning = msg.content as ReasoningMessage;
+        const visibility = normalizeReasoningVisibility(reasoning.visibility);
 
-        const prevItem = pillBuffer.length > 0 ? pillBuffer[pillBuffer.length - 1] : null;
-        const canMerge = prevItem &&
-          isToolsCallMessage(prevItem) &&
-          prevItem.generationId === toolCall.generationId &&
-          prevItem.runId === toolCall.runId;
-
-        if (canMerge && prevItem) {
-          // Merge into existing ToolsCallMessage
-          (prevItem as ToolsCallMessage).tool_calls.push(newToolCallEntry);
-        } else {
-          // Create new ToolsCallMessage wrapper
-          const toolsCallMsg: ToolsCallMessage = {
-            $type: MessageType.ToolsCall,
-            tool_calls: [newToolCallEntry],
-            role: toolCall.role,
-            generationId: toolCall.generationId,
-            runId: toolCall.runId,
-            parentRunId: toolCall.parentRunId,
-            threadId: toolCall.threadId,
-            messageOrderIdx: toolCall.messageOrderIdx,
-          };
-          pillBuffer.push(toolsCallMsg);
+        // Skip encrypted reasoning (just shows "[Encrypted reasoning hidden]" noise)
+        if (visibility === 'Encrypted') {
+          continue;
         }
-        pillRunId = msg.runId || null;
-        pillParentRunId = msg.parentRunId || null;
-        pillMessageOrderIdx = msg.messageOrderIdx || null;
+
+        // Skip duplicate plain reasoning with same content already in pill buffer
+        // (backend stores both streamed accumulation and final complete message)
+        const isDuplicate = pillBuffer.some(
+          (item) =>
+            isReasoningMessage(item) &&
+            (item as ReasoningMessage).generationId === reasoning.generationId &&
+            (item as ReasoningMessage).reasoning === reasoning.reasoning
+        );
+        if (isDuplicate) {
+          continue;
+        }
+
+        // Add to pill buffer
+        pillBuffer.push(reasoning);
+        pillRunId = msg.runId ?? null;
+        pillParentRunId = msg.parentRunId ?? null;
+        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
+      } else if (isToolsCallMessage(msg.content)) {
+        // Split multi-tool-call messages into individual pills (one per tool call)
+        const toolsCall = msg.content as ToolsCallMessage;
+        for (const tc of toolsCall.tool_calls) {
+          const singleToolMsg: ToolsCallMessage = {
+            $type: MessageType.ToolsCall,
+            tool_calls: [tc],
+            role: toolsCall.role,
+            generationId: toolsCall.generationId,
+            runId: toolsCall.runId,
+            parentRunId: toolsCall.parentRunId,
+            threadId: toolsCall.threadId,
+            messageOrderIdx: toolsCall.messageOrderIdx,
+          };
+          pillBuffer.push(singleToolMsg);
+        }
+        pillRunId = msg.runId ?? null;
+        pillParentRunId = msg.parentRunId ?? null;
+        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
+      } else if (isToolCallMessage(msg.content)) {
+        // Wrap individual tool call as its own pill (no merging)
+        const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
+        const toolsCallMsg: ToolsCallMessage = {
+          $type: MessageType.ToolsCall,
+          tool_calls: [{
+            tool_call_id: toolCall.tool_call_id,
+            function_name: toolCall.function_name,
+            function_args: toolCall.function_args,
+          }],
+          role: toolCall.role,
+          generationId: toolCall.generationId,
+          runId: toolCall.runId,
+          parentRunId: toolCall.parentRunId,
+          threadId: toolCall.threadId,
+          messageOrderIdx: toolCall.messageOrderIdx,
+        };
+        pillBuffer.push(toolsCallMsg);
+        pillRunId = msg.runId ?? null;
+        pillParentRunId = msg.parentRunId ?? null;
+        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
       } else if (isTextMessage(msg.content)) {
         // Text message - flush pill and add text
         flushPill();
@@ -389,6 +406,7 @@ export function useChat(options: UseChatOptions = {}) {
         timestamp: Date.now(),
       };
       messageIndex.value.set(errorId, errorMsg);
+      messageOrder.value.push(errorId);
     }
 
     // Mark all messages in this run as completed
@@ -823,7 +841,7 @@ export function useChat(options: UseChatOptions = {}) {
   /**
    * Clear all messages and reset state
    */
-  function clearMessages(): void {
+  async function clearMessages(): Promise<void> {
     log.info('Clearing all messages');
     pendingMessages.value = [];
     messageIndex.value.clear();
@@ -834,9 +852,9 @@ export function useChat(options: UseChatOptions = {}) {
     currentRunId.value = null;
     toolResults.value.clear();
     reset();
-    
+
     // Close WebSocket connection
-    disconnectWebSocket();
+    await disconnectWebSocket();
   }
   
   /**

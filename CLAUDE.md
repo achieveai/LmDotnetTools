@@ -37,6 +37,7 @@ dotnet test tests/LmCore.Tests/LmCore.Tests.csproj
 ## Testing
 - Mock utilities available in `src/LmTestUtils/`
 - See `src/LmTestUtils/README-SSE.md` for SSE testing docs
+- **Client UI testing:** See `samples/LmStreaming.Sample/PlaywrightTestingGuide.md` for Playwright scripts to test the chat client (mode switching, multi-turn conversations, thinking/tool call flows, etc.)
 
 ## Important Files
 - `Directory.Build.props` - Central build configuration
