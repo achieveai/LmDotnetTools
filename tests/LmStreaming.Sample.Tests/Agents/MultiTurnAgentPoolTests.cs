@@ -53,7 +53,7 @@ public class MultiTurnAgentPoolTests
     private static MultiTurnAgentPool CreatePool()
     {
         return new MultiTurnAgentPool(
-            (threadId, _, _) => new FakeMultiTurnAgent(threadId),
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             NullLogger<MultiTurnAgentPool>.Instance);
     }
 }

@@ -442,7 +442,28 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             var aggregate = TryCreateToolCallAggregate(aggregatedGroup);
             if (aggregate != null)
             {
-                result.Add(aggregate);
+                // Collect non-tool messages from the group (e.g., ReasoningMessage, TextMessage)
+                // that must be preserved alongside the tool call aggregate.
+                var nonToolMessages = aggregatedGroup
+                    .Where(m => m is not ToolsCallMessage and not ToolsCallResultMessage)
+                    .ToList();
+
+                if (nonToolMessages.Count > 0)
+                {
+                    // Re-sort: non-tool messages + aggregate, ordered by MessageOrderIdx
+                    var combined = new List<IMessage>(nonToolMessages) { aggregate };
+                    combined.Sort((a, b) =>
+                        (a.MessageOrderIdx ?? int.MaxValue).CompareTo(b.MessageOrderIdx ?? int.MaxValue));
+
+                    // Wrap in CompositeMessage since we have multiple messages with the same GenerationId
+                    var composite = CreateCompositeMessage(combined);
+                    result.Add(composite);
+                }
+                else
+                {
+                    result.Add(aggregate);
+                }
+
                 continue;
             }
 
