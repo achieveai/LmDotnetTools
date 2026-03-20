@@ -31,7 +31,8 @@ public record ClaudeAgentSdkRequest
     public string? SessionId { get; init; }
 
     /// <summary>
-    ///     Comma-separated list of allowed tools
+    ///     Comma-separated list of available built-in tools (maps to CLI --tools flag).
+    ///     Restricts which tools the agent can use.
     /// </summary>
     public string? AllowedTools { get; init; }
 
@@ -69,4 +70,9 @@ public record ClaudeAgentSdkRequest
     ///     Setting sources
     /// </summary>
     public string SettingSources { get; init; } = "";
+
+    /// <summary>
+    ///     Reasoning effort level (low, medium, high, xhigh)
+    /// </summary>
+    public string? ReasoningEffort { get; init; }
 }

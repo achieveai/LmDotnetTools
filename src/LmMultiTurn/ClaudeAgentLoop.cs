@@ -880,6 +880,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             AllowedTools = allowedTools,
             McpServers = mcpServers,
             Verbose = true,
+            ReasoningEffort = _claudeOptions.ReasoningEffort,
         };
     }
 }

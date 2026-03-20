@@ -82,7 +82,22 @@ internal sealed class CodexEventTranslator
 
             case "error":
                 {
-                    var err = eventElement.TryGetProperty("message", out var msg)
+                    // Try nested error.message first (codex app-server format), then top-level message
+                    string? err = null;
+                    if (eventElement.TryGetProperty("error", out var errorObj) && errorObj.ValueKind == JsonValueKind.Object)
+                    {
+                        if (errorObj.TryGetProperty("message", out var errMsg))
+                        {
+                            err = errMsg.GetString();
+                        }
+
+                        if (errorObj.TryGetProperty("additionalDetails", out var details))
+                        {
+                            err = $"{err} — {details.GetString()}";
+                        }
+                    }
+
+                    err ??= eventElement.TryGetProperty("message", out var msg)
                         ? msg.GetString()
                         : "Codex stream error";
                     throw new InvalidOperationException(err);

@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -13,8 +16,10 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using ModelContextProtocol.Client;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -153,6 +158,10 @@ try
             };
         });
 
+    // Read LlmQueryMcp config for books/question MCP servers
+    var llmQueryMcpBaseUrl = builder.Configuration["LlmQueryMcp:BaseUrl"];
+    var llmQueryMcpExamType = builder.Configuration["LlmQueryMcp:ExamType"] ?? "NeetPG";
+
     // Register the MultiTurnAgentPool with mode-aware factory
     _ = builder.Services.AddSingleton(sp =>
     {
@@ -164,60 +173,118 @@ try
         return new MultiTurnAgentPool(
             (threadId, mode, requestResponseDumpFileName) =>
             {
+                var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
+                var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
+
                 if (string.Equals(providerMode, "codex", StringComparison.OrdinalIgnoreCase))
                 {
-                    return CreateCodexAgentLoop(
-                        threadId,
-                        mode,
-                        functionRegistry,
-                        requestResponseDumpFileName,
-                        conversationStore,
-                        loggerFactory,
-                        codexMcpEndpointUrl);
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateCodexAgentLoop(
+                            threadId,
+                            mode,
+                            functionRegistry,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory,
+                            codexMcpEndpointUrl,
+                            mcpBaseUrl,
+                            llmQueryMcpExamType));
+                }
+
+                if (string.Equals(providerMode, "claude", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateClaudeAgentLoop(
+                            threadId,
+                            mode,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory,
+                            mcpBaseUrl,
+                            llmQueryMcpExamType));
                 }
 
                 var providerAgent = agentFactory();
 
-                // Create filtered function registry based on mode's enabled tools
-                var filteredRegistry = functionRegistry;
-                if (mode.EnabledTools != null && mode.EnabledTools.Count > 0)
+                // Clone the shared registry per-agent to avoid mutation, filtering by mode
+                var (allContracts, allHandlers) = functionRegistry.Build();
+                var enabledToolSet = mode.EnabledTools?.ToHashSet();
+                var filteredRegistry = new FunctionRegistry();
+                foreach (var contract in allContracts)
                 {
-                    // Create a new registry with only the enabled tools
-                    var enabledToolSet = mode.EnabledTools.ToHashSet();
-                    var (allContracts, allHandlers) = functionRegistry.Build();
-
-                    var newRegistry = new FunctionRegistry();
-                    foreach (var contract in allContracts)
+                    if (allHandlers.TryGetValue(contract.Name, out var handler)
+                        && (enabledToolSet == null || enabledToolSet.Contains(contract.Name)))
                     {
-                        if (enabledToolSet.Contains(contract.Name) && allHandlers.TryGetValue(contract.Name, out var handler))
+                        _ = filteredRegistry.AddFunction(contract, handler, "SampleTools");
+                    }
+                }
+
+                // Add LlmQuery book search MCP tools — only for medical knowledge mode
+                // Track MCP clients for proper disposal alongside the agent
+                List<IAsyncDisposable>? ownedResources = null;
+                if (!string.IsNullOrEmpty(mcpBaseUrl))
+                {
+                    var (_, mcpClients) = ConnectLlmQueryMcpClients(
+                        filteredRegistry, threadId, mcpBaseUrl, llmQueryMcpExamType,
+                        loggerFactory);
+                    if (mcpClients.Count > 0)
+                    {
+                        ownedResources = mcpClients.Cast<IAsyncDisposable>().ToList();
+                    }
+                }
+
+                try
+                {
+                    var modelId = GetModelIdForProvider(providerMode);
+
+                    // Filter built-in (server-side) tools based on mode's enabled tools
+                    var allBuiltInTools = GetBuiltInToolsForProvider(providerMode);
+                    var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
+
+                    // Enable extended thinking for Anthropic-compatible providers
+                    var extraProperties = ImmutableDictionary<string, object?>.Empty;
+                    if (providerMode.Equals("anthropic", StringComparison.OrdinalIgnoreCase)
+                        || providerMode.Equals("test-anthropic", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var budgetTokens = int.TryParse(
+                            Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
+                            out var parsed) ? parsed : 2048;
+                        extraProperties = extraProperties.Add(
+                            "Thinking", new AnthropicThinking(budgetTokens));
+                    }
+
+                    var agent = new MultiTurnAgentLoop(
+                        providerAgent,
+                        filteredRegistry,
+                        threadId,
+                        systemPrompt: mode.SystemPrompt,
+                        defaultOptions: new GenerateReplyOptions
                         {
-                            _ = newRegistry.AddFunction(contract, handler, "FilteredTools");
+                            ModelId = modelId,
+                            BuiltInTools = filteredBuiltInTools,
+                            RequestResponseDumpFileName = requestResponseDumpFileName,
+                            PromptCaching = PromptCachingMode.Auto,
+                            ExtraProperties = extraProperties,
+                        },
+                        store: conversationStore,
+                        logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
+
+                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
+                }
+                catch
+                {
+                    // Dispose owned resources (MCP clients) if agent construction fails
+                    if (ownedResources != null)
+                    {
+                        foreach (var resource in ownedResources)
+                        {
+                            try { resource.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                            catch { /* ignore cleanup errors */ }
                         }
                     }
 
-                    filteredRegistry = newRegistry;
+                    throw;
                 }
-
-                var modelId = GetModelIdForProvider(providerMode);
-
-                // Filter built-in (server-side) tools based on mode's enabled tools
-                var allBuiltInTools = GetBuiltInToolsForProvider(providerMode);
-                var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
-
-                return new MultiTurnAgentLoop(
-                    providerAgent,
-                    filteredRegistry,
-                    threadId,
-                    systemPrompt: mode.SystemPrompt,
-                    defaultOptions: new GenerateReplyOptions
-                    {
-                        ModelId = modelId,
-                        BuiltInTools = filteredBuiltInTools,
-                        RequestResponseDumpFileName = requestResponseDumpFileName,
-                        PromptCaching = PromptCachingMode.Auto,
-                    },
-                    store: conversationStore,
-                    logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
             },
             loggerFactory.CreateLogger<MultiTurnAgentPool>());
     });
@@ -477,7 +544,9 @@ public partial class Program
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
-        string mcpEndpointUrl)
+        string mcpEndpointUrl,
+        string? llmQueryMcpBaseUrl,
+        string? llmQueryMcpExamType)
     {
         var enabledTools = mode.EnabledTools;
         var codexOptions = CreateCodexOptions(requestResponseDumpFileName, threadId);
@@ -495,6 +564,17 @@ public partial class Program
                 EnabledTools = enabledTools == null ? null : [.. enabledTools],
             },
         };
+
+        // Add LlmQuery book search MCP server if configured (medical knowledge mode)
+        if (!string.IsNullOrEmpty(llmQueryMcpBaseUrl))
+        {
+            var queryParams = BuildLlmQueryParams(threadId, llmQueryMcpExamType ?? "NeetPG");
+            mcpServers["books"] = new CodexMcpServerConfig
+            {
+                Url = $"{llmQueryMcpBaseUrl}/mcp/query?{queryParams}",
+                Enabled = true,
+            };
+        }
 
         return new CodexAgentLoop(
             codexOptions,
@@ -634,6 +714,7 @@ public partial class Program
             "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
             "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
             "test-anthropic" => "claude-sonnet-4-5-20250929",
+            "claude" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
             "codex" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
             _ => "test-model",
         };
@@ -717,6 +798,140 @@ public partial class Program
         return recordValue is not null
             && (string.Equals(recordValue, "1", StringComparison.Ordinal)
                 || string.Equals(recordValue, "true", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static ClaudeAgentLoop CreateClaudeAgentLoop(
+        string threadId,
+        ChatMode mode,
+        string? requestResponseDumpFileName,
+        IConversationStore conversationStore,
+        ILoggerFactory loggerFactory,
+        string? llmQueryMcpBaseUrl,
+        string? llmQueryMcpExamType)
+    {
+        // Build AllowedTools from mode's enabled tools:
+        // null = use defaults, empty = no built-in tools (MCP only), non-empty = specific tools
+        var allowedTools = mode.EnabledTools == null
+            ? "Read,WebSearch,WebFetch"
+            : mode.EnabledTools.Count > 0
+                ? string.Join(",", mode.EnabledTools)
+                : string.Empty;
+
+        var claudeOptions = new ClaudeAgentSdkOptions
+        {
+            MaxTurnsPerRun = 50,
+            DisableCheckpoints = true,
+            DisableSessionPersistence = true,
+            AllowedTools = allowedTools,
+        };
+
+        var mcpServers = BuildLlmQueryMcpServers(threadId, llmQueryMcpBaseUrl, llmQueryMcpExamType);
+
+        var modelId = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6";
+
+        return new ClaudeAgentLoop(
+            claudeOptions,
+            mcpServers,
+            threadId: threadId,
+            systemPrompt: mode.SystemPrompt,
+            defaultOptions: new GenerateReplyOptions
+            {
+                ModelId = modelId,
+                RequestResponseDumpFileName = requestResponseDumpFileName,
+                PromptCaching = PromptCachingMode.Auto,
+            },
+            store: conversationStore,
+            logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
+            loggerFactory: loggerFactory);
+    }
+
+    /// <summary>
+    ///     Builds MCP server configuration for the LlmQuery book search endpoint.
+    ///     Used by the medical knowledge mode to expose textbook search tools.
+    /// </summary>
+    private static Dictionary<string, McpServerConfig> BuildLlmQueryMcpServers(
+        string conversationId,
+        string? baseUrl,
+        string? examType)
+    {
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return [];
+        }
+
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Exam-Type"] = examType ?? "NeetPG",
+            ["X-Session-Id"] = conversationId,
+        };
+
+        return new Dictionary<string, McpServerConfig>
+        {
+            ["books"] = McpServerConfig.CreateHttp($"{baseUrl}/mcp/query", headers: headers),
+        };
+    }
+
+    /// <summary>
+    ///     Connects to the LlmQuery book search MCP server and adds its tools to the FunctionRegistry.
+    ///     Used by Anthropic/OpenAI providers which route tool calls through the middleware pipeline.
+    ///     Returns the created McpClient instances for proper disposal by the caller.
+    /// </summary>
+    private static (FunctionRegistry Registry, List<McpClient> McpClients) ConnectLlmQueryMcpClients(
+        FunctionRegistry registry,
+        string threadId,
+        string baseUrl,
+        string? examType,
+        ILoggerFactory loggerFactory)
+    {
+        var createdClients = new List<McpClient>();
+        var logger = loggerFactory.CreateLogger<Program>();
+        try
+        {
+            var headers = new Dictionary<string, string>
+            {
+                ["X-Exam-Type"] = examType ?? "NeetPG",
+                ["X-Session-Id"] = threadId,
+            };
+
+            var booksTransport = new HttpClientTransport(new HttpClientTransportOptions
+            {
+                Name = "books",
+                Endpoint = new Uri($"{baseUrl}/mcp/query"),
+                AdditionalHeaders = headers,
+            });
+
+            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
+            var booksClient = McpClient.CreateAsync(booksTransport).GetAwaiter().GetResult();
+            createdClients.Add(booksClient);
+
+            var mcpClients = new Dictionary<string, McpClient>
+            {
+                ["books"] = booksClient,
+            };
+
+            registry.AddMcpClientsAsync(mcpClients, "LlmQuery").GetAwaiter().GetResult();
+
+            logger.LogInformation(
+                "Connected to LlmQuery book search MCP server for thread {ThreadId}",
+                threadId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to connect to LlmQuery MCP server at {BaseUrl} — continuing without MCP tools",
+                baseUrl);
+        }
+
+        return (registry, createdClients);
+    }
+
+    /// <summary>
+    ///     Builds query parameter string for LlmQuery MCP endpoints (used by Codex which doesn't support HTTP headers).
+    /// </summary>
+    private static string BuildLlmQueryParams(string conversationId, string examType)
+    {
+        return $"X-Exam-Type={Uri.EscapeDataString(examType)}&X-Session-Id={Uri.EscapeDataString(conversationId)}";
     }
 
     /// <summary>

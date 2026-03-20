@@ -15,7 +15,7 @@ public record CodexSdkOptions
 
     public int AppServerStartupTimeoutMs { get; init; } = 30_000;
 
-    public int TurnCompletionTimeoutMs { get; init; } = 120_000;
+    public int TurnCompletionTimeoutMs { get; init; } = 300_000;
 
     public int TurnInterruptGracePeriodMs { get; init; } = 5_000;
 
@@ -30,6 +30,20 @@ public record CodexSdkOptions
     public bool NetworkAccessEnabled { get; init; } = true;
 
     public string WebSearchMode { get; init; } = "disabled";
+
+    /// <summary>
+    /// Feature flags to explicitly disable. These are passed as features.{name} = false in the config.
+    /// Defaults disable shell/file-edit tools so the model only uses MCP tools, web search, and web fetch.
+    /// </summary>
+    public IReadOnlyList<string> DisabledFeatures { get; init; } =
+    [
+        "shell_tool",           // Disable shell command execution
+        "apply_patch_freeform", // Disable freeform file patching
+        "unified_exec",         // Disable PTY-backed exec
+        "multi_agent",          // Disable multi-agent coordination
+        "apps",                 // Disable apps feature
+        "apps_mcp_gateway",     // Disable apps MCP gateway
+    ];
 
     public string? BaseUrl { get; init; }
 
@@ -58,6 +72,8 @@ public record CodexSdkOptions
     public bool EmitLegacyInternalToolReasoningSummaries { get; init; } = false;
 
     public int ProcessTimeoutMs { get; init; } = 600_000;
+
+    public string? ReasoningEffort { get; init; }
 
     public string Provider { get; init; } = "codex";
 

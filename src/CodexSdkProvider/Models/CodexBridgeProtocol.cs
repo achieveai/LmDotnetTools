@@ -52,6 +52,10 @@ public sealed record CodexBridgeInitOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolBridgeMode { get; init; }
 
+    [JsonPropertyName("disabled_features")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? DisabledFeatures { get; init; }
+
     [JsonPropertyName("base_url")]
     public string? BaseUrl { get; init; }
 
@@ -60,6 +64,10 @@ public sealed record CodexBridgeInitOptions
 
     [JsonPropertyName("thread_id")]
     public string? ThreadId { get; init; }
+
+    [JsonPropertyName("reasoning_effort")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningEffort { get; init; }
 }
 
 public sealed record CodexTurnEventEnvelope

@@ -648,6 +648,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             ModelInstructionsFile = string.IsNullOrWhiteSpace(options.ModelInstructionsFile) ? null : options.ModelInstructionsFile,
             BaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl) ? _options.BaseUrl : options.BaseUrl,
             ApiKey = string.IsNullOrWhiteSpace(options.ApiKey) ? _options.ApiKey : options.ApiKey,
+            DisabledFeatures = options.DisabledFeatures ?? _options.DisabledFeatures,
+            ReasoningEffort = string.IsNullOrWhiteSpace(options.ReasoningEffort) ? _options.ReasoningEffort : options.ReasoningEffort,
         };
     }
 
@@ -748,6 +750,23 @@ public sealed class CodexSdkClient : ICodexSdkClient
         if (!string.IsNullOrWhiteSpace(options.ModelInstructionsFile))
         {
             config["model_instructions_file"] = options.ModelInstructionsFile;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ReasoningEffort))
+        {
+            config["model_reasoning_effort"] = options.ReasoningEffort;
+        }
+
+        // Disable built-in tools via feature flags (e.g. shell_tool, apply_patch_freeform)
+        if (options.DisabledFeatures is { Count: > 0 })
+        {
+            var features = new Dictionary<string, object?>();
+            foreach (var feature in options.DisabledFeatures)
+            {
+                features[feature] = false;
+            }
+
+            config["features"] = features;
         }
 
         return config;

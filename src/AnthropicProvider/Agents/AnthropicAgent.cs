@@ -73,7 +73,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         try
         {
             var startTime = DateTime.UtcNow;
-            var request = AnthropicRequest.FromMessages(messages, options);
+            var request = AnthropicRequest.FromMessages(messages, options, _logger);
             var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
             dumpWriter?.WriteRequest(request);
 
@@ -152,7 +152,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
         try
         {
-            var request = AnthropicRequest.FromMessages(messages, options) with { Stream = true };
+            var request = AnthropicRequest.FromMessages(messages, options, _logger) with { Stream = true };
             var dumpWriter = RequestResponseDumpWriter.Create(options?.RequestResponseDumpFileName, s_dumpJsonOptions, _logger);
             dumpWriter?.WriteRequest(request);
 
@@ -164,6 +164,12 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 request.Temperature,
                 !string.IsNullOrEmpty(request.System)
             );
+
+            if (request.Thinking != null && _logger.IsEnabled(LogLevel.Trace))
+            {
+                var requestJson = System.Text.Json.JsonSerializer.Serialize(request, s_dumpJsonOptions);
+                _logger.LogTrace("Full request with thinking enabled: {RequestJson}", requestJson);
+            }
 
             // Return the streaming response as an IAsyncEnumerable
             return await Task.FromResult(GenerateStreamingMessages(request, options, dumpWriter, cancellationToken));

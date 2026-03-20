@@ -60,6 +60,14 @@ public class HttpHeaderContextResolver : IToolDescriptionContextResolver
     /// <inheritdoc />
     public string? GetContextKey()
     {
-        return _httpContextAccessor.HttpContext?.Request.Headers[HeaderName].FirstOrDefault();
+        var request = _httpContextAccessor.HttpContext?.Request;
+        if (request == null)
+        {
+            return null;
+        }
+
+        // Try header first, then fall back to query parameter (for clients that don't support HTTP headers, e.g. Codex MCP)
+        return request.Headers[HeaderName].FirstOrDefault()
+            ?? request.Query[HeaderName].FirstOrDefault();
     }
 }

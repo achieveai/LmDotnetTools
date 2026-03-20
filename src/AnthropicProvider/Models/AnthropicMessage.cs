@@ -36,7 +36,22 @@ public record AnthropicContent
     ///     The text of the content if Type is "text".
     /// </summary>
     [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Text { get; init; }
+
+    /// <summary>
+    ///     The thinking content if Type is "thinking".
+    /// </summary>
+    [JsonPropertyName("thinking")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Thinking { get; init; }
+
+    /// <summary>
+    ///     The signature for thinking content if Type is "thinking".
+    /// </summary>
+    [JsonPropertyName("signature")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThinkingSignature { get; init; }
 
     /// <summary>
     ///     The source of an image if Type is "image".

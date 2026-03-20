@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Caching;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
@@ -115,8 +116,12 @@ public record AnthropicRequest
     /// </summary>
     /// <param name="messages">The messages to include in the request.</param>
     /// <param name="options">The options for the request.</param>
+    /// <param name="logger">Optional logger for trace-level diagnostics.</param>
     /// <returns>A new AnthropicRequest.</returns>
-    public static AnthropicRequest FromMessages(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null)
+    public static AnthropicRequest FromMessages(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        ILogger? logger = null)
     {
         // Get model from options or use default
         var modelName = AnthropicModelNames.Claude3Sonnet;
@@ -132,6 +137,21 @@ public record AnthropicRequest
         // a final update at content_block_stop — both are ToolCallUpdateMessage. When these
         // end up in history, only the final one (with accumulated args) should be serialized.
         var deduplicatedMessages = DeduplicateToolCallUpdates(messages);
+
+        if (logger != null && logger.IsEnabled(LogLevel.Trace))
+        {
+            logger.LogTrace(
+                "Building AnthropicRequest: MessageTypes={MessageTypes}",
+                string.Join(", ", deduplicatedMessages.Select(m => $"{m.GetType().Name}({m.Role})")));
+
+            foreach (var rm in deduplicatedMessages.OfType<ReasoningMessage>())
+            {
+                logger.LogTrace(
+                    "ReasoningMessage in history: Visibility={Visibility}, Length={Length}",
+                    rm.Visibility,
+                    rm.Reasoning?.Length);
+            }
+        }
 
         // Map LmCore messages to Anthropic messages
         var anthropicMessages = new List<AnthropicMessage>();
@@ -235,7 +255,9 @@ public record AnthropicRequest
             Messages = anthropicMessages,
             System = systemPrompt,
             MaxTokens = options?.MaxToken ?? 4096,
-            Temperature = options?.Temperature ?? 0.7f,
+            Temperature = thinking != null
+                ? (options?.Temperature ?? 1.0f)
+                : (options?.Temperature ?? 0.7f),
             TopP = options?.TopP,
             Stream = false, // Set by caller if streaming is needed
             // Add tool configuration
@@ -325,6 +347,44 @@ public record AnthropicRequest
         else if (message is TextMessage txtMsg)
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
+        }
+        else if (message is ReasoningMessage reasoningMsg)
+        {
+            if (reasoningMsg.Visibility == ReasoningVisibility.Encrypted)
+            {
+                // Encrypted reasoning carries the signature for the preceding thinking block.
+                // Emitted with null Thinking so JsonIgnore(WhenWritingNull) omits the field;
+                // MergeAdjacentThinkingBlocks will combine this with the preceding text block.
+                anthropicMessage.Content.Add(new AnthropicContent
+                {
+                    Type = "thinking",
+                    Thinking = null,
+                    ThinkingSignature = reasoningMsg.Reasoning,
+                });
+            }
+            else if (reasoningMsg.Visibility == ReasoningVisibility.Summary)
+            {
+                // Summary reasoning is a provider-generated short description (e.g., from OpenAI),
+                // not an Anthropic thinking block. Emit as text to avoid Anthropic rejecting it
+                // for missing a signature in multi-turn history.
+                anthropicMessage.Content.Add(new AnthropicContent
+                {
+                    Type = "text",
+                    Text = reasoningMsg.Reasoning,
+                });
+            }
+            else
+            {
+                // Plain reasoning — emit as a thinking block.
+                // Signature is null so JsonIgnore(WhenWritingNull) omits it;
+                // MergeAdjacentThinkingBlocks will attach the signature from the next block.
+                anthropicMessage.Content.Add(new AnthropicContent
+                {
+                    Type = "thinking",
+                    Thinking = reasoningMsg.Reasoning,
+                    ThinkingSignature = null,
+                });
+            }
         }
         else if (message is ToolCallMessage singularToolCallMsg)
         {
@@ -591,7 +651,45 @@ public record AnthropicRequest
             }
         }
 
+        // Merge adjacent thinking blocks within each message (combine thinking text + signature).
+        // The stream produces separate ReasoningMessage objects for thinking text and encrypted signature,
+        // which become separate thinking content blocks that need to be combined.
+        foreach (var msg in merged)
+        {
+            MergeAdjacentThinkingBlocks(msg.Content);
+        }
+
         return merged;
+    }
+
+    /// <summary>
+    /// Merges adjacent "thinking" content blocks: a block with thinking text but no signature
+    /// followed by a block with signature but no thinking text get combined into one block.
+    /// </summary>
+    private static void MergeAdjacentThinkingBlocks(List<AnthropicContent> content)
+    {
+        for (var i = content.Count - 2; i >= 0; i--)
+        {
+            var curr = content[i];
+            var next = content[i + 1];
+
+            if (curr.Type != "thinking" || next.Type != "thinking")
+            {
+                continue;
+            }
+
+            // Merge if curr has thinking text but no signature, and next has signature but no thinking text
+            var currHasText = !string.IsNullOrEmpty(curr.Thinking);
+            var currHasSig = !string.IsNullOrEmpty(curr.ThinkingSignature);
+            var nextHasText = !string.IsNullOrEmpty(next.Thinking);
+            var nextHasSig = !string.IsNullOrEmpty(next.ThinkingSignature);
+
+            if (currHasText && !currHasSig && !nextHasText && nextHasSig)
+            {
+                content[i] = curr with { ThinkingSignature = next.ThinkingSignature };
+                content.RemoveAt(i + 1);
+            }
+        }
     }
 
     private static string GetJsonType(JsonSchemaObject schemaObject)
