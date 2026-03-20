@@ -5,7 +5,7 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 
-const { displayItems, isLoading, isSending, error, usage, pendingMessages, sendMessage, clearMessages, getResultForToolCall } = useChat();
+const { displayItems, isLoading, isSending, error, cumulativeUsage, pendingMessages, sendMessage, clearMessages, getResultForToolCall } = useChat();
 
 // Provide getResultForToolCall to child components (MessageList -> MetadataPill)
 provide('getResultForToolCall', getResultForToolCall);
@@ -30,9 +30,16 @@ function handleSend(message: string) {
       {{ error }}
     </div>
 
-    <div v-if="usage" class="usage-banner">
-      Tokens: {{ usage.usage.inputTokens ?? usage.usage.prompt_tokens ?? 0 }} in /
-      {{ usage.usage.outputTokens ?? usage.usage.completion_tokens ?? 0 }} out
+    <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner">
+      Total: {{ cumulativeUsage.totalTokens }} |
+      In: {{ cumulativeUsage.promptTokens }} |
+      Out: {{ cumulativeUsage.completionTokens }}
+      <template v-if="cumulativeUsage.cachedTokens > 0">
+        | Cached: {{ cumulativeUsage.cachedTokens }}
+      </template>
+      <template v-if="cumulativeUsage.cacheCreationTokens > 0">
+        | Cache created: {{ cumulativeUsage.cacheCreationTokens }}
+      </template>
     </div>
 
     <PendingMessageQueue :pending-messages="pendingMessages" />

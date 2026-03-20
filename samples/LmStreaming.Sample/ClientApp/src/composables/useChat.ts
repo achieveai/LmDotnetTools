@@ -135,6 +135,13 @@ export function useChat(options: UseChatOptions = {}) {
   const isSending = ref(false); // Message send is in progress
   const error = ref<string | null>(null);
   const usage = ref<UsageMessage | null>(null);
+  const cumulativeUsage = ref({
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    cacheCreationTokens: 0,
+  });
   const transport = ref<TransportType>(initialTransport);
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
@@ -425,6 +432,19 @@ export function useChat(options: UseChatOptions = {}) {
     // Handle usage messages
     if (isUsageMessage(msg)) {
       usage.value = msg;
+      const u = msg.usage;
+      const promptTokens = u.prompt_tokens ?? u.inputTokens ?? 0;
+      const completionTokens = u.completion_tokens ?? u.outputTokens ?? 0;
+      const totalTokens = u.total_tokens ?? (promptTokens + completionTokens);
+      const cachedTokens = u.input_tokens_details?.cached_tokens ?? u.cacheReadTokens ?? 0;
+      const cacheCreationTokens = u.cache_creation_input_tokens ?? u.cacheCreationTokens ?? 0;
+      cumulativeUsage.value = {
+        promptTokens: cumulativeUsage.value.promptTokens + promptTokens,
+        completionTokens: cumulativeUsage.value.completionTokens + completionTokens,
+        totalTokens: cumulativeUsage.value.totalTokens + totalTokens,
+        cachedTokens: cumulativeUsage.value.cachedTokens + cachedTokens,
+        cacheCreationTokens: cumulativeUsage.value.cacheCreationTokens + cacheCreationTokens,
+      };
       return;
     }
 
@@ -847,6 +867,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageIndex.value.clear();
     messageOrder.value = [];
     usage.value = null;
+    cumulativeUsage.value = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -992,6 +1013,7 @@ export function useChat(options: UseChatOptions = {}) {
     isSending,
     error,
     usage,
+    cumulativeUsage,
     transport,
     threadId,
     currentRunId,

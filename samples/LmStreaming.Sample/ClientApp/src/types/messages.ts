@@ -140,6 +140,9 @@ export interface Usage {
   completion_tokens?: number;
   total_tokens?: number;
   total_cost?: number | null;
+  input_tokens_details?: { cached_tokens?: number } | null;
+  cache_creation_input_tokens?: number;
+  // Legacy camelCase aliases (some providers may use these)
   inputTokens?: number;
   outputTokens?: number;
   cacheCreationTokens?: number;

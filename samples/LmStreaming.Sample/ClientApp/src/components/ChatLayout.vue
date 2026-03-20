@@ -44,7 +44,7 @@ const {
   isLoading: chatLoading,
   isSending,
   error,
-  usage,
+  cumulativeUsage,
   pendingMessages,
   sendMessage,
   clearMessages,
@@ -291,9 +291,16 @@ onMounted(() => {
           {{ error }}
         </div>
 
-        <div v-if="usage" class="usage-banner">
-          Tokens: {{ usage.usage.inputTokens ?? usage.usage.prompt_tokens ?? 0 }} in /
-          {{ usage.usage.outputTokens ?? usage.usage.completion_tokens ?? 0 }} out
+        <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner">
+          Total: {{ cumulativeUsage.totalTokens }} |
+          In: {{ cumulativeUsage.promptTokens }} |
+          Out: {{ cumulativeUsage.completionTokens }}
+          <template v-if="cumulativeUsage.cachedTokens > 0">
+            | Cached: {{ cumulativeUsage.cachedTokens }}
+          </template>
+          <template v-if="cumulativeUsage.cacheCreationTokens > 0">
+            | Cache created: {{ cumulativeUsage.cacheCreationTokens }}
+          </template>
         </div>
 
         <PendingMessageQueue :pending-messages="pendingMessages" />
