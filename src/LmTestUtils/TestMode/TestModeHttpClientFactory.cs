@@ -70,6 +70,68 @@ public static class TestModeHttpClientFactory
 
         return new HttpClient(handler) { BaseAddress = new Uri(baseAddress) };
     }
+
+    public static HttpClient CreateEmbeddingTestClient(
+        ILoggerFactory? loggerFactory = null,
+        RequestCaptureBase? capture = null,
+        HttpStatusCode[]? statusSequence = null,
+        TimeSpan? delay = null,
+        int embeddingSize = 1536,
+        string baseAddress = "http://test-mode/v1/embeddings"
+    )
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+
+        HttpMessageHandler handler = new TestEmbeddingMessageHandler(
+            loggerFactory.CreateLogger<TestEmbeddingMessageHandler>()
+        )
+        {
+            EmbeddingSize = embeddingSize,
+            Delay = delay
+        };
+
+        if (statusSequence is { Length: > 0 })
+        {
+            handler = new StatusSequenceDelegatingHandler(statusSequence, handler);
+        }
+
+        if (capture != null)
+        {
+            handler = new RequestCaptureDelegatingHandler(capture, handler);
+        }
+
+        return new HttpClient(handler) { BaseAddress = new Uri(baseAddress) };
+    }
+
+    public static HttpClient CreateRerankTestClient(
+        ILoggerFactory? loggerFactory = null,
+        RequestCaptureBase? capture = null,
+        HttpStatusCode[]? statusSequence = null,
+        TimeSpan? delay = null,
+        string baseAddress = "http://test-mode/v1/rerank"
+    )
+    {
+        loggerFactory ??= NullLoggerFactory.Instance;
+
+        HttpMessageHandler handler = new TestRerankMessageHandler(
+            loggerFactory.CreateLogger<TestRerankMessageHandler>()
+        )
+        {
+            Delay = delay
+        };
+
+        if (statusSequence is { Length: > 0 })
+        {
+            handler = new StatusSequenceDelegatingHandler(statusSequence, handler);
+        }
+
+        if (capture != null)
+        {
+            handler = new RequestCaptureDelegatingHandler(capture, handler);
+        }
+
+        return new HttpClient(handler) { BaseAddress = new Uri(baseAddress) };
+    }
 }
 
 internal sealed class RequestCaptureDelegatingHandler : DelegatingHandler
