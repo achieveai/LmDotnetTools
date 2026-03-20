@@ -70,9 +70,10 @@ public record ClaudeAgentSdkOptions
     public TimeSpan KeepAliveInterval { get; init; } = TimeSpan.FromSeconds(12);
 
     /// <summary>
-    ///     Comma-separated list of available built-in tools (maps to CLI --tools flag).
-    ///     Restricts which tools the agent can use. Use "" to disable all built-in tools.
-    ///     If null, defaults to all tools: "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch"
+    ///     Comma-separated list of built-in tools available to the agent.
+    ///     Passed as the --tools CLI flag, which controls tool availability
+    ///     (not just permissions). Tools not listed here are removed from the model's context.
+    ///     If null, defaults to: "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch"
     /// </summary>
     public string? AllowedTools { get; init; }
 
