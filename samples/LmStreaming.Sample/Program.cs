@@ -1,6 +1,6 @@
-using System.Text;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
@@ -8,12 +8,12 @@ using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
@@ -528,31 +528,21 @@ public partial class Program
         var developerInstructions = Environment.GetEnvironmentVariable("CODEX_DEVELOPER_INSTRUCTIONS");
         var modelInstructionsFile = Environment.GetEnvironmentVariable("CODEX_MODEL_INSTRUCTIONS_FILE");
         var toolBridgeModeRaw = Environment.GetEnvironmentVariable("CODEX_TOOL_BRIDGE_MODE") ?? "hybrid";
-        var exposeInternalToolsAsToolMessages = bool.TryParse(
+        var exposeInternalToolsAsToolMessages = !bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_EXPOSE_INTERNAL_TOOLS_AS_TOOL_MESSAGES"),
-            out var parsedExposeInternalToolsAsToolMessages)
-            ? parsedExposeInternalToolsAsToolMessages
-            : true;
+            out var parsedExposeInternalToolsAsToolMessages) || parsedExposeInternalToolsAsToolMessages;
         var emitLegacyInternalToolReasoningSummaries = bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_EMIT_LEGACY_INTERNAL_TOOL_REASONING_SUMMARIES"),
-            out var parsedEmitLegacyInternalToolReasoningSummaries)
-            ? parsedEmitLegacyInternalToolReasoningSummaries
-            : false;
-        var networkEnabled = bool.TryParse(
+            out var parsedEmitLegacyInternalToolReasoningSummaries) && parsedEmitLegacyInternalToolReasoningSummaries;
+        var networkEnabled = !bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_NETWORK_ACCESS_ENABLED"),
-            out var parsedNetworkEnabled)
-            ? parsedNetworkEnabled
-            : true;
-        var skipGitRepoCheck = bool.TryParse(
+            out var parsedNetworkEnabled) || parsedNetworkEnabled;
+        var skipGitRepoCheck = !bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_SKIP_GIT_REPO_CHECK"),
-            out var parsedSkipGit)
-            ? parsedSkipGit
-            : true;
+            out var parsedSkipGit) || parsedSkipGit;
         var emitSyntheticUpdates = bool.TryParse(
             Environment.GetEnvironmentVariable("CODEX_EMIT_SYNTHETIC_MESSAGE_UPDATES"),
-            out var parsedEmitSyntheticUpdates)
-            ? parsedEmitSyntheticUpdates
-            : false;
+            out var parsedEmitSyntheticUpdates) && parsedEmitSyntheticUpdates;
         // Retained as a diagnostic-only compatibility knob; raw provider streaming remains default.
         var syntheticChunkSize = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_SYNTHETIC_MESSAGE_UPDATE_CHUNK_CHARS"),
@@ -601,7 +591,7 @@ public partial class Program
         if (enableRpcTrace && string.IsNullOrWhiteSpace(traceFilePath))
         {
             var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
-            Directory.CreateDirectory(logsDir);
+            _ = Directory.CreateDirectory(logsDir);
             traceFilePath = Path.Combine(logsDir, $"codex-rpc-{sessionId}.jsonl");
         }
 

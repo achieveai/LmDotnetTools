@@ -1,13 +1,12 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Tools;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -92,7 +91,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         if (functionRegistry != null && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)
         {
             var (contracts, handlers) = functionRegistry.Build();
-            dynamicContracts = contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name)).ToList();
+            dynamicContracts = [.. contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name))];
             dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(handlers, StringComparer.OrdinalIgnoreCase);
         }
 
@@ -135,7 +134,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
         if (_dynamicToolBridge != null)
         {
-            _client.ConfigureDynamicToolExecutor((request, token) => _dynamicToolBridge.ExecuteAsync(request, token));
+            _client.ConfigureDynamicToolExecutor(_dynamicToolBridge.ExecuteAsync);
         }
         else
         {

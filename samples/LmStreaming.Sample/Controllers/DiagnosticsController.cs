@@ -195,26 +195,20 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
 
     private static int GetEffectiveCodexMcpPort()
     {
-        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT_EFFECTIVE"), out var effectivePort)
+        return int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT_EFFECTIVE"), out var effectivePort)
             && effectivePort > 0
-            && effectivePort <= 65535)
-        {
-            return effectivePort;
-        }
-
-        return GetConfiguredCodexMcpPort();
+            && effectivePort <= 65535
+            ? effectivePort
+            : GetConfiguredCodexMcpPort();
     }
 
     private static int GetConfiguredCodexMcpPort()
     {
-        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
+        return int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
             && port > 0
-            && port <= 65535)
-        {
-            return port;
-        }
-
-        return 39200;
+            && port <= 65535
+            ? port
+            : 39200;
     }
 
     private static bool GetRpcTraceEnabled()
@@ -413,11 +407,6 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
 
     private static string Truncate(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return value.Length <= 500 ? value : value[..500];
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Length <= 500 ? value : value[..500];
     }
 }

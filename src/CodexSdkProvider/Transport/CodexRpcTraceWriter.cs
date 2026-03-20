@@ -33,7 +33,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         var directory = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
-            Directory.CreateDirectory(directory);
+            _ = Directory.CreateDirectory(directory);
         }
 
         _writer = new StreamWriter(filePath, append: true, Encoding.UTF8);
@@ -146,7 +146,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         }
         finally
         {
-            _writeLock.Release();
+            _ = _writeLock.Release();
         }
     }
 
@@ -163,7 +163,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         }
         finally
         {
-            _writeLock.Release();
+            _ = _writeLock.Release();
             _writeLock.Dispose();
         }
     }
@@ -212,7 +212,18 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
 
                 writer.WriteEndArray();
                 return;
-
+            case JsonValueKind.Undefined:
+                break;
+            case JsonValueKind.String:
+                break;
+            case JsonValueKind.Number:
+                break;
+            case JsonValueKind.True:
+                break;
+            case JsonValueKind.False:
+                break;
+            case JsonValueKind.Null:
+                break;
             default:
                 element.WriteTo(writer);
                 return;

@@ -20,21 +20,15 @@ internal static class CodexEventParser
             return threadIdProp.GetString();
         }
 
-        if (root.Value.TryGetProperty("thread_id", out var threadIdSnake)
-            && threadIdSnake.ValueKind == JsonValueKind.String)
-        {
-            return threadIdSnake.GetString();
-        }
-
-        if (root.Value.TryGetProperty("thread", out var threadProp)
+        return root.Value.TryGetProperty("thread_id", out var threadIdSnake)
+            && threadIdSnake.ValueKind == JsonValueKind.String
+            ? threadIdSnake.GetString()
+            : root.Value.TryGetProperty("thread", out var threadProp)
             && threadProp.ValueKind == JsonValueKind.Object
             && threadProp.TryGetProperty("id", out var idProp)
-            && idProp.ValueKind == JsonValueKind.String)
-        {
-            return idProp.GetString();
-        }
-
-        return null;
+            && idProp.ValueKind == JsonValueKind.String
+            ? idProp.GetString()
+            : null;
     }
 
     public static string? ExtractTurnId(JsonElement? root)
@@ -50,21 +44,15 @@ internal static class CodexEventParser
             return turnIdProp.GetString();
         }
 
-        if (root.Value.TryGetProperty("turn_id", out var turnIdSnake)
-            && turnIdSnake.ValueKind == JsonValueKind.String)
-        {
-            return turnIdSnake.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
+        return root.Value.TryGetProperty("turn_id", out var turnIdSnake)
+            && turnIdSnake.ValueKind == JsonValueKind.String
+            ? turnIdSnake.GetString()
+            : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("id", out var idProp)
-            && idProp.ValueKind == JsonValueKind.String)
-        {
-            return idProp.GetString();
-        }
-
-        return null;
+            && idProp.ValueKind == JsonValueKind.String
+            ? idProp.GetString()
+            : null;
     }
 
     public static string? ExtractTurnStatus(JsonElement? root)
@@ -74,21 +62,15 @@ internal static class CodexEventParser
             return null;
         }
 
-        if (root.Value.TryGetProperty("status", out var statusProp)
-            && statusProp.ValueKind == JsonValueKind.String)
-        {
-            return statusProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
+        return root.Value.TryGetProperty("status", out var statusProp)
+            && statusProp.ValueKind == JsonValueKind.String
+            ? statusProp.GetString()
+            : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("status", out var turnStatus)
-            && turnStatus.ValueKind == JsonValueKind.String)
-        {
-            return turnStatus.GetString();
-        }
-
-        return null;
+            && turnStatus.ValueKind == JsonValueKind.String
+            ? turnStatus.GetString()
+            : null;
     }
 
     public static string? ExtractTurnErrorMessage(JsonElement? root)
@@ -98,25 +80,19 @@ internal static class CodexEventParser
             return null;
         }
 
-        if (root.Value.TryGetProperty("error", out var errorProp)
+        return root.Value.TryGetProperty("error", out var errorProp)
             && errorProp.ValueKind == JsonValueKind.Object
             && errorProp.TryGetProperty("message", out var messageProp)
-            && messageProp.ValueKind == JsonValueKind.String)
-        {
-            return messageProp.GetString();
-        }
-
-        if (root.Value.TryGetProperty("turn", out var turnProp)
+            && messageProp.ValueKind == JsonValueKind.String
+            ? messageProp.GetString()
+            : root.Value.TryGetProperty("turn", out var turnProp)
             && turnProp.ValueKind == JsonValueKind.Object
             && turnProp.TryGetProperty("error", out var turnErrorProp)
             && turnErrorProp.ValueKind == JsonValueKind.Object
             && turnErrorProp.TryGetProperty("message", out var turnMessageProp)
-            && turnMessageProp.ValueKind == JsonValueKind.String)
-        {
-            return turnMessageProp.GetString();
-        }
-
-        return null;
+            && turnMessageProp.ValueKind == JsonValueKind.String
+            ? turnMessageProp.GetString()
+            : null;
     }
 
     public static string? ExtractErrorMessage(JsonElement payload)
@@ -136,44 +112,27 @@ internal static class CodexEventParser
             }
         }
 
-        if (TryGetProperty(payload, "message", out var fallbackMessage)
-            && fallbackMessage.ValueKind == JsonValueKind.String)
-        {
-            return fallbackMessage.GetString();
-        }
-
-        return null;
+        return TryGetProperty(payload, "message", out var fallbackMessage)
+            && fallbackMessage.ValueKind == JsonValueKind.String
+            ? fallbackMessage.GetString()
+            : null;
     }
 
     public static string? GetPropertyString(JsonElement? root, string propertyName)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String)
-        {
-            return property.GetString();
-        }
-
-        return null;
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
     }
 
     public static JsonElement? GetPropertyElement(JsonElement? root, string propertyName)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty(propertyName, out var property))
-        {
-            return property.Clone();
-        }
-
-        return null;
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty(propertyName, out var property) ? property.Clone() : null;
     }
 
     public static bool TryGetProperty(JsonElement root, string propertyName, out JsonElement value)
@@ -246,24 +205,21 @@ internal static class CodexEventParser
 
     public static string NormalizeInternalToolStatus(string? status, bool hasError)
     {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return hasError ? "error" : "success";
-        }
-
-        return status switch
-        {
-            "completed" => hasError ? "error" : "success",
-            "success" => "success",
-            "failed" => "error",
-            "error" => "error",
-            "interrupted" => "cancelled",
-            "cancelled" => "cancelled",
-            "canceled" => "cancelled",
-            "timed_out" => "timed_out",
-            "timeout" => "timed_out",
-            _ => hasError ? "error" : "success",
-        };
+        return string.IsNullOrWhiteSpace(status)
+            ? hasError ? "error" : "success"
+            : status switch
+            {
+                "completed" => hasError ? "error" : "success",
+                "success" => "success",
+                "failed" => "error",
+                "error" => "error",
+                "interrupted" => "cancelled",
+                "cancelled" => "cancelled",
+                "canceled" => "cancelled",
+                "timed_out" => "timed_out",
+                "timeout" => "timed_out",
+                _ => hasError ? "error" : "success",
+            };
     }
 
     public static string? NormalizeInternalToolName(string? itemType)
@@ -376,12 +332,14 @@ internal static class CodexEventParser
                 AddStringField(destination, payload, "operation", "operation", "action");
                 AddRawField(destination, payload, "items", "items", "todos");
                 break;
+            default:
+                break;
         }
     }
 
     public static void AddStringField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (TryGetProperty(payload, candidate, out var value) && value.ValueKind == JsonValueKind.String)
@@ -394,7 +352,7 @@ internal static class CodexEventParser
 
     public static void AddIntField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (!TryGetProperty(payload, candidate, out var value))
@@ -418,7 +376,7 @@ internal static class CodexEventParser
 
     public static void AddRawField(Dictionary<string, object?> destination, JsonElement payload, string targetName, params string[] sourceCandidates)
     {
-        var names = sourceCandidates.Length == 0 ? new[] { targetName } : sourceCandidates;
+        var names = sourceCandidates.Length == 0 ? [targetName] : sourceCandidates;
         foreach (var candidate in names)
         {
             if (TryGetProperty(payload, candidate, out var value))
@@ -437,11 +395,6 @@ internal static class CodexEventParser
 
     public static string Truncate(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return value.Length <= 2_000 ? value : value[..2_000];
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Length <= 2_000 ? value : value[..2_000];
     }
 }

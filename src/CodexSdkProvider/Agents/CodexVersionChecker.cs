@@ -49,19 +49,13 @@ internal static class CodexVersionChecker
         }
 
         var detectedVersion = ExtractVersion(combined);
-        if (string.IsNullOrWhiteSpace(detectedVersion))
-        {
-            throw new InvalidOperationException(
-                $"Could not parse Codex CLI version from output: {CodexEventParser.Truncate(combined)}");
-        }
-
-        if (CompareVersion(detectedVersion, minVersion) < 0)
-        {
-            throw new InvalidOperationException(
-                $"Codex CLI version '{detectedVersion}' is below minimum required '{minVersion}'.");
-        }
-
-        return detectedVersion;
+        return string.IsNullOrWhiteSpace(detectedVersion)
+            ? throw new InvalidOperationException(
+                $"Could not parse Codex CLI version from output: {CodexEventParser.Truncate(combined)}")
+            : CompareVersion(detectedVersion, minVersion) < 0
+            ? throw new InvalidOperationException(
+                $"Codex CLI version '{detectedVersion}' is below minimum required '{minVersion}'.")
+            : detectedVersion;
     }
 
     public static string? ExtractVersion(string value)
@@ -72,12 +66,7 @@ internal static class CodexVersionChecker
         }
 
         var match = VersionRegex.Match(value);
-        if (!match.Success)
-        {
-            return null;
-        }
-
-        return $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
+        return !match.Success ? null : $"{match.Groups["major"].Value}.{match.Groups["minor"].Value}.{match.Groups["patch"].Value}";
     }
 
     public static int CompareVersion(string left, string right)
@@ -100,13 +89,9 @@ internal static class CodexVersionChecker
     public static int[] ParseVersion(string version)
     {
         var match = VersionRegex.Match(version ?? string.Empty);
-        if (!match.Success)
-        {
-            throw new InvalidOperationException($"Invalid version string '{version}'.");
-        }
-
-        return
-        [
+        return !match.Success
+            ? throw new InvalidOperationException($"Invalid version string '{version}'.")
+            : [
             int.Parse(match.Groups["major"].Value),
             int.Parse(match.Groups["minor"].Value),
             int.Parse(match.Groups["patch"].Value),

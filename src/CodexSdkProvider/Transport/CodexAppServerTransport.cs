@@ -130,7 +130,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
         }
         finally
         {
-            _lifecycleLock.Release();
+            _ = _lifecycleLock.Release();
         }
     }
 
@@ -174,7 +174,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
         }
         catch
         {
-            _pendingRequests.TryRemove(id, out _);
+            _ = _pendingRequests.TryRemove(id, out _);
             throw;
         }
 
@@ -187,12 +187,12 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            _pendingRequests.TryRemove(id, out _);
+            _ = _pendingRequests.TryRemove(id, out _);
             throw new TimeoutException($"Timed out waiting for App Server response for method '{method}'.");
         }
         finally
         {
-            _pendingRequests.TryRemove(id, out _);
+            _ = _pendingRequests.TryRemove(id, out _);
         }
     }
 
@@ -302,7 +302,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
             _stdoutTask = null;
             _stderrTask = null;
 
-            _lifecycleLock.Release();
+            _ = _lifecycleLock.Release();
         }
     }
 
@@ -588,7 +588,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
         }
         finally
         {
-            _writeLock.Release();
+            _ = _writeLock.Release();
         }
     }
 
