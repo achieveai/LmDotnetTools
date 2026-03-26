@@ -250,18 +250,39 @@ public record ChatCompletionRequest
                     },
                 ];
             case ToolsCallResultMessage toolCallResultMessage:
-                return toolCallResultMessage
-                    .ToolCallResults.Where(tc => tc.Result != null)
-                    .Select(tc =>
-                    {
-                        var toolCallId = tc.ToolCallId;
-                        return new ChatMessage
+                {
+                    var toolMessages = toolCallResultMessage
+                        .ToolCallResults.Where(tc => tc.Result != null)
+                        .Select(tc => new ChatMessage
                         {
                             Role = RoleEnum.Tool,
-                            ToolCallId = toolCallId,
+                            ToolCallId = tc.ToolCallId,
                             Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!),
+                        });
+
+                    // OpenAI does not support images in tool_result messages.
+                    // Collect images from ContentBlocks and append as a user message.
+                    var imageContents = toolCallResultMessage
+                        .ToolCallResults.Where(tc => tc.Result != null && tc.ContentBlocks != null)
+                        .SelectMany(tc => tc.ContentBlocks!)
+                        .OfType<ImageToolResultBlock>()
+                        .Select(img => new Union<TextContent, ImageContent>(
+                            new ImageContent($"data:{img.MimeType};base64,{img.Data}")))
+                        .ToList();
+
+                    if (imageContents.Count > 0)
+                    {
+                        var imageMessage = new ChatMessage
+                        {
+                            Role = RoleEnum.User,
+                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
+                                [.. imageContents]),
                         };
-                    });
+                        return toolMessages.Append(imageMessage);
+                    }
+
+                    return toolMessages;
+                }
             case ToolsCallAggregateMessage toolCallAggregateMessage:
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -96,10 +97,39 @@ public record AnthropicContent
     public string? ToolUseId { get; init; }
 
     /// <summary>
-    ///     The content of the tool result, when Type is "tool_result".
+    ///     The text content of the tool result, when Type is "tool_result".
+    ///     For text-only results, this is serialized as a string.
+    ///     Unconditional [JsonIgnore] avoids collision with ContentRaw's [JsonPropertyName("content")].
+    /// </summary>
+    [JsonIgnore]
+    public string? Content { get; init; }
+
+    /// <summary>
+    ///     Multimodal content blocks for tool_result (text + images).
+    ///     When set, ContentRaw serializes as an array of content blocks instead of a plain string.
+    /// </summary>
+    [JsonIgnore]
+    public IList<AnthropicContent>? ToolResultContentBlocks { get; init; }
+
+    /// <summary>
+    ///     Serialization property for the tool result content.
+    ///     Serializes as an array when ToolResultContentBlocks is set, otherwise as a string.
+    ///     Follows the same computed-property pattern as SystemRaw in AnthropicRequest.
     /// </summary>
     [JsonPropertyName("content")]
-    public string? Content { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonNode? ContentRaw =>
+        ToolResultContentBlocks is { Count: > 0 }
+            ? JsonSerializer.SerializeToNode(ToolResultContentBlocks, s_contentBlockOptions)
+            : Content != null ? JsonValue.Create(Content) : null;
+
+    /// <summary>
+    ///     Serialization options for content blocks — omits null fields to keep the JSON clean.
+    /// </summary>
+    private static readonly JsonSerializerOptions s_contentBlockOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
     /// <summary>
     ///     Cache control directive for prompt caching.

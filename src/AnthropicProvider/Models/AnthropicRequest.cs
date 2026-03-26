@@ -318,12 +318,15 @@ public record AnthropicRequest
                 // since providers like Kimi treat server_tool_use as regular tool_use
                 // and require a matching tool_result in the next user turn.
                 secondaryMessage ??= new AnthropicMessage { Role = "user" };
+                var serverToolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    toolCallResultMsg.ContentBlocks, toolCallResultMsg.IsError);
                 secondaryMessage.Content.Add(
                     new AnthropicContent
                     {
                         Type = "tool_result",
                         ToolUseId = toolCallResultMsg.ToolCallId,
-                        Content = toolCallResultMsg.Result,
+                        Content = serverToolResultBlocks != null ? null : toolCallResultMsg.Result,
+                        ToolResultContentBlocks = serverToolResultBlocks,
                     }
                 );
             }
@@ -418,12 +421,15 @@ public record AnthropicRequest
         }
         else if (message is ToolCallResultMessage singularToolResultMsg)
         {
+            var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                singularToolResultMsg.ContentBlocks, singularToolResultMsg.IsError);
             anthropicMessage.Content.Add(
                 new AnthropicContent
                 {
                     Type = "tool_result",
                     ToolUseId = singularToolResultMsg.ToolCallId,
-                    Content = singularToolResultMsg.Result,
+                    Content = toolResultBlocks != null ? null : singularToolResultMsg.Result,
+                    ToolResultContentBlocks = toolResultBlocks,
                 }
             );
         }
@@ -458,12 +464,15 @@ public record AnthropicRequest
             // Then add tool results
             foreach (var result in toolResultMsg.ToolCallResults)
             {
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    result.ContentBlocks, result.IsError);
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
                         Type = "tool_result",
                         ToolUseId = result.ToolCallId,
-                        Content = result.Result,
+                        Content = toolResultBlocks != null ? null : result.Result,
+                        ToolResultContentBlocks = toolResultBlocks,
                     }
                 );
             }
@@ -484,6 +493,8 @@ public record AnthropicRequest
                 )
             )
             {
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    toolResult.ContentBlocks, toolResult.IsError);
                 yield return (
                     new AnthropicContent
                     {
@@ -496,7 +507,8 @@ public record AnthropicRequest
                     {
                         Type = "tool_result",
                         ToolUseId = toolCall.ToolCallId,
-                        Content = toolResult.Result,
+                        Content = toolResultBlocks != null ? null : toolResult.Result,
+                        ToolResultContentBlocks = toolResultBlocks,
                     }
                 );
             }
@@ -713,6 +725,57 @@ public record AnthropicRequest
         {
             return JsonSerializer.Deserialize<JsonElement>("{}");
         }
+    }
+
+    /// <summary>
+    ///     Converts LmCore ToolResultContentBlocks to Anthropic content block format.
+    ///     Returns null when the result should use the simpler string format:
+    ///     - No content blocks present
+    ///     - No images in the content blocks (text-only blocks fall back to string)
+    ///     - Error results (always text-only per Anthropic API convention)
+    /// </summary>
+    private static IList<AnthropicContent>? ToAnthropicToolResultContentBlocks(
+        IList<ToolResultContentBlock>? contentBlocks, bool isError = false)
+    {
+        if (isError || contentBlocks == null || contentBlocks.Count == 0)
+        {
+            return null;
+        }
+
+        // Only use array format when images are present; text-only results
+        // use the simpler string format for backward compatibility.
+        if (!contentBlocks.OfType<ImageToolResultBlock>().Any())
+        {
+            return null;
+        }
+
+        var result = new List<AnthropicContent>(contentBlocks.Count);
+        foreach (var block in contentBlocks)
+        {
+            switch (block)
+            {
+                case TextToolResultBlock textBlock:
+                    result.Add(new AnthropicContent { Type = "text", Text = textBlock.Text });
+                    break;
+                case ImageToolResultBlock imageBlock:
+                    result.Add(new AnthropicContent
+                    {
+                        Type = "image",
+                        Source = new ImageSource
+                        {
+                            Type = "base64",
+                            MediaType = imageBlock.MimeType,
+                            Data = imageBlock.Data,
+                        },
+                    });
+                    break;
+                default:
+                    // Unknown block types are skipped; only text and image are supported by Anthropic.
+                    break;
+            }
+        }
+
+        return result;
     }
 }
 

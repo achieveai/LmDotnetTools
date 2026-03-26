@@ -75,22 +75,28 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             string.Join(", ", mcpClients.Keys)
         );
 
-        // Extract function contracts and create handlers
-        var functionContracts = await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
-        var functionMap = await CreateFunctionMapAsync(mcpClients, logger, cancellationToken);
+        // Cache tool listings once per client to avoid redundant ListToolsAsync calls
+        var toolsByServer = await FetchToolsByServerAsync(mcpClients, logger, cancellationToken);
 
-        // Create function descriptors
+        // Extract function contracts and create both text-only and multimodal handler maps
+        var functionContracts = ExtractFunctionContractsFromCache(toolsByServer, logger);
+        var functionMap = CreateFunctionMapFromCache(mcpClients, toolsByServer, logger);
+        var multiModalMap = CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger);
+
+        // Create function descriptors with both text-only and multimodal handlers
         var functions = new List<FunctionDescriptor>();
         foreach (var contract in functionContracts)
         {
             var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
+                multiModalMap.TryGetValue(key, out var multiModalHandler);
                 functions.Add(
                     new FunctionDescriptor
                     {
                         Contract = contract,
                         Handler = handler,
+                        MultiModalHandler = multiModalHandler,
                         ProviderName = providerName ?? "McpClient",
                     }
                 );
@@ -231,7 +237,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             toolFilter = new FunctionFilter(toolFilterConfig, logger);
         }
 
-        // Extract function contracts and create handlers using naming map
+        // Extract function contracts and create both text-only and multimodal handler maps
         var functionContracts = await ExtractFunctionContractsWithNamingMapAsync(
             mcpClients,
             toolsByServer,
@@ -248,19 +254,28 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             logger,
             cancellationToken
         );
+        var multiModalMap = CreateMultiModalFunctionMapWithNamingMap(
+            mcpClients,
+            toolsByServer,
+            namingMap,
+            toolFilter,
+            logger
+        );
 
-        // Create function descriptors
+        // Create function descriptors with both text-only and multimodal handlers
         var functions = new List<FunctionDescriptor>();
         foreach (var contract in functionContracts)
         {
             var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
+                multiModalMap.TryGetValue(key, out var multiModalHandler);
                 functions.Add(
                     new FunctionDescriptor
                     {
                         Contract = contract,
                         Handler = handler,
+                        MultiModalHandler = multiModalHandler,
                         ProviderName = providerName ?? "McpClient",
                     }
                 );
@@ -277,53 +292,73 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    ///     Extracts function contracts from MCP client tools
-    ///     (Reused from McpMiddleware with minor adaptations)
+    ///     Fetches tools from all MCP clients once, caching the results to avoid
+    ///     redundant ListToolsAsync calls across contract extraction and map creation.
     /// </summary>
-    private static async Task<IEnumerable<FunctionContract>> ExtractFunctionContractsAsync(
+    private static async Task<Dictionary<string, List<McpClientTool>>> FetchToolsByServerAsync(
         Dictionary<string, McpClient> mcpClients,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
     )
     {
-        var functionContracts = new List<FunctionContract>();
-
-        foreach (var kvp in mcpClients)
+        var toolsByServer = new Dictionary<string, List<McpClientTool>>();
+        foreach (var (serverId, client) in mcpClients)
         {
             try
             {
-                var tools = await kvp.Value.ListToolsAsync(cancellationToken: cancellationToken);
-
-                foreach (var tool in tools)
-                {
-                    try
-                    {
-                        var contract = ConvertToFunctionContract(kvp.Key, tool, logger);
-                        functionContracts.Add(contract);
-
-                        logger.LogDebug(
-                            "Function contract extracted: FunctionName={FunctionName}, ClientId={ClientId}, ParameterCount={ParameterCount}",
-                            contract.Name,
-                            kvp.Key,
-                            contract.Parameters?.Count() ?? 0
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(
-                            ex,
-                            "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}",
-                            kvp.Key,
-                            tool.Name
-                        );
-                        // Continue with other tools even if one fails
-                    }
-                }
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
+                toolsByServer[serverId] = [.. tools];
+                logger.LogDebug(
+                    "Retrieved tools for server {ServerId}: ToolCount={ToolCount}",
+                    serverId,
+                    tools.Count
+                );
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
-                // Continue with other clients even if one fails
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", serverId);
+                toolsByServer[serverId] = [];
+            }
+        }
+
+        return toolsByServer;
+    }
+
+    /// <summary>
+    ///     Extracts function contracts from cached tool listings.
+    /// </summary>
+    private static IEnumerable<FunctionContract> ExtractFunctionContractsFromCache(
+        Dictionary<string, List<McpClientTool>> toolsByServer,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        var functionContracts = new List<FunctionContract>();
+
+        foreach (var (clientId, tools) in toolsByServer)
+        {
+            foreach (var tool in tools)
+            {
+                try
+                {
+                    var contract = ConvertToFunctionContract(clientId, tool, logger);
+                    functionContracts.Add(contract);
+
+                    logger.LogDebug(
+                        "Function contract extracted: FunctionName={FunctionName}, ClientId={ClientId}, ParameterCount={ParameterCount}",
+                        contract.Name,
+                        clientId,
+                        contract.Parameters?.Count() ?? 0
+                    );
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(
+                        ex,
+                        "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}",
+                        clientId,
+                        tool.Name
+                    );
+                }
             }
         }
 
@@ -331,160 +366,386 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    ///     Creates function delegates for the MCP clients asynchronously
-    ///     (Reused from McpMiddleware with minor adaptations)
+    ///     Creates text-only function handlers from cached tool listings.
     /// </summary>
-    private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
+    private static IDictionary<string, Func<string, Task<string>>> CreateFunctionMapFromCache(
         Dictionary<string, McpClient> mcpClients,
-        ILogger<McpClientFunctionProvider> logger,
-        CancellationToken cancellationToken = default
+        Dictionary<string, List<McpClientTool>> toolsByServer,
+        ILogger<McpClientFunctionProvider> logger
     )
     {
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 
-        logger.LogDebug(
-            "Creating function map: ClientCount={ClientCount}, ClientIds={ClientIds}",
-            mcpClients.Count,
-            string.Join(", ", mcpClients.Keys)
-        );
-
-        foreach (var kvp in mcpClients)
+        foreach (var (serverId, tools) in toolsByServer)
         {
-            var clientId = kvp.Key;
-            var client = kvp.Value;
-
-            try
+            if (!mcpClients.TryGetValue(serverId, out var client))
             {
-                // Get available tools from this client asynchronously
-                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-
-                logger.LogDebug(
-                    "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
-                    clientId,
-                    tools.Count,
-                    string.Join(", ", tools.Select(t => t.Name))
-                );
-
-                foreach (var tool in tools)
-                {
-                    var sanitizedClientId = SanitizeToolName(kvp.Key);
-                    var sanitizedToolName = SanitizeToolName(tool.Name);
-                    var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
-
-                    logger.LogDebug(
-                        "Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}, SanitizedName={SanitizedName}",
-                        functionName,
-                        clientId,
-                        tool.Name,
-                        functionName
-                    );
-
-                    // Create a delegate that calls the appropriate MCP client
-                    functionMap[functionName] = async argsJson =>
-                    {
-                        var stopwatch = Stopwatch.StartNew();
-                        try
-                        {
-                            logger.LogDebug(
-                                "Tool argument parsing: ToolName={ToolName}, ClientId={ClientId}, ArgsJson={ArgsJson}",
-                                tool.Name,
-                                clientId,
-                                argsJson
-                            );
-
-                            // Parse arguments from JSON
-                            Dictionary<string, object?> args;
-                            try
-                            {
-                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
-                            }
-                            catch (JsonException jsonEx)
-                            {
-                                logger.LogError(
-                                    jsonEx,
-                                    "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}, InputData={InputData}",
-                                    tool.Name,
-                                    clientId,
-                                    argsJson
-                                );
-                                throw;
-                            }
-
-                            logger.LogDebug(
-                                "Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}",
-                                tool.Name,
-                                args.Count,
-                                string.Join(", ", args.Keys)
-                            );
-
-                            // Call the MCP tool
-                            var response = await client.CallToolAsync(tool.Name, args);
-
-                            logger.LogDebug(
-                                "Tool response received: ToolName={ToolName}, ContentCount={ContentCount}",
-                                tool.Name,
-                                response.Content?.Count ?? 0
-                            );
-
-                            // Extract and format text response
-                            var result = string.Join(
-                                Environment.NewLine,
-                                response.Content != null
-                                    ? response
-                                        .Content.Where(c => c?.Type == "text")
-                                        .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
-                                    : []
-                            );
-
-                            logger.LogDebug(
-                                "Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}",
-                                tool.Name,
-                                result.Length
-                            );
-
-                            stopwatch.Stop();
-                            logger.LogDebug(
-                                "MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}",
-                                tool.Name,
-                                clientId,
-                                stopwatch.ElapsedMilliseconds,
-                                true,
-                                result.Length
-                            );
-
-                            return result;
-                        }
-                        catch (Exception ex)
-                        {
-                            stopwatch.Stop();
-                            logger.LogDebug(
-                                "Tool execution exception details: ToolName={ToolName}, ClientId={ClientId}, ExceptionType={ExceptionType}",
-                                tool.Name,
-                                clientId,
-                                ex.GetType().Name
-                            );
-                            logger.LogError(
-                                ex,
-                                "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Arguments={Arguments}",
-                                tool.Name,
-                                clientId,
-                                stopwatch.ElapsedMilliseconds,
-                                argsJson
-                            );
-
-                            return $"Error executing MCP tool {tool.Name}: {ex.Message}";
-                        }
-                    };
-                }
+                continue;
             }
-            catch (Exception ex)
+
+            foreach (var tool in tools)
             {
-                logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
-                // Continue with other clients even if one fails
+                var sanitizedClientId = SanitizeToolName(serverId);
+                var sanitizedToolName = SanitizeToolName(tool.Name);
+                var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
+
+                functionMap[functionName] = CreateTextOnlyHandler(client, tool, serverId, logger);
             }
         }
 
         return functionMap;
+    }
+
+    /// <summary>
+    ///     Creates multimodal function handlers from cached tool listings.
+    ///     These handlers return ToolCallResult with ContentBlocks preserving images.
+    /// </summary>
+    private static IDictionary<string, Func<string, Task<ToolCallResult>>> CreateMultiModalFunctionMapFromCache(
+        Dictionary<string, McpClient> mcpClients,
+        Dictionary<string, List<McpClientTool>> toolsByServer,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+
+        foreach (var (serverId, tools) in toolsByServer)
+        {
+            if (!mcpClients.TryGetValue(serverId, out var client))
+            {
+                continue;
+            }
+
+            foreach (var tool in tools)
+            {
+                var sanitizedClientId = SanitizeToolName(serverId);
+                var sanitizedToolName = SanitizeToolName(tool.Name);
+                var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
+
+                functionMap[functionName] = CreateMultiModalHandler(client, tool, serverId, logger);
+            }
+        }
+
+        return functionMap;
+    }
+
+    /// <summary>
+    ///     Creates multimodal function handlers using the naming map from collision detection.
+    /// </summary>
+    private static IDictionary<string, Func<string, Task<ToolCallResult>>> CreateMultiModalFunctionMapWithNamingMap(
+        Dictionary<string, McpClient> mcpClients,
+        Dictionary<string, List<McpClientTool>> toolsByServer,
+        Dictionary<(string serverId, string toolName), string> namingMap,
+        FunctionFilter? toolFilter,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+
+        foreach (var (serverId, tools) in toolsByServer)
+        {
+            if (!mcpClients.TryGetValue(serverId, out var client))
+            {
+                logger.LogWarning("Client not found for server: ServerId={ServerId}", serverId);
+                continue;
+            }
+
+            foreach (var tool in tools)
+            {
+                if (!namingMap.TryGetValue((serverId, tool.Name), out var registeredName))
+                {
+                    continue;
+                }
+
+                // Apply filtering if configured
+                if (toolFilter != null)
+                {
+                    var descriptor = new FunctionDescriptor
+                    {
+                        Contract = new FunctionContract { Name = tool.Name },
+                        Handler = _ => Task.FromResult(string.Empty),
+                        ProviderName = serverId,
+                    };
+
+                    if (toolFilter.ShouldFilterFunctionWithReason(descriptor, registeredName).IsFiltered)
+                    {
+                        continue;
+                    }
+                }
+
+                functionMap[registeredName] = CreateMultiModalHandler(client, tool, serverId, logger);
+            }
+        }
+
+        return functionMap;
+    }
+
+    /// <summary>
+    ///     Creates a text-only handler delegate for an MCP tool.
+    ///     Extracts only text content from the tool response.
+    /// </summary>
+    private static Func<string, Task<string>> CreateTextOnlyHandler(
+        McpClient client,
+        McpClientTool tool,
+        string serverId,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        return async argsJson =>
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                logger.LogDebug(
+                    "Tool argument parsing: ToolName={ToolName}, ClientId={ClientId}, ArgsJson={ArgsJson}",
+                    tool.Name,
+                    serverId,
+                    argsJson
+                );
+
+                var args = ParseToolArguments(argsJson, tool.Name, serverId, logger);
+
+                logger.LogDebug(
+                    "Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}",
+                    tool.Name,
+                    args.Count,
+                    string.Join(", ", args.Keys)
+                );
+
+                var response = await client.CallToolAsync(tool.Name, args);
+
+                logger.LogDebug(
+                    "Tool response received: ToolName={ToolName}, ContentCount={ContentCount}",
+                    tool.Name,
+                    response.Content?.Count ?? 0
+                );
+
+                var result = string.Join(
+                    Environment.NewLine,
+                    response.Content != null
+                        ? response
+                            .Content.Where(c => c?.Type == "text")
+                            .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
+                        : []
+                );
+
+                stopwatch.Stop();
+                logger.LogDebug(
+                    "MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}",
+                    tool.Name,
+                    serverId,
+                    stopwatch.ElapsedMilliseconds,
+                    true,
+                    result.Length
+                );
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                logger.LogDebug(
+                    "Tool execution exception details: ToolName={ToolName}, ClientId={ClientId}, ExceptionType={ExceptionType}",
+                    tool.Name,
+                    serverId,
+                    ex.GetType().Name
+                );
+                logger.LogError(
+                    ex,
+                    "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Arguments={Arguments}",
+                    tool.Name,
+                    serverId,
+                    stopwatch.ElapsedMilliseconds,
+                    argsJson
+                );
+
+                return $"Error executing MCP tool {tool.Name}: {ex.Message}";
+            }
+        };
+    }
+
+    /// <summary>
+    ///     Creates a multimodal handler delegate for an MCP tool.
+    ///     Returns ToolCallResult preserving both text and image content blocks.
+    /// </summary>
+    private static Func<string, Task<ToolCallResult>> CreateMultiModalHandler(
+        McpClient client,
+        McpClientTool tool,
+        string serverId,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        return async argsJson =>
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var args = ParseToolArguments(argsJson, tool.Name, serverId, logger);
+
+                var response = await client.CallToolAsync(tool.Name, args);
+
+                // Extract text content
+                var textResult = string.Join(
+                    Environment.NewLine,
+                    response.Content != null
+                        ? response.Content
+                            .Where(c => c?.Type == "text")
+                            .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
+                        : []
+                );
+
+                // Extract image content blocks with MIME type detection from bytes
+                var imageBlocks = ExtractImageBlocks(response, tool.Name, logger);
+
+                stopwatch.Stop();
+                logger.LogDebug(
+                    "Multi-modal MCP tool execution completed: ToolName={ToolName}, Duration={Duration}ms, ImageCount={ImageCount}",
+                    tool.Name,
+                    stopwatch.ElapsedMilliseconds,
+                    imageBlocks.Count
+                );
+
+                return new ToolCallResult(
+                    null, // ToolCallId will be set by executor
+                    textResult,
+                    imageBlocks.Count > 0 ? imageBlocks : null
+                );
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                logger.LogError(
+                    ex,
+                    "Multi-modal MCP tool execution failed: ToolName={ToolName}, Duration={Duration}ms",
+                    tool.Name,
+                    stopwatch.ElapsedMilliseconds
+                );
+
+                return new ToolCallResult(null, $"Error executing MCP tool {tool.Name}: {ex.Message}");
+            }
+        };
+    }
+
+    /// <summary>
+    ///     Parses JSON arguments for an MCP tool call.
+    /// </summary>
+    private static Dictionary<string, object?> ParseToolArguments(
+        string argsJson,
+        string toolName,
+        string serverId,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
+        }
+        catch (JsonException jsonEx)
+        {
+            logger.LogError(
+                jsonEx,
+                "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}, InputData={InputData}",
+                toolName,
+                serverId,
+                argsJson
+            );
+            throw;
+        }
+    }
+
+    /// <summary>
+    ///     Extracts image content blocks from an MCP tool response, detecting MIME types from bytes.
+    /// </summary>
+    private static List<LmCore.Messages.ToolResultContentBlock> ExtractImageBlocks(
+        CallToolResult response,
+        string toolName,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        var imageBlocks = new List<LmCore.Messages.ToolResultContentBlock>();
+        var imageBlocksInResponse = response.Content?.Count(c => c?.Type == "image") ?? 0;
+
+        logger.LogTrace(
+            "MCP response content analysis: ToolName={ToolName}, TotalBlocks={TotalBlocks}, ImageBlocks={ImageBlocks}",
+            toolName,
+            response.Content?.Count ?? 0,
+            imageBlocksInResponse
+        );
+
+        if (response.Content == null)
+        {
+            return imageBlocks;
+        }
+
+        var imageIndex = 0;
+        foreach (var content in response.Content.Where(c => c?.Type == "image"))
+        {
+            if (content is ImageContentBlock imgBlock && !string.IsNullOrEmpty(imgBlock.Data))
+            {
+                try
+                {
+                    var bytes = Convert.FromBase64String(imgBlock.Data);
+                    var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
+
+                    if (detectedMimeType != imgBlock.MimeType)
+                    {
+                        logger.LogInformation(
+                            "MIME type corrected in MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}, Header={HeaderMimeType}, Detected={DetectedMimeType}, ByteLength={ByteLength}",
+                            toolName,
+                            imageIndex,
+                            imgBlock.MimeType,
+                            detectedMimeType,
+                            bytes.Length
+                        );
+                    }
+                    else
+                    {
+                        logger.LogTrace(
+                            "Image processed: ToolName={ToolName}, ImageIndex={ImageIndex}, MimeType={MimeType}, ByteLength={ByteLength}",
+                            toolName,
+                            imageIndex,
+                            detectedMimeType,
+                            bytes.Length
+                        );
+                    }
+
+                    imageBlocks.Add(
+                        new ImageToolResultBlock { Data = imgBlock.Data, MimeType = detectedMimeType }
+                    );
+                }
+                catch (FormatException ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
+                        toolName,
+                        imageIndex,
+                        imgBlock.Data?.Length ?? 0
+                    );
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Failed to process image from MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}",
+                        toolName,
+                        imageIndex
+                    );
+                }
+            }
+            else
+            {
+                logger.LogDebug(
+                    "Skipping image block with missing data: ToolName={ToolName}, ImageIndex={ImageIndex}, IsImageContentBlock={IsImageContentBlock}",
+                    toolName,
+                    imageIndex,
+                    content is ImageContentBlock
+                );
+            }
+
+            imageIndex++;
+        }
+
+        return imageBlocks;
     }
 
     /// <summary>
@@ -503,181 +764,14 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     {
         ArgumentNullException.ThrowIfNull(mcpClients);
 
-        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
-
         logger.LogDebug(
             "Creating multi-modal function map: ClientCount={ClientCount}, ClientIds={ClientIds}",
             mcpClients.Count,
             string.Join(", ", mcpClients.Keys)
         );
 
-        foreach (var kvp in mcpClients)
-        {
-            var clientId = kvp.Key;
-            var client = kvp.Value;
-
-            try
-            {
-                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-
-                logger.LogDebug(
-                    "MCP multi-modal tool discovery: ClientId={ClientId}, ToolCount={ToolCount}",
-                    clientId,
-                    tools.Count
-                );
-
-                foreach (var tool in tools)
-                {
-                    var sanitizedClientId = SanitizeToolName(kvp.Key);
-                    var sanitizedToolName = SanitizeToolName(tool.Name);
-                    var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
-
-                    functionMap[functionName] = async argsJson =>
-                    {
-                        var stopwatch = Stopwatch.StartNew();
-                        try
-                        {
-                            // Parse arguments from JSON
-                            Dictionary<string, object?> args;
-                            try
-                            {
-                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
-                            }
-                            catch (JsonException jsonEx)
-                            {
-                                logger.LogError(jsonEx, "JSON parsing failed for multi-modal tool: {ToolName}", tool.Name);
-                                throw;
-                            }
-
-                            // Call the MCP tool
-                            var response = await client.CallToolAsync(tool.Name, args);
-
-                            // Extract text content
-                            var textResult = string.Join(
-                                Environment.NewLine,
-                                response.Content != null
-                                    ? response.Content
-                                        .Where(c => c?.Type == "text")
-                                        .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
-                                    : []
-                            );
-
-                            // Extract image content blocks with MIME type detection from bytes
-                            // Use fully qualified name to avoid ambiguity with MCP's ToolResultContentBlock
-                            var imageBlocks = new List<LmCore.Messages.ToolResultContentBlock>();
-                            var imageBlocksInResponse = response.Content?.Count(c => c?.Type == "image") ?? 0;
-                            logger.LogTrace(
-                                "MCP response content analysis: ToolName={ToolName}, TotalBlocks={TotalBlocks}, ImageBlocks={ImageBlocks}",
-                                tool.Name,
-                                response.Content?.Count ?? 0,
-                                imageBlocksInResponse);
-
-                            if (response.Content != null)
-                            {
-                                var imageIndex = 0;
-                                foreach (var content in response.Content.Where(c => c?.Type == "image"))
-                                {
-                                    if (content is ImageContentBlock imgBlock && !string.IsNullOrEmpty(imgBlock.Data))
-                                    {
-                                        try
-                                        {
-                                            // Detect MIME type from actual bytes (don't trust the header)
-                                            var bytes = Convert.FromBase64String(imgBlock.Data);
-                                            var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
-
-                                            // Log MIME type correction at info level for visibility
-                                            if (detectedMimeType != imgBlock.MimeType)
-                                            {
-                                                logger.LogInformation(
-                                                    "MIME type corrected in MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}, Header={HeaderMimeType}, Detected={DetectedMimeType}, ByteLength={ByteLength}",
-                                                    tool.Name,
-                                                    imageIndex,
-                                                    imgBlock.MimeType,
-                                                    detectedMimeType,
-                                                    bytes.Length);
-                                            }
-                                            else
-                                            {
-                                                logger.LogTrace(
-                                                    "Image processed: ToolName={ToolName}, ImageIndex={ImageIndex}, MimeType={MimeType}, ByteLength={ByteLength}",
-                                                    tool.Name,
-                                                    imageIndex,
-                                                    detectedMimeType,
-                                                    bytes.Length);
-                                            }
-
-                                            imageBlocks.Add(new ImageToolResultBlock
-                                            {
-                                                Data = imgBlock.Data,
-                                                MimeType = detectedMimeType
-                                            });
-                                        }
-                                        catch (FormatException ex)
-                                        {
-                                            logger.LogWarning(
-                                                ex,
-                                                "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
-                                                tool.Name,
-                                                imageIndex,
-                                                imgBlock.Data?.Length ?? 0);
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            logger.LogWarning(
-                                                ex,
-                                                "Failed to process image from MCP response: ToolName={ToolName}, ImageIndex={ImageIndex}",
-                                                tool.Name,
-                                                imageIndex);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        logger.LogDebug(
-                                            "Skipping image block with missing data: ToolName={ToolName}, ImageIndex={ImageIndex}, IsImageContentBlock={IsImageContentBlock}",
-                                            tool.Name,
-                                            imageIndex,
-                                            content is ImageContentBlock);
-                                    }
-                                    imageIndex++;
-                                }
-                            }
-
-                            stopwatch.Stop();
-                            logger.LogDebug(
-                                "Multi-modal MCP tool execution completed: ToolName={ToolName}, Duration={Duration}ms, ImageCount={ImageCount}",
-                                tool.Name,
-                                stopwatch.ElapsedMilliseconds,
-                                imageBlocks.Count
-                            );
-
-                            return new ToolCallResult(
-                                null, // ToolCallId will be set by executor
-                                textResult,
-                                imageBlocks.Count > 0 ? imageBlocks : null
-                            );
-                        }
-                        catch (Exception ex)
-                        {
-                            stopwatch.Stop();
-                            logger.LogError(
-                                ex,
-                                "Multi-modal MCP tool execution failed: ToolName={ToolName}, Duration={Duration}ms",
-                                tool.Name,
-                                stopwatch.ElapsedMilliseconds
-                            );
-
-                            return new ToolCallResult(null, $"Error executing MCP tool {tool.Name}: {ex.Message}");
-                        }
-                    };
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "MCP client multi-modal tool discovery failed: ClientId={ClientId}", clientId);
-            }
-        }
-
-        return functionMap;
+        var toolsByServer = await FetchToolsByServerAsync(mcpClients, logger, cancellationToken);
+        return CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger);
     }
 
     /// <summary>
@@ -882,8 +976,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 inputSchema?.GetType().Name ?? "null",
                 JsonSerializer.Serialize(inputSchema)
             );
-            // Log the error or handle it as needed
-            Console.Error.WriteLine($"Failed to extract parameters from input schema: {ex.Message}");
         }
 
         logger?.LogDebug(
@@ -1058,102 +1150,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     tool.Name
                 );
 
-                // Create a delegate that calls the appropriate MCP client
-                functionMap[registeredName] = async argsJson =>
-                {
-                    var stopwatch = Stopwatch.StartNew();
-                    try
-                    {
-                        logger.LogDebug(
-                            "Tool argument parsing: ToolName={ToolName}, ServerId={ServerId}, ArgsJson={ArgsJson}",
-                            tool.Name,
-                            serverId,
-                            argsJson
-                        );
-
-                        // Parse arguments from JSON
-                        Dictionary<string, object?> args;
-                        try
-                        {
-                            args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            logger.LogError(
-                                jsonEx,
-                                "JSON parsing failed for tool arguments: ToolName={ToolName}, ServerId={ServerId}, InputData={InputData}",
-                                tool.Name,
-                                serverId,
-                                argsJson
-                            );
-                            throw;
-                        }
-
-                        logger.LogDebug(
-                            "Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}",
-                            tool.Name,
-                            args.Count,
-                            string.Join(", ", args.Keys)
-                        );
-
-                        // Call the MCP tool with the original tool name
-                        var response = await client.CallToolAsync(tool.Name, args);
-
-                        logger.LogDebug(
-                            "Tool response received: ToolName={ToolName}, ContentCount={ContentCount}",
-                            tool.Name,
-                            response.Content?.Count ?? 0
-                        );
-
-                        // Extract and format text response
-                        var result = string.Join(
-                            Environment.NewLine,
-                            response.Content != null
-                                ? response
-                                    .Content.Where(c => c?.Type == "text")
-                                    .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
-                                : []
-                        );
-
-                        logger.LogDebug(
-                            "Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}",
-                            tool.Name,
-                            result.Length
-                        );
-
-                        stopwatch.Stop();
-                        logger.LogDebug(
-                            "MCP tool execution completed: ToolName={ToolName}, ServerId={ServerId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}",
-                            tool.Name,
-                            serverId,
-                            stopwatch.ElapsedMilliseconds,
-                            true,
-                            result.Length
-                        );
-
-                        return result;
-                    }
-                    catch (Exception ex)
-                    {
-                        stopwatch.Stop();
-                        logger.LogDebug(
-                            "Tool execution exception details: ToolName={ToolName}, ServerId={ServerId}, ExceptionType={ExceptionType}",
-                            tool.Name,
-                            serverId,
-                            ex.GetType().Name
-                        );
-                        logger.LogError(
-                            ex,
-                            "MCP tool execution failed: ToolName={ToolName}, ServerId={ServerId}, Duration={Duration}ms, Arguments={Arguments}",
-                            tool.Name,
-                            serverId,
-                            stopwatch.ElapsedMilliseconds,
-                            argsJson
-                        );
-
-                        return $"Error executing MCP tool {tool.Name}: {ex.Message}";
-                    }
-                };
+                functionMap[registeredName] = CreateTextOnlyHandler(client, tool, serverId, logger);
             }
         }
 

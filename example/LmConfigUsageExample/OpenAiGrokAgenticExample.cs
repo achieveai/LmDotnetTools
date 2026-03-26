@@ -192,7 +192,7 @@ public class OpenAiGrokAgenticExample
         );
 
         // Build middleware and handlers from registry
-        var (toolCallMiddleware, functionHandlers) = registry.BuildToolCallComponents(name: "ToolCallInjection");
+        var (toolCallMiddleware, functionHandlers, _) = registry.BuildToolCallComponents(name: "ToolCallInjection");
 
         // ===== Step 4: Create Provider Agent =====
         var providerAgent = _agentFactory.CreateStreamingAgent(resolution)

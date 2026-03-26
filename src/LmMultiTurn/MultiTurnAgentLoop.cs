@@ -60,7 +60,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         ArgumentNullException.ThrowIfNull(functionRegistry);
 
         // Build tool call components from registry
-        var (toolCallMiddleware, handlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
+        var (toolCallMiddleware, handlers, _) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = handlers;
 
         // Create publishing middleware that publishes to subscribers

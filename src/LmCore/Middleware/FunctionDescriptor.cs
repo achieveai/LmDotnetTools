@@ -1,4 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
@@ -15,6 +17,17 @@ public record FunctionDescriptor
     ///     The function handler that executes the actual function logic
     /// </summary>
     public required Func<string, Task<string>> Handler { get; init; }
+
+    /// <summary>
+    ///     Optional multimodal handler returning ToolCallResult with ContentBlocks.
+    ///     When set, FunctionCallMiddleware prefers this over the text-only Handler.
+    /// </summary>
+    public Func<string, Task<ToolCallResult>>? MultiModalHandler { get; init; }
+
+    /// <summary>
+    ///     Whether this descriptor has a multimodal handler available.
+    /// </summary>
+    public bool HasMultiModalHandler => MultiModalHandler != null;
 
     /// <summary>
     ///     Unique key for this function (handles class name prefixing for MCP functions)

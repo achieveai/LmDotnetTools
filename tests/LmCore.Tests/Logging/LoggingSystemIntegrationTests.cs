@@ -50,7 +50,7 @@ public class LoggingSystemIntegrationTests
             )
             .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "perf-test", mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "perf-test", logger: mockLogger.Object);
 
         // Act - Measure performance
         const int iterations = 100;
@@ -116,7 +116,7 @@ public class LoggingSystemIntegrationTests
         var messages = new List<IMessage> { toolCallMessage };
         var context = new MiddlewareContext(messages);
 
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "error-test-middleware", mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "error-test-middleware", logger: mockLogger.Object);
 
         // Act
         _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
@@ -162,7 +162,7 @@ public class LoggingSystemIntegrationTests
         };
 
         // Act & Assert - Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware");
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "test-middleware");
         Assert.NotNull(middleware);
         Assert.Equal("test-middleware", middleware.Name);
     }
@@ -203,7 +203,7 @@ public class LoggingSystemIntegrationTests
             )
             .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "test-middleware", logger: mockLogger.Object);
 
         // Act
         _ = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -261,8 +261,8 @@ public class LoggingSystemIntegrationTests
         var middleware = new FunctionCallMiddleware(
             functions,
             functionMap,
-            "logging-test-middleware",
-            mockLogger.Object
+            name: "logging-test-middleware",
+            logger: mockLogger.Object
         );
 
         // Act
@@ -403,7 +403,7 @@ public class LoggingSystemIntegrationTests
         };
 
         // Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "null-safe-test");
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "null-safe-test");
         Assert.NotNull(middleware);
         Assert.Equal("null-safe-test", middleware.Name);
     }

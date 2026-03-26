@@ -15,6 +15,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class FunctionCallMiddleware : IStreamingMiddleware
 {
     private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
+    private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _multiModalFunctionMap;
+    private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _mergedMultiModalMap;
     private readonly IEnumerable<FunctionContract> _functions;
 
     private readonly ILogger<FunctionCallMiddleware> _logger;
@@ -27,6 +29,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
         IDictionary<string, Func<string, Task<string>>> functionMap,
+        IDictionary<string, Func<string, Task<ToolCallResult>>>? multiModalFunctionMap = null,
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
         IToolResultCallback? resultCallback = null
@@ -65,7 +68,30 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
         Name = name ?? nameof(FunctionCallMiddleware);
         _functionMap = functionMap;
+        _multiModalFunctionMap = multiModalFunctionMap;
         _resultCallback = resultCallback;
+
+        // Pre-build merged multimodal map once (maps never change after construction)
+        if (multiModalFunctionMap is { Count: > 0 })
+        {
+            var merged = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+            foreach (var kvp in functionMap)
+            {
+                var textHandler = kvp.Value;
+                merged[kvp.Key] = async args =>
+                {
+                    var textResult = await textHandler(args);
+                    return new ToolCallResult(null, textResult);
+                };
+            }
+
+            foreach (var kvp in multiModalFunctionMap)
+            {
+                merged[kvp.Key] = kvp.Value;
+            }
+
+            _mergedMultiModalMap = merged;
+        }
     }
 
     public string? Name { get; }
@@ -358,7 +384,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     /// <summary>
     ///     Execute multiple tool calls and return a message with results.
-    ///     This method now delegates to ToolCallExecutor for actual execution.
+    ///     Prefers multimodal handlers when available, falls back to text-only.
     /// </summary>
     private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(
         IEnumerable<ToolCall> toolCalls,
@@ -366,7 +392,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
-        // Create a ToolsCallMessage from the tool calls for the executor
         var toolsCallMessage = new ToolsCallMessage
         {
             ToolCalls = [.. toolCalls],
@@ -374,7 +399,20 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             FromAgent = string.Empty,
         };
 
-        // Delegate to ToolCallExecutor
+        // Use multimodal executor if any tool calls have multimodal handlers
+        if (_mergedMultiModalMap != null &&
+            toolsCallMessage.ToolCalls.Any(tc =>
+                tc.FunctionName != null && _multiModalFunctionMap!.ContainsKey(tc.FunctionName)))
+        {
+            return await ToolCallExecutor.ExecuteMultiModalAsync(
+                toolsCallMessage,
+                _mergedMultiModalMap,
+                _resultCallback,
+                _logger,
+                cancellationToken
+            );
+        }
+
         return await ToolCallExecutor.ExecuteAsync(
             toolsCallMessage,
             _functionMap,
@@ -386,32 +424,53 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     /// <summary>
     ///     Execute a single tool call and return the result.
-    ///     Helper method for streaming scenarios. Delegates to ToolCallExecutor.
+    ///     Prefers multimodal handler when available, falls back to text-only.
     /// </summary>
     private async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
         CancellationToken cancellationToken = default
     )
     {
-        // Create a ToolsCallMessage with a single tool call
-        var toolsCallMessage = new ToolsCallMessage
+        // Prefer multimodal handler if available
+        if (_multiModalFunctionMap is { Count: > 0 } &&
+            toolCall.FunctionName != null &&
+            _multiModalFunctionMap.TryGetValue(toolCall.FunctionName, out var mmHandler))
+        {
+            var toolsCallMessage = new ToolsCallMessage
+            {
+                ToolCalls = [toolCall],
+                Role = Role.Assistant,
+                FromAgent = string.Empty,
+            };
+
+            var result = await ToolCallExecutor.ExecuteMultiModalAsync(
+                toolsCallMessage,
+                new Dictionary<string, Func<string, Task<ToolCallResult>>> { [toolCall.FunctionName] = mmHandler },
+                _resultCallback,
+                _logger,
+                cancellationToken
+            );
+
+            return result.ToolCallResults.First();
+        }
+
+        // Fall back to text-only
+        var textToolsCallMessage = new ToolsCallMessage
         {
             ToolCalls = [toolCall],
             Role = Role.Assistant,
             FromAgent = string.Empty,
         };
 
-        // Execute using ToolCallExecutor
-        var result = await ToolCallExecutor.ExecuteAsync(
-            toolsCallMessage,
+        var textResult = await ToolCallExecutor.ExecuteAsync(
+            textToolsCallMessage,
             _functionMap,
             _resultCallback,
             _logger,
             cancellationToken
         );
 
-        // Return the first (and only) result
-        return result.ToolCallResults.First();
+        return textResult.ToolCallResults.First();
     }
 
     /// <summary>

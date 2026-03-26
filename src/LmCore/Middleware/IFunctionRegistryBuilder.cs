@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -85,6 +86,17 @@ public interface IConfiguredFunctionRegistry
     /// </summary>
     /// <returns>A tuple containing the function contracts and their handlers</returns>
     (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build();
+
+    /// <summary>
+    ///     Builds the final function collections including multimodal handlers.
+    ///     The multimodal handler map is a subset — only functions with multimodal handlers appear in it.
+    /// </summary>
+    /// <returns>A tuple containing function contracts, text-only handlers, and multimodal handlers</returns>
+    (
+        IEnumerable<FunctionContract> Contracts,
+        IDictionary<string, Func<string, Task<string>>> TextHandlers,
+        IDictionary<string, Func<string, Task<ToolCallResult>>> MultiModalHandlers
+    ) BuildWithMultiModal();
 
     /// <summary>
     ///     Builds and creates a FunctionCallMiddleware instance directly.

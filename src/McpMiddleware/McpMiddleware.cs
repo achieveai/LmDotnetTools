@@ -47,7 +47,12 @@ public partial class McpMiddleware : IStreamingMiddleware
         _logger = logger;
 
         // Initialize the FunctionCallMiddleware with our function map and logger
-        _functionCallMiddleware = new FunctionCallMiddleware(functions, functionMap, Name, functionCallLogger);
+        _functionCallMiddleware = new FunctionCallMiddleware(
+            functions,
+            functionMap,
+            multiModalFunctionMap: null,
+            name: Name,
+            logger: functionCallLogger);
     }
 
     /// <summary>
@@ -114,11 +119,26 @@ public partial class McpMiddleware : IStreamingMiddleware
             string.Join(", ", mcpClients.Keys)
         );
 
-        // Create function delegates map
-        var functionMap = await CreateFunctionMapAsync(mcpClients, logger, cancellationToken);
+        // Fetch tools once per client to avoid redundant ListToolsAsync calls
+        var toolsByClient = new Dictionary<string, IList<McpClientTool>>();
+        foreach (var kvp in mcpClients)
+        {
+            try
+            {
+                toolsByClient[kvp.Key] = await kvp.Value.ListToolsAsync(cancellationToken: cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
+                toolsByClient[kvp.Key] = [];
+            }
+        }
 
-        // If functions weren't provided, extract them from the MCP clients
-        functions ??= await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
+        // Create function delegates map using cached tool listings
+        var functionMap = CreateFunctionMapFromCache(mcpClients, toolsByClient, logger);
+
+        // If functions weren't provided, extract them from the cached tool listings
+        functions ??= ExtractFunctionContractsFromCache(mcpClients, toolsByClient, logger);
 
         logger.LogInformation(
             "MCP middleware initialized: FunctionCount={FunctionCount}, FunctionNames={FunctionNames}",
@@ -341,6 +361,117 @@ public partial class McpMiddleware : IStreamingMiddleware
             {
                 logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
                 // Continue with other clients even if one fails
+            }
+        }
+
+        return functionContracts;
+    }
+
+    /// <summary>
+    ///     Creates function map from pre-fetched tool listings (no ListToolsAsync calls).
+    /// </summary>
+    private static IDictionary<string, Func<string, Task<string>>> CreateFunctionMapFromCache(
+        Dictionary<string, McpClient> mcpClients,
+        Dictionary<string, IList<McpClientTool>> toolsByClient,
+        ILogger<McpMiddleware> logger)
+    {
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+
+        foreach (var kvp in mcpClients)
+        {
+            var clientId = kvp.Key;
+            var client = kvp.Value;
+
+            if (!toolsByClient.TryGetValue(clientId, out var tools) || tools.Count == 0)
+                continue;
+
+            logger.LogInformation(
+                "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
+                clientId, tools.Count, string.Join(", ", tools.Select(t => t.Name)));
+
+            foreach (var tool in tools)
+            {
+                var sanitizedClientId = SanitizeToolName(kvp.Key);
+                var sanitizedToolName = SanitizeToolName(tool.Name);
+                var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
+
+                functionMap[functionName] = async argsJson =>
+                {
+                    var stopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        Dictionary<string, object?> args;
+                        try
+                        {
+                            args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
+                        }
+                        catch (JsonException jsonEx)
+                        {
+                            logger.LogError(jsonEx,
+                                "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}",
+                                tool.Name, clientId);
+                            throw;
+                        }
+
+                        var response = await client.CallToolAsync(tool.Name, args);
+
+                        var result = string.Join(
+                            Environment.NewLine,
+                            response.Content != null
+                                ? response.Content.Where(c => c?.Type == "text")
+                                    .Select(c => c is TextContentBlock tb ? tb.Text : string.Empty)
+                                : []);
+
+                        stopwatch.Stop();
+                        logger.LogInformation(
+                            "MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, ResultLength={ResultLength}",
+                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, result.Length);
+
+                        return result;
+                    }
+                    catch (Exception ex)
+                    {
+                        stopwatch.Stop();
+                        logger.LogError(ex,
+                            "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms",
+                            tool.Name, clientId, stopwatch.ElapsedMilliseconds);
+                        return $"Error executing MCP tool {tool.Name}: {ex.Message}";
+                    }
+                };
+            }
+        }
+
+        return functionMap;
+    }
+
+    /// <summary>
+    ///     Extracts function contracts from pre-fetched tool listings (no ListToolsAsync calls).
+    /// </summary>
+    private static IEnumerable<FunctionContract> ExtractFunctionContractsFromCache(
+        Dictionary<string, McpClient> mcpClients,
+        Dictionary<string, IList<McpClientTool>> toolsByClient,
+        ILogger<McpMiddleware> logger)
+    {
+        var functionContracts = new List<FunctionContract>();
+
+        foreach (var kvp in mcpClients)
+        {
+            if (!toolsByClient.TryGetValue(kvp.Key, out var tools))
+                continue;
+
+            foreach (var tool in tools)
+            {
+                try
+                {
+                    var contract = ConvertToFunctionContract(kvp.Key, tool, logger);
+                    functionContracts.Add(contract);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex,
+                        "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}",
+                        kvp.Key, tool.Name);
+                }
             }
         }
 

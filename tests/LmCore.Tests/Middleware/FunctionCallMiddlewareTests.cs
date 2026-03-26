@@ -1179,7 +1179,7 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the middleware with the MCP tools
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "McpCalculatorTest");
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "McpCalculatorTest");
 
         // Create large numbers to test with
         var firstNumber = 9876543210.123;
