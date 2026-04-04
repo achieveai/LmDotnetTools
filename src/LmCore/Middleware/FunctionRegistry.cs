@@ -393,6 +393,27 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
+    ///     Add a single function explicitly with an optional multimodal handler.
+    /// </summary>
+    public FunctionRegistry AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        Func<string, Task<ToolCallResult>>? multiModalHandler,
+        string? providerName = null
+    )
+    {
+        var descriptor = new FunctionDescriptor
+        {
+            Contract = contract,
+            Handler = handler,
+            MultiModalHandler = multiModalHandler,
+            ProviderName = providerName ?? "Explicit",
+        };
+        _explicitFunctions[descriptor.Key] = descriptor;
+        return this;
+    }
+
+    /// <summary>
     ///     Set conflict resolution strategy
     /// </summary>
     public FunctionRegistry WithConflictResolution(ConflictResolution strategy)

@@ -28,6 +28,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, Func<string, Task<string>>> _toolHandlers;
+    private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _multiModalHandlers;
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -60,8 +61,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         ArgumentNullException.ThrowIfNull(functionRegistry);
 
         // Build tool call components from registry
-        var (toolCallMiddleware, handlers, _) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
+        var (toolCallMiddleware, handlers, multiModalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = handlers;
+        _multiModalHandlers = multiModalHandlers.Count > 0 ? multiModalHandlers : null;
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -311,8 +313,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     {
         var result = await ExecuteToolCallAsync(toolCall, ct);
 
-        // Publish immediately when this tool completes (parallel with other tools/streaming)
-        AddToHistory(result);
+        // Add text-only version to LLM history (captions are in the text for id:// referencing)
+        // Publish full version with ContentBlocks to subscribers (for image data resolution)
+        var historyResult = result.ContentBlocks != null
+            ? result with { ContentBlocks = null }
+            : result;
+        AddToHistory(historyResult);
         await PublishToAllAsync(result, ct);
 
         Logger.LogDebug(
@@ -369,6 +375,34 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                         available_functions = _toolHandlers.Keys.ToArray(),
                     }),
                     IsError = true,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
+            }
+
+            // Prefer multimodal handler when available — preserves images in tool results
+            if (_multiModalHandlers != null &&
+                _multiModalHandlers.TryGetValue(toolCall.FunctionName, out var multiModalHandler))
+            {
+                Logger.LogInformation(
+                    "Using multimodal handler for tool '{FunctionName}' (ToolCallId: {ToolCallId})",
+                    toolCall.FunctionName, toolCall.ToolCallId);
+
+                var mmResult = await multiModalHandler(functionArgs);
+
+                var imageCount = mmResult.ContentBlocks?.Count(b => b is ImageToolResultBlock) ?? 0;
+                Logger.LogInformation(
+                    "Multimodal tool result for '{FunctionName}': {ImageCount} images, result length={ResultLength}",
+                    toolCall.FunctionName, imageCount, mmResult.Result?.Length ?? 0);
+
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCall.ToolCallId,
+                    ToolName = toolCall.FunctionName,
+                    Result = mmResult.Result ?? "",
+                    ContentBlocks = mmResult.ContentBlocks,
                     ExecutionTarget = ExecutionTarget.LocalFunction,
                     Role = Role.User,
                     FromAgent = toolCall.FromAgent,
