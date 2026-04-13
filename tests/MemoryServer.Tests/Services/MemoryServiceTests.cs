@@ -9,15 +9,16 @@ using Moq;
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Unit tests for the MemoryService class.
-/// Tests business logic with mocked dependencies.
+///     Unit tests for the MemoryService class.
+///     Tests business logic with mocked dependencies.
 /// </summary>
 public class MemoryServiceTests
 {
-    private readonly MockMemoryRepository _mockRepository;
-    private readonly Mock<ILogger<MemoryService>> _mockLogger;
-    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private static readonly float[] value = [0.1f, 0.2f, 0.3f];
     private readonly MemoryService _memoryService;
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private readonly Mock<ILogger<MemoryService>> _mockLogger;
+    private readonly MockMemoryRepository _mockRepository;
     private readonly MemoryServerOptions _options;
 
     public MemoryServiceTests()
@@ -28,35 +29,41 @@ public class MemoryServiceTests
 
         _options = new MemoryServerOptions
         {
-            Memory = new MemoryOptions
-            {
-                MaxMemoryLength = 10000,
-                DefaultSearchLimit = 10
-            },
+            Memory = new MemoryOptions { MaxMemoryLength = 10000, DefaultSearchLimit = 10 },
             Embedding = new EmbeddingOptions
             {
                 EnableVectorStorage = false, // Disable for unit tests by default
-                AutoGenerateEmbeddings = false
-            }
+                AutoGenerateEmbeddings = false,
+            },
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
-        optionsMock.Setup(x => x.Value).Returns(_options);
+        _ = optionsMock.Setup(x => x.Value).Returns(_options);
 
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
 
         // Setup mock embedding manager
-        _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
-        _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
+        _ = _mockEmbeddingManager
+            .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(value); // Mock embedding
+        _ = _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
 
-        _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, _mockLogger.Object, optionsMock.Object);
+        _memoryService = new MemoryService(
+            _mockRepository,
+            mockGraphMemoryService.Object,
+            _mockEmbeddingManager.Object,
+            _mockLogger.Object,
+            optionsMock.Object
+        );
     }
 
     [Theory]
     [MemberData(nameof(MemoryTestDataFactory.GetMemoryContentTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public async Task AddMemoryAsync_WithVariousContent_ValidatesCorrectly(
-        string content, bool shouldSucceed, string description)
+        string content,
+        bool shouldSucceed,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync: {description}");
@@ -78,8 +85,9 @@ public class MemoryServiceTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => _memoryService.AddMemoryAsync(content, sessionContext));
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+                _memoryService.AddMemoryAsync(content, sessionContext)
+            );
 
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.AddAsync), _mockRepository.MethodCalls);
@@ -91,7 +99,9 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(MemoryTestDataFactory.GetMetadataTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public async Task AddMemoryAsync_WithVariousMetadata_PreservesMetadataCorrectly(
-        Dictionary<string, object>? metadata, string description)
+        Dictionary<string, object>? metadata,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync with metadata: {description}");
@@ -116,7 +126,11 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(MemoryTestDataFactory.GetSearchQueryTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public async Task SearchMemoriesAsync_WithVariousQueries_HandlesCorrectly(
-        string query, int limit, float scoreThreshold, string description)
+        string query,
+        int limit,
+        float scoreThreshold,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing SearchMemoriesAsync: {description}");
@@ -160,7 +174,9 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(GetSessionContextTestData))]
     public async Task GetAllMemoriesAsync_WithDifferentSessions_RespectsSessionIsolation(
-        SessionContext sessionContext, string description)
+        SessionContext sessionContext,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing GetAllMemoriesAsync session isolation: {description}");
@@ -176,7 +192,7 @@ public class MemoryServiceTests
         _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(2, "User2 memory", "user2"));
 
         // Act
-        var results = await _memoryService.GetAllMemoriesAsync(sessionContext, 100, 0);
+        var results = await _memoryService.GetAllMemoriesAsync(sessionContext);
         Debug.WriteLine($"Retrieved {results.Count} memories for session");
 
         // Assert
@@ -196,7 +212,10 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(GetUpdateTestData))]
     public async Task UpdateMemoryAsync_WithVariousScenarios_HandlesCorrectly(
-        string newContent, bool shouldSucceed, string description)
+        string newContent,
+        bool shouldSucceed,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing UpdateMemoryAsync: {description}");
@@ -206,7 +225,7 @@ public class MemoryServiceTests
         _mockRepository.Reset();
 
         // Add a test memory
-        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content", "test-user");
+        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content");
         _mockRepository.AddTestMemory(originalMemory);
 
         // Act & Assert
@@ -221,8 +240,9 @@ public class MemoryServiceTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => _memoryService.UpdateMemoryAsync(1, newContent, sessionContext));
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+                _memoryService.UpdateMemoryAsync(1, newContent, sessionContext)
+            );
 
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.UpdateAsync), _mockRepository.MethodCalls);
@@ -239,7 +259,7 @@ public class MemoryServiceTests
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
-        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content", "test-user");
+        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         _mockRepository.AddTestMemory(testMemory);
         Debug.WriteLine($"Added test memory with ID: {testMemory.Id}");
 
@@ -265,11 +285,12 @@ public class MemoryServiceTests
         _mockRepository.Reset();
 
         // Add multiple test memories
-        for (int i = 1; i <= 3; i++)
+        for (var i = 1; i <= 3; i++)
         {
-            var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}", "test-user");
+            var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}");
             _mockRepository.AddTestMemory(memory);
         }
+
         Debug.WriteLine("Added 3 test memories");
 
         // Act
@@ -295,20 +316,23 @@ public class MemoryServiceTests
         // Add test memories with known content lengths
         var memories = new[]
         {
-            MemoryTestDataFactory.CreateTestMemory(1, "Short", "test-user"), // 5 chars
-            MemoryTestDataFactory.CreateTestMemory(2, "Medium length content", "test-user"), // 21 chars
-            MemoryTestDataFactory.CreateTestMemory(3, "This is a longer piece of content for testing", "test-user") // 45 chars
+            MemoryTestDataFactory.CreateTestMemory(1, "Short"), // 5 chars
+            MemoryTestDataFactory.CreateTestMemory(2, "Medium length content"), // 21 chars
+            MemoryTestDataFactory.CreateTestMemory(3, "This is a longer piece of content for testing"), // 45 chars
         };
 
         foreach (var memory in memories)
         {
             _mockRepository.AddTestMemory(memory);
         }
+
         Debug.WriteLine($"Added {memories.Length} test memories");
 
         // Act
         var stats = await _memoryService.GetMemoryStatsAsync(sessionContext);
-        Debug.WriteLine($"Stats - Total: {stats.TotalMemories}, Size: {stats.TotalContentSize}, Avg: {stats.AverageContentLength}");
+        Debug.WriteLine(
+            $"Stats - Total: {stats.TotalMemories}, Size: {stats.TotalContentSize}, Avg: {stats.AverageContentLength}"
+        );
 
         // Assert
         Assert.NotNull(stats);
@@ -328,7 +352,7 @@ public class MemoryServiceTests
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
-        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content", "test-user");
+        var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Test content");
         _mockRepository.AddTestMemory(testMemory);
 
         // Act

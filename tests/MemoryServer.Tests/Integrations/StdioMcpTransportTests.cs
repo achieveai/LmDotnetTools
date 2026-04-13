@@ -4,15 +4,17 @@ using Xunit.Abstractions;
 namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
-/// STDIO transport implementation of the MCP transport test suite.
-/// This class provides STDIO-specific client creation and server management
-/// while inheriting all the core MCP functionality tests from the base class.
+///     STDIO transport implementation of the MCP transport test suite.
+///     This class provides STDIO-specific client creation and server management
+///     while inheriting all the core MCP functionality tests from the base class.
 /// </summary>
 public class StdioMcpTransportTests : McpTransportTestBase
 {
+    private static readonly string[] options = ["--stdio"];
     private readonly string _serverExecutablePath;
 
-    public StdioMcpTransportTests(ITestOutputHelper output) : base(output)
+    public StdioMcpTransportTests(ITestOutputHelper output)
+        : base(output)
     {
         // Path to the Memory MCP Server executable
         var assemblyLocation = Path.GetDirectoryName(typeof(StdioMcpTransportTests).Assembly.Location)!;
@@ -23,13 +25,26 @@ public class StdioMcpTransportTests : McpTransportTestBase
         {
             _serverExecutablePath = Path.Combine(
                 assemblyLocation,
-                "..", "..", "..", "McpServers", "Memory", "MemoryServer", "bin", "Debug", "net9.0", "MemoryServer.exe");
+                "..",
+                "..",
+                "..",
+                "McpServers",
+                "Memory",
+                "MemoryServer",
+                "bin",
+                "Debug",
+                "net9.0",
+                "MemoryServer.exe"
+            );
         }
     }
 
-    protected override string GetTransportName() => "STDIO";
+    protected override string GetTransportName()
+    {
+        return "STDIO";
+    }
 
-    protected override async Task<IMcpClient> CreateClientAsync()
+    protected override async Task<McpClient> CreateClientAsync()
     {
         _output.WriteLine($"🔌 Creating STDIO MCP client transport: {_serverExecutablePath}");
 
@@ -38,14 +53,16 @@ public class StdioMcpTransportTests : McpTransportTestBase
             throw new FileNotFoundException($"Server executable not found at: {_serverExecutablePath}");
         }
 
-        var transport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "memory-server",
-            Command = _serverExecutablePath,
-            Arguments = new[] { "--stdio" }
-        });
+        var transport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "memory-server",
+                Command = _serverExecutablePath,
+                Arguments = options,
+            }
+        );
 
-        var client = await McpClientFactory.CreateAsync(transport);
+        var client = await McpClient.CreateAsync(transport);
         _output.WriteLine("✅ STDIO MCP client connected successfully");
 
         return client;

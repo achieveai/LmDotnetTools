@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Logging;
 
 /// <summary>
-/// Defines event IDs for structured logging in the Anthropic provider.
+///     Defines event IDs for structured logging in the Anthropic provider.
 /// </summary>
 public static class LogEventIds
 {

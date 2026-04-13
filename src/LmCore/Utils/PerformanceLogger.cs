@@ -4,16 +4,16 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Utility class for measuring and logging operation performance.
+///     Utility class for measuring and logging operation performance.
 /// </summary>
 public sealed class PerformanceLogger : IDisposable
 {
+    private readonly EventId _eventId;
+    private readonly LogLevel _logLevel;
     private readonly ILogger _logger;
     private readonly string _operationName;
-    private readonly Stopwatch _stopwatch;
-    private readonly LogLevel _logLevel;
-    private readonly EventId _eventId;
     private readonly Dictionary<string, object?> _properties;
+    private readonly Stopwatch _stopwatch;
     private bool _disposed;
 
     private PerformanceLogger(ILogger logger, string operationName, LogLevel logLevel, EventId eventId)
@@ -22,91 +22,24 @@ public sealed class PerformanceLogger : IDisposable
         _operationName = operationName;
         _logLevel = logLevel;
         _eventId = eventId;
-        _properties = new Dictionary<string, object?>();
+        _properties = [];
         _stopwatch = Stopwatch.StartNew();
     }
 
     /// <summary>
-    /// Creates a new performance logger for measuring operation duration.
-    /// </summary>
-    /// <param name="logger">The logger to use for output</param>
-    /// <param name="operationName">Name of the operation being measured</param>
-    /// <param name="logLevel">Log level to use (default: Debug)</param>
-    /// <param name="eventId">Event ID to use (default: PerformanceMetrics)</param>
-    /// <returns>A disposable performance logger</returns>
-    public static PerformanceLogger Start(ILogger logger, string operationName,
-        LogLevel logLevel = LogLevel.Debug, EventId? eventId = null)
-    {
-        return new PerformanceLogger(logger, operationName, logLevel, eventId ?? LogEventIds.PerformanceMetrics);
-    }
-
-    /// <summary>
-    /// Adds a property to be included in the performance log.
-    /// </summary>
-    /// <param name="key">Property key</param>
-    /// <param name="value">Property value</param>
-    /// <returns>This instance for method chaining</returns>
-    public PerformanceLogger WithProperty(string key, object? value)
-    {
-        _properties[key] = value;
-        return this;
-    }
-
-    /// <summary>
-    /// Adds token count information to the performance log.
-    /// </summary>
-    /// <param name="tokenCount">Number of tokens processed</param>
-    /// <returns>This instance for method chaining</returns>
-    public PerformanceLogger WithTokens(int tokenCount)
-    {
-        _properties["Tokens"] = tokenCount;
-        return this;
-    }
-
-    /// <summary>
-    /// Adds cost information to the performance log.
-    /// </summary>
-    /// <param name="cost">Cost of the operation</param>
-    /// <returns>This instance for method chaining</returns>
-    public PerformanceLogger WithCost(decimal cost)
-    {
-        _properties["Cost"] = cost;
-        return this;
-    }
-
-    /// <summary>
-    /// Adds completion ID to the performance log.
-    /// </summary>
-    /// <param name="completionId">Completion ID</param>
-    /// <returns>This instance for method chaining</returns>
-    public PerformanceLogger WithCompletionId(string? completionId)
-    {
-        _properties["CompletionId"] = completionId;
-        return this;
-    }
-
-    /// <summary>
-    /// Adds model information to the performance log.
-    /// </summary>
-    /// <param name="modelId">Model ID</param>
-    /// <returns>This instance for method chaining</returns>
-    public PerformanceLogger WithModel(string modelId)
-    {
-        _properties["Model"] = modelId;
-        return this;
-    }
-
-    /// <summary>
-    /// Gets the current elapsed time in milliseconds.
+    ///     Gets the current elapsed time in milliseconds.
     /// </summary>
     public long ElapsedMilliseconds => _stopwatch.ElapsedMilliseconds;
 
     /// <summary>
-    /// Stops the timer and logs the performance metrics.
+    ///     Stops the timer and logs the performance metrics.
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
 
         _stopwatch.Stop();
 
@@ -126,32 +59,105 @@ public sealed class PerformanceLogger : IDisposable
 
             var message = $"Performance metrics: {string.Join(", ", messageBuilder)}";
 
-            _logger.Log(_logLevel, _eventId, message, values.ToArray());
+            _logger.Log(_logLevel, _eventId, message, [.. values]);
         }
 
         _disposed = true;
     }
+
+    /// <summary>
+    ///     Creates a new performance logger for measuring operation duration.
+    /// </summary>
+    /// <param name="logger">The logger to use for output</param>
+    /// <param name="operationName">Name of the operation being measured</param>
+    /// <param name="logLevel">Log level to use (default: Debug)</param>
+    /// <param name="eventId">Event ID to use (default: PerformanceMetrics)</param>
+    /// <returns>A disposable performance logger</returns>
+    public static PerformanceLogger Start(
+        ILogger logger,
+        string operationName,
+        LogLevel logLevel = LogLevel.Debug,
+        EventId? eventId = null
+    )
+    {
+        return new PerformanceLogger(logger, operationName, logLevel, eventId ?? LogEventIds.PerformanceMetrics);
+    }
+
+    /// <summary>
+    ///     Adds a property to be included in the performance log.
+    /// </summary>
+    /// <param name="key">Property key</param>
+    /// <param name="value">Property value</param>
+    /// <returns>This instance for method chaining</returns>
+    public PerformanceLogger WithProperty(string key, object? value)
+    {
+        _properties[key] = value;
+        return this;
+    }
+
+    /// <summary>
+    ///     Adds token count information to the performance log.
+    /// </summary>
+    /// <param name="tokenCount">Number of tokens processed</param>
+    /// <returns>This instance for method chaining</returns>
+    public PerformanceLogger WithTokens(int tokenCount)
+    {
+        _properties["Tokens"] = tokenCount;
+        return this;
+    }
+
+    /// <summary>
+    ///     Adds cost information to the performance log.
+    /// </summary>
+    /// <param name="cost">Cost of the operation</param>
+    /// <returns>This instance for method chaining</returns>
+    public PerformanceLogger WithCost(decimal cost)
+    {
+        _properties["Cost"] = cost;
+        return this;
+    }
+
+    /// <summary>
+    ///     Adds completion ID to the performance log.
+    /// </summary>
+    /// <param name="completionId">Completion ID</param>
+    /// <returns>This instance for method chaining</returns>
+    public PerformanceLogger WithCompletionId(string? completionId)
+    {
+        _properties["CompletionId"] = completionId;
+        return this;
+    }
+
+    /// <summary>
+    ///     Adds model information to the performance log.
+    /// </summary>
+    /// <param name="modelId">Model ID</param>
+    /// <returns>This instance for method chaining</returns>
+    public PerformanceLogger WithModel(string modelId)
+    {
+        _properties["Model"] = modelId;
+        return this;
+    }
 }
 
 /// <summary>
-/// Utility class for calculating and logging tokens per second metrics.
+///     Utility class for calculating and logging tokens per second metrics.
 /// </summary>
 public static class TokenMetrics
 {
     /// <summary>
-    /// Calculates tokens per second based on token count and duration.
+    ///     Calculates tokens per second based on token count and duration.
     /// </summary>
     /// <param name="tokenCount">Number of tokens processed</param>
     /// <param name="durationMs">Duration in milliseconds</param>
     /// <returns>Tokens per second</returns>
     public static double CalculateTokensPerSecond(int tokenCount, long durationMs)
     {
-        if (durationMs <= 0) return 0;
-        return (double)tokenCount / (durationMs / 1000.0);
+        return durationMs <= 0 ? 0 : tokenCount / (durationMs / 1000.0);
     }
 
     /// <summary>
-    /// Logs tokens per second metrics.
+    ///     Logs tokens per second metrics.
     /// </summary>
     /// <param name="logger">Logger to use</param>
     /// <param name="tokenCount">Number of tokens processed</param>
@@ -161,25 +167,29 @@ public static class TokenMetrics
     {
         var tokensPerSecond = CalculateTokensPerSecond(tokenCount, durationMs);
 
-        logger.LogDebug(LogEventIds.TokensPerSecond,
+        logger.LogDebug(
+            LogEventIds.TokensPerSecond,
             "Tokens per second: CompletionId={CompletionId}, Tokens={Tokens}, Duration={Duration}ms, TokensPerSecond={TokensPerSecond:F2}",
-            completionId, tokenCount, durationMs, tokensPerSecond);
+            completionId,
+            tokenCount,
+            durationMs,
+            tokensPerSecond
+        );
     }
 }
 
 /// <summary>
-/// Utility class for measuring time to first token in streaming scenarios.
+///     Utility class for measuring time to first token in streaming scenarios.
 /// </summary>
 public sealed class TimeToFirstTokenLogger : IDisposable
 {
+    private readonly string? _completionId;
     private readonly ILogger _logger;
     private readonly Stopwatch _stopwatch;
-    private readonly string? _completionId;
-    private bool _firstTokenReceived;
     private bool _disposed;
 
     /// <summary>
-    /// Creates a new time to first token logger.
+    ///     Creates a new time to first token logger.
     /// </summary>
     /// <param name="logger">Logger to use</param>
     /// <param name="completionId">Optional completion ID</param>
@@ -191,35 +201,44 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     }
 
     /// <summary>
-    /// Records that the first token has been received and logs the time.
-    /// </summary>
-    public void RecordFirstToken()
-    {
-        if (_firstTokenReceived) return;
-
-        _firstTokenReceived = true;
-        var timeToFirstToken = _stopwatch.ElapsedMilliseconds;
-
-        _logger.LogDebug(LogEventIds.TimeToFirstToken,
-            "Time to first token: CompletionId={CompletionId}, TimeToFirstToken={TimeToFirstToken}ms",
-            _completionId, timeToFirstToken);
-    }
-
-    /// <summary>
-    /// Gets the elapsed time since creation.
+    ///     Gets the elapsed time since creation.
     /// </summary>
     public long ElapsedMilliseconds => _stopwatch.ElapsedMilliseconds;
 
     /// <summary>
-    /// Gets whether the first token has been received.
+    ///     Gets whether the first token has been received.
     /// </summary>
-    public bool FirstTokenReceived => _firstTokenReceived;
+    public bool FirstTokenReceived { get; private set; }
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
 
         _stopwatch.Stop();
         _disposed = true;
+    }
+
+    /// <summary>
+    ///     Records that the first token has been received and logs the time.
+    /// </summary>
+    public void RecordFirstToken()
+    {
+        if (FirstTokenReceived)
+        {
+            return;
+        }
+
+        FirstTokenReceived = true;
+        var timeToFirstToken = _stopwatch.ElapsedMilliseconds;
+
+        _logger.LogDebug(
+            LogEventIds.TimeToFirstToken,
+            "Time to first token: CompletionId={CompletionId}, TimeToFirstToken={TimeToFirstToken}ms",
+            _completionId,
+            timeToFirstToken
+        );
     }
 }

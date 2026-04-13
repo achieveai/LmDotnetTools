@@ -1,0 +1,16 @@
+{
+  "printWidth": 120,
+  "useTabs": false,
+  "indentSize": 4,
+  "endOfLine": "crlf",
+  "overrides": [
+    {
+      "files": "*.{csproj,props,targets,xml,config,xaml}",
+      "indentSize": 2
+    },
+    {
+      "files": "*.{json,json5}",
+      "indentSize": 2
+    }
+  ]
+}

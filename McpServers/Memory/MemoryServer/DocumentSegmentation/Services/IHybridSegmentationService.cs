@@ -1,16 +1,15 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for hybrid document segmentation services.
-/// Combines multiple segmentation strategies with intelligent weighting and selection.
+///     Interface for hybrid document segmentation services.
+///     Combines multiple segmentation strategies with intelligent weighting and selection.
 /// </summary>
 public interface IHybridSegmentationService
 {
     /// <summary>
-    /// Segments document content using hybrid approach that combines multiple strategies.
+    ///     Segments document content using hybrid approach that combines multiple strategies.
     /// </summary>
     /// <param name="content">Document content to segment</param>
     /// <param name="documentType">Type of document being segmented</param>
@@ -21,10 +20,11 @@ public interface IHybridSegmentationService
         string content,
         DocumentType documentType = DocumentType.Generic,
         HybridSegmentationOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Determines optimal strategy weights for a specific document.
+    ///     Determines optimal strategy weights for a specific document.
     /// </summary>
     /// <param name="content">Document content to analyze</param>
     /// <param name="documentType">Type of document being analyzed</param>
@@ -33,10 +33,11 @@ public interface IHybridSegmentationService
     Task<StrategyWeights> DetermineStrategyWeightsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Combines segmentation results from multiple strategies using intelligent merging.
+    ///     Combines segmentation results from multiple strategies using intelligent merging.
     /// </summary>
     /// <param name="structureSegments">Segments from structure-based strategy</param>
     /// <param name="narrativeSegments">Segments from narrative-based strategy</param>
@@ -49,10 +50,11 @@ public interface IHybridSegmentationService
         List<DocumentSegment> narrativeSegments,
         List<DocumentSegment> topicSegments,
         StrategyWeights weights,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Validates hybrid segmentation quality and provides improvement suggestions.
+    ///     Validates hybrid segmentation quality and provides improvement suggestions.
     /// </summary>
     /// <param name="segments">Segments to validate</param>
     /// <param name="originalContent">Original document content</param>
@@ -63,10 +65,11 @@ public interface IHybridSegmentationService
         List<DocumentSegment> segments,
         string originalContent,
         StrategyWeights weights,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Adapts segmentation strategy based on document characteristics and feedback.
+    ///     Adapts segmentation strategy based on document characteristics and feedback.
     /// </summary>
     /// <param name="content">Document content</param>
     /// <param name="previousResults">Previous segmentation results for learning</param>
@@ -77,5 +80,6 @@ public interface IHybridSegmentationService
         string content,
         List<DocumentSegmentationResult>? previousResults = null,
         List<string>? feedback = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

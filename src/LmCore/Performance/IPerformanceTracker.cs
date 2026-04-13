@@ -1,8 +1,8 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Interface for tracking performance metrics across all providers.
-/// Enables consistent performance monitoring for OpenAI, Anthropic, and other providers.
+///     Interface for tracking performance metrics across all providers.
+///     Enables consistent performance monitoring for OpenAI, Anthropic, and other providers.
 /// </summary>
 public interface IPerformanceTracker
 {
@@ -44,7 +44,8 @@ public interface IPerformanceTracker
     /// <returns>Top performing models</returns>
     IEnumerable<(string Provider, string Model, ModelStatistics Stats)> GetTopModels(
         int count = 10,
-        string orderBy = "requests");
+        string orderBy = "requests"
+    );
 
     /// <summary>Gets current overall statistics across all providers</summary>
     /// <returns>Aggregated statistics</returns>
@@ -52,7 +53,7 @@ public interface IPerformanceTracker
 }
 
 /// <summary>
-/// Overall statistics across all providers and models.
+///     Overall statistics across all providers and models.
 /// </summary>
 public record OverallStatistics
 {
@@ -75,12 +76,10 @@ public record OverallStatistics
     public long RetriedRequests { get; init; }
 
     /// <summary>Overall success rate as percentage</summary>
-    public double OverallSuccessRate =>
-        TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double OverallSuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Overall retry rate as percentage</summary>
-    public double OverallRetryRate =>
-        TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double OverallRetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Total tokens processed across all providers</summary>
     public long TotalTokensProcessed { get; init; }
@@ -93,11 +92,11 @@ public record OverallStatistics
         TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Provider performance breakdown</summary>
-    public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = new();
+    public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = [];
 }
 
 /// <summary>
-/// Summary statistics for a single provider.
+///     Summary statistics for a single provider.
 /// </summary>
 public record ProviderSummary
 {

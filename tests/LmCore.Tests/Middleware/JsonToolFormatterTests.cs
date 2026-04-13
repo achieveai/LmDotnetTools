@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Middleware;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -93,9 +93,9 @@ public class JsonToolFormatterTests
     }
 
     /// <summary>
-    /// Helper method to create JsonFragmentUpdates from raw JSON for testing
+    ///     Helper method to create JsonFragmentUpdates from raw JSON for testing
     /// </summary>
-    private IEnumerable<JsonFragmentUpdate> CreateFragmentUpdates(string toolName, string json)
+    private static IEnumerable<JsonFragmentUpdate> CreateFragmentUpdates(string toolName, string json)
     {
         var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
         return generator.AddFragment(json);

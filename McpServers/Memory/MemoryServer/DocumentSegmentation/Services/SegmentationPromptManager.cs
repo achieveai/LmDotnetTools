@@ -1,27 +1,27 @@
-using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
+using MemoryServer.DocumentSegmentation.Models;
+using Microsoft.Extensions.Options;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service for managing YAML-based segmentation prompts with hot reload capability.
+///     Service for managing YAML-based segmentation prompts with hot reload capability.
 /// </summary>
 public class SegmentationPromptManager : ISegmentationPromptManager
 {
+    private readonly ConcurrentDictionary<string, string> _domainInstructionsCache;
+    private readonly Lock _loadLock = new();
     private readonly ILogger<SegmentationPromptManager> _logger;
     private readonly DocumentSegmentationOptions _options;
     private readonly ConcurrentDictionary<string, PromptTemplate> _promptCache;
-    private readonly ConcurrentDictionary<string, string> _domainInstructionsCache;
     private DateTime _lastLoadTime;
-    private readonly object _loadLock = new();
 
     public SegmentationPromptManager(
-      ILogger<SegmentationPromptManager> logger,
-      IOptions<DocumentSegmentationOptions> options)
+        ILogger<SegmentationPromptManager> logger,
+        IOptions<DocumentSegmentationOptions> options
+    )
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
@@ -31,12 +31,13 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets a prompt template for a specific segmentation strategy.
+    ///     Gets a prompt template for a specific segmentation strategy.
     /// </summary>
     public async Task<PromptTemplate> GetPromptAsync(
-      SegmentationStrategy strategy,
-      string language = "en",
-      CancellationToken cancellationToken = default)
+        SegmentationStrategy strategy,
+        string language = "en",
+        CancellationToken cancellationToken = default
+    )
     {
         await EnsurePromptsLoadedAsync(cancellationToken);
 
@@ -44,11 +45,19 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
         if (_promptCache.TryGetValue(key, out var cachedPrompt))
         {
-            _logger.LogDebug("Retrieved cached prompt for strategy {Strategy}, language {Language}", strategy, language);
+            _logger.LogDebug(
+                "Retrieved cached prompt for strategy {Strategy}, language {Language}",
+                strategy,
+                language
+            );
             return cachedPrompt;
         }
 
-        _logger.LogWarning("Prompt not found for strategy {Strategy}, language {Language}. Using fallback.", strategy, language);
+        _logger.LogWarning(
+            "Prompt not found for strategy {Strategy}, language {Language}. Using fallback.",
+            strategy,
+            language
+        );
 
         // Fallback to hybrid strategy if specific strategy not found
         var fallbackKey = $"hybrid_{language}";
@@ -62,11 +71,12 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets a prompt template for quality validation.
+    ///     Gets a prompt template for quality validation.
     /// </summary>
     public async Task<PromptTemplate> GetQualityValidationPromptAsync(
-      string language = "en",
-      CancellationToken cancellationToken = default)
+        string language = "en",
+        CancellationToken cancellationToken = default
+    )
     {
         await EnsurePromptsLoadedAsync(cancellationToken);
 
@@ -83,12 +93,13 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Gets domain-specific instructions for document types.
+    ///     Gets domain-specific instructions for document types.
     /// </summary>
     public async Task<string> GetDomainInstructionsAsync(
-      DocumentType documentType,
-      string language = "en",
-      CancellationToken cancellationToken = default)
+        DocumentType documentType,
+        string language = "en",
+        CancellationToken cancellationToken = default
+    )
     {
         await EnsurePromptsLoadedAsync(cancellationToken);
 
@@ -96,16 +107,23 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
         if (_domainInstructionsCache.TryGetValue(key, out var instructions))
         {
-            _logger.LogDebug("Retrieved domain instructions for {DocumentType}, language {Language}", documentType, language);
+            _logger.LogDebug(
+                "Retrieved domain instructions for {DocumentType}, language {Language}",
+                documentType,
+                language
+            );
             return instructions;
         }
 
-        _logger.LogDebug("No specific domain instructions found for {DocumentType}, using generic guidance", documentType);
+        _logger.LogDebug(
+            "No specific domain instructions found for {DocumentType}, using generic guidance",
+            documentType
+        );
         return GetGenericDomainInstructions(documentType);
     }
 
     /// <summary>
-    /// Reloads all prompts from the YAML configuration file.
+    ///     Reloads all prompts from the YAML configuration file.
     /// </summary>
     public async Task<bool> ReloadPromptsAsync(CancellationToken cancellationToken = default)
     {
@@ -131,7 +149,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     }
 
     /// <summary>
-    /// Validates that all required prompts are properly configured.
+    ///     Validates that all required prompts are properly configured.
     /// </summary>
     public async Task<bool> ValidatePromptConfigurationAsync(CancellationToken cancellationToken = default)
     {
@@ -142,9 +160,12 @@ public class SegmentationPromptManager : ISegmentationPromptManager
             _logger.LogDebug("Validating prompt configuration. Cache contains {Count} prompts", _promptCache.Count);
 
             // If we have any prompts loaded, consider it valid (flexible validation for testing)
-            if (_promptCache.Count > 0)
+            if (!_promptCache.IsEmpty)
             {
-                _logger.LogInformation("Prompt configuration validation passed. Found {Count} configured prompts", _promptCache.Count);
+                _logger.LogInformation(
+                    "Prompt configuration validation passed. Found {Count} configured prompts",
+                    _promptCache.Count
+                );
                 return true;
             }
 
@@ -161,9 +182,12 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                 }
             }
 
-            if (missingPrompts.Any())
+            if (missingPrompts.Count != 0)
             {
-                _logger.LogWarning("Missing required prompt configurations: {MissingPrompts}", string.Join(", ", missingPrompts));
+                _logger.LogWarning(
+                    "Missing required prompt configurations: {MissingPrompts}",
+                    string.Join(", ", missingPrompts)
+                );
                 return false;
             }
 
@@ -213,7 +237,10 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
                 if (!File.Exists(promptsFilePath))
                 {
-                    _logger.LogWarning("Prompts file not found at {FilePath}. Using fallback prompts.", promptsFilePath);
+                    _logger.LogWarning(
+                        "Prompts file not found at {FilePath}. Using fallback prompts.",
+                        promptsFilePath
+                    );
                     LoadFallbackPrompts();
                     return Task.CompletedTask;
                 }
@@ -222,8 +249,8 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
                 var yamlContent = File.ReadAllText(promptsFilePath);
                 var deserializer = new DeserializerBuilder()
-                  .WithNamingConvention(UnderscoredNamingConvention.Instance)
-                  .Build();
+                    .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                    .Build();
 
                 var promptsConfig = deserializer.Deserialize<Dictionary<string, object>>(yamlContent);
 
@@ -232,8 +259,12 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
                 _lastLoadTime = DateTime.UtcNow;
 
-                _logger.LogInformation("Successfully loaded {PromptCount} prompts and {DomainCount} domain instructions from {FilePath}",
-                  _promptCache.Count, _domainInstructionsCache.Count, promptsFilePath);
+                _logger.LogInformation(
+                    "Successfully loaded {PromptCount} prompts and {DomainCount} domain instructions from {FilePath}",
+                    _promptCache.Count,
+                    _domainInstructionsCache.Count,
+                    promptsFilePath
+                );
 
                 return Task.CompletedTask;
             }
@@ -279,15 +310,26 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     private void LoadPromptsFromConfig(Dictionary<string, object> config)
     {
         // List of expected prompt keys in the YAML file
-        var strategies = new[] { "strategy_determination", "topic_based", "structure_based", "narrative_based", "hybrid", "quality_validation" };
+        var strategies = new[]
+        {
+            "strategy_determination",
+            "topic_based",
+            "structure_based",
+            "narrative_based",
+            "hybrid",
+            "quality_validation",
+        };
 
         foreach (var strategy in strategies)
         {
-            if (config.TryGetValue(strategy, out var strategyConfig) && strategyConfig is Dictionary<object, object> strategyDict)
+            if (
+                config.TryGetValue(strategy, out var strategyConfig)
+                && strategyConfig is Dictionary<object, object> strategyDict
+            )
             {
                 var prompt = ParsePromptTemplate(strategyDict);
                 var key = $"{strategy}_{_options.Prompts.DefaultLanguage}";
-                _promptCache.TryAdd(key, prompt);
+                _ = _promptCache.TryAdd(key, prompt);
 
                 _logger.LogDebug("Loaded prompt template for strategy: {Strategy}", strategy);
             }
@@ -296,7 +338,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         // Also try to load any additional prompts found in the config
         foreach (var kvp in config)
         {
-            var strategyName = kvp.Key.ToString();
+            var strategyName = kvp.Key;
             if (!strategies.Contains(strategyName) && kvp.Value is Dictionary<object, object> additionalDict)
             {
                 // Skip domain_instructions as that's handled separately
@@ -304,7 +346,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                 {
                     var prompt = ParsePromptTemplate(additionalDict);
                     var key = $"{strategyName}_{_options.Prompts.DefaultLanguage}";
-                    _promptCache.TryAdd(key, prompt);
+                    _ = _promptCache.TryAdd(key, prompt);
 
                     _logger.LogDebug("Loaded additional prompt template for: {Strategy}", strategyName);
                 }
@@ -314,14 +356,17 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
     private void LoadDomainInstructionsFromConfig(Dictionary<string, object> config)
     {
-        if (config.TryGetValue("domain_instructions", out var domainConfig) && domainConfig is Dictionary<object, object> domainDict)
+        if (
+            config.TryGetValue("domain_instructions", out var domainConfig)
+            && domainConfig is Dictionary<object, object> domainDict
+        )
         {
             foreach (var kvp in domainDict)
             {
                 if (kvp.Key?.ToString() is string documentType && kvp.Value?.ToString() is string instructions)
                 {
                     var key = $"{documentType}_{_options.Prompts.DefaultLanguage}";
-                    _domainInstructionsCache.TryAdd(key, instructions.Trim());
+                    _ = _domainInstructionsCache.TryAdd(key, instructions.Trim());
                 }
             }
         }
@@ -346,12 +391,18 @@ public class SegmentationPromptManager : ISegmentationPromptManager
             template.ExpectedFormat = format.ToString() ?? "json";
         }
 
-        if (templateDict.TryGetValue("max_tokens", out var maxTokens) && int.TryParse(maxTokens.ToString(), out var tokens))
+        if (
+            templateDict.TryGetValue("max_tokens", out var maxTokens)
+            && int.TryParse(maxTokens.ToString(), out var tokens)
+        )
         {
             template.MaxTokens = tokens;
         }
 
-        if (templateDict.TryGetValue("temperature", out var temperature) && double.TryParse(temperature.ToString(), out var temp))
+        if (
+            templateDict.TryGetValue("temperature", out var temperature)
+            && double.TryParse(temperature.ToString(), out var temp)
+        )
         {
             template.Temperature = temp;
         }
@@ -368,11 +419,11 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         foreach (var strategy in strategies)
         {
             var key = $"{strategy.ToString().ToLowerInvariant()}_en";
-            _promptCache.TryAdd(key, CreateFallbackPrompt(strategy));
+            _ = _promptCache.TryAdd(key, CreateFallbackPrompt(strategy));
         }
 
         // Add quality validation fallback
-        _promptCache.TryAdd("quality_validation_en", CreateFallbackQualityPrompt());
+        _ = _promptCache.TryAdd("quality_validation_en", CreateFallbackQualityPrompt());
     }
 
     private static PromptTemplate CreateFallbackPrompt(SegmentationStrategy strategy)
@@ -380,10 +431,11 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         return new PromptTemplate
         {
             SystemPrompt = $"You are a document segmentation expert using {strategy} strategy.",
-            UserPrompt = "Analyze the document and provide segmentation points in JSON format with position, reason, and confidence fields.",
+            UserPrompt =
+                "Analyze the document and provide segmentation points in JSON format with position, reason, and confidence fields.",
             ExpectedFormat = "json",
             MaxTokens = 1000,
-            Temperature = 0.1
+            Temperature = 0.1,
         };
     }
 
@@ -392,10 +444,11 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         return new PromptTemplate
         {
             SystemPrompt = "You are a quality assessment expert for document segmentation.",
-            UserPrompt = "Evaluate the segmentation quality and provide scores for coherence, independence, and topic consistency.",
+            UserPrompt =
+                "Evaluate the segmentation quality and provide scores for coherence, independence, and topic consistency.",
             ExpectedFormat = "json",
             MaxTokens = 800,
-            Temperature = 0.1
+            Temperature = 0.1,
         };
     }
 
@@ -408,7 +461,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
             DocumentType.Technical => "Group technical procedures and maintain implementation context.",
             DocumentType.Email => "Maintain conversation context and reply chains.",
             DocumentType.Chat => "Group related conversation topics together.",
-            _ => "Segment based on logical content boundaries and topic coherence."
+            _ => "Segment based on logical content boundaries and topic coherence.",
         };
     }
 

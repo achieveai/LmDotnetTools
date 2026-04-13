@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem"
+      ],
+      "env": {
+        "ALLOWED_PATHS": "D:/Source/repos/LmDotnetTools/example/LmConfigUsageExample"
+      }
+    },
+    "neetpg_reference_query": {
+      "type": "http",
+      "url": "http://localhost:5113/mcp",
+      "headers": {
+        "X-Exam-Type": "NeetPG"
+      }
+    }
+  }
+}

@@ -7,30 +7,54 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ToolsCallResultMessageJsonConverter))]
 public record ToolsCallResultMessage : IMessage
 {
+    [JsonPropertyName("tool_call_results")]
+    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = [];
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? FromAgent { get; init; } = null;
+    public string? FromAgent { get; init; }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? GenerationId { get; init; } = null;
+    public string? GenerationId { get; init; }
 
-    [JsonPropertyName("tool_call_results")]
-    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = ImmutableList<ToolCallResult>.Empty;
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
 
-    public string? GetText() => null;
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
 
-    public ToolCall? GetToolCalls() => null;
+    public static string? GetText()
+    {
+        return null;
+    }
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 
     // Factory method for creating a ToolsCallResultMessage with a single result
     public static ToolsCallResultMessage Create(
@@ -39,15 +63,24 @@ public record ToolsCallResultMessage : IMessage
         Role role = Role.User,
         string? fromAgent = null,
         ImmutableDictionary<string, object>? metadata = null,
-        string? generationId = null)
+        string? generationId = null
+    )
     {
+        ArgumentNullException.ThrowIfNull(toolCall);
         return new ToolsCallResultMessage
         {
             Role = role,
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty))
+            ToolCallResults =
+            [
+                new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)
+                {
+                    ToolName = toolCall.FunctionName,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                },
+            ],
         };
     }
 
@@ -57,7 +90,8 @@ public record ToolsCallResultMessage : IMessage
         Role role = Role.User,
         string? fromAgent = null,
         ImmutableDictionary<string, object>? metadata = null,
-        string? generationId = null)
+        string? generationId = null
+    )
     {
         return new ToolsCallResultMessage
         {
@@ -65,7 +99,14 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)).ToImmutableList()
+            ToolCallResults =
+            [
+                .. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)
+                {
+                    ToolName = r.toolCall.FunctionName,
+                    ExecutionTarget = r.toolCall.ExecutionTarget,
+                }),
+            ],
         };
     }
 }

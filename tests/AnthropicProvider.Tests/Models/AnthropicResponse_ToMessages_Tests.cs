@@ -5,6 +5,8 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
 public class AnthropicResponse_ToMessages_Tests
 {
+    private static readonly string[] separator = ["\r\n", "\n"];
+
     // Gets the path to the repository root directory
     private static string GetRepositoryRootPath()
     {
@@ -14,8 +16,11 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Go up to find the repository root (where you'd typically find .git, etc.)
         // This will work even if the test is run from different working directories
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")) &&
-               !File.Exists(Path.Combine(currentDir, "LmDotnetTools.sln")))
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, "LmDotnetTools.sln"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -32,15 +37,16 @@ public class AnthropicResponse_ToMessages_Tests
     public void NonStreaming_ExampleResponse_ShouldConvertToCorrectMessages()
     {
         // Arrange
-        string exampleJson = File.ReadAllText(GetExampleFilePath("example_responses.json"));
-        var responses = JsonSerializer.Deserialize<AnthropicResponse[]>(exampleJson, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        }) ?? throw new InvalidOperationException("Failed to deserialize example responses");
+        var exampleJson = File.ReadAllText(GetExampleFilePath("example_responses.json"));
+        var responses =
+            JsonSerializer.Deserialize<AnthropicResponse[]>(
+                exampleJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            ) ?? throw new InvalidOperationException("Failed to deserialize example responses");
 
         // Act & Assert for first response - text and tool_use
         var response1 = responses[0];
-        var messages1 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response1, "test-agent");
+        var messages1 = response1.ToMessages("test-agent");
 
         // Assert basic properties - we now have 3 messages because of the additional UsageMessage
         Assert.Equal(3, messages1.Count);
@@ -49,14 +55,14 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal("test-agent", messages1[0].FromAgent);
 
         // Verify text message content
-        Assert.IsType<TextMessage>(messages1[0]);
+        _ = Assert.IsType<TextMessage>(messages1[0]);
         var textMessage = messages1[0] as TextMessage;
         Assert.NotNull(textMessage);
         Assert.Contains("I'll help you list the files in the root and \"code\" directories", textMessage.Text);
         Assert.False(textMessage.IsThinking);
 
         // Verify tool message content
-        Assert.IsType<ToolsCallMessage>(messages1[1]);
+        _ = Assert.IsType<ToolsCallMessage>(messages1[1]);
         var toolMessage = messages1[1] as ToolsCallMessage;
         Assert.NotNull(toolMessage);
         var toolCalls = toolMessage.GetToolCalls();
@@ -66,35 +72,35 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal("toolu_018", toolCall.ToolCallId);
 
         // Verify usage message
-        Assert.IsType<UsageMessage>(messages1[2]);
+        _ = Assert.IsType<UsageMessage>(messages1[2]);
         var usageMessage = messages1[2] as UsageMessage;
         Assert.NotNull(usageMessage);
         Assert.NotNull(usageMessage.Usage);
 
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
-        var messages2 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response2, "test-agent");
+        var messages2 = response2.ToMessages("test-agent");
 
         // Assert basic properties - we now have 4 messages because of the additional UsageMessage
         Assert.Equal(4, messages2.Count);
         Assert.Equal("msg_016", response2.Id);
 
         // Verify thinking message content
-        Assert.IsType<TextMessage>(messages2[0]);
+        _ = Assert.IsType<TextMessage>(messages2[0]);
         var thinkingMessage = messages2[0] as TextMessage;
         Assert.NotNull(thinkingMessage);
         Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Text);
         Assert.True(thinkingMessage.IsThinking);
 
         // Verify regular text message
-        Assert.IsType<TextMessage>(messages2[1]);
+        _ = Assert.IsType<TextMessage>(messages2[1]);
         var regularTextMessage = messages2[1] as TextMessage;
         Assert.NotNull(regularTextMessage);
         Assert.Contains("I'll help you find the files that are in", regularTextMessage.Text);
         Assert.False(regularTextMessage.IsThinking);
 
         // Verify tool message
-        Assert.IsType<ToolsCallMessage>(messages2[2]);
+        _ = Assert.IsType<ToolsCallMessage>(messages2[2]);
         var toolMessage2 = messages2[2] as ToolsCallMessage;
         Assert.NotNull(toolMessage2);
         var toolCalls2 = toolMessage2.GetToolCalls();
@@ -104,7 +110,7 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Contains("import os", toolCall2.FunctionArgs);
 
         // Verify usage message
-        Assert.IsType<UsageMessage>(messages2[3]);
+        _ = Assert.IsType<UsageMessage>(messages2[3]);
         var usageMessage2 = messages2[3] as UsageMessage;
         Assert.NotNull(usageMessage2);
         Assert.NotNull(usageMessage2.Usage);
@@ -114,7 +120,7 @@ public class AnthropicResponse_ToMessages_Tests
     public void Streaming_ExampleResponse_ShouldConvertToCorrectUpdateMessages()
     {
         // Arrange
-        string exampleSse = File.ReadAllText(GetExampleFilePath("example_streaming_responses.txt"));
+        var exampleSse = File.ReadAllText(GetExampleFilePath("example_streaming_responses.txt"));
         var sseEvents = ParseSseEvents(exampleSse);
 
         // Convert SSE events to JSON nodes and text delta objects
@@ -123,7 +129,10 @@ public class AnthropicResponse_ToMessages_Tests
 
         foreach (var sseEvent in sseEvents)
         {
-            if (string.IsNullOrEmpty(sseEvent.Data)) continue;
+            if (string.IsNullOrEmpty(sseEvent.Data))
+            {
+                continue;
+            }
 
             try
             {
@@ -141,18 +150,22 @@ public class AnthropicResponse_ToMessages_Tests
                     {
                         // Create a text update message
                         var text = delta["text"]!.GetValue<string>();
-                        textDeltas.Add(new TextUpdateMessage
-                        {
-                            Text = text,
-                            Role = Role.Assistant,
-                            IsThinking = false
-                        });
+                        textDeltas.Add(
+                            new TextUpdateMessage
+                            {
+                                Text = text,
+                                Role = Role.Assistant,
+                                IsThinking = false,
+                            }
+                        );
                     }
                 }
 
                 // Check for tool_use content blocks
-                if (eventType == "content_block_start" &&
-                    jsonNode?["content_block"]?["type"]?.GetValue<string>() == "tool_use")
+                if (
+                    eventType == "content_block_start"
+                    && jsonNode?["content_block"]?["type"]?.GetValue<string>() == "tool_use"
+                )
                 {
                     var toolId = jsonNode["content_block"]?["id"]?.GetValue<string>();
                     var toolName = jsonNode["content_block"]?["name"]?.GetValue<string>();
@@ -163,9 +176,11 @@ public class AnthropicResponse_ToMessages_Tests
                 }
 
                 // Check for message_delta events with usage information
-                if (eventType == "message_delta" &&
-                    jsonNode?["delta"]?["stop_reason"] != null &&
-                    jsonNode?["usage"] != null)
+                if (
+                    eventType == "message_delta"
+                    && jsonNode?["delta"]?["stop_reason"] != null
+                    && jsonNode?["usage"] != null
+                )
                 {
                     // This would handle usage information if needed
                 }
@@ -202,7 +217,7 @@ public class AnthropicResponse_ToMessages_Tests
     private static List<SseEvent> ParseSseEvents(string input)
     {
         var events = new List<SseEvent>();
-        var lines = input.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        var lines = input.Split(separator, StringSplitOptions.None);
 
         SseEvent? currentEvent = null;
 
@@ -216,21 +231,19 @@ public class AnthropicResponse_ToMessages_Tests
                     events.Add(currentEvent);
                     currentEvent = null;
                 }
+
                 continue;
             }
 
-            if (currentEvent == null)
-            {
-                currentEvent = new SseEvent();
-            }
+            currentEvent ??= new SseEvent();
 
             if (line.StartsWith("event:"))
             {
-                currentEvent.Event = line.Substring(6).Trim();
+                currentEvent.Event = line[6..].Trim();
             }
             else if (line.StartsWith("data:"))
             {
-                currentEvent.Data = line.Substring(5).Trim();
+                currentEvent.Data = line[5..].Trim();
             }
         }
 

@@ -32,3 +32,16 @@ kv_store
 *.db-journal
 .fake
 LLM_CACHE/
+*.log
+
+nul
+.playwright-mcp/
+.next/
+node_modules/
+
+# Vite build output
+**/wwwroot/dist/
+
+# WebSocket recordings
+**/recordings/
+.logs/

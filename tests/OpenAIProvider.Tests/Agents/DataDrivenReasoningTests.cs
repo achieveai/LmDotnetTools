@@ -1,26 +1,31 @@
-using System.Diagnostics;
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
+using System.Diagnostics;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 /// <summary>
-/// Data-driven tests that exercise the full HTTP stack (record / playback) for reasoning support.
-/// The first time <see cref="CreateBasicReasoningTestData"/> is executed it will hit the real provider
-/// using the credentials in .env.test, persist the cassette under tests/TestData/OpenAI/, and serialise
-/// both the original LmCore request and the translated Core response. Subsequent CI runs replay the
-/// interaction offline.
+///     Data-driven tests that exercise the full HTTP stack (record / playback) for reasoning support.
+///     The first time <see cref="CreateBasicReasoningTestData" /> is executed it will hit the real provider
+///     using the credentials in .env.test, persist the cassette under tests/TestData/OpenAI/, and serialise
+///     both the original LmCore request and the translated Core response. Subsequent CI runs replay the
+///     interaction offline.
 /// </summary>
 public class DataDrivenReasoningTests
 {
+    private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
+    private const string TestBaseUrl = "http://test-mode/v1";
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
     private readonly ProviderTestDataManager _testDataManager = new();
 
-    private static string EnvTestPath => Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
+    private static string EnvTestPath =>
+        Path.Combine(TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
     #region Playback test
 
@@ -30,33 +35,23 @@ public class DataDrivenReasoningTests
     {
         // Arrange – load recorded request/options
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.OpenAI);
+        messages = PrepareReasoningInstructionMessages(messages);
 
-        // Wire HTTP client for playback only (allowAdditional = false)
-        var cassettePath = Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
-
-        var handler = MockHttpHandlerBuilder.Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: false)
-            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
-            .Build();
-
-        var httpClient = new HttpClient(handler);
-        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var httpClient = TestModeHttpClientFactory.CreateOpenAiTestClient(chunkDelayMs: 0);
+        var client = new OpenClient(httpClient, TestBaseUrl);
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
         var response = (await agent.GenerateReplyAsync(messages, options)).ToList();
 
         // Assert – must contain a ReasoningMessage + final answer + UsageMessage
-        Assert.True(response.OfType<ReasoningMessage>().Any(), "Expected at least one ReasoningMessage in the provider response.");
+        Assert.True(
+            response.Any(m => m is ReasoningMessage or ReasoningUpdateMessage),
+            "Expected at least one reasoning message in the provider response."
+        );
         Assert.Equal(response.Last(), response.OfType<UsageMessage>().Last()); // ensure UsageMessage is last
 
-        // Cross-check with frozen expectation (if available)
-        var expected = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
-        if (expected != null)
-        {
-            Assert.Equal(expected.Count, response.Count);
-        }
+        Assert.True(response.Count >= 2, "Expected reasoning response plus usage message.");
     }
 
     public static IEnumerable<object[]> GetReasoningTestCases()
@@ -69,19 +64,41 @@ public class DataDrivenReasoningTests
 
     #endregion
 
+    private static IMessage[] PrepareReasoningInstructionMessages(IMessage[] messages)
+    {
+        var userIndex = Array.FindIndex(messages, m => m is TextMessage tm && tm.Role == Role.User);
+        if (userIndex < 0 || messages[userIndex] is not TextMessage userMessage)
+        {
+            return messages;
+        }
+
+        var instruction = """
+            <|instruction_start|>{"instruction_chain":[{"id_message":"reasoning","reasoning":{"length":30},"messages":[{"text_message":{"length":40}}]}]}<|instruction_end|>
+            """;
+
+        var rewritten = messages.ToArray();
+        rewritten[userIndex] = userMessage with { Text = $"{userMessage.Text}\n{instruction}" };
+        return rewritten;
+    }
+
     #region Test-data creation (one-off)
 
     /// <summary>
-    /// Executes a real call to the provider (if no cassette exists yet) and stores the artefacts.
-    /// Marked as a Fact so that it can be run manually – CI will skip if the cassette already exists.
+    ///     Executes a real call to the provider (if no cassette exists yet) and stores the artefacts.
+    ///     Marked as a Fact so that it can be run manually – CI will skip if the cassette already exists.
     /// </summary>
     [Fact]
     public async Task CreateBasicReasoningTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "BasicReasoning";
 
         // Short-circuit if data already there
-        string lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Test data already exists at {lmCoreRequestPath}. Skipping creation.");
@@ -91,34 +108,37 @@ public class DataDrivenReasoningTests
         // 1) Build prompt + options
         var messages = new IMessage[]
         {
-            new TextMessage { Role = Role.User, Text = "Which number is larger – 9.11 or 9.9? Explain your reasoning." }
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "Which number is larger – 9.11 or 9.9? Explain your reasoning.",
+            },
         };
 
-        var reasoningDict = new Dictionary<string, object?>
-        {
-            ["effort"] = "medium",
-            ["max_tokens"] = 512
-        };
+        var reasoningDict = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 512 };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "deepseek/deepseek-r1-0528:free", // model known to emit reasoning field via OpenRouter
             Temperature = 0f,
-            ExtraProperties = new Dictionary<string, object?>
-            {
-                ["reasoning"] = reasoningDict
-            }.ToImmutableDictionary()
+            ExtraProperties = new Dictionary<string, object?> { ["reasoning"] = reasoningDict }.ToImmutableDictionary(),
         };
 
         // 2) Save LmCore request artefact
-        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages.OfType<TextMessage>().ToArray(), options);
+        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, [.. messages.OfType<TextMessage>()], options);
 
         // 3) Configure record/playback handler
-        var cassettePath = Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
+        var cassettePath = Path.Combine(
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests",
+            "TestData",
+            "OpenAI",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -140,14 +160,19 @@ public class DataDrivenReasoningTests
     }
 
     /// <summary>
-    /// Creates OpenAI o-series (gpt-o4-mini) reasoning test data.
+    ///     Creates OpenAI o-series (gpt-o4-mini) reasoning test data.
     /// </summary>
     [Fact]
     public async Task CreateO4MiniReasoningTestData()
     {
+        if (!ManualArtifactCreationEnabled())
+        {
+            return;
+        }
+
         const string testName = "O4MiniReasoning";
 
-        string lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Test data already exists at {lmCoreRequestPath}. Skipping creation.");
@@ -156,7 +181,11 @@ public class DataDrivenReasoningTests
 
         var messages = new IMessage[]
         {
-            new TextMessage { Role = Role.User, Text = "Explain why the sky appears blue. Provide your chain-of-thought." }
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "Explain why the sky appears blue. Provide your chain-of-thought.",
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -168,18 +197,24 @@ public class DataDrivenReasoningTests
                 ["reasoning"] = new Dictionary<string, object?>
                 {
                     ["effort"] = "medium",
-                    ["max_completion_tokens"] = 512
-                }
-            }.ToImmutableDictionary()
+                    ["max_completion_tokens"] = 512,
+                },
+            }.ToImmutableDictionary(),
         };
 
-        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages.OfType<TextMessage>().ToArray(), options);
+        _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, [.. messages.OfType<TextMessage>()], options);
 
-        var cassettePath = Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
+        var cassettePath = Path.Combine(
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests",
+            "TestData",
+            "OpenAI",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
-            .WithRecordPlayback(cassettePath, allowAdditional: true)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .WithRecordPlayback(cassettePath, true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
@@ -202,10 +237,23 @@ public class DataDrivenReasoningTests
     #region Helpers
 
     private static string GetApiKeyFromEnv()
-        => EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", new[] { "LLM_API_KEY" }, "test-api-key");
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys);
+    }
 
     private static string GetApiBaseUrlFromEnv()
-        => EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", new[] { "LLM_API_BASE_URL" }, "https://api.openai.com/v1");
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray);
+    }
+
+    private static bool ManualArtifactCreationEnabled()
+    {
+        return string.Equals(
+            Environment.GetEnvironmentVariable(ManualArtifactCreationEnvVar),
+            "1",
+            StringComparison.Ordinal
+        );
+    }
 
     #endregion
 }

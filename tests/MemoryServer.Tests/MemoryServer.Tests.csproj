@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -8,9 +7,9 @@
     <IsTestProject>true</IsTestProject>
     <VSTestLogger>trx</VSTestLogger>
     <VSTestResultsDirectory>$(MSBuildProjectDirectory)/TestResults</VSTestResultsDirectory>
-      <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4">
       <PrivateAssets>all</PrivateAssets>
@@ -24,41 +23,35 @@
     </PackageReference>
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="FluentAssertions" Version="7.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
-    <PackageReference Include="ModelContextProtocol" Version="0.3.0-preview.3" />
+    <PackageReference Include="ModelContextProtocol" Version="0.4.1-preview.1" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.5" />
     <PackageReference Include="dotenv.net" Version="3.2.1" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\..\McpServers\Memory\MemoryServer\MemoryServer.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <Using Include="Xunit" />
     <Using Include="System.Diagnostics" />
   </ItemGroup>
-
-  <!-- Copy MemoryServer.exe to test output for integration tests -->
+  <!-- Copy MemoryServer files to test output for integration tests -->
   <Target Name="CopyMemoryServer" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
+    <PropertyGroup>
+      <MemoryServerSourceDir>$(MSBuildProjectDirectory)/../../McpServers/Memory/MemoryServer/bin/$(Configuration)/net9.0</MemoryServerSourceDir>
+    </PropertyGroup>
+    <!-- Copy exe on Windows -->
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.exe" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(MemoryServerSourceDir)/MemoryServer.exe')" />
+    <!-- Copy native executable on Unix -->
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(MemoryServerSourceDir)/MemoryServer')" />
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MemoryServerSourceDir)/MemoryServer.runtimeconfig.json" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
     <!-- Copy prompt files needed for LLM services -->
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml" 
-          DestinationFolder="$(OutputPath)\Prompts" 
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Prompts/graph-extraction.yaml" DestinationFolder="$(OutputPath)/Prompts" SkipUnchangedFiles="true" />
   </Target>
-
 </Project>

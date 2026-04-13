@@ -1,4 +1,4 @@
-using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
@@ -6,19 +6,20 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 public static class FunctionContractExtension
 {
     /// <summary>
-    /// Convert a <see cref="FunctionContract"/> to a <see cref="FunctionDefinition"/> that can be used in function call.
+    ///     Convert a <see cref="FunctionContract" /> to a <see cref="FunctionDefinition" /> that can be used in function call.
     /// </summary>
     /// <param name="functionContract">function contract</param>
-    /// <returns><see cref="FunctionDefinition"/></returns>
+    /// <returns>
+    ///     <see cref="FunctionDefinition" />
+    /// </returns>
     public static FunctionDefinition ToOpenFunctionDefinition(this FunctionContract functionContract)
     {
-        var name = functionContract.Name
-            ?? throw new Exception("Function name cannot be null");
-        var description = functionContract.Description
-            ?? throw new Exception("Function description cannot be null");
+        ArgumentNullException.ThrowIfNull(functionContract);
 
-        var schemaBuilder = JsonSchemaObject.Create()
-            .WithDescription($"Parameters for {name}");
+        var name = functionContract.Name ?? throw new Exception("Function name cannot be null");
+        var description = functionContract.Description ?? throw new Exception("Function description cannot be null");
+
+        var schemaBuilder = JsonSchemaObject.Create().WithDescription($"Parameters for {name}");
 
         if (functionContract.Parameters != null)
         {
@@ -47,7 +48,7 @@ public static class FunctionContractExtension
     }
 
     /// <summary>
-    /// Creates a JsonSchemaObject based on the .NET type
+    ///     Creates a JsonSchemaObject based on the .NET type
     /// </summary>
     private static JsonSchemaObject CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
     {
@@ -59,8 +60,16 @@ public static class FunctionContractExtension
             "number" => JsonSchemaObject.Number(description),
             "boolean" => JsonSchemaObject.Boolean(description),
             "array" when schemaObject.Items != null => JsonSchemaObject.Array(schemaObject.Items, description),
-            "object" => new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType(["object", "null"]), Description = description },
-            _ => new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description }
+            "object" => new JsonSchemaObject
+            {
+                Type = JsonSchemaTypeHelper.ToType(["object", "null"]),
+                Description = description,
+            },
+            _ => new JsonSchemaObject
+            {
+                Type = JsonSchemaTypeHelper.ToType(["string", "null"]),
+                Description = description,
+            },
         };
     }
 }

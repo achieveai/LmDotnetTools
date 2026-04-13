@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -10,8 +10,16 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
         return new Usage();
     }
 
-    protected override (bool handled, Usage instance) ReadProperty(ref Utf8JsonReader reader, Usage instance, string propertyName, JsonSerializerOptions options)
+    protected override (bool handled, Usage instance) ReadProperty(
+        ref Utf8JsonReader reader,
+        Usage instance,
+        string propertyName,
+        JsonSerializerOptions options
+    )
     {
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentNullException.ThrowIfNull(propertyName);
+
         switch (propertyName)
         {
             case "input_tokens":
@@ -31,6 +39,9 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
 
     public override void Write(Utf8JsonWriter writer, Usage value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
 
         // Only write non-default values to respect JsonIgnoreCondition.WhenWritingDefault

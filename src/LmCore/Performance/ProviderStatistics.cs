@@ -1,14 +1,23 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Maintains running statistics for each provider, including model-specific metrics and operational insights.
-/// Provides real-time provider performance monitoring capabilities.
+///     Maintains running statistics for each provider, including model-specific metrics and operational insights.
+///     Provides real-time provider performance monitoring capabilities.
 /// </summary>
 public class ProviderStatistics
 {
     private readonly object _lock = new();
-    private readonly List<RequestMetrics> _recentMetrics = new();
-    private readonly Dictionary<string, ModelStatistics> _modelStats = new();
+    private readonly Dictionary<string, ModelStatistics> _modelStats = [];
+    private readonly List<RequestMetrics> _recentMetrics = [];
+
+    /// <summary>Creates a new ProviderStatistics instance</summary>
+    /// <param name="provider">Provider name</param>
+    /// <param name="maxRecentMetrics">Maximum number of recent metrics to retain</param>
+    public ProviderStatistics(string provider, int maxRecentMetrics = 1000)
+    {
+        Provider = provider;
+        MaxRecentMetrics = maxRecentMetrics;
+    }
 
     /// <summary>Maximum number of recent metrics to keep in memory</summary>
     public int MaxRecentMetrics { get; init; } = 1000;
@@ -42,12 +51,10 @@ public class ProviderStatistics
         TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Success rate as percentage (all time)</summary>
-    public double SuccessRate =>
-        TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Retry rate as percentage (all time)</summary>
-    public double RetryRate =>
-        TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double RetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Model-specific statistics</summary>
     public IReadOnlyDictionary<string, ModelStatistics> ModelStatistics
@@ -68,25 +75,19 @@ public class ProviderStatistics
         {
             lock (_lock)
             {
-                return _recentMetrics.ToList();
+                return [.. _recentMetrics];
             }
         }
-    }
-
-    /// <summary>Creates a new ProviderStatistics instance</summary>
-    /// <param name="provider">Provider name</param>
-    /// <param name="maxRecentMetrics">Maximum number of recent metrics to retain</param>
-    public ProviderStatistics(string provider, int maxRecentMetrics = 1000)
-    {
-        Provider = provider;
-        MaxRecentMetrics = maxRecentMetrics;
     }
 
     /// <summary>Records a request metric and updates statistics</summary>
     /// <param name="metric">Request metric to record</param>
     public void RecordMetric(RequestMetrics metric)
     {
-        if (metric == null) return;
+        if (metric == null)
+        {
+            return;
+        }
 
         lock (_lock)
         {
@@ -94,12 +95,18 @@ public class ProviderStatistics
             TotalRequests++;
 
             if (metric.IsSuccess)
+            {
                 SuccessfulRequests++;
+            }
             else
+            {
                 FailedRequests++;
+            }
 
             if (metric.RetryAttempts > 0)
+            {
                 RetriedRequests++;
+            }
 
             TotalTokensProcessed += metric.Usage?.TotalTokens ?? 0;
             TotalProcessingTime = TotalProcessingTime.Add(metric.Duration);
@@ -173,10 +180,7 @@ public class ProviderStatistics
     {
         lock (_lock)
         {
-            return _modelStats.Values
-                .OrderByDescending(m => m.TotalRequests)
-                .Take(count)
-                .ToList();
+            return [.. _modelStats.Values.OrderByDescending(m => m.TotalRequests).Take(count)];
         }
     }
 
@@ -187,19 +191,23 @@ public class ProviderStatistics
     {
         lock (_lock)
         {
-            return _modelStats.Values
-                .OrderByDescending(m => m.TotalTokens)
-                .Take(count)
-                .ToList();
+            return [.. _modelStats.Values.OrderByDescending(m => m.TotalTokens).Take(count)];
         }
     }
 }
 
 /// <summary>
-/// Statistics for a specific model within a provider.
+///     Statistics for a specific model within a provider.
 /// </summary>
 public class ModelStatistics
 {
+    /// <summary>Creates a new ModelStatistics instance</summary>
+    /// <param name="model">Model name</param>
+    public ModelStatistics(string model)
+    {
+        Model = model;
+    }
+
     /// <summary>Model name</summary>
     public string Model { get; }
 
@@ -226,19 +234,10 @@ public class ModelStatistics
         TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Success rate for this model</summary>
-    public double SuccessRate =>
-        TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Average tokens per request for this model</summary>
-    public double AverageTokensPerRequest =>
-        TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;
-
-    /// <summary>Creates a new ModelStatistics instance</summary>
-    /// <param name="model">Model name</param>
-    public ModelStatistics(string model)
-    {
-        Model = model;
-    }
+    public double AverageTokensPerRequest => TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;
 
     /// <summary>Records a metric for this model</summary>
     /// <param name="metric">Request metric to record</param>
@@ -247,12 +246,18 @@ public class ModelStatistics
         TotalRequests++;
 
         if (metric.IsSuccess)
+        {
             SuccessfulRequests++;
+        }
         else
+        {
             FailedRequests++;
+        }
 
         if (metric.RetryAttempts > 0)
+        {
             RetriedRequests++;
+        }
 
         TotalTokens += metric.Usage?.TotalTokens ?? 0;
         TotalProcessingTime = TotalProcessingTime.Add(metric.Duration);

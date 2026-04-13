@@ -5,7 +5,7 @@ using Xunit;
 namespace LmEmbeddings.Tests.TestUtilities;
 
 /// <summary>
-/// Tests for EmbeddingTestDataGenerator shared utility
+///     Tests for EmbeddingTestDataGenerator shared utility
 /// </summary>
 public class EmbeddingTestDataGeneratorTests
 {
@@ -15,7 +15,8 @@ public class EmbeddingTestDataGeneratorTests
         int embeddingCount,
         int embeddingSize,
         string model,
-        string description)
+        string description
+    )
     {
         Debug.WriteLine($"Testing CreateValidEmbeddingResponse: {description}");
         Debug.WriteLine($"Parameters: count={embeddingCount}, size={embeddingSize}, model={model}");
@@ -60,7 +61,8 @@ public class EmbeddingTestDataGeneratorTests
     public void CreateValidRerankResponse_WithParameters_ReturnsValidJson(
         int documentCount,
         string model,
-        string description)
+        string description
+    )
     {
         Debug.WriteLine($"Testing CreateValidRerankResponse: {description}");
 
@@ -84,10 +86,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(EmbeddingArrayTestCases))]
-    public void GenerateTestEmbeddingArray_WithParameters_ReturnsValidArray(
-        int size,
-        int seed,
-        string description)
+    public void GenerateTestEmbeddingArray_WithParameters_ReturnsValidArray(int size, int seed, string description)
     {
         Debug.WriteLine($"Testing GenerateTestEmbeddingArray: {description}");
 
@@ -114,7 +113,8 @@ public class EmbeddingTestDataGeneratorTests
         int count,
         int size,
         int baseSeed,
-        string description)
+        string description
+    )
     {
         Debug.WriteLine($"Testing GenerateTestEmbeddingArrays: {description}");
 
@@ -142,10 +142,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(InputTextTestCases))]
-    public void CreateTestInputTexts_WithParameters_ReturnsValidTexts(
-        int count,
-        string prefix,
-        string description)
+    public void CreateTestInputTexts_WithParameters_ReturnsValidTexts(int count, string prefix, string description)
     {
         Debug.WriteLine($"Testing CreateTestInputTexts: {description}");
 
@@ -156,7 +153,7 @@ public class EmbeddingTestDataGeneratorTests
         Assert.NotNull(texts);
         Assert.Equal(count, texts.Length);
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             Assert.Equal($"{prefix}_{i}", texts[i]);
         }
@@ -166,10 +163,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(DocumentTextTestCases))]
-    public void CreateTestDocumentTexts_WithParameters_ReturnsValidTexts(
-        int count,
-        string prefix,
-        string description)
+    public void CreateTestDocumentTexts_WithParameters_ReturnsValidTexts(int count, string prefix, string description)
     {
         Debug.WriteLine($"Testing CreateTestDocumentTexts: {description}");
 
@@ -195,7 +189,8 @@ public class EmbeddingTestDataGeneratorTests
         string errorCode,
         string errorMessage,
         string errorType,
-        string description)
+        string description
+    )
     {
         Debug.WriteLine($"Testing CreateErrorResponse: {description}");
 
@@ -268,9 +263,9 @@ public class EmbeddingTestDataGeneratorTests
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // count, size, description
-            Assert.IsType<int>(testCase[0]);   // count
-            Assert.IsType<int>(testCase[1]);   // size
-            Assert.IsType<string>(testCase[2]); // description
+            _ = Assert.IsType<int>(testCase[0]); // count
+            _ = Assert.IsType<int>(testCase[1]); // size
+            _ = Assert.IsType<string>(testCase[2]); // description
         }
 
         Debug.WriteLine($"✓ Generated {testCases.Count()} embedding test cases");
@@ -291,9 +286,9 @@ public class EmbeddingTestDataGeneratorTests
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // code, message, description
-            Assert.IsType<string>(testCase[0]); // code
-            Assert.IsType<string>(testCase[1]); // message
-            Assert.IsType<string>(testCase[2]); // description
+            _ = Assert.IsType<string>(testCase[0]); // code
+            _ = Assert.IsType<string>(testCase[1]); // message
+            _ = Assert.IsType<string>(testCase[2]); // description
         }
 
         Debug.WriteLine($"✓ Generated {testCases.Count()} error test cases");
@@ -301,62 +296,62 @@ public class EmbeddingTestDataGeneratorTests
 
     #region Test Data
 
-    public static IEnumerable<object[]> EmbeddingResponseTestCases => new List<object[]>
-    {
-        new object[] { 1, 1536, "test-model", "Single embedding with standard size" },
-        new object[] { 3, 1536, "test-model-large", "Multiple embeddings with standard size" },
-        new object[] { 1, 512, "small-model", "Single embedding with small size" },
-        new object[] { 5, 768, "custom-model", "Multiple embeddings with custom size" },
-        new object[] { 10, 1024, "batch-model", "Large batch with medium size" }
-    };
+    public static IEnumerable<object[]> EmbeddingResponseTestCases =>
+        [
+            [1, 1536, "test-model", "Single embedding with standard size"],
+            [3, 1536, "test-model-large", "Multiple embeddings with standard size"],
+            [1, 512, "small-model", "Single embedding with small size"],
+            [5, 768, "custom-model", "Multiple embeddings with custom size"],
+            [10, 1024, "batch-model", "Large batch with medium size"],
+        ];
 
-    public static IEnumerable<object[]> RerankResponseTestCases => new List<object[]>
-    {
-        new object[] { 1, "rerank-model", "Single document rerank" },
-        new object[] { 5, "rerank-v2", "Multiple document rerank" },
-        new object[] { 10, "custom-rerank", "Large document set rerank" }
-    };
+    public static IEnumerable<object[]> RerankResponseTestCases =>
+        [
+            [1, "rerank-model", "Single document rerank"],
+            [5, "rerank-v2", "Multiple document rerank"],
+            [10, "custom-rerank", "Large document set rerank"],
+        ];
 
-    public static IEnumerable<object[]> EmbeddingArrayTestCases => new List<object[]>
-    {
-        new object[] { 1536, 42, "Standard OpenAI embedding size" },
-        new object[] { 768, 123, "BERT-style embedding size" },
-        new object[] { 512, 456, "Smaller embedding size" },
-        new object[] { 1024, 789, "Medium embedding size" },
-        new object[] { 100, 999, "Tiny embedding for testing" }
-    };
+    public static IEnumerable<object[]> EmbeddingArrayTestCases =>
+        [
+            [1536, 42, "Standard OpenAI embedding size"],
+            [768, 123, "BERT-style embedding size"],
+            [512, 456, "Smaller embedding size"],
+            [1024, 789, "Medium embedding size"],
+            [100, 999, "Tiny embedding for testing"],
+        ];
 
-    public static IEnumerable<object[]> MultipleEmbeddingArrayTestCases => new List<object[]>
-    {
-        new object[] { 3, 1536, 42, "Three standard embeddings" },
-        new object[] { 5, 768, 123, "Five medium embeddings" },
-        new object[] { 10, 512, 456, "Ten small embeddings" },
-        new object[] { 1, 1024, 789, "Single medium embedding" }
-    };
+    public static IEnumerable<object[]> MultipleEmbeddingArrayTestCases =>
+        [
+            [3, 1536, 42, "Three standard embeddings"],
+            [5, 768, 123, "Five medium embeddings"],
+            [10, 512, 456, "Ten small embeddings"],
+            [1, 1024, 789, "Single medium embedding"],
+        ];
 
-    public static IEnumerable<object[]> InputTextTestCases => new List<object[]>
-    {
-        new object[] { 1, "test_input", "Single test input" },
-        new object[] { 5, "sample", "Multiple sample inputs" },
-        new object[] { 10, "data", "Batch of data inputs" },
-        new object[] { 3, "embedding_text", "Custom prefix inputs" }
-    };
+    public static IEnumerable<object[]> InputTextTestCases =>
+        [
+            [1, "test_input", "Single test input"],
+            [5, "sample", "Multiple sample inputs"],
+            [10, "data", "Batch of data inputs"],
+            [3, "embedding_text", "Custom prefix inputs"],
+        ];
 
-    public static IEnumerable<object[]> DocumentTextTestCases => new List<object[]>
-    {
-        new object[] { 1, "test_document", "Single test document" },
-        new object[] { 5, "sample_doc", "Multiple sample documents" },
-        new object[] { 10, "content", "Batch of content documents" },
-        new object[] { 3, "rerank_item", "Custom prefix documents" }
-    };
+    public static IEnumerable<object[]> DocumentTextTestCases =>
+        [
+            [1, "test_document", "Single test document"],
+            [5, "sample_doc", "Multiple sample documents"],
+            [10, "content", "Batch of content documents"],
+            [3, "rerank_item", "Custom prefix documents"],
+        ];
 
-    public static IEnumerable<object[]> ErrorResponseTestCases => new List<object[]>
-    {
-        new object[] { "invalid_request", "The request is invalid", "client_error", "Client error response" },
-        new object[] { "server_error", "Internal server error", "server_error", "Server error response" },
-        new object[] { "rate_limit", "Too many requests", "rate_limit_error", "Rate limit error response" },
-        new object[] { "auth_failed", "Authentication failed", "auth_error", "Authentication error response" }
-    };
+    public static IEnumerable<object[]> ErrorResponseTestCases =>
+        [
+            ["invalid_request", "The request is invalid", "client_error", "Client error response"],
+            ["server_error", "Internal server error", "server_error", "Server error response"],
+            ["rate_limit", "Too many requests", "rate_limit_error", "Rate limit error response"],
+            ["auth_failed", "Authentication failed", "auth_error", "Authentication error response"],
+        ];
 
     #endregion
 }

@@ -1,38 +1,30 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
+using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
-using Microsoft.Extensions.Options;
 using MemoryServer.Models;
 using MemoryServer.Utils;
-using System.Text.Json;
-using System.Reflection;
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using RerankingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions;
+using Microsoft.Extensions.Options;
 using EmbeddingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.EmbeddingOptions;
+using RerankingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Implementation of LmConfig integration service for centralized model management.
+///     Implementation of LmConfig integration service for centralized model management.
 /// </summary>
 public class LmConfigService : ILmConfigService
 {
-    private static readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-    };
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly AppConfig _appConfig;
-    private readonly MemoryServerOptions _memoryOptions;
-    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<LmConfigService> _logger;
+    private readonly MemoryServerOptions _memoryOptions;
     private readonly IModelResolver _modelResolver;
+    private readonly IServiceProvider _serviceProvider;
     private readonly UnifiedAgent _unifiedAgent;
 
     public LmConfigService(
@@ -41,8 +33,10 @@ public class LmConfigService : ILmConfigService
         ILogger<LmConfigService> logger,
         IModelResolver modelResolver,
         UnifiedAgent unifiedAgent,
-        IOptions<AppConfig> appConfig)
+        IOptions<AppConfig> appConfig
+    )
     {
+        ArgumentNullException.ThrowIfNull(memoryOptions);
         _memoryOptions = memoryOptions.Value;
         _serviceProvider = serviceProvider;
         _logger = logger;
@@ -50,18 +44,23 @@ public class LmConfigService : ILmConfigService
         _unifiedAgent = unifiedAgent;
 
         // Use the shared AppConfig instance from DI
+        ArgumentNullException.ThrowIfNull(appConfig);
         _appConfig = appConfig.Value ?? throw new ArgumentNullException(nameof(appConfig));
     }
 
     /// <summary>
-    /// Gets the optimal model configuration for a specific capability.
+    ///     Gets the optimal model configuration for a specific capability.
     /// </summary>
     public Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default)
     {
         _logger.LogError("DEBUG: GetOptimalModelAsync called with capability: {Capability}", capability);
 
         var modelsWithCapability = GetModelsWithCapability(capability);
-        _logger.LogError("DEBUG: Found {Count} models with capability {Capability}", modelsWithCapability.Count, capability);
+        _logger.LogError(
+            "DEBUG: Found {Count} models with capability {Capability}",
+            modelsWithCapability.Count,
+            capability
+        );
 
         if (!modelsWithCapability.Any())
         {
@@ -73,9 +72,12 @@ public class LmConfigService : ILmConfigService
         if (_memoryOptions.LmConfig?.CostOptimization?.Enabled == true)
         {
             var maxCost = _memoryOptions.LmConfig.CostOptimization.MaxCostPerRequest;
-            modelsWithCapability = modelsWithCapability
-                .Where(m => (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000)
-                .ToList();
+            modelsWithCapability =
+            [
+                .. modelsWithCapability.Where(m =>
+                    (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000
+                ),
+            ];
         }
 
         // Select based on fallback strategy
@@ -83,22 +85,30 @@ public class LmConfigService : ILmConfigService
 
         var selectedModel = strategy.ToLower() switch
         {
-            "cost-optimized" => modelsWithCapability.OrderBy(m => m.GetPrimaryProvider().Pricing.PromptPerMillion).FirstOrDefault(),
-            "performance-first" => modelsWithCapability.OrderByDescending(m => m.GetPrimaryProvider().Priority).FirstOrDefault(),
-            _ => modelsWithCapability.FirstOrDefault()
+            "cost-optimized" => modelsWithCapability
+                .OrderBy(m => m.GetPrimaryProvider().Pricing.PromptPerMillion)
+                .FirstOrDefault(),
+            "performance-first" => modelsWithCapability
+                .OrderByDescending(m => m.GetPrimaryProvider().Priority)
+                .FirstOrDefault(),
+            _ => modelsWithCapability.FirstOrDefault(),
         };
 
         if (selectedModel != null)
         {
-            _logger.LogDebug("Selected model {ModelId} for capability {Capability} using strategy {Strategy}",
-                selectedModel.Id, capability, strategy);
+            _logger.LogDebug(
+                "Selected model {ModelId} for capability {Capability} using strategy {Strategy}",
+                selectedModel.Id,
+                capability,
+                strategy
+            );
         }
 
         return Task.FromResult(selectedModel);
     }
 
     /// <summary>
-    /// Creates an agent for a specific capability using the optimal model.
+    ///     Creates an agent for a specific capability using the optimal model.
     /// </summary>
     public async Task<IAgent> CreateAgentAsync(string capability, CancellationToken cancellationToken = default)
     {
@@ -116,10 +126,9 @@ public class LmConfigService : ILmConfigService
                 throw new InvalidOperationException($"No model found for capability: {capability}");
             }
 
-            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
+            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching,
             // and model name translation when GenerateReplyAsync is called
-            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}",
-                optimalModel.Id);
+            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}", optimalModel.Id);
 
             return _unifiedAgent;
         }
@@ -131,30 +140,44 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
+    ///     Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
     /// </summary>
-    public Task<IAgent> CreateAgentWithModelAsync(string modelId, string capability, CancellationToken cancellationToken = default)
+    public Task<IAgent> CreateAgentWithModelAsync(
+        string modelId,
+        string capability,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
-            _logger.LogInformation("CreateAgentWithModelAsync called with modelId: {ModelId}, capability: {Capability}", modelId, capability);
+            _logger.LogInformation(
+                "CreateAgentWithModelAsync called with modelId: {ModelId}, capability: {Capability}",
+                modelId,
+                capability
+            );
 
             // Validate that the model exists in configuration
             var model = _appConfig.GetModel(modelId);
             if (model == null)
             {
                 _logger.LogError("Model {ModelId} not found in configuration", modelId);
-                throw new InvalidOperationException($"Model '{modelId}' not found in configuration. Available models: {string.Join(", ", _appConfig.Models.Select(m => m.Id))}");
+                throw new InvalidOperationException(
+                    $"Model '{modelId}' not found in configuration. Available models: {string.Join(", ", _appConfig.Models.Select(m => m.Id))}"
+                );
             }
 
             // Validate that the model supports the required capability (optional validation)
             var capabilitySupported = model.HasCapability(capability);
             if (!capabilitySupported)
             {
-                _logger.LogWarning("Model {ModelId} may not fully support capability {Capability}, but proceeding with user request", modelId, capability);
+                _logger.LogWarning(
+                    "Model {ModelId} may not fully support capability {Capability}, but proceeding with user request",
+                    modelId,
+                    capability
+                );
             }
 
-            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
+            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching,
             // and model name translation when GenerateReplyAsync is called with the specific modelId
             _logger.LogInformation("Successfully created UnifiedAgent for specific model: {ModelId}", modelId);
 
@@ -162,19 +185,32 @@ public class LmConfigService : ILmConfigService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create agent for model: {ModelId}, capability: {Capability}", modelId, capability);
+            _logger.LogError(
+                ex,
+                "Failed to create agent for model: {ModelId}, capability: {Capability}",
+                modelId,
+                capability
+            );
             throw;
         }
     }
 
     /// <summary>
-    /// Creates an embedding service using environment variables.
+    ///     Creates an embedding service using environment variables.
     /// </summary>
     public Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default)
     {
         var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
-        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_BASE_URL", null, "https://api.openai.com/v1");
-        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "EMBEDDING_BASE_URL",
+            null,
+            "https://api.openai.com/v1"
+        );
+        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "EMBEDDING_MODEL",
+            null,
+            "text-embedding-3-small"
+        );
 
         var httpClientFactory = _serviceProvider.GetRequiredService<IHttpClientFactory>();
         var httpClient = httpClientFactory.CreateClient("LmDotNet.Reranking");
@@ -182,15 +218,21 @@ public class LmConfigService : ILmConfigService
 
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
-            throw new InvalidOperationException("Embedding API key not configured. Set EMBEDDING_API_KEY environment variable.");
+            throw new InvalidOperationException(
+                "Embedding API key not configured. Set EMBEDDING_API_KEY environment variable."
+            );
         }
 
-        var embeddingService = new OpenAIEmbeddingService(logger, httpClient, new EmbeddingOptions
-        {
-            ApiKey = apiKey,
-            BaseUrl = baseUrl,
-            DefaultModel = model
-        });
+        var embeddingService = new OpenAIEmbeddingService(
+            logger,
+            httpClient,
+            new EmbeddingOptions
+            {
+                ApiKey = apiKey,
+                BaseUrl = baseUrl,
+                DefaultModel = model,
+            }
+        );
 
         _logger.LogInformation("Created embedding service using model {Model} at {BaseUrl}", model, baseUrl);
 
@@ -198,13 +240,21 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Creates a reranking service using environment variables.
+    ///     Creates a reranking service using environment variables.
     /// </summary>
     public Task<IRerankService> CreateRerankServiceAsync(CancellationToken cancellationToken = default)
     {
         var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
-        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_BASE_URL", null, "https://api.jina.ai/v1/rerank");
-        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_MODEL", null, "jina-reranker-m0");
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "RERANKING_BASE_URL",
+            null,
+            "https://api.jina.ai/v1/rerank"
+        );
+        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "RERANKING_MODEL",
+            null,
+            "jina-reranker-m0"
+        );
 
         var httpClientFactory = _serviceProvider.GetRequiredService<IHttpClientFactory>();
         var httpClient = httpClientFactory.CreateClient("LmDotNet.Reranking");
@@ -214,14 +264,14 @@ public class LmConfigService : ILmConfigService
         {
             ApiKey = apiKey,
             BaseUrl = baseUrl,
-            DefaultModel = model
+            DefaultModel = model,
         };
 
         return Task.FromResult(new RerankingService(options, logger, httpClient) as IRerankService);
     }
 
     /// <summary>
-    /// Gets the complete application configuration.
+    ///     Gets the complete application configuration.
     /// </summary>
     public AppConfig GetConfiguration()
     {
@@ -229,7 +279,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets all models that support a specific capability.
+    ///     Gets all models that support a specific capability.
     /// </summary>
     public IReadOnlyList<ModelConfig> GetModelsWithCapability(string capability)
     {
@@ -237,7 +287,7 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Validates that required models are configured for memory operations.
+    ///     Validates that required models are configured for memory operations.
     /// </summary>
     public bool ValidateRequiredModels()
     {
@@ -277,9 +327,12 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
-    /// Gets the effective model name that should be used for API calls for a specific capability.
+    ///     Gets the effective model name that should be used for API calls for a specific capability.
     /// </summary>
-    public async Task<string?> GetEffectiveModelNameAsync(string capability, CancellationToken cancellationToken = default)
+    public async Task<string?> GetEffectiveModelNameAsync(
+        string capability,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
@@ -292,7 +345,10 @@ public class LmConfigService : ILmConfigService
             }
 
             // Then resolve the provider for that model to get the effective model name
-            var providerResolution = await _modelResolver.ResolveProviderAsync(optimalModel.Id, cancellationToken: cancellationToken);
+            var providerResolution = await _modelResolver.ResolveProviderAsync(
+                optimalModel.Id,
+                cancellationToken: cancellationToken
+            );
             if (providerResolution == null)
             {
                 _logger.LogWarning("No provider resolution found for model: {ModelId}", optimalModel.Id);
@@ -316,8 +372,10 @@ public class LmConfigService : ILmConfigService
         // First, check if AppConfig is directly provided in configuration
         if (_memoryOptions.LmConfig?.AppConfig != null)
         {
-            _logger.LogInformation("Using AppConfig directly provided in configuration with {ModelCount} models",
-                _memoryOptions.LmConfig.AppConfig.Models.Count);
+            _logger.LogInformation(
+                "Using AppConfig directly provided in configuration with {ModelCount} models",
+                _memoryOptions.LmConfig.AppConfig.Models.Count
+            );
             return _memoryOptions.LmConfig.AppConfig;
         }
 
@@ -327,8 +385,10 @@ public class LmConfigService : ILmConfigService
             var config = LoadFromEmbeddedResource();
             if (config != null)
             {
-                _logger.LogInformation("Loaded LmConfig with {ModelCount} models from embedded resource",
-                    config.Models.Count);
+                _logger.LogInformation(
+                    "Loaded LmConfig with {ModelCount} models from embedded resource",
+                    config.Models.Count
+                );
                 return config;
             }
         }
@@ -345,7 +405,9 @@ public class LmConfigService : ILmConfigService
             var assemblyPath = Path.GetDirectoryName(typeof(AppConfig).Assembly.Location)!;
             if (!File.Exists(Path.Combine(assemblyPath, configPath)))
             {
-                throw new InvalidOperationException($"LmConfig not found. Either provide AppConfig directly in configuration, ensure the embedded resource exists, or ensure the file exists at: {configPath}");
+                throw new InvalidOperationException(
+                    $"LmConfig not found. Either provide AppConfig directly in configuration, ensure the embedded resource exists, or ensure the file exists at: {configPath}"
+                );
             }
 
             configPath = Path.Combine(assemblyPath, configPath);
@@ -358,11 +420,16 @@ public class LmConfigService : ILmConfigService
 
             if (config?.Models?.Any() != true)
             {
-                throw new InvalidOperationException($"Invalid or empty LmConfig file at {configPath}. The configuration must contain at least one model.");
+                throw new InvalidOperationException(
+                    $"Invalid or empty LmConfig file at {configPath}. The configuration must contain at least one model."
+                );
             }
 
-            _logger.LogInformation("Loaded LmConfig with {ModelCount} models from file {ConfigPath}",
-                config.Models.Count, configPath);
+            _logger.LogInformation(
+                "Loaded LmConfig with {ModelCount} models from file {ConfigPath}",
+                config.Models.Count,
+                configPath
+            );
 
             return config;
         }
@@ -386,12 +453,12 @@ public class LmConfigService : ILmConfigService
 
         var config = JsonSerializer.Deserialize<AppConfig>(configJson, _jsonOptions);
 
-        if (config?.Models?.Any() != true)
-        {
-            throw new InvalidOperationException("Invalid or empty embedded LmConfig resource. The configuration must contain at least one model.");
-        }
-
-        return config;
+        return config?.Models?.Any() != true
+            ? throw new InvalidOperationException(
+                "Invalid or empty embedded LmConfig resource. The configuration must contain at least one model."
+            )
+            : config;
     }
+
     #endregion
 }

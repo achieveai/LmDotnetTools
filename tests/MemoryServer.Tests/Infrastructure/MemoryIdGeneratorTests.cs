@@ -6,8 +6,8 @@ using Moq;
 namespace MemoryServer.Tests.Infrastructure;
 
 /// <summary>
-/// Integration tests for MemoryIdGenerator using direct SQLite connections.
-/// Tests ID generation logic with minimal setup to avoid deadlocks.
+///     Integration tests for MemoryIdGenerator using direct SQLite connections.
+///     Tests ID generation logic with minimal setup to avoid deadlocks.
 /// </summary>
 public class MemoryIdGeneratorTests : IDisposable
 {
@@ -28,9 +28,15 @@ public class MemoryIdGeneratorTests : IDisposable
         _idGenerator = new TestMemoryIdGenerator(_connection, _mockLogger.Object);
     }
 
+    public void Dispose()
+    {
+        _connection?.Dispose();
+    }
+
     private void InitializeSchemaDirectly()
     {
-        var createTableSql = @"
+        var createTableSql =
+            @"
             CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -38,7 +44,7 @@ public class MemoryIdGeneratorTests : IDisposable
 
         using var command = _connection.CreateCommand();
         command.CommandText = createTableSql;
-        command.ExecuteNonQuery();
+        _ = command.ExecuteNonQuery();
 
         Debug.WriteLine("✅ Schema initialized directly");
     }
@@ -46,8 +52,9 @@ public class MemoryIdGeneratorTests : IDisposable
     private void ResetIdSequence()
     {
         using var command = _connection.CreateCommand();
-        command.CommandText = "DELETE FROM memory_id_sequence; DELETE FROM sqlite_sequence WHERE name='memory_id_sequence';";
-        command.ExecuteNonQuery();
+        command.CommandText =
+            "DELETE FROM memory_id_sequence; DELETE FROM sqlite_sequence WHERE name='memory_id_sequence';";
+        _ = command.ExecuteNonQuery();
         Debug.WriteLine("🔄 Reset ID sequence");
     }
 
@@ -79,7 +86,7 @@ public class MemoryIdGeneratorTests : IDisposable
         var generatedIds = new List<int>();
 
         // Act
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var id = await _idGenerator.GenerateNextIdAsync();
             generatedIds.Add(id);
@@ -90,7 +97,7 @@ public class MemoryIdGeneratorTests : IDisposable
         Assert.Equal(count, generatedIds.Count);
 
         // Verify IDs are sequential starting from 1
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             Assert.Equal(i + 1, generatedIds[i]);
         }
@@ -111,7 +118,7 @@ public class MemoryIdGeneratorTests : IDisposable
         var tasks = new List<Task<int>>();
 
         // Act
-        for (int i = 0; i < taskCount; i++)
+        for (var i = 0; i < taskCount; i++)
         {
             tasks.Add(_idGenerator.GenerateNextIdAsync());
         }
@@ -128,21 +135,16 @@ public class MemoryIdGeneratorTests : IDisposable
 
         Debug.WriteLine("✅ Concurrent ID generation test passed");
     }
-
-    public void Dispose()
-    {
-        _connection?.Dispose();
-    }
 }
 
 /// <summary>
-/// Test-specific MemoryIdGenerator that uses a direct connection to avoid SqliteManager deadlocks.
+///     Test-specific MemoryIdGenerator that uses a direct connection to avoid SqliteManager deadlocks.
 /// </summary>
 internal class TestMemoryIdGenerator
 {
     private readonly SqliteConnection _connection;
-    private readonly ILogger<MemoryIdGenerator> _logger;
     private readonly SemaphoreSlim _generationSemaphore;
+    private readonly ILogger<MemoryIdGenerator> _logger;
 
     public TestMemoryIdGenerator(SqliteConnection connection, ILogger<MemoryIdGenerator> logger)
     {
@@ -165,7 +167,8 @@ internal class TestMemoryIdGenerator
                 command.Transaction = transaction;
 
                 // Insert into sequence table and get the generated ID
-                command.CommandText = @"
+                command.CommandText =
+                    @"
                     INSERT INTO memory_id_sequence DEFAULT VALUES;
                     SELECT last_insert_rowid();";
 
@@ -196,7 +199,7 @@ internal class TestMemoryIdGenerator
         }
         finally
         {
-            _generationSemaphore.Release();
+            _ = _generationSemaphore.Release();
         }
     }
 }

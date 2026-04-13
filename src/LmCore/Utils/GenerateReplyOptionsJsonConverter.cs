@@ -1,5 +1,4 @@
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-
+using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 public class GenerateReplyOptionsJsonConverter : ShadowPropertiesJsonConverter<GenerateReplyOptions>

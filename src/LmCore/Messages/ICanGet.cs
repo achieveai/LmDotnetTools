@@ -1,28 +1,28 @@
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 public interface ICanGetText : IMessage
 {
-    public string? GetText();
+    string? GetText();
 }
 
 public interface ICanGetBinary : IMessage
 {
-    public BinaryData? GetBinary();
+    BinaryData? GetBinary();
 }
 
 public interface ICanGetToolCalls : IMessage
 {
-    public IEnumerable<ToolCall>? GetToolCalls();
+    IEnumerable<ToolCall>? GetToolCalls();
 }
 
 public interface ICanGetMessages : IMessage
 {
-    public IEnumerable<IMessage>? GetMessages();
+    IEnumerable<IMessage>? GetMessages();
 }
 
 public interface ICanGetUsage : IMessage
 {
-    public Usage? GetUsage();
+    Usage? GetUsage();
 }

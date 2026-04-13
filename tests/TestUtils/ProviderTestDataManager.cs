@@ -1,36 +1,38 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
 /// <summary>
-/// Manages test data for provider-specific tests, allowing for data-driven testing
-/// with standardized naming conventions and storage formats.
+///     Manages test data for provider-specific tests, allowing for data-driven testing
+///     with standardized naming conventions and storage formats.
 /// </summary>
 public class ProviderTestDataManager
 {
-    private readonly string _dataDirectory;
     private const string OpenAIDirectory = "OpenAI";
     private const string AnthropicDirectory = "Anthropic";
     private const string CommonDirectory = "Common";
 
     public static readonly JsonSerializerOptions JsonOptions = CreateTestingOptions();
+    private readonly string _dataDirectory;
+
+    public ProviderTestDataManager()
+    {
+        var workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+        _dataDirectory = Path.Combine(workspaceRoot, "tests", "TestData");
+    }
 
     /// <summary>
-    /// Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
-    /// Uses camelCase naming policy to match the existing test data files.
+    ///     Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
+    ///     Uses camelCase naming policy to match the existing test data files.
     /// </summary>
     private static JsonSerializerOptions CreateTestingOptions()
     {
         // Start with OpenAI factory but with camelCase naming to match test data
-        var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(
-            writeIndented: true,
-            namingPolicy: JsonNamingPolicy.CamelCase);
+        var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(true, JsonNamingPolicy.CamelCase);
 
         // Add test-specific converters not included in the base factories
         options.Converters.Add(new UnionJsonConverter<int, string>());
@@ -38,14 +40,8 @@ public class ProviderTestDataManager
         return options;
     }
 
-    public ProviderTestDataManager()
-    {
-        string workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
-        _dataDirectory = Path.Combine(workspaceRoot, "tests", "TestData");
-    }
-
     /// <summary>
-    /// Gets a path to test data files using a standardized naming convention.
+    ///     Gets a path to test data files using a standardized naming convention.
     /// </summary>
     /// <param name="testName">The name of the test</param>
     /// <param name="providerType">Which provider this data is for</param>
@@ -53,46 +49,50 @@ public class ProviderTestDataManager
     /// <returns>A path to the test data file</returns>
     public string GetTestDataPath(string testName, ProviderType providerType, DataType dataType)
     {
-        string providerDir = providerType switch
+        var providerDir = providerType switch
         {
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
             ProviderType.Common => CommonDirectory,
-            _ => throw new ArgumentOutOfRangeException(nameof(providerType))
+            _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
-        string dataTypeStr = dataType switch
+        var dataTypeStr = dataType switch
         {
             DataType.LmCoreRequest => "LmCoreRequest",
             DataType.FinalResponse => "FinalResponse",
-            _ => throw new ArgumentOutOfRangeException(nameof(dataType))
+            _ => throw new ArgumentOutOfRangeException(nameof(dataType)),
         };
 
         return Path.Combine(_dataDirectory, providerDir, $"{testName}.{dataTypeStr}.json");
     }
 
     /// <summary>
-    /// Saves LmCore request data to a file.
+    ///     Saves LmCore request data to a file.
     /// </summary>
-    public void SaveLmCoreRequest(string testName, ProviderType providerType, TextMessage[] messages, GenerateReplyOptions options)
+    public void SaveLmCoreRequest(
+        string testName,
+        ProviderType providerType,
+        TextMessage[] messages,
+        GenerateReplyOptions options
+    )
     {
-        var data = new
-        {
-            Messages = messages,
-            Options = options
-        };
+        var data = new { Messages = messages, Options = options };
 
-        string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
+        var filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(data, JsonOptions));
     }
 
     /// <summary>
-    /// Loads LmCore request data from a file.
+    ///     Loads LmCore request data from a file.
     /// </summary>
-    public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(string testName, ProviderType providerType)
+    public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(
+        string testName,
+        ProviderType providerType
+    )
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
+        var filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         if (!File.Exists(filePath))
         {
             throw new FileNotFoundException($"Test data file not found: {filePath}");
@@ -101,25 +101,25 @@ public class ProviderTestDataManager
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
 
-        return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
+        return (data?.Messages ?? [], data?.Options ?? new GenerateReplyOptions());
     }
 
     /// <summary>
-    /// Saves a final response to a file.
+    ///     Saves a final response to a file.
     /// </summary>
     public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
+        var filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(response, JsonOptions));
     }
 
     /// <summary>
-    /// Loads a final response from a file.
+    ///     Loads a final response from a file.
     /// </summary>
     public List<IMessage>? LoadFinalResponse(string testName, ProviderType providerType)
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
+        var filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         if (!File.Exists(filePath))
         {
             return null;
@@ -131,82 +131,80 @@ public class ProviderTestDataManager
     }
 
     /// <summary>
-    /// Ensures the directory exists for the given file path.
+    ///     Ensures the directory exists for the given file path.
     /// </summary>
     private static void EnsureDirectoryExists(string filePath)
     {
-        string? directory = Path.GetDirectoryName(filePath);
+        var directory = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
-            Directory.CreateDirectory(directory);
+            _ = Directory.CreateDirectory(directory);
         }
     }
 
     /// <summary>
-    /// Gets all test cases from test data files in a provider's directory.
+    ///     Gets all test cases from test data files in a provider's directory.
     /// </summary>
     public IEnumerable<string> GetTestCaseNames(ProviderType providerType)
     {
-        string providerDir = providerType switch
+        var providerDir = providerType switch
         {
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
             ProviderType.Common => CommonDirectory,
-            _ => throw new ArgumentOutOfRangeException(nameof(providerType))
+            _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
-        string directoryPath = Path.Combine(_dataDirectory, providerDir);
-        if (!Directory.Exists(directoryPath))
-        {
-            return Enumerable.Empty<string>();
-        }
-
-        return Directory.GetFiles(directoryPath, "*.LmCoreRequest.json")
-            .Select(path => Path.GetFileName(path)!)
-            .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
-            .Distinct();
+        var directoryPath = Path.Combine(_dataDirectory, providerDir);
+        return !Directory.Exists(directoryPath)
+            ? []
+            : Directory
+                .GetFiles(directoryPath, "*.LmCoreRequest.json")
+                .Select(path => Path.GetFileName(path)!)
+                .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
+                .Distinct();
     }
 }
 
 /// <summary>
-/// Types of data stored for tests.
+///     Types of data stored for tests.
 /// </summary>
 public enum DataType
 {
     /// <summary>
-    /// The original LmCore request with messages and options.
+    ///     The original LmCore request with messages and options.
     /// </summary>
     LmCoreRequest,
 
     /// <summary>
-    /// The final processed response.
+    ///     The final processed response.
     /// </summary>
-    FinalResponse
+    FinalResponse,
 }
 
 /// <summary>
-/// Providers supported for testing.
+///     Providers supported for testing.
 /// </summary>
 public enum ProviderType
 {
     /// <summary>
-    /// OpenAI provider.
+    ///     OpenAI provider.
     /// </summary>
     OpenAI,
 
     /// <summary>
-    /// Anthropic provider.
+    ///     Anthropic provider.
     /// </summary>
     Anthropic,
 
     /// <summary>
-    /// Common data shared between providers.
+    ///     Common data shared between providers.
     /// </summary>
-    Common
+    Common,
 }
 
 /// <summary>
-/// Data structure for LmCore requests.
+///     Data structure for LmCore requests.
 /// </summary>
 internal class LmCoreRequestData
 {

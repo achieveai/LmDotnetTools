@@ -1,10 +1,10 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using ModelContextProtocol.Server;
-using System.Diagnostics;
-using System.Reflection;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -21,7 +21,9 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(attr); // Verify the attribute is present
 
         // Find the CalculatorTool type by name
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Log the types we've found
@@ -29,7 +31,8 @@ public class McpFunctionCallExtensionsTests
         Debug.WriteLine($"Found CalculatorTool: {calculatorToolType!.FullName}");
 
         // Check that there are methods with McpServerToolAttribute on the GreetingTool
-        var greetingToolMethods = greetingToolType.GetMethods()
+        var greetingToolMethods = greetingToolType
+            .GetMethods()
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null)
             .ToList();
 
@@ -38,7 +41,9 @@ public class McpFunctionCallExtensionsTests
 
         // Act - test with specific tool types rather than scanning whole assembly
         var toolTypes = new[] { greetingToolType, calculatorToolType };
-        var (functionContracts, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var (functionContracts, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(
+            toolTypes
+        );
 
         // Convert to list for easier assertions
         var contractsList = functionContracts.ToList();
@@ -55,14 +60,14 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(sayHelloContract);
         Assert.Equal("Greets a person by name", sayHelloContract!.Description);
         Assert.NotNull(sayHelloContract.Parameters);
-        Assert.Single(sayHelloContract.Parameters!);
+        _ = Assert.Single(sayHelloContract.Parameters!);
         Assert.Equal("name", sayHelloContract.Parameters!.First().Name);
 
         var sayGoodbyeContract = contractsList.FirstOrDefault(c => c.Name == "SayGoodbye");
         Assert.NotNull(sayGoodbyeContract);
         Assert.Equal("Says goodbye to a person by name", sayGoodbyeContract!.Description);
         Assert.NotNull(sayGoodbyeContract.Parameters);
-        Assert.Single(sayGoodbyeContract.Parameters!);
+        _ = Assert.Single(sayGoodbyeContract.Parameters!);
         Assert.Equal("name", sayGoodbyeContract.Parameters!.First().Name);
 
         // Test CalculatorTool methods
@@ -99,7 +104,9 @@ public class McpFunctionCallExtensionsTests
     {
         // Arrange - use direct reflection to find McpServerToolTypeAttribute to avoid assembly resolution issues
         var greetingToolType = typeof(GreetingTool);
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Act - test with specific tool types rather than scanning whole assembly
@@ -113,13 +120,13 @@ public class McpFunctionCallExtensionsTests
         // Act & Assert for Add
         var addResult = await functionMap["CalculatorTool-Add"]("{\"a\":5,\"b\":3}");
         // Parse the result to verify it's a valid number
-        double addNumber = double.Parse(addResult.Trim('\"'));
+        var addNumber = double.Parse(addResult.Trim('\"'));
         Assert.Equal(8, addNumber);
 
         // Act & Assert for Divide
         var divideResult = await functionMap["CalculatorTool-Divide"]("{\"a\":10,\"b\":2}");
         // Parse the result to verify it's a valid number
-        double divideNumber = double.Parse(divideResult.Trim('\"'));
+        var divideNumber = double.Parse(divideResult.Trim('\"'));
         Assert.Equal(5, divideNumber);
 
         // Test error handling for Divide by zero
@@ -134,13 +141,15 @@ public class McpFunctionCallExtensionsTests
     {
         // Arrange - we'll create the middleware directly with the two specific types rather than scanning the assembly
         var greetingToolType = typeof(GreetingTool);
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Create a middleware using a direct approach rather than assembly scanning
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
         var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "FunctionCallMiddleware");
+        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "FunctionCallMiddleware");
 
         // Assert
         Assert.NotNull(middleware);

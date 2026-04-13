@@ -1,101 +1,101 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Configuration options for quality assessment.
+///     Configuration options for quality assessment.
 /// </summary>
 public class QualityAssessmentOptions
 {
     /// <summary>
-    /// Minimum coherence score threshold (0.0-1.0).
+    ///     Minimum coherence score threshold (0.0-1.0).
     /// </summary>
     public double MinCoherenceThreshold { get; set; } = 0.7;
 
     /// <summary>
-    /// Minimum independence score threshold (0.0-1.0).
+    ///     Minimum independence score threshold (0.0-1.0).
     /// </summary>
     public double MinIndependenceThreshold { get; set; } = 0.6;
 
     /// <summary>
-    /// Minimum topic consistency threshold (0.0-1.0).
+    ///     Minimum topic consistency threshold (0.0-1.0).
     /// </summary>
     public double MinTopicConsistencyThreshold { get; set; } = 0.7;
 
     /// <summary>
-    /// Minimum overall quality score threshold (0.0-1.0).
+    ///     Minimum overall quality score threshold (0.0-1.0).
     /// </summary>
     public double MinOverallQualityThreshold { get; set; } = 0.75;
 
     /// <summary>
-    /// Maximum acceptable content overlap between segments (0.0-1.0).
+    ///     Maximum acceptable content overlap between segments (0.0-1.0).
     /// </summary>
     public double MaxContentOverlapThreshold { get; set; } = 0.1;
 
     /// <summary>
-    /// Minimum segment completeness score (0.0-1.0).
+    ///     Minimum segment completeness score (0.0-1.0).
     /// </summary>
     public double MinCompletenessThreshold { get; set; } = 0.8;
 
     /// <summary>
-    /// Whether to use LLM enhancement for quality assessment.
+    ///     Whether to use LLM enhancement for quality assessment.
     /// </summary>
     public bool UseLlmEnhancement { get; set; } = true;
 
     /// <summary>
-    /// Whether to perform deep semantic analysis.
+    ///     Whether to perform deep semantic analysis.
     /// </summary>
     public bool PerformDeepSemanticAnalysis { get; set; } = true;
 
     /// <summary>
-    /// Whether to validate cross-segment relationships.
+    ///     Whether to validate cross-segment relationships.
     /// </summary>
     public bool ValidateCrossSegmentRelationships { get; set; } = true;
 
     /// <summary>
-    /// Custom weights for different quality metrics.
+    ///     Custom weights for different quality metrics.
     /// </summary>
     public QualityMetricWeights MetricWeights { get; set; } = new();
 
     /// <summary>
-    /// Specific validation rules to apply.
+    ///     Specific validation rules to apply.
     /// </summary>
-    public List<ValidationRule> ValidationRules { get; set; } = new();
+    public List<ValidationRule> ValidationRules { get; set; } = [];
 }
 
 /// <summary>
-/// Weights for different quality metrics in overall score calculation.
+///     Weights for different quality metrics in overall score calculation.
 /// </summary>
 public class QualityMetricWeights
 {
     /// <summary>
-    /// Weight for coherence score (0.0-1.0).
+    ///     Weight for coherence score (0.0-1.0).
     /// </summary>
     public double CoherenceWeight { get; set; } = 0.3;
 
     /// <summary>
-    /// Weight for independence score (0.0-1.0).
+    ///     Weight for independence score (0.0-1.0).
     /// </summary>
     public double IndependenceWeight { get; set; } = 0.25;
 
     /// <summary>
-    /// Weight for topic consistency score (0.0-1.0).
+    ///     Weight for topic consistency score (0.0-1.0).
     /// </summary>
     public double TopicConsistencyWeight { get; set; } = 0.3;
 
     /// <summary>
-    /// Weight for completeness score (0.0-1.0).
+    ///     Weight for completeness score (0.0-1.0).
     /// </summary>
     public double CompletenessWeight { get; set; } = 0.15;
 
     /// <summary>
-    /// Validates that weights sum to approximately 1.0.
+    ///     Validates that weights sum to approximately 1.0.
     /// </summary>
-    public bool AreValid => Math.Abs((CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight) - 1.0) < 0.01;
+    public bool AreValid =>
+        Math.Abs(CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight - 1.0) < 0.01;
 
     /// <summary>
-    /// Normalizes weights to sum to 1.0.
+    ///     Normalizes weights to sum to 1.0.
     /// </summary>
     public void Normalize()
     {
@@ -115,419 +115,419 @@ public class QualityMetricWeights
 }
 
 /// <summary>
-/// Comprehensive quality assessment results with detailed metrics and analysis.
+///     Comprehensive quality assessment results with detailed metrics and analysis.
 /// </summary>
 public class ComprehensiveQualityAssessment
 {
     /// <summary>
-    /// Overall quality score (0.0-1.0).
+    ///     Overall quality score (0.0-1.0).
     /// </summary>
     public double OverallQualityScore { get; set; }
 
     /// <summary>
-    /// Individual quality metric scores.
+    ///     Individual quality metric scores.
     /// </summary>
     public QualityMetricScores MetricScores { get; set; } = new();
 
     /// <summary>
-    /// Detailed semantic coherence validation results.
+    ///     Detailed semantic coherence validation results.
     /// </summary>
-    public List<SemanticCoherenceValidation> CoherenceValidations { get; set; } = new();
+    public List<SemanticCoherenceValidation> CoherenceValidations { get; set; } = [];
 
     /// <summary>
-    /// Independence score analysis for each segment.
+    ///     Independence score analysis for each segment.
     /// </summary>
-    public List<IndependenceScoreAnalysis> IndependenceAnalyses { get; set; } = new();
+    public List<IndependenceScoreAnalysis> IndependenceAnalyses { get; set; } = [];
 
     /// <summary>
-    /// Topic consistency validation results.
+    ///     Topic consistency validation results.
     /// </summary>
     public TopicConsistencyValidation TopicConsistency { get; set; } = new();
 
     /// <summary>
-    /// Completeness verification results.
+    ///     Completeness verification results.
     /// </summary>
     public CompletenessVerification Completeness { get; set; } = new();
 
     /// <summary>
-    /// Quality issue analysis.
+    ///     Quality issue analysis.
     /// </summary>
     public QualityIssueAnalysis QualityIssues { get; set; } = new();
 
     /// <summary>
-    /// Improvement recommendations.
+    ///     Improvement recommendations.
     /// </summary>
     public ImprovementRecommendations Recommendations { get; set; } = new();
 
     /// <summary>
-    /// Whether the segmentation meets quality standards.
+    ///     Whether the segmentation meets quality standards.
     /// </summary>
     public bool MeetsQualityStandards { get; set; }
 
     /// <summary>
-    /// Confidence in the quality assessment (0.0-1.0).
+    ///     Confidence in the quality assessment (0.0-1.0).
     /// </summary>
     public double AssessmentConfidence { get; set; }
 
     /// <summary>
-    /// Processing time for the assessment in milliseconds.
+    ///     Processing time for the assessment in milliseconds.
     /// </summary>
     public long ProcessingTimeMs { get; set; }
 
     /// <summary>
-    /// Metadata about the assessment process.
+    ///     Metadata about the assessment process.
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
-/// Individual quality metric scores.
+///     Individual quality metric scores.
 /// </summary>
 public class QualityMetricScores
 {
     /// <summary>
-    /// Average coherence score across all segments (0.0-1.0).
+    ///     Average coherence score across all segments (0.0-1.0).
     /// </summary>
     public double AverageCoherenceScore { get; set; }
 
     /// <summary>
-    /// Average independence score across all segments (0.0-1.0).
+    ///     Average independence score across all segments (0.0-1.0).
     /// </summary>
     public double AverageIndependenceScore { get; set; }
 
     /// <summary>
-    /// Average topic consistency score across all segments (0.0-1.0).
+    ///     Average topic consistency score across all segments (0.0-1.0).
     /// </summary>
     public double AverageTopicConsistencyScore { get; set; }
 
     /// <summary>
-    /// Overall completeness score (0.0-1.0).
+    ///     Overall completeness score (0.0-1.0).
     /// </summary>
     public double CompletenessScore { get; set; }
 
     /// <summary>
-    /// Cross-segment relationship quality score (0.0-1.0).
+    ///     Cross-segment relationship quality score (0.0-1.0).
     /// </summary>
     public double RelationshipQualityScore { get; set; }
 
     /// <summary>
-    /// Content coverage score (0.0-1.0).
+    ///     Content coverage score (0.0-1.0).
     /// </summary>
     public double ContentCoverageScore { get; set; }
 
     /// <summary>
-    /// Boundary quality score (0.0-1.0).
+    ///     Boundary quality score (0.0-1.0).
     /// </summary>
     public double BoundaryQualityScore { get; set; }
 }
 
 /// <summary>
-/// Semantic coherence validation results for a segment.
+///     Semantic coherence validation results for a segment.
 /// </summary>
 public class SemanticCoherenceValidation
 {
     /// <summary>
-    /// Segment ID being validated.
+    ///     Segment ID being validated.
     /// </summary>
     public string SegmentId { get; set; } = string.Empty;
 
     /// <summary>
-    /// Coherence score (0.0-1.0).
+    ///     Coherence score (0.0-1.0).
     /// </summary>
     public double CoherenceScore { get; set; }
 
     /// <summary>
-    /// Lexical coherence score (0.0-1.0).
+    ///     Lexical coherence score (0.0-1.0).
     /// </summary>
     public double LexicalCoherenceScore { get; set; }
 
     /// <summary>
-    /// Semantic coherence score (0.0-1.0).
+    ///     Semantic coherence score (0.0-1.0).
     /// </summary>
     public double SemanticCoherenceScore { get; set; }
 
     /// <summary>
-    /// Structural coherence score (0.0-1.0).
+    ///     Structural coherence score (0.0-1.0).
     /// </summary>
     public double StructuralCoherenceScore { get; set; }
 
     /// <summary>
-    /// Identified coherence issues.
+    ///     Identified coherence issues.
     /// </summary>
-    public List<CoherenceIssue> CoherenceIssues { get; set; } = new();
+    public List<CoherenceIssue> CoherenceIssues { get; set; } = [];
 
     /// <summary>
-    /// Whether the segment passes coherence validation.
+    ///     Whether the segment passes coherence validation.
     /// </summary>
     public bool PassesValidation { get; set; }
 
     /// <summary>
-    /// Detailed analysis notes.
+    ///     Detailed analysis notes.
     /// </summary>
     public string AnalysisNotes { get; set; } = string.Empty;
 }
 
 /// <summary>
-/// Independence score analysis for a segment.
+///     Independence score analysis for a segment.
 /// </summary>
 public class IndependenceScoreAnalysis
 {
     /// <summary>
-    /// Segment ID being analyzed.
+    ///     Segment ID being analyzed.
     /// </summary>
     public string SegmentId { get; set; } = string.Empty;
 
     /// <summary>
-    /// Overall independence score (0.0-1.0).
+    ///     Overall independence score (0.0-1.0).
     /// </summary>
     public double IndependenceScore { get; set; }
 
     /// <summary>
-    /// Self-containment score (0.0-1.0).
+    ///     Self-containment score (0.0-1.0).
     /// </summary>
     public double SelfContainmentScore { get; set; }
 
     /// <summary>
-    /// Context dependency score (0.0-1.0, lower is better).
+    ///     Context dependency score (0.0-1.0, lower is better).
     /// </summary>
     public double ContextDependencyScore { get; set; }
 
     /// <summary>
-    /// Cross-reference dependency score (0.0-1.0, lower is better).
+    ///     Cross-reference dependency score (0.0-1.0, lower is better).
     /// </summary>
     public double CrossReferenceDependencyScore { get; set; }
 
     /// <summary>
-    /// Identified dependencies on other segments.
+    ///     Identified dependencies on other segments.
     /// </summary>
-    public List<SegmentDependency> Dependencies { get; set; } = new();
+    public List<SegmentDependency> Dependencies { get; set; } = [];
 
     /// <summary>
-    /// Whether the segment is sufficiently independent.
+    ///     Whether the segment is sufficiently independent.
     /// </summary>
     public bool IsIndependent { get; set; }
 
     /// <summary>
-    /// Recommendations for improving independence.
+    ///     Recommendations for improving independence.
     /// </summary>
-    public List<string> IndependenceRecommendations { get; set; } = new();
+    public List<string> IndependenceRecommendations { get; set; } = [];
 }
 
 /// <summary>
-/// Topic consistency validation results.
+///     Topic consistency validation results.
 /// </summary>
 public class TopicConsistencyValidation
 {
     /// <summary>
-    /// Overall topic consistency score (0.0-1.0).
+    ///     Overall topic consistency score (0.0-1.0).
     /// </summary>
     public double OverallConsistencyScore { get; set; }
 
     /// <summary>
-    /// Within-segment topic consistency scores.
+    ///     Within-segment topic consistency scores.
     /// </summary>
-    public Dictionary<string, double> WithinSegmentConsistency { get; set; } = new();
+    public Dictionary<string, double> WithinSegmentConsistency { get; set; } = [];
 
     /// <summary>
-    /// Cross-segment topic overlap analysis.
+    ///     Cross-segment topic overlap analysis.
     /// </summary>
-    public List<TopicOverlapAnalysis> TopicOverlaps { get; set; } = new();
+    public List<TopicOverlapAnalysis> TopicOverlaps { get; set; } = [];
 
     /// <summary>
-    /// Identified topic violations.
+    ///     Identified topic violations.
     /// </summary>
-    public List<TopicViolation> TopicViolations { get; set; } = new();
+    public List<TopicViolation> TopicViolations { get; set; } = [];
 
     /// <summary>
-    /// Topic distribution across segments.
+    ///     Topic distribution across segments.
     /// </summary>
-    public Dictionary<string, List<string>> TopicDistribution { get; set; } = new();
+    public Dictionary<string, List<string>> TopicDistribution { get; set; } = [];
 
     /// <summary>
-    /// Whether topic consistency meets standards.
+    ///     Whether topic consistency meets standards.
     /// </summary>
     public bool MeetsConsistencyStandards { get; set; }
 }
 
 /// <summary>
-/// Completeness verification results.
+///     Completeness verification results.
 /// </summary>
 public class CompletenessVerification
 {
     /// <summary>
-    /// Overall completeness score (0.0-1.0).
+    ///     Overall completeness score (0.0-1.0).
     /// </summary>
     public double CompletenessScore { get; set; }
 
     /// <summary>
-    /// Content coverage percentage (0.0-1.0).
+    ///     Content coverage percentage (0.0-1.0).
     /// </summary>
     public double ContentCoveragePercentage { get; set; }
 
     /// <summary>
-    /// Information preservation score (0.0-1.0).
+    ///     Information preservation score (0.0-1.0).
     /// </summary>
     public double InformationPreservationScore { get; set; }
 
     /// <summary>
-    /// Identified content gaps.
+    ///     Identified content gaps.
     /// </summary>
-    public List<ContentGap> ContentGaps { get; set; } = new();
+    public List<ContentGap> ContentGaps { get; set; } = [];
 
     /// <summary>
-    /// Identified content overlaps.
+    ///     Identified content overlaps.
     /// </summary>
-    public List<ContentOverlap> ContentOverlaps { get; set; } = new();
+    public List<ContentOverlap> ContentOverlaps { get; set; } = [];
 
     /// <summary>
-    /// Missing content analysis.
+    ///     Missing content analysis.
     /// </summary>
-    public List<string> MissingContentAreas { get; set; } = new();
+    public List<string> MissingContentAreas { get; set; } = [];
 
     /// <summary>
-    /// Whether completeness meets standards.
+    ///     Whether completeness meets standards.
     /// </summary>
     public bool MeetsCompletenessStandards { get; set; }
 }
 
 /// <summary>
-/// Quality issue analysis results.
+///     Quality issue analysis results.
 /// </summary>
 public class QualityIssueAnalysis
 {
     /// <summary>
-    /// Total number of quality issues identified.
+    ///     Total number of quality issues identified.
     /// </summary>
     public int TotalIssueCount { get; set; }
 
     /// <summary>
-    /// Issues categorized by severity.
+    ///     Issues categorized by severity.
     /// </summary>
-    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } = new();
+    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } = [];
 
     /// <summary>
-    /// Issues categorized by type.
+    ///     Issues categorized by type.
     /// </summary>
-    public Dictionary<QualityIssueType, List<QualityIssue>> IssuesByType { get; set; } = new();
+    public Dictionary<QualityIssueType, List<QualityIssue>> IssuesByType { get; set; } = [];
 
     /// <summary>
-    /// Issues categorized by affected segment.
+    ///     Issues categorized by affected segment.
     /// </summary>
-    public Dictionary<string, List<QualityIssue>> IssuesBySegment { get; set; } = new();
+    public Dictionary<string, List<QualityIssue>> IssuesBySegment { get; set; } = [];
 
     /// <summary>
-    /// Overall issue severity score (0.0-1.0, lower is better).
+    ///     Overall issue severity score (0.0-1.0, lower is better).
     /// </summary>
     public double OverallIssueSeverityScore { get; set; }
 
     /// <summary>
-    /// Whether the issue level is acceptable.
+    ///     Whether the issue level is acceptable.
     /// </summary>
     public bool IsAcceptableIssueLevel { get; set; }
 }
 
 /// <summary>
-/// Improvement recommendations based on quality assessment.
+///     Improvement recommendations based on quality assessment.
 /// </summary>
 public class ImprovementRecommendations
 {
     /// <summary>
-    /// Priority recommendations for immediate action.
+    ///     Priority recommendations for immediate action.
     /// </summary>
-    public List<QualityRecommendation> HighPriorityRecommendations { get; set; } = new();
+    public List<QualityRecommendation> HighPriorityRecommendations { get; set; } = [];
 
     /// <summary>
-    /// Medium priority recommendations for enhancement.
+    ///     Medium priority recommendations for enhancement.
     /// </summary>
-    public List<QualityRecommendation> MediumPriorityRecommendations { get; set; } = new();
+    public List<QualityRecommendation> MediumPriorityRecommendations { get; set; } = [];
 
     /// <summary>
-    /// Low priority recommendations for optimization.
+    ///     Low priority recommendations for optimization.
     /// </summary>
-    public List<QualityRecommendation> LowPriorityRecommendations { get; set; } = new();
+    public List<QualityRecommendation> LowPriorityRecommendations { get; set; } = [];
 
     /// <summary>
-    /// Strategy-specific recommendations.
+    ///     Strategy-specific recommendations.
     /// </summary>
-    public Dictionary<SegmentationStrategy, List<QualityRecommendation>> StrategyRecommendations { get; set; } = new();
+    public Dictionary<SegmentationStrategy, List<QualityRecommendation>> StrategyRecommendations { get; set; } = [];
 
     /// <summary>
-    /// Implementation guidance for recommendations.
+    ///     Implementation guidance for recommendations.
     /// </summary>
-    public List<ImplementationGuidance> ImplementationGuidance { get; set; } = new();
+    public List<ImplementationGuidance> ImplementationGuidance { get; set; } = [];
 
     /// <summary>
-    /// Expected impact of implementing recommendations.
+    ///     Expected impact of implementing recommendations.
     /// </summary>
     public ExpectedImpactAnalysis ExpectedImpact { get; set; } = new();
 }
 
 /// <summary>
-/// Comparative quality analysis across different segmentation approaches.
+///     Comparative quality analysis across different segmentation approaches.
 /// </summary>
 public class ComparativeQualityAnalysis
 {
     /// <summary>
-    /// Quality scores for each strategy.
+    ///     Quality scores for each strategy.
     /// </summary>
-    public Dictionary<SegmentationStrategy, double> StrategyQualityScores { get; set; } = new();
+    public Dictionary<SegmentationStrategy, double> StrategyQualityScores { get; set; } = [];
 
     /// <summary>
-    /// Detailed metric comparison across strategies.
+    ///     Detailed metric comparison across strategies.
     /// </summary>
-    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } = new();
+    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } = [];
 
     /// <summary>
-    /// Best performing strategy overall.
+    ///     Best performing strategy overall.
     /// </summary>
     public SegmentationStrategy BestOverallStrategy { get; set; }
 
     /// <summary>
-    /// Best strategies for specific metrics.
+    ///     Best strategies for specific metrics.
     /// </summary>
-    public Dictionary<string, SegmentationStrategy> BestStrategyByMetric { get; set; } = new();
+    public Dictionary<string, SegmentationStrategy> BestStrategyByMetric { get; set; } = [];
 
     /// <summary>
-    /// Strategy ranking by overall quality.
+    ///     Strategy ranking by overall quality.
     /// </summary>
-    public List<StrategyRanking> StrategyRankings { get; set; } = new();
+    public List<StrategyRanking> StrategyRankings { get; set; } = [];
 
     /// <summary>
-    /// Comparative analysis insights.
+    ///     Comparative analysis insights.
     /// </summary>
-    public List<string> ComparativeInsights { get; set; } = new();
+    public List<string> ComparativeInsights { get; set; } = [];
 }
 
 /// <summary>
-/// Custom validation results for user-defined criteria.
+///     Custom validation results for user-defined criteria.
 /// </summary>
 public class CustomValidationResults
 {
     /// <summary>
-    /// Results for each custom criterion.
+    ///     Results for each custom criterion.
     /// </summary>
-    public Dictionary<string, CustomCriterionResult> CriterionResults { get; set; } = new();
+    public Dictionary<string, CustomCriterionResult> CriterionResults { get; set; } = [];
 
     /// <summary>
-    /// Overall custom validation score (0.0-1.0).
+    ///     Overall custom validation score (0.0-1.0).
     /// </summary>
     public double OverallCustomScore { get; set; }
 
     /// <summary>
-    /// Whether custom validation passes.
+    ///     Whether custom validation passes.
     /// </summary>
     public bool PassesCustomValidation { get; set; }
 
     /// <summary>
-    /// Custom validation feedback.
+    ///     Custom validation feedback.
     /// </summary>
-    public List<string> CustomFeedback { get; set; } = new();
+    public List<string> CustomFeedback { get; set; } = [];
 }
 
 // Supporting model classes...
 
 /// <summary>
-/// Represents a coherence issue within a segment.
+///     Represents a coherence issue within a segment.
 /// </summary>
 public class CoherenceIssue
 {
@@ -539,7 +539,7 @@ public class CoherenceIssue
 }
 
 /// <summary>
-/// Types of coherence issues.
+///     Types of coherence issues.
 /// </summary>
 public enum CoherenceIssueType
 {
@@ -548,11 +548,11 @@ public enum CoherenceIssueType
     StructuralBreak,
     TopicShift,
     LogicalGap,
-    ReferentialAmbiguity
+    ReferentialAmbiguity,
 }
 
 /// <summary>
-/// Represents a dependency between segments.
+///     Represents a dependency between segments.
 /// </summary>
 public class SegmentDependency
 {
@@ -564,7 +564,7 @@ public class SegmentDependency
 }
 
 /// <summary>
-/// Types of segment dependencies.
+///     Types of segment dependencies.
 /// </summary>
 public enum DependencyType
 {
@@ -573,24 +573,24 @@ public enum DependencyType
     Sequential,
     Causal,
     Conceptual,
-    Definitional
+    Definitional,
 }
 
 /// <summary>
-/// Topic overlap analysis between segments.
+///     Topic overlap analysis between segments.
 /// </summary>
 public class TopicOverlapAnalysis
 {
     public string Segment1Id { get; set; } = string.Empty;
     public string Segment2Id { get; set; } = string.Empty;
     public double OverlapPercentage { get; set; }
-    public List<string> SharedTopics { get; set; } = new();
+    public List<string> SharedTopics { get; set; } = [];
     public bool IsProblematic { get; set; }
     public string OverlapReason { get; set; } = string.Empty;
 }
 
 /// <summary>
-/// Topic violation within segmentation.
+///     Topic violation within segmentation.
 /// </summary>
 public class TopicViolation
 {
@@ -598,11 +598,11 @@ public class TopicViolation
     public TopicViolationType Type { get; set; }
     public string Description { get; set; } = string.Empty;
     public double Severity { get; set; }
-    public List<string> ConflictingTopics { get; set; } = new();
+    public List<string> ConflictingTopics { get; set; } = [];
 }
 
 /// <summary>
-/// Types of topic violations.
+///     Types of topic violations.
 /// </summary>
 public enum TopicViolationType
 {
@@ -611,11 +611,11 @@ public enum TopicViolationType
     InconsistentTopicBoundaries,
     OrphanedTopicContent,
     TopicContinuityBreak,
-    UnrelatedContentMixing
+    UnrelatedContentMixing,
 }
 
 /// <summary>
-/// Content gap in segmentation.
+///     Content gap in segmentation.
 /// </summary>
 public class ContentGap
 {
@@ -624,11 +624,11 @@ public class ContentGap
     public string MissingContent { get; set; } = string.Empty;
     public GapType Type { get; set; }
     public double Significance { get; set; }
-    public List<string> PotentialCauses { get; set; } = new();
+    public List<string> PotentialCauses { get; set; } = [];
 }
 
 /// <summary>
-/// Content overlap between segments.
+///     Content overlap between segments.
 /// </summary>
 public class ContentOverlap
 {
@@ -641,7 +641,7 @@ public class ContentOverlap
 }
 
 /// <summary>
-/// Quality issue with details.
+///     Quality issue with details.
 /// </summary>
 public class QualityIssue
 {
@@ -649,14 +649,14 @@ public class QualityIssue
     public QualityIssueType Type { get; set; }
     public QualityIssueSeverity Severity { get; set; }
     public string Description { get; set; } = string.Empty;
-    public List<string> AffectedSegmentIds { get; set; } = new();
+    public List<string> AffectedSegmentIds { get; set; } = [];
     public string Context { get; set; } = string.Empty;
-    public List<string> RecommendedActions { get; set; } = new();
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public List<string> RecommendedActions { get; set; } = [];
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
-/// Quality recommendation for improvement.
+///     Quality recommendation for improvement.
 /// </summary>
 public class QualityRecommendation
 {
@@ -665,14 +665,14 @@ public class QualityRecommendation
     public RecommendationPriority Priority { get; set; }
     public string Title { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
-    public List<string> AffectedSegmentIds { get; set; } = new();
-    public List<string> ActionSteps { get; set; } = new();
+    public List<string> AffectedSegmentIds { get; set; } = [];
+    public List<string> ActionSteps { get; set; } = [];
     public double ExpectedImpact { get; set; }
     public string Implementation { get; set; } = string.Empty;
 }
 
 /// <summary>
-/// Enums for categorization
+///     Enums for categorization
 /// </summary>
 public enum QualityIssueType
 {
@@ -683,7 +683,7 @@ public enum QualityIssueType
     BoundaryIssue,
     ContentOverlap,
     StructuralProblem,
-    SemanticIssue
+    SemanticIssue,
 }
 
 public enum QualityIssueSeverity
@@ -691,7 +691,7 @@ public enum QualityIssueSeverity
     Low,
     Medium,
     High,
-    Critical
+    Critical,
 }
 
 public enum GapType
@@ -699,7 +699,7 @@ public enum GapType
     ContentMissing,
     TransitionMissing,
     ContextMissing,
-    ConclusionMissing
+    ConclusionMissing,
 }
 
 public enum OverlapType
@@ -707,7 +707,7 @@ public enum OverlapType
     ExactDuplication,
     ParaphrasingOverlap,
     ConceptualOverlap,
-    ReferentialOverlap
+    ReferentialOverlap,
 }
 
 public enum RecommendationType
@@ -717,7 +717,7 @@ public enum RecommendationType
     BoundaryAdjustment,
     ContentReorganization,
     StrategyChange,
-    QualityImprovement
+    QualityImprovement,
 }
 
 public enum RecommendationPriority
@@ -725,18 +725,18 @@ public enum RecommendationPriority
     Low,
     Medium,
     High,
-    Critical
+    Critical,
 }
 
 /// <summary>
-/// Additional supporting classes for completeness
+///     Additional supporting classes for completeness
 /// </summary>
 public class ValidationRule
 {
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public ValidationRuleType Type { get; set; }
-    public Dictionary<string, object> Parameters { get; set; } = new();
+    public Dictionary<string, object> Parameters { get; set; } = [];
     public bool IsEnabled { get; set; } = true;
 }
 
@@ -746,7 +746,7 @@ public enum ValidationRuleType
     MaximumLength,
     CoherenceThreshold,
     TopicConsistency,
-    CustomRule
+    CustomRule,
 }
 
 public class CustomQualityCriterion
@@ -776,10 +776,10 @@ public class StrategyRanking
 public class ImplementationGuidance
 {
     public string RecommendationId { get; set; } = string.Empty;
-    public List<string> Steps { get; set; } = new();
+    public List<string> Steps { get; set; } = [];
     public TimeSpan EstimatedEffort { get; set; }
-    public List<string> Prerequisites { get; set; } = new();
-    public List<string> Resources { get; set; } = new();
+    public List<string> Prerequisites { get; set; } = [];
+    public List<string> Resources { get; set; } = [];
 }
 
 public class ExpectedImpactAnalysis
@@ -787,6 +787,6 @@ public class ExpectedImpactAnalysis
     public double QualityImprovement { get; set; }
     public double PerformanceImpact { get; set; }
     public string ImpactDescription { get; set; } = string.Empty;
-    public List<string> BenefitAreas { get; set; } = new();
-    public List<string> PotentialRisks { get; set; } = new();
+    public List<string> BenefitAreas { get; set; } = [];
+    public List<string> PotentialRisks { get; set; } = [];
 }

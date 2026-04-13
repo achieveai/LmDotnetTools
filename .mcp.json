@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "sequential-thinking-tools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "env": {}
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
+    "clarify-doubt": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@achieveai/hitl-mcp-server@latest"
+      ]
+    },
+    "duckdb": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-duckdb",
+        "--db-path",
+        ":memory:"
+      ]
+    }
+  }
+}

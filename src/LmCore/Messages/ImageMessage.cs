@@ -1,6 +1,7 @@
-using System.Text.RegularExpressions;
-using System.Text.Json.Serialization;
 using System.Collections.Immutable;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -8,6 +9,39 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ImageMessageJsonConverter))]
 public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 {
+    [JsonPropertyName("image_data")]
+    public required BinaryData ImageData { get; init; }
+
+    /// <summary>
+    ///     Gets the media type of the image (e.g., "image/jpeg", "image/png").
+    ///     This property is used for JSON serialization since BinaryData.MediaType is not serialized.
+    /// </summary>
+    [JsonPropertyName("media_type")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MediaType
+    {
+        get => ImageData.MediaType;
+        init
+        {
+            // This setter is used during deserialization to reconstruct BinaryData with MediaType
+            // The actual setting happens in the JsonConverter
+        }
+    }
+
+    [JsonPropertyName("parent_run_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; set; }
+
+    public BinaryData? GetBinary()
+    {
+        return ImageData;
+    }
+
+    public string? GetText()
+    {
+        return ImageData.ToDataUrl();
+    }
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; set; }
@@ -22,45 +56,149 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; set; }
 
-    [JsonPropertyName("image_data")]
-    public required BinaryData ImageData { get; init; }
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; set; }
 
-    public string? GetText() => ImageData.ToDataUrl();
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; set; }
 
-    public BinaryData? GetBinary() => ImageData;
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; set; }
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMessage>
 {
+    private string? _pendingMediaType;
+    private byte[]? _pendingImageData;
+
     protected override ImageMessage CreateInstance()
     {
+        // Create with empty data; will be replaced if image_data is read
         return new ImageMessage { ImageData = BinaryData.FromString("") };
+    }
+
+    protected override (bool handled, ImageMessage instance) ReadProperty(
+        ref Utf8JsonReader reader,
+        ImageMessage instance,
+        string propertyName,
+        JsonSerializerOptions options
+    )
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+
+        switch (propertyName)
+        {
+            case "image_data":
+                // Read base64 bytes
+                _pendingImageData = reader.GetBytesFromBase64();
+                // If we already have a media type, create the BinaryData now
+                if (_pendingMediaType != null)
+                {
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData, _pendingMediaType));
+                    _pendingImageData = null;
+                    _pendingMediaType = null;
+                }
+                else
+                {
+                    // Create with default media type, may be updated when media_type is read
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData));
+                }
+
+                return (true, instance);
+
+            case "media_type":
+                _pendingMediaType = reader.GetString();
+                // If we already have image data, recreate BinaryData with the media type
+                if (_pendingImageData != null && _pendingMediaType != null)
+                {
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(_pendingImageData, _pendingMediaType));
+                    _pendingImageData = null;
+                    _pendingMediaType = null;
+                }
+                else if (instance.ImageData.Length > 0 && _pendingMediaType != null)
+                {
+                    // Recreate with media type if image_data was already processed
+                    instance = CreateNewInstance(instance, BinaryData.FromBytes(instance.ImageData.ToArray(), _pendingMediaType));
+                    _pendingMediaType = null;
+                }
+
+                return (true, instance);
+
+            default:
+                return base.ReadProperty(ref reader, instance, propertyName, options);
+        }
+    }
+
+    protected override void WriteProperties(Utf8JsonWriter writer, ImageMessage value, JsonSerializerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
+        // Write image_data as base64
+        writer.WriteBase64String("image_data", value.ImageData.ToMemory().Span);
+
+        // Write media_type if available
+        if (value.ImageData.MediaType != null)
+        {
+            writer.WriteString("media_type", value.ImageData.MediaType);
+        }
+    }
+
+    private static ImageMessage CreateNewInstance(ImageMessage source, BinaryData newImageData)
+    {
+        return new ImageMessage
+        {
+            ImageData = newImageData,
+            FromAgent = source.FromAgent,
+            Role = source.Role,
+            Metadata = source.Metadata,
+            GenerationId = source.GenerationId,
+            ThreadId = source.ThreadId,
+            RunId = source.RunId,
+            ParentRunId = source.ParentRunId,
+            MessageOrderIdx = source.MessageOrderIdx,
+        };
     }
 }
 
 public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 {
-    public string? FromAgent { get; init; }
-
-    public Role Role { get; init; }
-
     public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; init; }
 
-    public List<BinaryData> ImageData { get; init; } = new List<BinaryData>();
+    public List<BinaryData> ImageData { get; init; } = [];
+
+    public string? ThreadId { get; init; }
+
+    public string? RunId { get; init; }
+
+    public int? MessageOrderIdx { get; init; }
+    public string? FromAgent { get; init; }
+
+    public Role Role { get; init; }
 
     IMessage IMessageBuilder.Build()
     {
-        return this.Build();
+        return Build();
     }
 
     public void Add(ImageMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         ImageData.Add(streamingMessageUpdate.ImageData);
 
         // Merge metadata from the update
@@ -100,23 +238,30 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
             Metadata = Metadata,
             GenerationId = GenerationId,
             ImageData = BinaryData.FromBytes(combinedBytes, mimeType),
+            ThreadId = ThreadId,
+            RunId = RunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }
 
-public static class ImageMessageExtensions
+public static partial class ImageMessageExtensions
 {
-    private static readonly Regex DataUriPattern = new Regex(@"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$", RegexOptions.Compiled);
+    private static readonly Regex DataUriPattern = MyRegex();
 
     // Parse base64 data URI and convert to BinaryData with mime type
     public static BinaryData? ToBinaryDataWithMimeType(this string? dataUrl)
     {
         if (dataUrl == null)
+        {
             return null;
+        }
 
         var match = DataUriPattern.Match(dataUrl);
         if (!match.Success)
+        {
             return null;
+        }
 
         var mimeType = match.Groups["mimeType"].Value;
         var base64Data = match.Groups["data"].Value;
@@ -124,12 +269,58 @@ public static class ImageMessageExtensions
         try
         {
             var bytes = Convert.FromBase64String(base64Data);
-            return BinaryData.FromBytes(bytes, mimeType);
+            var detectedMimeType = DetectImageMimeType(bytes, mimeType);
+            return BinaryData.FromBytes(bytes, detectedMimeType);
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Detects the MIME type of an image from its byte content using magic bytes.
+    /// Also normalizes non-standard MIME types (e.g. image/jpg -> image/jpeg).
+    /// </summary>
+    public static string DetectImageMimeType(byte[] bytes, string fallbackMimeType)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+
+        if (bytes.Length >= 8)
+        {
+            // PNG: 89 50 4E 47
+            if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            {
+                return "image/png";
+            }
+
+            // JPEG: FF D8 FF
+            if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+            {
+                return "image/jpeg";
+            }
+
+            // GIF: 47 49 46 38
+            if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38)
+            {
+                return "image/gif";
+            }
+
+            // WebP: 52 49 46 46 ... 57 45 42 50
+            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            {
+                return "image/webp";
+            }
+        }
+
+        // Normalize non-standard MIME types
+        if (string.Equals(fallbackMimeType, "image/jpg", StringComparison.OrdinalIgnoreCase))
+        {
+            return "image/jpeg";
+        }
+
+        return fallbackMimeType ?? "application/octet-stream";
     }
 
     // Create BinaryData with explicit mime type
@@ -142,10 +333,15 @@ public static class ImageMessageExtensions
     public static string? ToDataUrl(this BinaryData? data)
     {
         if (data == null)
+        {
             return null;
+        }
 
-        string actualMimeType = data.MediaType ?? "application/octet-stream";
+        var actualMimeType = data.MediaType ?? "application/octet-stream";
         var base64Data = Convert.ToBase64String(data.ToArray());
         return $"data:{actualMimeType};base64,{base64Data}";
     }
+
+    [GeneratedRegex(@"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
 }

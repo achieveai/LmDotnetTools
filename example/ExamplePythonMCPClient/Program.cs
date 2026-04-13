@@ -1,27 +1,28 @@
 using System.Collections.Immutable;
-using Microsoft.Extensions.DependencyInjection;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using System.ComponentModel;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.Misc.Extensions;
-using AchieveAi.LmDotnetTools.Misc.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
-using AchieveAi.LmDotnetTools.LmCore.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.Misc.Storage;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using ModelContextProtocol.Client;
-using System.ComponentModel;
-using AchieveAi.LmDotnetTools.LmCore.Models;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Utils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using DotNetEnv;
+using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
 /// <summary>
-/// Custom function provider for the AskUser function
+///     Custom function provider for the AskUser function
 /// </summary>
 public class CustomFunctionProvider : IFunctionProvider
 {
@@ -33,48 +34,47 @@ public class CustomFunctionProvider : IFunctionProvider
         var askUserContract = new FunctionContract
         {
             Name = "AskUser",
-            Description = "Ask the user a question and return the answer. Use this tool "
+            Description =
+                "Ask the user a question and return the answer. Use this tool "
                 + "to ask the user for clarifications or to provide more information, this is "
                 + "important because you will need to continue work after the user's "
                 + "response.",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "question",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string" },
                     Description = "The question to ask the user.",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "options",
                     ParameterType = JsonSchemaObject.StringArray(
-                        description: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
-                        itemDescription: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
+                        "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
+                        "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
                     ),
-                    Description = "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
-                    IsRequired = true
-                }
-            }.ToList()
+                    Description =
+                        "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
+                    IsRequired = true,
+                },
+            ],
         };
 
-        var askUserHandler = async (string json) =>
+        static async Task<string> askUserHandler(string json)
         {
-            var jsonObject = JsonObject.Parse(json)!;
+            var jsonObject = JsonNode.Parse(json)!;
             var question = jsonObject["question"]?.ToString() ?? "";
             var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
             return await Program.AskUser(question, options);
-        };
+        }
 
         yield return new FunctionDescriptor
         {
             Contract = askUserContract,
             Handler = askUserHandler,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 }
@@ -86,60 +86,74 @@ public static class Program
         // Load environment variables from .env file
         LoadEnvironmentVariables();
 
-        string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
-        string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
-        string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(
-            GetWorkspaceRootPath(),
-            "example",
-            "ExamplePythonMCPClient",
-            "prompts.yaml");
+        var API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+        var API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+        var KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
+        var PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo");
 
-        var braveSearchMcpServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "brave-search",
-            Command = "npx",
-            Arguments = ["-y", "@modelcontextprotocol/server-brave-search"],
-            EnvironmentVariables = new Dictionary<string, string?>
+        var braveSearchMcpServer = new StdioClientTransport(
+            new StdioClientTransportOptions
             {
-                ["BRAVE_API_KEY"] = Environment.GetEnvironmentVariable("BRAVE_API_KEY")!
+                Name = "brave-search",
+                Command = "npx",
+                Arguments = ["-y", "@modelcontextprotocol/server-brave-search"],
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["BRAVE_API_KEY"] = Environment.GetEnvironmentVariable("BRAVE_API_KEY")!,
+                },
             }
-        });
+        );
 
-        var rustMCPSystem = new StdioClientTransport(new StdioClientTransportOptions
+        var rustMCPSystem = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "fs",
+                Command =
+                    @"D:\LmDotnetTools\example\rust-mcp-filesystem-x86_64-pc-windows-msvc\rust-mcp-filesystem.exe",
+                Arguments = ["--allow-write", @"D:\scratchPad"],
+            }
+        );
+
+        var turnDownMcpServer = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "url - fetcher",
+                Command = "node",
+                Arguments = ["d:/turndown-mcp/server.js"],
+            }
+        );
+
+        var thinkingMcpServer = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "thinking",
+                Command = "npx",
+                Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            }
+        );
+
+        var memoryMcpServer = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "memory",
+                Command = "npx",
+                Arguments = ["-y", "@modelcontextprotocol/server-memory"],
+            }
+        );
+
+        var mcpServers = new[]
         {
-            Name = "fs",
-            Command = @"D:\LmDotnetTools\example\rust-mcp-filesystem-x86_64-pc-windows-msvc\rust-mcp-filesystem.exe",
-            Arguments = ["--allow-write", @"D:\scratchPad"]
-        });
-
-        var turnDownMcpServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "url - fetcher",
-            Command = "node",
-            Arguments = ["d:/turndown-mcp/server.js"]
-        });
-
-        var thinkingMcpServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "thinking",
-            Command = "npx",
-            Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
-        });
-
-        var memoryMcpServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "memory",
-            Command = "npx",
-            Arguments = ["-y", "@modelcontextprotocol/server-memory"]
-        });
-
-        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, rustMCPSystem };
+            braveSearchMcpServer,
+            turnDownMcpServer,
+            thinkingMcpServer,
+            memoryMcpServer,
+            rustMCPSystem,
+        };
         var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fs" };
 
-        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
+        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClient.CreateAsync(transport)));
 
         try
         {
@@ -149,7 +163,7 @@ public static class Program
 
             // Register Todo TaskManager instance functions (stateful)
             var taskManager = new TaskManager();
-            functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
+            _ = functionRegistry.AddFunctionsFromObject(taskManager, "TodoManager", 50);
 
             // Print comprehensive function documentation
             Console.WriteLine("=== Available Functions ===");
@@ -161,21 +175,19 @@ public static class Program
 
             // Set up services with function call support
             var services = new ServiceCollection();
-            services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
+            _ = services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
 
             // Add function call services
-            services.AddFunctionCallServices();
+            _ = services.AddFunctionCallServices();
 
             // Add MCP function providers (this will register available MCP tools from assemblies)
-            services.AddMcpFunctionsFromLoadedAssemblies();
+            _ = services.AddMcpFunctionsFromLoadedAssemblies();
 
             // Build service provider
             var serviceProvider = services.BuildServiceProvider();
 
             // Create a caching HttpClient for OpenAI
-            var httpClient = services.CreateCachingOpenAIClient(
-                apiKey: API_KEY,
-                baseUrl: API_URL);
+            var httpClient = services.CreateCachingOpenAIClient(API_KEY, API_URL);
 
             // Create an OpenAI client with caching
             var openClient = new OpenClient(httpClient, API_URL);
@@ -185,15 +197,12 @@ public static class Program
             var middlewareFactory = serviceProvider.GetRequiredService<IFunctionCallMiddlewareFactory>();
             var functionCallMiddleware = middlewareFactory.Create("Combined-Functions");
 
-
             // Create other middleware components
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
             var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
-            var todoContextMiddleware = new TodoContextMiddleware(() => taskManager.GetCurrentTaskContext());
 
             var theogent = openAgent
                 .WithMiddleware(jsonFragmentUpdateMiddleware)
-                .WithMiddleware(todoContextMiddleware)
                 .WithMiddleware(functionRegistry.BuildMiddleware())
                 .WithMiddleware(consolePrinterMiddleware)
                 .WithMiddleware(functionCallMiddleware)
@@ -202,18 +211,14 @@ public static class Program
             var options = new GenerateReplyOptions
             {
                 ModelId = "openai/gpt-5-mini", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
-                                               // ModelId = "meta-llama/llama-4-maverick",
+                // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
-                ExtraProperties = new Dictionary<string, object?>()
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["parallel_tool_call"] = true,
-                    ["reasoning"] = new Dictionary<string, object?>()
-                    {
-                        ["effort"] = "low",
-                        ["max_tokens"] = 768,
-                    }
-                }.ToImmutableDictionary()
+                    ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "low", ["max_tokens"] = 768 },
+                }.ToImmutableDictionary(),
             };
 
             Console.WriteLine("Enter a task to complete:");
@@ -224,10 +229,7 @@ public static class Program
 
             var promptReader = new PromptReader(PROMPTS_PATH);
 
-            var dict = new Dictionary<string, object>()
-            {
-                ["task"] = task!,
-            };
+            var dict = new Dictionary<string, object> { ["task"] = task! };
 
             if (previousPlan != null)
             {
@@ -239,35 +241,15 @@ public static class Program
                 dict["progress"] = progress;
             }
 
-            var plannerPrompt = promptReader
-              .GetPromptChain("NewsBlogger")
-              .PromptMessages(dict);
+            var plannerPrompt = promptReader.GetPromptChain("NewsBlogger").PromptMessages(dict);
 
             do
             {
-                bool contLoop = true;
+                var contLoop = true;
                 while (contLoop)
                 {
                     contLoop = false;
-                    var repliesStream = await theogent.GenerateReplyStreamingAsync(
-                        plannerPrompt,
-                        options);
-
-                    if (plannerPrompt.Last() is CompositeMessage compositeMessage)
-                    {
-                        if (compositeMessage.Messages.Any(m => m.FromAgent == "TodoContextMiddleware"))
-                        {
-                            plannerPrompt[plannerPrompt.Count - 1] = new CompositeMessage
-                            {
-                                FromAgent = "UniAgentLoop",
-                                GenerationId = compositeMessage.GenerationId,
-                                Role = Role.Assistant,
-                                Messages = compositeMessage.Messages
-                                    .Where(m => m.FromAgent != "TodoContextMiddleware")
-                                    .ToImmutableList()
-                            };
-                        }
-                    }
+                    var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
 
                     var replyMessages = new List<IMessage>();
                     await foreach (var reply in repliesStream)
@@ -281,19 +263,6 @@ public static class Program
                         }
                     }
 
-                    var pendingTasks = taskManager.GetCurrentTaskContext();
-                    if (!string.IsNullOrWhiteSpace(pendingTasks))
-                    {
-                        replyMessages.Add(
-                            new TextMessage
-                            {
-                                Text = $"REMEMBER: You MUST update task status as you start/complete/remove each phase.\n\n{pendingTasks}",
-                                Role = Role.User,
-                                FromAgent = "TodoContextMiddleware",
-                                GenerationId = replyMessages[0].GenerationId
-                            });
-                    }
-
                     if (replyMessages.Count > 1)
                     {
                         plannerPrompt.Add(
@@ -302,8 +271,9 @@ public static class Program
                                 FromAgent = "UniAgentLoop",
                                 GenerationId = replyMessages[0].GenerationId,
                                 Role = Role.Assistant,
-                                Messages = replyMessages.ToImmutableList(),
-                            });
+                                Messages = [.. replyMessages],
+                            }
+                        );
                     }
                     else if (replyMessages.Count == 1)
                     {
@@ -314,14 +284,16 @@ public static class Program
                 Console.WriteLine("What's Next (q/quit to quit)?");
                 var x = Console.ReadLine()?.Trim() ?? "";
 
-                if (x.ToLowerInvariant() == "quit" || x.ToLowerInvariant() == "q")
+                if (
+                    x.Equals("quit", StringComparison.InvariantCultureIgnoreCase)
+                    || x.Equals("q", StringComparison.InvariantCultureIgnoreCase)
+                )
                 {
                     break;
                 }
 
                 plannerPrompt.Add(new TextMessage { Text = x, Role = Role.User });
-            }
-            while (true);
+            } while (true);
         }
         catch (Exception ex)
         {
@@ -329,11 +301,10 @@ public static class Program
             Console.WriteLine(ex.StackTrace);
         }
 
-        await Task.WhenAll(
-          mcpClients.Select(client => client.DisposeAsync().AsTask()));
+        await Task.WhenAll(mcpClients.Select(client => client.DisposeAsync().AsTask()));
 
         Console.WriteLine("\nPress any key to exit...");
-        Console.ReadLine();
+        _ = Console.ReadLine();
     }
 
     public static async Task MainBak()
@@ -341,48 +312,45 @@ public static class Program
         // Load environment variables from .env file
         LoadEnvironmentVariables();
 
-        string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
-        string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
-        string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(
-            GetWorkspaceRootPath(),
-            "example",
-            "ExamplePythonMCPClient",
-            "prompts.yaml");
+        var API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+        var API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+        var KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
+        var PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo - DeepSeek R1 Reasoning");
 
         // === MCP client setup (identical to Main) ===
-        var pythonTransport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "python-mcp",
-            Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
-            Arguments = [
-                "--image",
-                "pyexec:latest",
-                "--code-dir",
-                GetWorkspaceRootPath() + "/.code_workspace"
-            ]
-        });
+        var pythonTransport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "python-mcp",
+                Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
+                Arguments = ["--image", "pyexec:latest", "--code-dir", GetWorkspaceRootPath() + "/.code_workspace"],
+            }
+        );
 
-        var thinkingTransport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "thinking",
-            Command = "npx",
-            Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
-        });
+        var thinkingTransport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "thinking",
+                Command = "npx",
+                Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            }
+        );
 
-        var memoryTransport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "memory",
-            Command = "npx",
-            Arguments = ["-y", "@modelcontextprotocol/server-memory"]
-        });
+        var memoryTransport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "memory",
+                Command = "npx",
+                Arguments = ["-y", "@modelcontextprotocol/server-memory"],
+            }
+        );
 
         var transports = new[] { pythonTransport, thinkingTransport, memoryTransport };
         var clientIds = new[] { "python-mcp", "thinking", "memory" };
 
-        // var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClientFactory.CreateAsync(transport)));
+        // var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClient.CreateAsync(transport)));
 
         try
         {
@@ -423,12 +391,8 @@ public static class Program
                 MaxToken = 4096 * 2,
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["reasoning"] = new Dictionary<string, object?>
-                    {
-                        ["effort"] = "medium",
-                        ["max_tokens"] = 1024
-                    }
-                }.ToImmutableDictionary()
+                    ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 1024 },
+                }.ToImmutableDictionary(),
             };
 
             Console.WriteLine("Enter a reasoning task to complete:");
@@ -440,16 +404,21 @@ public static class Program
             var promptReader = new PromptReader(PROMPTS_PATH);
             var dict = new Dictionary<string, object> { ["task"] = task };
 
-            if (previousPlan != null) dict["previous_plan"] = previousPlan;
-            if (progress != null) dict["progress"] = progress;
+            if (previousPlan != null)
+            {
+                dict["previous_plan"] = previousPlan;
+            }
 
-            var plannerPrompt = promptReader
-                .GetPromptChain("UniAgentLoop")
-                .PromptMessages(dict);
+            if (progress != null)
+            {
+                dict["progress"] = progress;
+            }
+
+            var plannerPrompt = promptReader.GetPromptChain("UniAgentLoop").PromptMessages(dict);
 
             do
             {
-                bool contLoop = false;
+                var contLoop = false;
                 var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
 
                 var replyMessages = new List<IMessage>();
@@ -472,8 +441,9 @@ public static class Program
                             FromAgent = "UniAgentLoop",
                             GenerationId = replyMessages[0].GenerationId,
                             Role = Role.Assistant,
-                            Messages = replyMessages.ToImmutableList(),
-                        });
+                            Messages = [.. replyMessages],
+                        }
+                    );
                 }
                 else if (replyMessages.Count == 1)
                 {
@@ -485,50 +455,50 @@ public static class Program
                     Console.WriteLine("What's Next (q/quit to quit)?");
                     var x = Console.ReadLine()?.Trim() ?? "";
 
-                    if (x.Equals("quit", StringComparison.OrdinalIgnoreCase) || x.Equals("q", StringComparison.OrdinalIgnoreCase))
+                    if (
+                        x.Equals("quit", StringComparison.OrdinalIgnoreCase)
+                        || x.Equals("q", StringComparison.OrdinalIgnoreCase)
+                    )
                     {
                         break;
                     }
 
                     plannerPrompt.Add(new TextMessage { Text = x, Role = Role.User });
                 }
-            }
-            while (true);
+            } while (true);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"\nError: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
         }
-        finally
-        {
-            // await Task.WhenAll(pythonMcpClients.Select(client => client.DisposeAsync().AsTask()));
-        }
 
         Console.WriteLine("\nPress any key to exit...");
-        Console.ReadLine();
+        _ = Console.ReadLine();
     }
 
     public static string GetWorkspaceRootPath()
     {
         var curPath = Environment.CurrentDirectory;
-        while (curPath != null && !string.IsNullOrEmpty(curPath) && !Directory.GetFiles(curPath, "*.sln").Any())
+        while (curPath != null && !string.IsNullOrEmpty(curPath) && Directory.GetFiles(curPath, "*.sln").Length == 0)
         {
             curPath = Path.GetDirectoryName(curPath);
         }
 
-        return curPath ?? throw new DirectoryNotFoundException("Solution root directory not found in the current directory or any parent directories.");
+        return curPath
+            ?? throw new DirectoryNotFoundException(
+                "Solution root directory not found in the current directory or any parent directories."
+            );
     }
 
-
     /// <summary>
-    /// Loads environment variables from .env file in the project root
+    ///     Loads environment variables from .env file in the project root
     /// </summary>
     /// <remarks>
-    /// Tries multiple locations to find the .env file:
-    /// 1. Current directory
-    /// 2. Project directory
-    /// 3. Solution root directory
+    ///     Tries multiple locations to find the .env file:
+    ///     1. Current directory
+    ///     2. Project directory
+    ///     3. Solution root directory
     /// </remarks>
     private static void LoadEnvironmentVariables()
     {
@@ -538,9 +508,12 @@ public static class Program
             curPath = Path.GetDirectoryName(curPath);
         }
 
-        _ = curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
-          ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
-          : throw new FileNotFoundException(".env file not found in the current directory or any parent directories.");
+        _ =
+            curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
+                ? Env.Load(Path.Combine(curPath, ".env"))
+                : throw new FileNotFoundException(
+                    ".env file not found in the current directory or any parent directories."
+                );
     }
 
     public static void WriteToConsole(this IMessage message)
@@ -556,33 +529,44 @@ public static class Program
             case ReasoningMessage reasoningMessage:
                 // WriteToConsoleInColor($"Reasoning: {reasoningMessage.Reasoning}", ConsoleColor.DarkGreen, null);
                 break;
-            case ImageMessage _:
+            case ImageMessage:
                 WriteToConsoleInColor("Image generated", ConsoleColor.DarkGray, null);
                 break;
             case ToolsCallMessage toolsCallMessage:
-                toolsCallMessage.ToolCalls.ForEach(
-                    toolCall => WriteToConsoleInColor($"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}", ConsoleColor.Red, null));
+                toolsCallMessage.ToolCalls.ForEach(toolCall =>
+                    WriteToConsoleInColor(
+                        $"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}",
+                        ConsoleColor.Red,
+                        null
+                    )
+                );
                 break;
             case ToolsCallAggregateMessage toolsCallAggregateMessage:
-                toolsCallAggregateMessage.ToolsCallMessage.ToolCalls.Zip(toolsCallAggregateMessage.ToolsCallResult.ToolCallResults)
+                toolsCallAggregateMessage
+                    .ToolsCallMessage.ToolCalls.Zip(toolsCallAggregateMessage.ToolsCallResult.ToolCallResults)
                     .ToImmutableList()
-                    .ForEach((tup) =>
-                        {
-                            var (toolCall, toolCallResult) = tup;
-                            WriteToConsoleInColor($"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}", ConsoleColor.DarkCyan, null);
-                            WriteToConsoleInColor($"Tool call result: {toolCallResult.Result}", ConsoleColor.DarkMagenta, null);
-                        });
+                    .ForEach(tup =>
+                    {
+                        var (toolCall, toolCallResult) = tup;
+                        WriteToConsoleInColor(
+                            $"Tool call: {toolCall.Index} {toolCall.FunctionName} - {toolCall.FunctionArgs}",
+                            ConsoleColor.DarkCyan,
+                            null
+                        );
+                        WriteToConsoleInColor(
+                            $"Tool call result: {toolCallResult.Result}",
+                            ConsoleColor.DarkMagenta,
+                            null
+                        );
+                    });
                 break;
             default:
-                Console.WriteLine(message.ToString());
+                Console.WriteLine(message?.ToString() ?? string.Empty);
                 break;
         }
     }
 
-    public static void WriteToConsoleInColor(
-        string text,
-        ConsoleColor fgColor,
-        ConsoleColor? bgColor)
+    public static void WriteToConsoleInColor(string text, ConsoleColor fgColor, ConsoleColor? bgColor)
     {
         var fgColorBak = Console.ForegroundColor;
         var bgColorBak = Console.BackgroundColor;
@@ -600,16 +584,22 @@ public static class Program
         }
     }
 
-    [Description("Ask the user a question and return the answer. Use this tool"
-     + "to ask the user for clarifications or to provide more information, this is"
-     + "important because you will need to continue work after the user's"
-     + "response.")]
+    [Description(
+        "Ask the user a question and return the answer. Use this tool"
+            + "to ask the user for clarifications or to provide more information, this is"
+            + "important because you will need to continue work after the user's"
+            + "response."
+    )]
     public static async Task<string> AskUser(
-        [Description("The question to ask the user.")]
-        string question,
-        [Description("The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.")]
-        string[] options)
+        [Description("The question to ask the user.")] string question,
+        [Description(
+            "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
+        )]
+            string[] options
+    )
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(question);
+        ArgumentNullException.ThrowIfNull(options);
         Console.WriteLine(question.Trim());
         foreach (var option in options)
         {

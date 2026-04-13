@@ -1,26 +1,29 @@
-using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Options;
+using System.Data;
+using System.Diagnostics;
 using System.Text;
 using MemoryServer.Models;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Infrastructure;
 
 /// <summary>
-/// Manages SQLite database connections, initialization, and extension loading.
-/// Handles connection pooling and ensures proper database setup.
+///     Manages SQLite database connections, initialization, and extension loading.
+///     Handles connection pooling and ensures proper database setup.
 /// </summary>
 public class SqliteManager : IDisposable
 {
-    private readonly string _connectionString;
-    private readonly ILogger<SqliteManager> _logger;
     private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly string _connectionString;
+    private readonly object _initLock = new();
     private readonly SemaphoreSlim _initSemaphore;
+    private readonly ILogger<SqliteManager> _logger;
     private readonly DatabaseOptions _options;
-    private bool _isInitialized = false;
-    private readonly object _initLock = new object();
+    private bool _isInitialized;
 
     public SqliteManager(IOptions<DatabaseOptions> options, ILogger<SqliteManager> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _connectionString = _options.ConnectionString;
         _logger = logger;
@@ -28,21 +31,36 @@ public class SqliteManager : IDisposable
         _initSemaphore = new SemaphoreSlim(1, 1);
     }
 
+    public void Dispose()
+    {
+        _connectionSemaphore?.Dispose();
+        _initSemaphore?.Dispose();
+    }
+
     /// <summary>
-    /// Gets a database connection with proper configuration.
+    ///     Gets a database connection with proper configuration.
     /// </summary>
     public async Task<ManagedSqliteConnection> GetConnectionAsync(CancellationToken cancellationToken = default)
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-        var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+        var stopwatch = Stopwatch.StartNew();
+        var threadId = Environment.CurrentManagedThreadId;
+        var taskId = Task.CurrentId ?? -1;
 
-        _logger.LogDebug("🔄 GetConnectionAsync START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
-            threadId, taskId, _connectionSemaphore.CurrentCount, _options.MaxConnections);
+        _logger.LogDebug(
+            "🔄 GetConnectionAsync START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
+            threadId,
+            taskId,
+            _connectionSemaphore.CurrentCount,
+            _options.MaxConnections
+        );
 
         await _connectionSemaphore.WaitAsync(cancellationToken);
-        _logger.LogDebug("✅ Semaphore acquired - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms",
-            threadId, taskId, stopwatch.ElapsedMilliseconds);
+        _logger.LogDebug(
+            "✅ Semaphore acquired - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms",
+            threadId,
+            taskId,
+            stopwatch.ElapsedMilliseconds
+        );
 
         try
         {
@@ -51,52 +69,77 @@ public class SqliteManager : IDisposable
 
             _logger.LogDebug("📡 Opening connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             await connection.OpenAsync(cancellationToken);
-            _logger.LogDebug("✅ Connection opened - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
-                threadId, taskId, connection.State);
+            _logger.LogDebug(
+                "✅ Connection opened - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
+                threadId,
+                taskId,
+                connection.State
+            );
 
             // Configure connection settings
             _logger.LogDebug("⚙️ Configuring connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             await ConfigureConnectionAsync(connection, cancellationToken);
-            _logger.LogDebug("✅ Connection configured - Thread: {ThreadId}, Task: {TaskId}, Total Elapsed: {Elapsed}ms",
-                threadId, taskId, stopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "✅ Connection configured - Thread: {ThreadId}, Task: {TaskId}, Total Elapsed: {Elapsed}ms",
+                threadId,
+                taskId,
+                stopwatch.ElapsedMilliseconds
+            );
 
             // Return managed connection that will auto-release semaphore
             return new ManagedSqliteConnection(connection, this);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ GetConnectionAsync FAILED - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms",
-                threadId, taskId, stopwatch.ElapsedMilliseconds);
-            _connectionSemaphore.Release();
+            _logger.LogError(
+                ex,
+                "❌ GetConnectionAsync FAILED - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms",
+                threadId,
+                taskId,
+                stopwatch.ElapsedMilliseconds
+            );
+            _ = _connectionSemaphore.Release();
             throw;
         }
     }
 
     /// <summary>
-    /// Releases a database connection back to the pool.
-    /// This is called automatically by ManagedSqliteConnection.Dispose().
+    ///     Releases a database connection back to the pool.
+    ///     This is called automatically by ManagedSqliteConnection.Dispose().
     /// </summary>
     internal void ReleaseConnection(SqliteConnection connection)
     {
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-        var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+        var threadId = Environment.CurrentManagedThreadId;
+        var taskId = Task.CurrentId ?? -1;
 
-        _logger.LogDebug("🔄 ReleaseConnection START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
-            threadId, taskId, _connectionSemaphore.CurrentCount, _options.MaxConnections);
+        _logger.LogDebug(
+            "🔄 ReleaseConnection START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
+            threadId,
+            taskId,
+            _connectionSemaphore.CurrentCount,
+            _options.MaxConnections
+        );
 
         try
         {
             if (connection != null)
             {
-                _logger.LogDebug("🗑️ Disposing connection - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
-                    threadId, taskId, connection.State);
+                _logger.LogDebug(
+                    "🗑️ Disposing connection - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
+                    threadId,
+                    taskId,
+                    connection.State
+                );
                 connection.Dispose();
                 _logger.LogDebug("✅ Connection disposed - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             }
             else
             {
-                _logger.LogWarning("⚠️ Attempting to release null connection - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId, taskId);
+                _logger.LogWarning(
+                    "⚠️ Attempting to release null connection - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
             }
         }
         catch (Exception ex)
@@ -106,27 +149,38 @@ public class SqliteManager : IDisposable
         finally
         {
             _logger.LogDebug("🔓 Releasing semaphore - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
-            _connectionSemaphore.Release();
-            _logger.LogDebug("✅ Semaphore released - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
-                threadId, taskId, _connectionSemaphore.CurrentCount, _options.MaxConnections);
+            _ = _connectionSemaphore.Release();
+            _logger.LogDebug(
+                "✅ Semaphore released - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
+                threadId,
+                taskId,
+                _connectionSemaphore.CurrentCount,
+                _options.MaxConnections
+            );
         }
     }
 
     /// <summary>
-    /// Initializes the database schema and extensions.
+    ///     Initializes the database schema and extensions.
     /// </summary>
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
-        if (_isInitialized) return;
+        if (_isInitialized)
+        {
+            return;
+        }
 
         // Use SemaphoreSlim for async-safe initialization
         await _initSemaphore.WaitAsync(cancellationToken);
         try
         {
-            if (_isInitialized) return;
+            if (_isInitialized)
+            {
+                return;
+            }
 
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-            var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+            var threadId = Environment.CurrentManagedThreadId;
+            var taskId = Task.CurrentId ?? -1;
             _logger.LogDebug("🔧 InitializeDatabaseAsync START - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
             _logger.LogInformation("Initializing SQLite database...");
@@ -134,16 +188,37 @@ public class SqliteManager : IDisposable
             try
             {
                 // Create direct connection for initialization (bypass semaphore to avoid deadlock)
-                _logger.LogDebug("🔌 Creating direct initialization connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogDebug(
+                    "🔌 Creating direct initialization connection - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
                 using var connection = new SqliteConnection(_connectionString);
-                _logger.LogDebug("📡 Opening initialization connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogDebug(
+                    "📡 Opening initialization connection - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
                 await connection.OpenAsync(cancellationToken);
-                _logger.LogDebug("✅ Initialization connection opened - Thread: {ThreadId}, Task: {TaskId}, State: {State}", threadId, taskId, connection.State);
+                _logger.LogDebug(
+                    "✅ Initialization connection opened - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
+                    threadId,
+                    taskId,
+                    connection.State
+                );
 
                 // Configure the connection
-                _logger.LogDebug("⚙️ Configuring initialization connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogDebug(
+                    "⚙️ Configuring initialization connection - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
                 await ConfigureConnectionAsync(connection, cancellationToken);
-                _logger.LogDebug("✅ Initialization connection configured - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogDebug(
+                    "✅ Initialization connection configured - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
 
                 // Load extensions first
                 _logger.LogDebug("🔌 Loading extensions - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
@@ -156,30 +231,52 @@ public class SqliteManager : IDisposable
                 _logger.LogDebug("✅ Schema created - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
                 // Verify connection state before disposal
-                _logger.LogDebug("🔍 Pre-disposal connection state - Thread: {ThreadId}, Task: {TaskId}, State: {State}", threadId, taskId, connection.State);
+                _logger.LogDebug(
+                    "🔍 Pre-disposal connection state - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
+                    threadId,
+                    taskId,
+                    connection.State
+                );
 
                 _isInitialized = true;
                 _logger.LogInformation("SQLite database initialized successfully");
-                _logger.LogDebug("✅ InitializeDatabaseAsync COMPLETE - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogDebug(
+                    "✅ InitializeDatabaseAsync COMPLETE - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to initialize SQLite database - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                _logger.LogError(
+                    ex,
+                    "Failed to initialize SQLite database - Thread: {ThreadId}, Task: {TaskId}",
+                    threadId,
+                    taskId
+                );
                 throw;
             }
         }
         finally
         {
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-            var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
-            _logger.LogDebug("🔓 Releasing initialization semaphore - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
-            _initSemaphore.Release();
-            _logger.LogDebug("✅ Initialization semaphore released - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+            var threadId = Environment.CurrentManagedThreadId;
+            var taskId = Task.CurrentId ?? -1;
+            _logger.LogDebug(
+                "🔓 Releasing initialization semaphore - Thread: {ThreadId}, Task: {TaskId}",
+                threadId,
+                taskId
+            );
+            _ = _initSemaphore.Release();
+            _logger.LogDebug(
+                "✅ Initialization semaphore released - Thread: {ThreadId}, Task: {TaskId}",
+                threadId,
+                taskId
+            );
         }
     }
 
     /// <summary>
-    /// Configures connection-specific settings.
+    ///     Configures connection-specific settings.
     /// </summary>
     private async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -215,19 +312,19 @@ public class SqliteManager : IDisposable
         {
             using var command = connection.CreateCommand();
             command.CommandText = commandText;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 
     /// <summary>
-    /// Loads SQLite extensions including sqlite-vec.
+    ///     Loads SQLite extensions including sqlite-vec.
     /// </summary>
     private void LoadExtensions(SqliteConnection connection)
     {
         try
         {
             // Enable extension loading
-            connection.EnableExtensions(true);
+            connection.EnableExtensions();
 
             // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");
@@ -236,12 +333,15 @@ public class SqliteManager : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to load sqlite-vec extension. Vector functionality requires this extension.");
-            throw new InvalidOperationException("sqlite-vec extension is required for vector functionality but could not be loaded. Ensure the sqlite-vec NuGet package is properly installed.", ex);
+            throw new InvalidOperationException(
+                "sqlite-vec extension is required for vector functionality but could not be loaded. Ensure the sqlite-vec NuGet package is properly installed.",
+                ex
+            );
         }
     }
 
     /// <summary>
-    /// Executes database schema creation scripts.
+    ///     Executes database schema creation scripts.
     /// </summary>
     private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -251,26 +351,29 @@ public class SqliteManager : IDisposable
         command.CommandText = schema;
         command.CommandTimeout = _options.CommandTimeout;
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
         _logger.LogInformation("Database schema created successfully");
     }
 
     /// <summary>
-    /// Gets the complete database schema SQL.
+    ///     Gets the complete database schema SQL.
     /// </summary>
-    private string GetDatabaseSchema()
+    private static string GetDatabaseSchema()
     {
         var schema = new StringBuilder();
 
         // ID sequence table for generating unique integers
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
-            );");
+            );"
+        );
 
         // Main memories table with integer primary key
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
                 content TEXT NOT NULL,
@@ -283,38 +386,46 @@ public class SqliteManager : IDisposable
                 version INTEGER DEFAULT 1,
                 CONSTRAINT chk_content_length CHECK (length(content) <= 10000),
                 CONSTRAINT chk_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100)
-            );");
+            );"
+        );
 
         // Vector embeddings using sqlite-vec (primary approach)
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
                     memory_id INTEGER PRIMARY KEY,
                     embedding FLOAT[1024]
-                );");
+                );"
+        );
 
         // Vector metadata table for embedding information
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS embedding_metadata (
                 memory_id INTEGER PRIMARY KEY,
                 model_name TEXT NOT NULL,
                 embedding_dimension INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-            );");
+            );"
+        );
 
         // FTS5 virtual table for full-text search
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 content,
                 metadata,
                 content='memories',
                 content_rowid='id'
-            );");
+            );"
+        );
 
         // Graph database tables for entities and relationships
 
         // Entities table for knowledge graph
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -333,10 +444,12 @@ public class SqliteManager : IDisposable
                 CONSTRAINT chk_entity_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100),
                 CONSTRAINT chk_entity_confidence CHECK (confidence >= 0.0 AND confidence <= 1.0),
                 UNIQUE(name, user_id, agent_id, run_id)
-            );");
+            );"
+        );
 
         // Relationships table for knowledge graph
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS relationships (
                 id INTEGER PRIMARY KEY,
                 source TEXT NOT NULL,
@@ -359,10 +472,12 @@ public class SqliteManager : IDisposable
                 CONSTRAINT chk_relationship_confidence CHECK (confidence >= 0.0 AND confidence <= 1.0),
                 FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
                 UNIQUE(source, relationship_type, target, user_id, agent_id, run_id)
-            );");
+            );"
+        );
 
         // FTS5 virtual tables for entity and relationship search
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
                 name,
                 type,
@@ -370,9 +485,11 @@ public class SqliteManager : IDisposable
                 metadata,
                 content='entities',
                 content_rowid='id'
-            );");
+            );"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE VIRTUAL TABLE IF NOT EXISTS relationships_fts USING fts5(
                 source,
                 relationship_type,
@@ -381,42 +498,52 @@ public class SqliteManager : IDisposable
                 metadata,
                 content='relationships',
                 content_rowid='id'
-            );");
+            );"
+        );
 
         // Vector embeddings for entities and relationships using sqlite-vec
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
                     entity_id INTEGER PRIMARY KEY,
                     embedding FLOAT[1024]
-                );");
+                );"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0(
                     relationship_id INTEGER PRIMARY KEY,
                     embedding FLOAT[1024]
-                );");
+                );"
+        );
 
         // Metadata tables for entity and relationship embeddings
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS entity_embedding_metadata (
                 entity_id INTEGER PRIMARY KEY,
                 model_name TEXT NOT NULL,
                 embedding_dimension INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
-            );");
+            );"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TABLE IF NOT EXISTS relationship_embedding_metadata (
                 relationship_id INTEGER PRIMARY KEY,
                 model_name TEXT NOT NULL,
                 embedding_dimension INTEGER NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (relationship_id) REFERENCES relationships(id) ON DELETE CASCADE
-            );");
+            );"
+        );
 
         // Indexes for performance
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
@@ -450,61 +577,80 @@ public class SqliteManager : IDisposable
             CREATE INDEX IF NOT EXISTS idx_relationships_source_target ON relationships(source, target);
             CREATE INDEX IF NOT EXISTS idx_relationships_created ON relationships(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_relationships_updated ON relationships(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_relationships_memory ON relationships(source_memory_id);");
+            CREATE INDEX IF NOT EXISTS idx_relationships_memory ON relationships(source_memory_id);"
+        );
 
         // FTS5 triggers for automatic content indexing
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
                 INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
                 UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
-            END");
+            END"
+        );
 
         // FTS5 triggers for entities
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_insert AFTER INSERT ON entities BEGIN
                 INSERT INTO entities_fts(rowid, name, type, aliases, metadata) VALUES (new.id, new.name, new.type, new.aliases, new.metadata);
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_update AFTER UPDATE ON entities BEGIN
                 UPDATE entities_fts SET name = new.name, type = new.type, aliases = new.aliases, metadata = new.metadata WHERE rowid = new.id;
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_delete AFTER DELETE ON entities BEGIN
                 DELETE FROM entities_fts WHERE rowid = old.id;
-            END");
+            END"
+        );
 
         // FTS5 triggers for relationships
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_insert AFTER INSERT ON relationships BEGIN
                 INSERT INTO relationships_fts(rowid, source, relationship_type, target, temporal_context, metadata) VALUES (new.id, new.source, new.relationship_type, new.target, new.temporal_context, new.metadata);
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_update AFTER UPDATE ON relationships BEGIN
                 UPDATE relationships_fts SET source = new.source, relationship_type = new.relationship_type, target = new.target, temporal_context = new.temporal_context, metadata = new.metadata WHERE rowid = new.id;
-            END");
+            END"
+        );
 
-        schema.AppendLine(@"
+        _ = schema.AppendLine(
+            @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_delete AFTER DELETE ON relationships BEGIN
                 DELETE FROM relationships_fts WHERE rowid = old.id;
-            END");
+            END"
+        );
 
         return schema.ToString();
     }
 
     /// <summary>
-    /// Executes a health check on the database.
+    ///     Executes a health check on the database.
     /// </summary>
     public async Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
     {
@@ -522,77 +668,93 @@ public class SqliteManager : IDisposable
             return false;
         }
     }
-
-    public void Dispose()
-    {
-        _connectionSemaphore?.Dispose();
-        _initSemaphore?.Dispose();
-    }
 }
 
 /// <summary>
-/// Wrapper for SqliteConnection that automatically releases semaphore on disposal.
+///     Wrapper for SqliteConnection that automatically releases semaphore on disposal.
 /// </summary>
 public class ManagedSqliteConnection : IDisposable
 {
-    private readonly SqliteConnection _connection;
-    private readonly SqliteManager _manager;
-    private bool _disposed = false;
-    private readonly int _connectionId;
     private static int _nextConnectionId = 1;
+    private readonly SqliteConnection _connection;
+    private readonly int _connectionId;
+    private readonly SqliteManager _manager;
+    private bool _disposed;
 
     public ManagedSqliteConnection(SqliteConnection connection, SqliteManager manager)
     {
+        ArgumentNullException.ThrowIfNull(connection);
         _connection = connection;
         _manager = manager;
         _connectionId = Interlocked.Increment(ref _nextConnectionId);
 
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-        System.Diagnostics.Debug.WriteLine($"🔌 ManagedConnection-{_connectionId} CREATED - Thread: {threadId}, State: {connection.State}");
+        var threadId = Environment.CurrentManagedThreadId;
+        Debug.WriteLine(
+            $"🔌 ManagedConnection-{_connectionId} CREATED - Thread: {threadId}, State: {connection.State}"
+        );
     }
 
     // Delegate all SqliteConnection members
     public string ConnectionString => _connection.ConnectionString;
-    public System.Data.ConnectionState State => _connection.State;
-    public SqliteCommand CreateCommand() => _connection.CreateCommand();
-    public SqliteTransaction BeginTransaction()
-    {
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-        System.Diagnostics.Debug.WriteLine($"🔄 ManagedConnection-{_connectionId} BeginTransaction START - Thread: {threadId}, State: {State}");
-
-        try
-        {
-            var transaction = _connection.BeginTransaction();
-            System.Diagnostics.Debug.WriteLine($"✅ ManagedConnection-{_connectionId} BeginTransaction SUCCESS - Thread: {threadId}");
-            return transaction;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"❌ ManagedConnection-{_connectionId} BeginTransaction FAILED - Thread: {threadId}, Error: {ex.Message}");
-            throw;
-        }
-    }
-
-    public SqliteTransaction BeginTransaction(System.Data.IsolationLevel isolationLevel) => _connection.BeginTransaction(isolationLevel);
+    public ConnectionState State => _connection.State;
 
     public void Dispose()
     {
         if (!_disposed)
         {
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-            System.Diagnostics.Debug.WriteLine($"🗑️ ManagedConnection-{_connectionId} DISPOSE START - Thread: {threadId}, State: {State}");
+            var threadId = Environment.CurrentManagedThreadId;
+            Debug.WriteLine(
+                $"🗑️ ManagedConnection-{_connectionId} DISPOSE START - Thread: {threadId}, State: {State}"
+            );
 
             _connection?.Dispose();
             if (_connection != null)
             {
                 _manager.ReleaseConnection(_connection);
             }
+
             _disposed = true;
 
-            System.Diagnostics.Debug.WriteLine($"✅ ManagedConnection-{_connectionId} DISPOSE COMPLETE - Thread: {threadId}");
+            Debug.WriteLine($"✅ ManagedConnection-{_connectionId} DISPOSE COMPLETE - Thread: {threadId}");
         }
     }
 
+    public SqliteCommand CreateCommand()
+    {
+        return _connection.CreateCommand();
+    }
+
+    public SqliteTransaction BeginTransaction()
+    {
+        var threadId = Environment.CurrentManagedThreadId;
+        Debug.WriteLine(
+            $"🔄 ManagedConnection-{_connectionId} BeginTransaction START - Thread: {threadId}, State: {State}"
+        );
+
+        try
+        {
+            var transaction = _connection.BeginTransaction();
+            Debug.WriteLine($"✅ ManagedConnection-{_connectionId} BeginTransaction SUCCESS - Thread: {threadId}");
+            return transaction;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(
+                $"❌ ManagedConnection-{_connectionId} BeginTransaction FAILED - Thread: {threadId}, Error: {ex.Message}"
+            );
+            throw;
+        }
+    }
+
+    public SqliteTransaction BeginTransaction(IsolationLevel isolationLevel)
+    {
+        return _connection.BeginTransaction(isolationLevel);
+    }
+
     // Implicit conversion to SqliteConnection for compatibility
-    public static implicit operator SqliteConnection(ManagedSqliteConnection managed) => managed._connection;
+    public static implicit operator SqliteConnection(ManagedSqliteConnection managed)
+    {
+        ArgumentNullException.ThrowIfNull(managed);
+        return managed._connection;
+    }
 }

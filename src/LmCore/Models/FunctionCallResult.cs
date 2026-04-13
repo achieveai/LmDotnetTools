@@ -13,12 +13,11 @@ public record TextBlock : ContentBlock
     public required string Text { get; init; }
 }
 
-
 public abstract record FunctionCallResult
 {
     public bool? IsError { get; init; }
 
-    public IList<ContentBlock> Content { get; init; } = new List<ContentBlock>();
+    public IList<ContentBlock> Content { get; init; } = [];
 
     public abstract JsonNode ToStructuredJson();
 }
@@ -27,5 +26,8 @@ public record FunctionCallResult<T> : FunctionCallResult
 {
     public required T Result { get; init; }
 
-    public override JsonNode ToStructuredJson() => JsonSerializer.SerializeToNode(this.Result)!;
+    public override JsonNode ToStructuredJson()
+    {
+        return JsonSerializer.SerializeToNode(Result)!;
+    }
 }

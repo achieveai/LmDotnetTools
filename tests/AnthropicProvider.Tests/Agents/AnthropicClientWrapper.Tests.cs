@@ -1,31 +1,30 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
+
+// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class MockHttpHandlerBuilderRecordPlaybackTests
 {
     /// <summary>
-    /// Gets the path to test files
+    ///     Gets the path to test files
     /// </summary>
     private static string GetTestFilesPath()
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation);
-        if (currentDir == null)
-        {
-            throw new InvalidOperationException("Could not determine current directory");
-        }
+        var currentDir =
+            Path.GetDirectoryName(assemblyLocation)
+            ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
+        // Check for both .git directory (normal repo) and .git file (worktree)
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, ".git"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -46,15 +45,16 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testName = "RecordPlaybackNonStreaming";
         var testDataPath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "Anthropic", $"{testName}.json");
+            "tests",
+            "TestData",
+            "Anthropic",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
-            .WithRecordPlayback(testDataPath, allowAdditional: true)
-            .RespondWithAnthropicMessage(
-                "Hello from record/playback test!",
-                "claude-3-sonnet-20240229",
-                10,
-                20)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .WithRecordPlayback(testDataPath, true)
+            .RespondWithAnthropicMessage("Hello from record/playback test!")
             .Build();
 
         var httpClient = new HttpClient(handler);
@@ -65,21 +65,14 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var request = new AnthropicRequest
             {
                 Model = "claude-3-sonnet-20240229",
-                Messages = new List<AnthropicMessage>
-                {
+                Messages =
+                [
                     new AnthropicMessage
                     {
                         Role = "user",
-                        Content = new List<AnthropicContent>
-                        {
-                            new AnthropicContent
-                            {
-                                Type = "text",
-                                Text = "Hello, world!"
-                            }
-                        }
-                    }
-                }
+                        Content = [new AnthropicContent { Type = "text", Text = "Hello, world!" }],
+                    },
+                ],
             };
 
             // Act
@@ -90,7 +83,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             Assert.StartsWith("msg_test", response.Id); // MockHttpHandlerBuilder generates msg_test prefix
             Assert.Equal("message", response.Type);
             Assert.Equal("assistant", response.Role);
-            Assert.Single(response.Content);
+            _ = Assert.Single(response.Content);
             Assert.Equal("text", response.Content[0].Type);
 
             var typedContent = Assert.IsType<AnthropicResponseTextContent>(response.Content[0]);
@@ -122,10 +115,11 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             throw new FileNotFoundException($"Streaming response file not found: {streamingFilePath}");
         }
 
-        var testDataPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".json");
+        var testDataPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
 
-        var handler = MockHttpHandlerBuilder.Create()
-            .WithRecordPlayback(testDataPath, allowAdditional: false)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .WithRecordPlayback(testDataPath)
             .RespondWithStreamingFile(streamingFilePath)
             .Build();
 
@@ -137,22 +131,22 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var request = new AnthropicRequest
             {
                 Model = "claude-3-sonnet-20240229",
-                Messages = new List<AnthropicMessage>
-                {
+                Messages =
+                [
                     new AnthropicMessage
                     {
                         Role = "user",
-                        Content = new List<AnthropicContent>
-                        {
+                        Content =
+                        [
                             new AnthropicContent
                             {
                                 Type = "text",
-                                Text = "Write a Python function to calculate Fibonacci sequence for n=10"
-                            }
-                        }
-                    }
-                },
-                Stream = true
+                                Text = "Write a Python function to calculate Fibonacci sequence for n=10",
+                            },
+                        ],
+                    },
+                ],
+                Stream = true,
             };
 
             // Act

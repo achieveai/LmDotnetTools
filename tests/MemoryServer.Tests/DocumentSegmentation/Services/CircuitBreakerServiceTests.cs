@@ -2,18 +2,17 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// Tests for CircuitBreakerService implementation.
-/// Validates AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests for CircuitBreakerService implementation.
+///     Validates AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public class CircuitBreakerServiceTests
 {
-    private readonly Mock<ILogger<CircuitBreakerService>> _mockLogger;
     private readonly CircuitBreakerConfiguration _configuration;
+    private readonly Mock<ILogger<CircuitBreakerService>> _mockLogger;
     private readonly CircuitBreakerService _service;
 
     public CircuitBreakerServiceTests()
@@ -22,12 +21,28 @@ public class CircuitBreakerServiceTests
         _configuration = new CircuitBreakerConfiguration
         {
             FailureThreshold = 3, // Lower threshold for testing
-            TimeoutMs = 1000,     // Shorter timeout for testing
+            TimeoutMs = 1000, // Shorter timeout for testing
             MaxTimeoutMs = 10000,
-            ExponentialFactor = 2.0
+            ExponentialFactor = 2.0,
         };
         _service = new CircuitBreakerService(_configuration, _mockLogger.Object);
     }
+
+    /// <summary>
+    ///     Test data for different error types and their thresholds.
+    ///     Validates AC-2.2 error type threshold configuration.
+    /// </summary>
+    public static IEnumerable<object[]> ErrorTypeTestCases =>
+        [
+            [new HttpRequestException("401 Unauthorized"), "401", "Authentication error should use specific threshold"],
+            [
+                new HttpRequestException("503 Service Unavailable"),
+                "503",
+                "Service unavailable should use specific threshold",
+            ],
+            [new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold"],
+            [new InvalidOperationException("Generic error"), "generic", "Generic error should use default threshold"],
+        ];
 
     [Fact]
     public async Task ExecuteAsync_WithSuccessfulOperation_ShouldReturnResult()
@@ -37,9 +52,7 @@ public class CircuitBreakerServiceTests
         var operationName = "test-operation";
 
         // Act
-        var result = await _service.ExecuteAsync(
-          () => Task.FromResult(expectedResult),
-          operationName);
+        var result = await _service.ExecuteAsync(() => Task.FromResult(expectedResult), operationName);
 
         // Assert
         Assert.Equal(expectedResult, result);
@@ -57,10 +70,11 @@ public class CircuitBreakerServiceTests
         var exception = new InvalidOperationException("Test failure");
 
         // Act & Assert - Record failures up to threshold
-        for (int i = 1; i < _configuration.FailureThreshold; i++)
+        for (var i = 1; i < _configuration.FailureThreshold; i++)
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-              await _service.ExecuteAsync<string>(() => throw exception, operationName));
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await _service.ExecuteAsync<string>(() => throw exception, operationName)
+            );
 
             var state = _service.GetState(operationName);
             Assert.Equal(CircuitBreakerStateEnum.Closed, state.State);
@@ -68,13 +82,14 @@ public class CircuitBreakerServiceTests
         }
 
         // Final failure should open the circuit
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-          await _service.ExecuteAsync<string>(() => throw exception, operationName));
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await _service.ExecuteAsync<string>(() => throw exception, operationName)
+        );
 
         var finalState = _service.GetState(operationName);
         Assert.Equal(CircuitBreakerStateEnum.Open, finalState.State);
         Assert.Equal(_configuration.FailureThreshold, finalState.FailureCount);
-        Assert.NotNull(finalState.NextRetryAt);
+        _ = Assert.NotNull(finalState.NextRetryAt);
         Assert.True(finalState.NextRetryAt > DateTime.UtcNow);
     }
 
@@ -87,10 +102,11 @@ public class CircuitBreakerServiceTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<CircuitBreakerOpenException>(async () =>
-          await _service.ExecuteAsync(() => Task.FromResult("should not execute"), operationName));
+            await _service.ExecuteAsync(() => Task.FromResult("should not execute"), operationName)
+        );
 
         Assert.Equal(operationName, exception.OperationName);
-        Assert.NotNull(exception.NextRetryAt);
+        _ = Assert.NotNull(exception.NextRetryAt);
     }
 
     [Fact]
@@ -155,8 +171,8 @@ public class CircuitBreakerServiceTests
         // Assert
         var state = _service.GetState(operationName);
         Assert.Equal(CircuitBreakerStateEnum.Open, state.State);
-        Assert.NotNull(state.LastOpenedAt);
-        Assert.NotNull(state.NextRetryAt);
+        _ = Assert.NotNull(state.LastOpenedAt);
+        _ = Assert.NotNull(state.NextRetryAt);
         Assert.Equal("Forced open for testing", state.LastError);
     }
 
@@ -178,24 +194,13 @@ public class CircuitBreakerServiceTests
         Assert.Null(state.LastError);
     }
 
-    /// <summary>
-    /// Test data for different error types and their thresholds.
-    /// Validates AC-2.2 error type threshold configuration.
-    /// </summary>
-    public static IEnumerable<object[]> ErrorTypeTestCases => new List<object[]>
-  {
-    new object[] { new HttpRequestException("401 Unauthorized"), "401", "Authentication error should use specific threshold" },
-    new object[] { new HttpRequestException("503 Service Unavailable"), "503", "Service unavailable should use specific threshold" },
-    new object[] { new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold" },
-    new object[] { new InvalidOperationException("Generic error"), "generic", "Generic error should use default threshold" }
-  };
-
     [Theory]
     [MemberData(nameof(ErrorTypeTestCases))]
     public void RecordFailure_WithDifferentErrorTypes_ShouldClassifyCorrectly(
-      Exception exception,
-      string expectedErrorType,
-      string _)
+        Exception exception,
+        string expectedErrorType,
+        string _
+    )
     {
         // Arrange
         var operationName = $"error-type-test-{expectedErrorType}";
@@ -222,17 +227,19 @@ public class CircuitBreakerServiceTests
         cts.Cancel();
 
         // Act & Assert
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-          await _service.ExecuteAsync(
-            async () =>
-            {
-                // This will immediately throw OperationCanceledException
-                cts.Token.ThrowIfCancellationRequested();
-                await Task.Delay(1000, cts.Token);
-                return "should not complete";
-            },
-            operationName,
-            cts.Token));
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await _service.ExecuteAsync(
+                async () =>
+                {
+                    // This will immediately throw OperationCanceledException
+                    cts.Token.ThrowIfCancellationRequested();
+                    await Task.Delay(1000, cts.Token);
+                    return "should not complete";
+                },
+                operationName,
+                cts.Token
+            )
+        );
 
         // Circuit should not be affected by cancellation
         var state = _service.GetState(operationName);

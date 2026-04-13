@@ -1,22 +1,23 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for initializing transport-specific session context at startup.
+///     Service for initializing transport-specific session context at startup.
 /// </summary>
 public class TransportSessionInitializer
 {
-    private readonly ISessionManager _sessionManager;
     private readonly ILogger<TransportSessionInitializer> _logger;
     private readonly MemoryServerOptions _options;
+    private readonly ISessionManager _sessionManager;
 
     public TransportSessionInitializer(
         ISessionManager sessionManager,
         ILogger<TransportSessionInitializer> logger,
-        IOptions<MemoryServerOptions> options)
+        IOptions<MemoryServerOptions> options
+    )
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -24,7 +25,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Initializes session context for STDIO transport by reading environment variables.
+    ///     Initializes session context for STDIO transport by reading environment variables.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults if found, null otherwise</returns>
@@ -58,7 +59,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Initializes session context for SSE transport by processing URL parameters and headers.
+    ///     Initializes session context for SSE transport by processing URL parameters and headers.
     /// </summary>
     /// <param name="queryParameters">URL query parameters</param>
     /// <param name="headers">HTTP headers</param>
@@ -67,14 +68,18 @@ public class TransportSessionInitializer
     public async Task<SessionDefaults?> InitializeSseSessionAsync(
         IDictionary<string, string>? queryParameters = null,
         IDictionary<string, string>? headers = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogInformation("Initializing SSE transport session context");
 
         try
         {
             var sessionDefaults = await _sessionManager.ProcessTransportContextAsync(
-                queryParameters, headers, cancellationToken);
+                queryParameters,
+                headers,
+                cancellationToken
+            );
 
             if (sessionDefaults != null)
             {
@@ -98,7 +103,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Performs cleanup of expired session defaults.
+    ///     Performs cleanup of expired session defaults.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
@@ -130,7 +135,7 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Validates that the transport session context is properly configured.
+    ///     Validates that the transport session context is properly configured.
     /// </summary>
     /// <param name="sessionDefaults">Session defaults to validate</param>
     /// <returns>True if valid, false otherwise</returns>
@@ -152,22 +157,28 @@ public class TransportSessionInitializer
         // Validate identifier lengths
         if (sessionDefaults.UserId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: UserId too long ({Length} > 100)",
-                sessionDefaults.UserId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: UserId too long ({Length} > 100)",
+                sessionDefaults.UserId.Length
+            );
             return false;
         }
 
         if (!string.IsNullOrEmpty(sessionDefaults.AgentId) && sessionDefaults.AgentId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: AgentId too long ({Length} > 100)",
-                sessionDefaults.AgentId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: AgentId too long ({Length} > 100)",
+                sessionDefaults.AgentId.Length
+            );
             return false;
         }
 
         if (!string.IsNullOrEmpty(sessionDefaults.RunId) && sessionDefaults.RunId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: RunId too long ({Length} > 100)",
-                sessionDefaults.RunId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: RunId too long ({Length} > 100)",
+                sessionDefaults.RunId.Length
+            );
             return false;
         }
 
@@ -176,15 +187,18 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Logs environment variables for debugging purposes.
+    ///     Logs environment variables for debugging purposes.
     /// </summary>
     private void LogEnvironmentVariables()
     {
         var envVars = new[]
         {
             ("MCP_MEMORY_USER_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID")),
-            ("MCP_MEMORY_AGENT_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID")),
-            ("MCP_MEMORY_RUN_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"))
+            (
+                "MCP_MEMORY_AGENT_ID",
+                EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID")
+            ),
+            ("MCP_MEMORY_RUN_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID")),
         };
 
         foreach (var (name, value) in envVars)
@@ -197,33 +211,33 @@ public class TransportSessionInitializer
     }
 
     /// <summary>
-    /// Logs SSE context for debugging purposes.
+    ///     Logs SSE context for debugging purposes.
     /// </summary>
     private void LogSseContext(IDictionary<string, string>? queryParameters, IDictionary<string, string>? headers)
     {
         if (queryParameters != null && queryParameters.Any())
         {
-            var relevantParams = queryParameters
-                .Where(kvp => kvp.Key.EndsWith("_id"))
-                .ToList();
+            var relevantParams = queryParameters.Where(kvp => kvp.Key.EndsWith("_id")).ToList();
 
-            if (relevantParams.Any())
+            if (relevantParams.Count != 0)
             {
-                _logger.LogDebug("Found URL parameters: {Parameters}",
-                    string.Join(", ", relevantParams.Select(kvp => $"{kvp.Key}={kvp.Value}")));
+                _logger.LogDebug(
+                    "Found URL parameters: {Parameters}",
+                    string.Join(", ", relevantParams.Select(kvp => $"{kvp.Key}={kvp.Value}"))
+                );
             }
         }
 
         if (headers != null && headers.Any())
         {
-            var relevantHeaders = headers
-                .Where(kvp => kvp.Key.StartsWith("X-Memory-"))
-                .ToList();
+            var relevantHeaders = headers.Where(kvp => kvp.Key.StartsWith("X-Memory-")).ToList();
 
-            if (relevantHeaders.Any())
+            if (relevantHeaders.Count != 0)
             {
-                _logger.LogDebug("Found HTTP headers: {Headers}",
-                    string.Join(", ", relevantHeaders.Select(kvp => $"{kvp.Key}={kvp.Value}")));
+                _logger.LogDebug(
+                    "Found HTTP headers: {Headers}",
+                    string.Join(", ", relevantHeaders.Select(kvp => $"{kvp.Key}={kvp.Value}"))
+                );
             }
         }
     }

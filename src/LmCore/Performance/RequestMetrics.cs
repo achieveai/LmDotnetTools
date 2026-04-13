@@ -1,11 +1,10 @@
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Tracks comprehensive metrics for individual provider requests.
-/// Supports OpenAI, Anthropic, and other provider-specific metrics.
+///     Tracks comprehensive metrics for individual provider requests.
+///     Supports OpenAI, Anthropic, and other provider-specific metrics.
 /// </summary>
 public record RequestMetrics
 {
@@ -52,7 +51,7 @@ public record RequestMetrics
     public bool IsSuccess => StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
 
     /// <summary>Additional provider-specific properties</summary>
-    public Dictionary<string, object> AdditionalProperties { get; init; } = new();
+    public Dictionary<string, object> AdditionalProperties { get; init; } = [];
 
     /// <summary>Creates a new RequestMetrics instance with start time set to now</summary>
     /// <param name="provider">Provider name</param>
@@ -66,7 +65,7 @@ public record RequestMetrics
             StartTime = DateTimeOffset.UtcNow,
             Provider = provider,
             Model = model,
-            Operation = operation
+            Operation = operation,
         };
     }
 
@@ -88,7 +87,8 @@ public record RequestMetrics
         int retryAttempts = 0,
         string? errorMessage = null,
         string? exceptionType = null,
-        Dictionary<string, object>? additionalProperties = null)
+        Dictionary<string, object>? additionalProperties = null
+    )
     {
         return this with
         {
@@ -100,7 +100,7 @@ public record RequestMetrics
             RetryAttempts = retryAttempts,
             ErrorMessage = errorMessage,
             ExceptionType = exceptionType,
-            AdditionalProperties = additionalProperties ?? AdditionalProperties
+            AdditionalProperties = additionalProperties ?? AdditionalProperties,
         };
     }
 }

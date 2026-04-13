@@ -7,30 +7,58 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallMessage : IMessage, ICanGetToolCalls
 {
+    [JsonPropertyName("tool_calls")]
+    public ImmutableList<ToolCall> ToolCalls { get; init; } = [];
+
+    public IEnumerable<ToolCall>? GetToolCalls()
+    {
+        return ToolCalls.Count > 0 ? ToolCalls : null;
+    }
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? FromAgent { get; init; } = null;
+    public string? FromAgent { get; init; }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? GenerationId { get; init; } = null;
+    public string? GenerationId { get; init; }
 
-    [JsonPropertyName("tool_calls")]
-    public ImmutableList<ToolCall> ToolCalls { get; init; } = ImmutableList<ToolCall>.Empty;
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
 
-    public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 
-    public string? GetText() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static string? GetText()
+    {
+        return null;
+    }
+
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallMessage>
@@ -44,6 +72,9 @@ public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<Tools
 [JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallUpdateMessage : IMessage
 {
+    [JsonPropertyName("tool_call_updates")]
+    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = [];
+
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; } = null;
@@ -58,8 +89,30 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; } = null;
 
-    [JsonPropertyName("tool_call_updates")]
-    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = ImmutableList<ToolCallUpdate>.Empty;
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// Note: A chunk represents partial updates to tool calls, not multiple distinct tool calls.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
 }
 
 public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
@@ -72,41 +125,43 @@ public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter
 
 public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCallUpdateMessage>
 {
+    public ImmutableDictionary<string, object>? Metadata { get; private set; }
+
+    public string? GenerationId { get; set; }
+
+    public Action<ToolCall> OnToolCall { get; init; } = _ => { };
+
+    public string? CurrentFunctionName { get; private set; }
+
+    public string AccumulatedArgs { get; private set; } = "";
+
+    public string? CurrentToolCallId { get; private set; }
+
+    public int? CurrentIndex { get; private set; }
+
+    public ExecutionTarget CurrentExecutionTarget { get; private set; } = ExecutionTarget.LocalFunction;
+
+    public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = [];
+
+    public string? ThreadId { get; set; }
+
+    public string? RunId { get; set; }
+
+    public string? ParentRunId { get; set; }
+
+    public int? MessageOrderIdx { get; set; }
     public string? FromAgent { get; init; } = null;
 
     public Role Role { get; init; } = Role.Assistant;
 
-    public ImmutableDictionary<string, object>? Metadata { get; private set; } = null;
-
-    public string? GenerationId { get; set; } = null;
-
-    public Action<ToolCall> OnToolCall { get; init; } = _ => { };
-
-    private ImmutableList<ToolCall> _completedToolCalls = ImmutableList<ToolCall>.Empty;
-
-    // Current partial tool call we're building
-    private string? _currentFunctionName = null;
-    private string _accumulatedArgs = "";
-    private string? _currentToolCallId = null;
-    private int? _currentIndex = null;
-
     IMessage IMessageBuilder.Build()
     {
-        return this.Build();
+        return Build();
     }
-
-    public string? CurrentFunctionName => _currentFunctionName;
-
-    public string AccumulatedArgs => _accumulatedArgs;
-
-    public string? CurrentToolCallId => _currentToolCallId;
-
-    public int? CurrentIndex => _currentIndex;
-
-    public ImmutableList<ToolCall> CompletedToolCalls => _completedToolCalls;
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         // Capture GenerationId from the message update if not already set
         if (GenerationId == null && streamingMessageUpdate.GenerationId != null)
         {
@@ -117,46 +172,52 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         foreach (var update in streamingMessageUpdate.ToolCallUpdates)
         {
             // Check if this update completes a current tool call based on Id or Index
-            bool isNewToolCall = false;
+            var isNewToolCall = false;
 
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
-            if (_currentToolCallId != null && update.ToolCallId != null && _currentToolCallId != update.ToolCallId)
+            if (CurrentToolCallId != null && update.ToolCallId != null && CurrentToolCallId != update.ToolCallId)
             {
                 CompleteCurrentToolCall();
                 isNewToolCall = true;
             }
             // Rule 1: If we have both Indexes (non-null) and they're different, it's a new tool call
-            else if (_currentIndex != null && update.Index != null && _currentIndex != update.Index)
+            else if (CurrentIndex != null && update.Index != null && CurrentIndex != update.Index)
             {
                 CompleteCurrentToolCall();
                 isNewToolCall = true;
             }
 
             // If update contains a function name, it's the start of a new tool call
-            if (isNewToolCall || (update.FunctionName != null && _currentFunctionName == null))
+            if (isNewToolCall || (update.FunctionName != null && CurrentFunctionName == null))
             {
                 // Start a new tool call
-                _currentFunctionName = update.FunctionName;
-                _accumulatedArgs = update.FunctionArgs ?? "";
-                _currentToolCallId = update.ToolCallId;
-                _currentIndex = update.Index;
+                CurrentFunctionName = update.FunctionName;
+                AccumulatedArgs = update.FunctionArgs ?? "";
+                CurrentToolCallId = update.ToolCallId;
+                CurrentIndex = update.Index;
+                CurrentExecutionTarget = update.ExecutionTarget;
             }
             // Otherwise, it's an update to the current partial tool call
-            else if (_currentFunctionName != null && update.FunctionArgs != null)
+            else if (CurrentFunctionName != null && update.FunctionArgs != null)
             {
-                _accumulatedArgs += update.FunctionArgs;
+                AccumulatedArgs += update.FunctionArgs;
 
                 // Update tool call ID if it's now provided
-                if (_currentToolCallId == null && update.ToolCallId != null)
+                if (CurrentToolCallId == null && update.ToolCallId != null)
                 {
-                    _currentToolCallId = update.ToolCallId;
+                    CurrentToolCallId = update.ToolCallId;
                 }
 
                 // Update index if it's now provided
-                if (_currentIndex == null && update.Index != null)
+                if (CurrentIndex == null && update.Index != null)
                 {
-                    _currentIndex = update.Index;
+                    CurrentIndex = update.Index;
                 }
+            }
+            else if (CurrentFunctionName != null)
+            {
+                // Preserve explicit execution target updates even when args are not present.
+                CurrentExecutionTarget = update.ExecutionTarget;
             }
         }
 
@@ -178,38 +239,12 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         }
     }
 
-    private void CompleteCurrentToolCall()
-    {
-        if (_currentFunctionName != null)
-        {
-            var toolCall = new ToolCall
-            {
-                FunctionName = _currentFunctionName,
-                FunctionArgs = _accumulatedArgs,
-                ToolCallId = _currentToolCallId,
-                Index = _currentIndex
-            };
-
-            // Add to completed tool calls
-            _completedToolCalls = _completedToolCalls.Add(toolCall);
-
-            // Invoke callback for completed tool call
-            OnToolCall(toolCall);
-
-            // Reset the current tool call state
-            _currentFunctionName = null;
-            _accumulatedArgs = "";
-            _currentToolCallId = null;
-            _currentIndex = null;
-        }
-    }
-
     public ToolsCallMessage Build()
     {
         // Rule 2: When build is called, complete any final partial update
         CompleteCurrentToolCall();
-        var toolCalls = _completedToolCalls;
-        _completedToolCalls = [];
+        var toolCalls = CompletedToolCalls;
+        CompletedToolCalls = [];
 
         return new ToolsCallMessage
         {
@@ -217,7 +252,40 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             Role = Role,
             Metadata = Metadata,
             GenerationId = GenerationId,
-            ToolCalls = toolCalls
+            ToolCalls = toolCalls,
+            ThreadId = ThreadId,
+            RunId = RunId,
+            ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
+    }
+
+    private void CompleteCurrentToolCall()
+    {
+        if (CurrentFunctionName != null)
+        {
+            var toolCall = new ToolCall
+            {
+                FunctionName = CurrentFunctionName,
+                FunctionArgs = AccumulatedArgs,
+                ToolCallId = CurrentToolCallId,
+                Index = CurrentIndex,
+                ToolCallIdx = CompletedToolCalls.Count, // Assign sequential index (0, 1, 2...)
+                ExecutionTarget = CurrentExecutionTarget,
+            };
+
+            // Add to completed tool calls
+            CompletedToolCalls = CompletedToolCalls.Add(toolCall);
+
+            // Invoke callback for completed tool call
+            OnToolCall(toolCall);
+
+            // Reset the current tool call state
+            CurrentFunctionName = null;
+            AccumulatedArgs = "";
+            CurrentToolCallId = null;
+            CurrentIndex = null;
+            CurrentExecutionTarget = ExecutionTarget.LocalFunction;
+        }
     }
 }

@@ -1,16 +1,17 @@
+using AchieveAi.LmDotnetTools.LmConfig.Services;
+using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
+using AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog;
 using NLog.Extensions.Logging;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
-using AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
+using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator;
 
 /// <summary>
-/// Console application for generating Models.config files from OpenRouter data.
+///     Console application for generating Models.config files from OpenRouter data.
 /// </summary>
 public class Program
 {
@@ -19,7 +20,10 @@ public class Program
         try
         {
             var options = ParseArguments(args);
-            if (options == null) return 1;
+            if (options == null)
+            {
+                return 1;
+            }
 
             // Special handling for list families
             if (args.Contains("--list-families"))
@@ -29,49 +33,53 @@ public class Program
                 {
                     Console.WriteLine($"  {family}");
                 }
+
                 return 0;
             }
 
             // Setup NLog and logging
             var logger = LogManager.GetCurrentClassLogger();
-            var logLevel = options.Verbose ? Microsoft.Extensions.Logging.LogLevel.Debug : Microsoft.Extensions.Logging.LogLevel.Information;
+            var logLevel = options.Verbose ? LogLevel.Debug : LogLevel.Information;
 
             try
             {
-                logger.Info("Starting ModelConfigGenerator with options: {@Options}", new
-                {
-                    options.OutputPath,
-                    options.ModelFamilies,
-                    options.Verbose,
-                    options.MaxModels,
-                    options.ReasoningOnly,
-                    options.MultimodalOnly,
-                    options.MinContextLength,
-                    options.MaxCostPerMillion,
-                    options.ModelUpdatedSince
-                });
+                logger.Info(
+                    "Starting ModelConfigGenerator with options: {@Options}",
+                    new
+                    {
+                        options.OutputPath,
+                        options.ModelFamilies,
+                        options.Verbose,
+                        options.MaxModels,
+                        options.ReasoningOnly,
+                        options.MultimodalOnly,
+                        options.MinContextLength,
+                        options.MaxCostPerMillion,
+                        options.ModelUpdatedSince,
+                    }
+                );
 
                 // Create host and services with NLog
                 var host = Host.CreateDefaultBuilder()
-                  .ConfigureLogging(logging =>
-                  {
-                      logging.ClearProviders();
-                      logging.SetMinimumLevel(logLevel);
-                      logging.AddNLog("nlog.config");
-                  })
-                  .ConfigureServices(services =>
-                  {
-                      services.AddHttpClient();
-                      services.AddTransient<OpenRouterModelService>(provider =>
-                      {
-                          var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
-                          var httpClient = httpClientFactory.CreateClient();
-                          var serviceLogger = provider.GetRequiredService<ILogger<OpenRouterModelService>>();
-                          return new OpenRouterModelService(httpClient, serviceLogger);
-                      });
-                      services.AddTransient<ModelConfigGeneratorService>();
-                  })
-                  .Build();
+                    .ConfigureLogging(logging =>
+                    {
+                        _ = logging.ClearProviders();
+                        _ = logging.SetMinimumLevel(logLevel);
+                        _ = logging.AddNLog("nlog.config");
+                    })
+                    .ConfigureServices(services =>
+                    {
+                        _ = services.AddHttpClient();
+                        _ = services.AddTransient(provider =>
+                        {
+                            var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+                            var httpClient = httpClientFactory.CreateClient();
+                            var serviceLogger = provider.GetRequiredService<ILogger<OpenRouterModelService>>();
+                            return new OpenRouterModelService(httpClient, serviceLogger);
+                        });
+                        _ = services.AddTransient<ModelConfigGeneratorService>();
+                    })
+                    .Build();
 
                 var generator = host.Services.GetRequiredService<ModelConfigGeneratorService>();
                 var success = await generator.GenerateConfigAsync(options);
@@ -104,6 +112,7 @@ public class Program
             {
                 Console.Error.WriteLine(ex.StackTrace);
             }
+
             return 1;
         }
     }
@@ -113,7 +122,7 @@ public class Program
         var options = new GeneratorOptions();
         var families = new List<string>();
 
-        for (int i = 0; i < args.Length; i++)
+        for (var i = 0; i < args.Length; i++)
         {
             switch (args[i].ToLowerInvariant())
             {
@@ -121,39 +130,47 @@ public class Program
                     ShowHelp();
                     return null;
 
-                case "--output" or "-o":
+                case "--output"
+                or "-o":
                     if (i + 1 >= args.Length)
                     {
                         Console.Error.WriteLine("Error: --output requires a value");
                         return null;
                     }
+
                     options = options with { OutputPath = args[++i] };
                     break;
 
-                case "--families" or "-f":
+                case "--families"
+                or "-f":
                     if (i + 1 >= args.Length)
                     {
                         Console.Error.WriteLine("Error: --families requires a value");
                         return null;
                     }
+
                     families.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries));
                     break;
 
-                case "--verbose" or "-v":
+                case "--verbose"
+                or "-v":
                     options = options with { Verbose = true };
                     break;
 
-                case "--max-models" or "-m":
+                case "--max-models"
+                or "-m":
                     if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var maxModels) || maxModels < 0)
                     {
                         Console.Error.WriteLine("Error: --max-models requires a non-negative integer");
                         return null;
                     }
+
                     options = options with { MaxModels = maxModels };
                     i++;
                     break;
 
-                case "--reasoning-only" or "-r":
+                case "--reasoning-only"
+                or "-r":
                     options = options with { ReasoningOnly = true };
                     break;
 
@@ -167,6 +184,7 @@ public class Program
                         Console.Error.WriteLine("Error: --min-context requires a non-negative integer");
                         return null;
                     }
+
                     options = options with { MinContextLength = minContext };
                     i++;
                     break;
@@ -177,6 +195,7 @@ public class Program
                         Console.Error.WriteLine("Error: --max-cost requires a non-negative decimal");
                         return null;
                     }
+
                     options = options with { MaxCostPerMillion = maxCost };
                     i++;
                     break;
@@ -187,11 +206,13 @@ public class Program
                         Console.Error.WriteLine("Error: --model-updated-since requires a value");
                         return null;
                     }
+
                     if (!DateTime.TryParse(args[i + 1], out var sinceDate))
                     {
                         Console.Error.WriteLine("Error: --model-updated-since requires a valid date (YYYY-MM-DD)");
                         return null;
                     }
+
                     options = options with { ModelUpdatedSince = sinceDate };
                     i++;
                     break;

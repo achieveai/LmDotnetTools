@@ -1,18 +1,20 @@
+using System.ComponentModel;
+using System.Net;
+using MemoryServer.Services;
+using MemoryServer.Tools;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 using Xunit.Abstractions;
-using Microsoft.AspNetCore.TestHost;
-using System.ComponentModel;
 
 namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
-/// Integration tests for the Memory MCP Server using SSE transport.
-/// These tests verify that the SSE infrastructure is in place and working.
-/// 
-/// NOTE: Full SSE client testing is pending SDK updates with proper SSE support.
-/// Currently testing the server-side SSE endpoint availability and basic functionality.
+///     Integration tests for the Memory MCP Server using SSE transport.
+///     These tests verify that the SSE infrastructure is in place and working.
+///     NOTE: Full SSE client testing is pending SDK updates with proper SSE support.
+///     Currently testing the server-side SSE endpoint availability and basic functionality.
 /// </summary>
 public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposable
 {
@@ -25,6 +27,11 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         _output = output;
     }
 
+    public void Dispose()
+    {
+        // Cleanup if needed
+    }
+
     [Fact(Timeout = 15000)]
     public async Task SseEndpoint_ShouldBeAvailable()
     {
@@ -35,9 +42,9 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/sse"));
 
         // Assert - SSE endpoint should exist (even if it returns method not allowed for HEAD)
-        Assert.True(response.StatusCode == System.Net.HttpStatusCode.OK ||
-                   response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed ||
-                   response.StatusCode == System.Net.HttpStatusCode.BadRequest);
+        Assert.True(
+            response.StatusCode is HttpStatusCode.OK or HttpStatusCode.MethodNotAllowed or HttpStatusCode.BadRequest
+        );
         _output.WriteLine($"✅ SSE endpoint exists and responds: {response.StatusCode}");
     }
 
@@ -76,7 +83,7 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         Assert.NotNull(sseResponse);
 
         // Check if endpoint exists (not returning NotFound)
-        var sseExists = sseResponse.StatusCode != System.Net.HttpStatusCode.NotFound;
+        var sseExists = sseResponse.StatusCode != HttpStatusCode.NotFound;
         Assert.True(sseExists, $"SSE endpoint should exist. Status: {sseResponse.StatusCode}");
 
         _output.WriteLine($"✅ SSE infrastructure in place - SSE: {sseResponse.StatusCode}");
@@ -93,27 +100,22 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         Assert.NotNull(services);
 
         // Verify core MemoryServer services are registered (not just basic MCP)
-        var memoryService = services.GetService<MemoryServer.Services.IMemoryService>();
-        var sessionResolver = services.GetService<MemoryServer.Services.ISessionContextResolver>();
-        var memoryTools = services.GetService<MemoryServer.Tools.MemoryMcpTools>();
+        var memoryService = services.GetService<IMemoryService>();
+        var sessionResolver = services.GetService<ISessionContextResolver>();
+        var memoryTools = services.GetService<MemoryMcpTools>();
 
         Assert.NotNull(memoryService);
         Assert.NotNull(sessionResolver);
         Assert.NotNull(memoryTools);
 
-        _output.WriteLine($"✅ MemoryServer services properly registered in SSE transport");
-    }
-
-    public void Dispose()
-    {
-        // Cleanup if needed
+        _output.WriteLine("✅ MemoryServer services properly registered in SSE transport");
     }
 }
 
 /// <summary>
-/// Test fixture for SSE integration tests using the actual MemoryServer Startup class.
-/// This fixture uses the same configuration as production MemoryServer to ensure
-/// we're testing the real implementation, not a minimal mock.
+///     Test fixture for SSE integration tests using the actual MemoryServer Startup class.
+///     This fixture uses the same configuration as production MemoryServer to ensure
+///     we're testing the real implementation, not a minimal mock.
 /// </summary>
 public class SseTestServerFixture : IDisposable
 {
@@ -122,12 +124,15 @@ public class SseTestServerFixture : IDisposable
 
     public SseTestServerFixture()
     {
-        var builder = new WebHostBuilder()
-            .UseEnvironment("Testing")
-            .UseStartup<Startup>(); // Use MemoryServer's actual Startup class
+        var builder = new WebHostBuilder().UseEnvironment("Testing").UseStartup<Startup>(); // Use MemoryServer's actual Startup class
 
         _server = new TestServer(builder);
         _services = _server.Services;
+    }
+
+    public void Dispose()
+    {
+        _server?.Dispose();
     }
 
     public HttpClient CreateHttpClient()
@@ -139,19 +144,18 @@ public class SseTestServerFixture : IDisposable
     {
         return _services;
     }
-
-    public void Dispose()
-    {
-        _server?.Dispose();
-    }
 }
 
 /// <summary>
-/// Simple test tool for minimal SSE testing
+///     Simple test tool for minimal SSE testing
 /// </summary>
 [McpServerToolType]
 public class SimpleTestTool
 {
-    [McpServerTool, Description("Simple test tool that returns a greeting")]
-    public static string SayHello(string name) => $"Hello, {name}!";
+    [McpServerTool]
+    [Description("Simple test tool that returns a greeting")]
+    public static string SayHello(string name)
+    {
+        return $"Hello, {name}!";
+    }
 }

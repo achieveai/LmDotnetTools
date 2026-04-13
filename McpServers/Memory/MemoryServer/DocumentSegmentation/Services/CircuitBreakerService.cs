@@ -1,68 +1,67 @@
-using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using MemoryServer.DocumentSegmentation.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Interface for circuit breaker functionality.
-/// Implements AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
+///     Interface for circuit breaker functionality.
+///     Implements AC-2.1, AC-2.2, and AC-2.3 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public interface ICircuitBreakerService
 {
     /// <summary>
-    /// Executes an operation with circuit breaker protection.
+    ///     Executes an operation with circuit breaker protection.
     /// </summary>
     Task<T> ExecuteAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class;
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class;
 
     /// <summary>
-    /// Records a successful operation, potentially closing the circuit.
+    ///     Records a successful operation, potentially closing the circuit.
     /// </summary>
     void RecordSuccess(string operationName);
 
     /// <summary>
-    /// Records a failure, potentially opening the circuit.
+    ///     Records a failure, potentially opening the circuit.
     /// </summary>
     void RecordFailure(string operationName, Exception exception);
 
     /// <summary>
-    /// Gets the current state of the circuit breaker for an operation.
+    ///     Gets the current state of the circuit breaker for an operation.
     /// </summary>
     CircuitBreakerState GetState(string operationName);
 
     /// <summary>
-    /// Checks if the circuit is currently open for an operation.
+    ///     Checks if the circuit is currently open for an operation.
     /// </summary>
     bool IsCircuitOpen(string operationName);
 
     /// <summary>
-    /// Forces the circuit to open (for testing purposes).
+    ///     Forces the circuit to open (for testing purposes).
     /// </summary>
     void ForceOpen(string operationName);
 
     /// <summary>
-    /// Forces the circuit to close (for testing purposes).
+    ///     Forces the circuit to close (for testing purposes).
     /// </summary>
     void ForceClose(string operationName);
 }
 
 /// <summary>
-/// Implementation of circuit breaker service with configurable thresholds and timing.
-/// Provides centralized circuit breaker functionality for all LLM operations.
+///     Implementation of circuit breaker service with configurable thresholds and timing.
+///     Provides centralized circuit breaker functionality for all LLM operations.
 /// </summary>
 public class CircuitBreakerService : ICircuitBreakerService
 {
-    private readonly CircuitBreakerConfiguration _configuration;
-    private readonly ILogger<CircuitBreakerService> _logger;
     private readonly ConcurrentDictionary<string, CircuitBreakerState> _circuitStates;
+    private readonly CircuitBreakerConfiguration _configuration;
     private readonly ConcurrentDictionary<string, object> _locks;
+    private readonly ILogger<CircuitBreakerService> _logger;
 
-    public CircuitBreakerService(
-      CircuitBreakerConfiguration configuration,
-      ILogger<CircuitBreakerService> logger)
+    public CircuitBreakerService(CircuitBreakerConfiguration configuration, ILogger<CircuitBreakerService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -71,14 +70,18 @@ public class CircuitBreakerService : ICircuitBreakerService
     }
 
     /// <summary>
-    /// Executes an operation with circuit breaker protection.
-    /// Implements AC-2.1 state transitions and AC-2.3 recovery timing.
+    ///     Executes an operation with circuit breaker protection.
+    ///     Implements AC-2.1 state transitions and AC-2.3 recovery timing.
     /// </summary>
     public async Task<T> ExecuteAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class
     {
+        ArgumentNullException.ThrowIfNull(operation, nameof(operation));
+
         // Check cancellation before doing any work
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -92,25 +95,30 @@ public class CircuitBreakerService : ICircuitBreakerService
             {
                 if (DateTime.UtcNow < state.NextRetryAt)
                 {
-                    _logger.LogWarning("Circuit breaker is open for {OperationName}. Next retry at {NextRetry}",
-                      operationName, state.NextRetryAt);
+                    _logger.LogWarning(
+                        "Circuit breaker is open for {OperationName}. Next retry at {NextRetry}",
+                        operationName,
+                        state.NextRetryAt
+                    );
                     throw new CircuitBreakerOpenException(operationName, state.NextRetryAt);
                 }
 
                 // Transition to half-open
-                _logger.LogInformation("Circuit breaker transitioning to Half-Open for {OperationName}",
-                  operationName);
+                _logger.LogInformation("Circuit breaker transitioning to Half-Open for {OperationName}", operationName);
 
                 var halfOpenState = state with { State = CircuitBreakerStateEnum.HalfOpen };
-                _circuitStates.TryUpdate(operationName, halfOpenState, state);
+                _ = _circuitStates.TryUpdate(operationName, halfOpenState, state);
                 state = halfOpenState;
             }
         }
 
         try
         {
-            _logger.LogDebug("Executing {OperationName} with circuit breaker in {State} state",
-              operationName, state.State);
+            _logger.LogDebug(
+                "Executing {OperationName} with circuit breaker in {State} state",
+                operationName,
+                state.State
+            );
 
             // Check cancellation again before executing the operation
             cancellationToken.ThrowIfCancellationRequested();
@@ -135,8 +143,8 @@ public class CircuitBreakerService : ICircuitBreakerService
     }
 
     /// <summary>
-    /// Records a successful operation, potentially closing the circuit.
-    /// Implements AC-2.1 success transitions.
+    ///     Records a successful operation, potentially closing the circuit.
+    ///     Implements AC-2.1 success transitions.
     /// </summary>
     public void RecordSuccess(string operationName)
     {
@@ -148,8 +156,10 @@ public class CircuitBreakerService : ICircuitBreakerService
 
             if (currentState.State != CircuitBreakerStateEnum.Closed)
             {
-                _logger.LogInformation("Circuit breaker closing for {OperationName} after successful operation",
-                  operationName);
+                _logger.LogInformation(
+                    "Circuit breaker closing for {OperationName} after successful operation",
+                    operationName
+                );
             }
 
             // Reset to closed state on success
@@ -160,19 +170,22 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastOpenedAt = currentState.LastOpenedAt,
                 NextRetryAt = null,
                 TotalOpenings = currentState.TotalOpenings,
-                LastError = null
+                LastError = null,
             };
 
-            _circuitStates.TryUpdate(operationName, newState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, newState, currentState);
         }
     }
 
     /// <summary>
-    /// Records a failure, potentially opening the circuit.
-    /// Implements AC-2.1 failure transitions and AC-2.2 threshold configuration.
+    ///     Records a failure, potentially opening the circuit.
+    ///     Implements AC-2.1 failure transitions and AC-2.2 threshold configuration.
     /// </summary>
     public void RecordFailure(string operationName, Exception exception)
     {
+        ArgumentException.ThrowIfNullOrEmpty(operationName, nameof(operationName));
+        ArgumentNullException.ThrowIfNull(exception, nameof(exception));
+
         var lockObject = _locks.GetOrAdd(operationName, _ => new object());
         var errorType = ClassifyError(exception);
         var threshold = GetFailureThreshold(errorType);
@@ -182,16 +195,25 @@ public class CircuitBreakerService : ICircuitBreakerService
             var currentState = GetOrCreateState(operationName);
             var newFailureCount = currentState.FailureCount + 1;
 
-            _logger.LogWarning("Recording failure for {OperationName}. Count: {FailureCount}/{Threshold}. Error: {Error}",
-              operationName, newFailureCount, threshold, exception.Message);
+            _logger.LogWarning(
+                "Recording failure for {OperationName}. Count: {FailureCount}/{Threshold}. Error: {Error}",
+                operationName,
+                newFailureCount,
+                threshold,
+                exception.Message
+            );
 
             if (newFailureCount >= threshold)
             {
                 // Open the circuit
                 var nextRetryAt = CalculateNextRetryTime(currentState.TotalOpenings);
 
-                _logger.LogWarning("Circuit breaker opening for {OperationName} after {FailureCount} failures. Next retry: {NextRetry}",
-                  operationName, newFailureCount, nextRetryAt);
+                _logger.LogWarning(
+                    "Circuit breaker opening for {OperationName} after {FailureCount} failures. Next retry: {NextRetry}",
+                    operationName,
+                    newFailureCount,
+                    nextRetryAt
+                );
 
                 var openState = new CircuitBreakerState
                 {
@@ -200,10 +222,10 @@ public class CircuitBreakerService : ICircuitBreakerService
                     LastOpenedAt = DateTime.UtcNow,
                     NextRetryAt = nextRetryAt,
                     TotalOpenings = currentState.TotalOpenings + 1,
-                    LastError = exception.Message
+                    LastError = exception.Message,
                 };
 
-                _circuitStates.TryUpdate(operationName, openState, currentState);
+                _ = _circuitStates.TryUpdate(operationName, openState, currentState);
             }
             else
             {
@@ -211,16 +233,16 @@ public class CircuitBreakerService : ICircuitBreakerService
                 var failureState = currentState with
                 {
                     FailureCount = newFailureCount,
-                    LastError = exception.Message
+                    LastError = exception.Message,
                 };
 
-                _circuitStates.TryUpdate(operationName, failureState, currentState);
+                _ = _circuitStates.TryUpdate(operationName, failureState, currentState);
             }
         }
     }
 
     /// <summary>
-    /// Gets the current state of the circuit breaker for an operation.
+    ///     Gets the current state of the circuit breaker for an operation.
     /// </summary>
     public CircuitBreakerState GetState(string operationName)
     {
@@ -228,22 +250,17 @@ public class CircuitBreakerService : ICircuitBreakerService
     }
 
     /// <summary>
-    /// Checks if the circuit is currently open for an operation.
+    ///     Checks if the circuit is currently open for an operation.
     /// </summary>
     public bool IsCircuitOpen(string operationName)
     {
         var state = GetOrCreateState(operationName);
 
-        if (state.State == CircuitBreakerStateEnum.Open)
-        {
-            return DateTime.UtcNow < state.NextRetryAt;
-        }
-
-        return false;
+        return state.State == CircuitBreakerStateEnum.Open && DateTime.UtcNow < state.NextRetryAt;
     }
 
     /// <summary>
-    /// Forces the circuit to open (for testing purposes).
+    ///     Forces the circuit to open (for testing purposes).
     /// </summary>
     public void ForceOpen(string operationName)
     {
@@ -260,17 +277,17 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastOpenedAt = DateTime.UtcNow,
                 NextRetryAt = nextRetryAt,
                 TotalOpenings = currentState.TotalOpenings + 1,
-                LastError = "Forced open for testing"
+                LastError = "Forced open for testing",
             };
 
-            _circuitStates.TryUpdate(operationName, openState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, openState, currentState);
 
             _logger.LogWarning("Circuit breaker forced open for {OperationName}", operationName);
         }
     }
 
     /// <summary>
-    /// Forces the circuit to close (for testing purposes).
+    ///     Forces the circuit to close (for testing purposes).
     /// </summary>
     public void ForceClose(string operationName)
     {
@@ -287,10 +304,10 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastOpenedAt = currentState.LastOpenedAt,
                 NextRetryAt = null,
                 TotalOpenings = currentState.TotalOpenings,
-                LastError = null
+                LastError = null,
             };
 
-            _circuitStates.TryUpdate(operationName, closedState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, closedState, currentState);
 
             _logger.LogInformation("Circuit breaker forced closed for {OperationName}", operationName);
         }
@@ -300,18 +317,21 @@ public class CircuitBreakerService : ICircuitBreakerService
 
     private CircuitBreakerState GetOrCreateState(string operationName)
     {
-        return _circuitStates.GetOrAdd(operationName, _ => new CircuitBreakerState
-        {
-            State = CircuitBreakerStateEnum.Closed,
-            FailureCount = 0,
-            LastOpenedAt = null,
-            NextRetryAt = null,
-            TotalOpenings = 0,
-            LastError = null
-        });
+        return _circuitStates.GetOrAdd(
+            operationName,
+            _ => new CircuitBreakerState
+            {
+                State = CircuitBreakerStateEnum.Closed,
+                FailureCount = 0,
+                LastOpenedAt = null,
+                NextRetryAt = null,
+                TotalOpenings = 0,
+                LastError = null,
+            }
+        );
     }
 
-    private string ClassifyError(Exception exception)
+    private static string ClassifyError(Exception exception)
     {
         return exception switch
         {
@@ -319,15 +339,15 @@ public class CircuitBreakerService : ICircuitBreakerService
             HttpRequestException httpEx when httpEx.Message.Contains("429") => "429",
             HttpRequestException httpEx when httpEx.Message.Contains("503") => "503",
             TaskCanceledException => "timeout",
-            _ => "generic"
+            _ => "generic",
         };
     }
 
     private int GetFailureThreshold(string errorType)
     {
         return _configuration.ErrorTypeThresholds.TryGetValue(errorType, out var threshold)
-          ? threshold
-          : _configuration.FailureThreshold;
+            ? threshold
+            : _configuration.FailureThreshold;
     }
 
     private DateTime CalculateNextRetryTime(int openingCount)
@@ -344,17 +364,17 @@ public class CircuitBreakerService : ICircuitBreakerService
 }
 
 /// <summary>
-/// Exception thrown when a circuit breaker is open.
+///     Exception thrown when a circuit breaker is open.
 /// </summary>
 public class CircuitBreakerOpenException : Exception
 {
-    public string OperationName { get; }
-    public DateTime? NextRetryAt { get; }
-
     public CircuitBreakerOpenException(string operationName, DateTime? nextRetryAt)
-      : base($"Circuit breaker is open for operation '{operationName}'. Next retry at: {nextRetryAt}")
+        : base($"Circuit breaker is open for operation '{operationName}'. Next retry at: {nextRetryAt}")
     {
         OperationName = operationName;
         NextRetryAt = nextRetryAt;
     }
+
+    public string OperationName { get; }
+    public DateTime? NextRetryAt { get; }
 }

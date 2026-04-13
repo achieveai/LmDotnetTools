@@ -1,35 +1,34 @@
-using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System.Text.RegularExpressions;
+using MemoryServer.DocumentSegmentation.Models;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Service for analyzing document size and determining segmentation requirements.
+///     Service for analyzing document size and determining segmentation requirements.
 /// </summary>
-public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
+public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
 {
+    // Regex patterns for text analysis
+    private static readonly Regex WordPattern = MyRegex();
+    private static readonly Regex SentencePattern = MyRegex1();
+    private static readonly Regex ParagraphPattern = MyRegex2();
     private readonly ILogger<DocumentSizeAnalyzer> _logger;
     private readonly DocumentSegmentationOptions _options;
 
-    // Regex patterns for text analysis
-    private static readonly Regex WordPattern = new(@"\b\w+\b", RegexOptions.Compiled);
-    private static readonly Regex SentencePattern = new(@"[.!?]+\s*", RegexOptions.Compiled);
-    private static readonly Regex ParagraphPattern = new(@"\n\s*\n", RegexOptions.Compiled);
-
-    public DocumentSizeAnalyzer(
-      ILogger<DocumentSizeAnalyzer> logger,
-      IOptions<DocumentSegmentationOptions> options)
+    public DocumentSizeAnalyzer(ILogger<DocumentSizeAnalyzer> logger, IOptions<DocumentSegmentationOptions> options)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
     }
 
     /// <summary>
-    /// Analyzes document content to determine size metrics.
+    ///     Analyzes document content to determine size metrics.
     /// </summary>
-    public async Task<DocumentStatistics> AnalyzeDocumentAsync(string content, CancellationToken cancellationToken = default)
+    public async Task<DocumentStatistics> AnalyzeDocumentAsync(
+        string content,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
@@ -44,7 +43,7 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
                     WordCount = 0,
                     SentenceCount = 0,
                     ParagraphCount = 1, // Default to 1 paragraph even for empty content
-                    TokenCount = 0
+                    TokenCount = 0,
                 };
             }
 
@@ -57,7 +56,7 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
                     WordCount = 0,
                     SentenceCount = 0,
                     ParagraphCount = content.Length == 0 ? 1 : CountParagraphs(content), // 1 for empty, counted for whitespace
-                    TokenCount = 0
+                    TokenCount = 0,
                 };
             }
 
@@ -66,14 +65,18 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
                 CharacterCount = content.Length,
                 WordCount = CountWords(content),
                 SentenceCount = CountSentences(content),
-                ParagraphCount = CountParagraphs(content)
+                ParagraphCount = CountParagraphs(content),
+                // Estimate token count (rough approximation: 1 token ≈ 4 characters for English)
+                TokenCount = EstimateTokenCount(content),
             };
 
-            // Estimate token count (rough approximation: 1 token ≈ 4 characters for English)
-            statistics.TokenCount = EstimateTokenCount(content);
-
-            _logger.LogDebug("Document analysis complete: {WordCount} words, {TokenCount} tokens, {SentenceCount} sentences, {ParagraphCount} paragraphs",
-              statistics.WordCount, statistics.TokenCount, statistics.SentenceCount, statistics.ParagraphCount);
+            _logger.LogDebug(
+                "Document analysis complete: {WordCount} words, {TokenCount} tokens, {SentenceCount} sentences, {ParagraphCount} paragraphs",
+                statistics.WordCount,
+                statistics.TokenCount,
+                statistics.SentenceCount,
+                statistics.ParagraphCount
+            );
 
             return await Task.FromResult(statistics);
         }
@@ -85,7 +88,7 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     }
 
     /// <summary>
-    /// Determines if a document should be segmented based on configured thresholds.
+    ///     Determines if a document should be segmented based on configured thresholds.
     /// </summary>
     public bool ShouldSegmentDocument(DocumentStatistics statistics, DocumentType documentType = DocumentType.Generic)
     {
@@ -100,16 +103,26 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
 
         var shouldSegment = statistics.WordCount >= minWords && statistics.WordCount <= maxWords;
 
-        _logger.LogDebug("Document segmentation decision for {DocumentType}: {WordCount} words, threshold: {MinWords}-{MaxWords}, should segment: {ShouldSegment}",
-          documentType, statistics.WordCount, minWords, maxWords, shouldSegment);
+        _logger.LogDebug(
+            "Document segmentation decision for {DocumentType}: {WordCount} words, threshold: {MinWords}-{MaxWords}, should segment: {ShouldSegment}",
+            documentType,
+            statistics.WordCount,
+            minWords,
+            maxWords,
+            shouldSegment
+        );
 
         return shouldSegment;
     }
 
     /// <summary>
-    /// Calculates optimal segment count for a document.
+    ///     Calculates optimal segment count for a document.
     /// </summary>
-    public int CalculateOptimalSegmentCount(DocumentStatistics statistics, int targetSegmentSize = 1000, int maxSegmentSize = 2000)
+    public int CalculateOptimalSegmentCount(
+        DocumentStatistics statistics,
+        int targetSegmentSize = 1000,
+        int maxSegmentSize = 2000
+    )
     {
         if (statistics == null || statistics.WordCount <= targetSegmentSize)
         {
@@ -124,14 +137,19 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
 
         var optimalCount = Math.Max(initialCount, maxPossibleSegments);
 
-        _logger.LogDebug("Calculated optimal segment count: {Count} for {WordCount} words (target: {TargetSize}, max: {MaxSize})",
-          optimalCount, statistics.WordCount, targetSegmentSize, maxSegmentSize);
+        _logger.LogDebug(
+            "Calculated optimal segment count: {Count} for {WordCount} words (target: {TargetSize}, max: {MaxSize})",
+            optimalCount,
+            statistics.WordCount,
+            targetSegmentSize,
+            maxSegmentSize
+        );
 
         return optimalCount;
     }
 
     /// <summary>
-    /// Estimates processing time for document segmentation.
+    ///     Estimates processing time for document segmentation.
     /// </summary>
     public long EstimateProcessingTime(DocumentStatistics statistics, SegmentationStrategy strategy)
     {
@@ -143,21 +161,25 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
         // Base processing time (ms per word)
         var baseTimePerWord = strategy switch
         {
-            SegmentationStrategy.TopicBased => 2.0,      // More complex analysis
-            SegmentationStrategy.StructureBased => 1.0,   // Pattern-based, faster
-            SegmentationStrategy.NarrativeBased => 2.5,   // Most complex
-            SegmentationStrategy.Hybrid => 3.0,           // Combines multiple approaches
-            SegmentationStrategy.Custom => 2.0,           // Variable complexity
-            _ => 1.5                                       // Default
+            SegmentationStrategy.TopicBased => 2.0, // More complex analysis
+            SegmentationStrategy.StructureBased => 1.0, // Pattern-based, faster
+            SegmentationStrategy.NarrativeBased => 2.5, // Most complex
+            SegmentationStrategy.Hybrid => 3.0, // Combines multiple approaches
+            SegmentationStrategy.Custom => 2.0, // Variable complexity
+            _ => 1.5, // Default
         };
 
         // LLM overhead for intelligent segmentation
         var llmOverhead = _options.LlmOptions.EnableLlmSegmentation ? 5000 : 0; // 5 seconds base overhead
 
-        var estimatedTime = (long)(statistics.WordCount * baseTimePerWord + llmOverhead);
+        var estimatedTime = (long)((statistics.WordCount * baseTimePerWord) + llmOverhead);
 
-        _logger.LogDebug("Estimated processing time for {Strategy}: {Time}ms for {WordCount} words",
-          strategy, estimatedTime, statistics.WordCount);
+        _logger.LogDebug(
+            "Estimated processing time for {Strategy}: {Time}ms for {WordCount} words",
+            strategy,
+            estimatedTime,
+            statistics.WordCount
+        );
 
         return estimatedTime;
     }
@@ -198,14 +220,23 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
         // Adjust minimum word thresholds based on document type
         return documentType switch
         {
-            DocumentType.Email => 250,           // Lower threshold for emails (300 words should segment)
-            DocumentType.Chat => 150,            // Even lower for chat messages (200 words should segment)
-            DocumentType.ResearchPaper => 2000,  // Higher threshold for academic papers
-            DocumentType.Legal => 1000,          // Higher threshold for legal documents
-            DocumentType.Technical => 1500,      // Higher threshold for technical docs
-            _ => defaultMinWords                  // Use default for other types
+            DocumentType.Email => 250, // Lower threshold for emails (300 words should segment)
+            DocumentType.Chat => 150, // Even lower for chat messages (200 words should segment)
+            DocumentType.ResearchPaper => 2000, // Higher threshold for academic papers
+            DocumentType.Legal => 1000, // Higher threshold for legal documents
+            DocumentType.Technical => 1500, // Higher threshold for technical docs
+            _ => defaultMinWords, // Use default for other types
         };
     }
+
+    [GeneratedRegex(@"\b\w+\b", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(@"[.!?]+\s*", RegexOptions.Compiled)]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"\n\s*\n", RegexOptions.Compiled)]
+    private static partial Regex MyRegex2();
 
     #endregion
 }

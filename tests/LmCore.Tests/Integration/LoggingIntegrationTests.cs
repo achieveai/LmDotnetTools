@@ -1,28 +1,24 @@
-using System.Collections.Immutable;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.DependencyInjection;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using LmConfigLogEventIds = AchieveAi.LmDotnetTools.LmConfig.Logging.LogEventIds;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
 /// <summary>
-/// Integration tests for the comprehensive logging system across all agents and middleware.
-/// Tests complete request flows with logging enabled at various levels.
+///     Integration tests for the comprehensive logging system across all agents and middleware.
+///     Tests complete request flows with logging enabled at various levels.
 /// </summary>
 public class LoggingIntegrationTests : IDisposable
 {
-    private readonly TestLogger<UnifiedAgent> _unifiedAgentLogger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly TestLogger<FunctionCallMiddleware> _middlewareLogger;
     private readonly TestLogger<OpenClient> _openClientLogger;
-    private readonly ILoggerFactory _loggerFactory;
     private readonly ServiceProvider _serviceProvider;
+    private readonly TestLogger<UnifiedAgent> _unifiedAgentLogger;
 
     public LoggingIntegrationTests()
     {
@@ -33,10 +29,10 @@ public class LoggingIntegrationTests : IDisposable
 
         // Create a service collection with logging
         var services = new ServiceCollection();
-        services.AddLogging(builder =>
+        _ = services.AddLogging(builder =>
         {
-            builder.SetMinimumLevel(LogLevel.Trace);
-            builder.AddProvider(new TestLoggerProvider());
+            _ = builder.SetMinimumLevel(LogLevel.Trace);
+            _ = builder.AddProvider(new TestLoggerProvider());
         });
 
         // Create logger factory
@@ -47,6 +43,12 @@ public class LoggingIntegrationTests : IDisposable
         _loggerFactory = loggerFactory;
 
         _serviceProvider = services.BuildServiceProvider();
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 
     /* [Fact] // Disabled: Test relies on mocking non-virtual properties which is not supported
@@ -60,7 +62,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -86,7 +88,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestInitiated && log.LogLevel == LogLevel.Information)
             .ToList();
         Assert.Single(initiationLogs);
-        
+
         var initiationLog = initiationLogs.First();
         Assert.Contains("LLM request initiated", initiationLog.Message);
         Assert.Contains("gpt-4", initiationLog.Message);
@@ -97,7 +99,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestCompleted && log.LogLevel == LogLevel.Information)
             .ToList();
         Assert.Single(completionLogs);
-        
+
         var completionLog = completionLogs.First();
         Assert.Contains("LLM request completed", completionLog.Message);
         Assert.Contains("gpt-4", completionLog.Message);
@@ -108,7 +110,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentCacheMiss && log.LogLevel == LogLevel.Debug)
             .ToList();
         Assert.Single(cacheLogs);
-        
+
         var cacheLog = cacheLogs.First();
         Assert.Contains("Agent cache miss", cacheLog.Message);
         Assert.Contains("openai", cacheLog.Message);
@@ -123,47 +125,51 @@ public class LoggingIntegrationTests : IDisposable
         {
             Name = "TestFunction",
             Description = "A test function",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "input",
                     ParameterType = JsonSchemaObject.String("Test input parameter"),
-                    Description = "Test input"
-                }
-            }
+                    Description = "Test input",
+                },
+            ],
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["TestFunction"] = async (args) =>
+            ["TestFunction"] = async args =>
             {
                 await Task.Delay(10); // Simulate some work
                 return "Test result";
-            }
+            },
         };
 
-        var middleware = new FunctionCallMiddleware(
-            new[] { testFunction },
-            functionMap,
-            "TestMiddleware",
-            _middlewareLogger);
+        var middleware = new FunctionCallMiddleware([testFunction], functionMap, name: "TestMiddleware", logger: _middlewareLogger);
 
         var mockAgent = new Mock<IAgent>();
-        var toolCall = new ToolCall("TestFunction", "{\"input\":\"test\"}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"input\":\"test\"}" };
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(toolCall),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
-            FromAgent = "test-agent"
+            FromAgent = "test-agent",
         };
 
-        mockAgent.Setup(x => x.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new[] { toolCallMessage });
+        _ = mockAgent
+            .Setup(x =>
+                x.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([toolCallMessage]);
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Text = "Call test function", Role = Role.User } },
-            new GenerateReplyOptions());
+            [new TextMessage { Text = "Call test function", Role = Role.User }],
+            new GenerateReplyOptions()
+        );
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -173,25 +179,26 @@ public class LoggingIntegrationTests : IDisposable
 
         // Verify middleware processing started
         var processingStartedLogs = logs.Where(log => log.Message.Contains("Middleware processing started")).ToList();
-        Assert.Single(processingStartedLogs);
+        _ = Assert.Single(processingStartedLogs);
         Assert.Contains("TestMiddleware", processingStartedLogs.First().Message);
 
         // Verify function execution logging
         var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed")).ToList();
-        Assert.Single(functionExecutionLogs);
+        _ = Assert.Single(functionExecutionLogs);
 
         var functionLog = functionExecutionLogs.First();
         Assert.Contains("TestFunction", functionLog.Message);
         Assert.Contains("Success=True", functionLog.Message);
 
         // Verify middleware processing completed
-        var processingCompletedLogs = logs.Where(log => log.Message.Contains("Middleware processing completed")).ToList();
-        Assert.Single(processingCompletedLogs);
+        var processingCompletedLogs = logs.Where(log => log.Message.Contains("Middleware processing completed"))
+            .ToList();
+        _ = Assert.Single(processingCompletedLogs);
 
         // Verify the result contains the expected aggregate message
         var resultList = result.ToList();
-        Assert.Single(resultList);
-        Assert.IsType<ToolsCallAggregateMessage>(resultList.First());
+        _ = Assert.Single(resultList);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(resultList.First());
     }
 
     /* [Fact] // Disabled: Test relies on mocking non-virtual properties which is not supported
@@ -205,7 +212,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -263,7 +270,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -289,7 +296,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestFailed && log.LogLevel == LogLevel.Error)
             .ToList();
         Assert.Single(errorLogs);
-        
+
         var errorLog = errorLogs.First();
         Assert.Contains("LLM request failed", errorLog.Message);
         Assert.Contains("gpt-4", errorLog.Message);
@@ -322,19 +329,19 @@ public class LoggingIntegrationTests : IDisposable
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddLogging(builder =>
+        _ = services.AddLogging(builder =>
         {
-            builder.SetMinimumLevel(LogLevel.Debug);
-            builder.AddProvider(new TestLoggerProvider());
+            _ = builder.SetMinimumLevel(LogLevel.Debug);
+            _ = builder.AddProvider(new TestLoggerProvider());
         });
 
         // Register components with logger factory
-        services.AddSingleton<ILoggerFactory>(provider => _loggerFactory);
-        services.AddTransient<UnifiedAgent>(provider =>
-            new UnifiedAgent(
-                Mock.Of<IModelResolver>(),
-                Mock.Of<IProviderAgentFactory>(),
-                provider.GetService<ILogger<UnifiedAgent>>()));
+        _ = services.AddSingleton<ILoggerFactory>(provider => _loggerFactory);
+        _ = services.AddTransient<UnifiedAgent>(provider => new UnifiedAgent(
+            Mock.Of<IModelResolver>(),
+            Mock.Of<IProviderAgentFactory>(),
+            provider.GetService<ILogger<UnifiedAgent>>()
+        ));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -346,17 +353,27 @@ public class LoggingIntegrationTests : IDisposable
 
         // Verify that the logger was injected by checking if logging works
         var mockModelResolver = new Mock<IModelResolver>();
-        mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
+        _ = mockModelResolver
+            .Setup(x =>
+                x.ResolveProviderAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<ProviderSelectionCriteria>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ThrowsAsync(new InvalidOperationException("No provider found"));
 
         // This should trigger error logging
-        var messages = new[] { new TextMessage { Text = "Hello", Role = Role.User } };
+        var messages = new[]
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
         var options = new GenerateReplyOptions { ModelId = "invalid-model" };
 
         try
         {
             // We expect this to fail, but we want to verify logging occurs
-            await unifiedAgent.GenerateReplyAsync(messages, options);
+            _ = await unifiedAgent.GenerateReplyAsync(messages, options);
         }
         catch
         {
@@ -382,7 +399,7 @@ public class LoggingIntegrationTests : IDisposable
         // Assert - Verify structured logging format
         var logs = ((TestLogger<UnifiedAgent>)logger).LogEntries.ToList();
         Assert.Single(logs);
-        
+
         var log = logs.First();
         Assert.Equal(LmConfigLogEventIds.AgentRequestInitiated, log.EventId);
         Assert.Equal(LogLevel.Information, log.LogLevel);
@@ -395,13 +412,13 @@ public class LoggingIntegrationTests : IDisposable
         Assert.NotNull(log.State);
         var state = log.State as IReadOnlyList<KeyValuePair<string, object>>;
         Assert.NotNull(state);
-        
+
         var modelParam = state.FirstOrDefault(kvp => kvp.Key == "ModelId");
         Assert.Equal("gpt-4", modelParam.Value);
-        
+
         var messageCountParam = state.FirstOrDefault(kvp => kvp.Key == "MessageCount");
         Assert.Equal(2, messageCountParam.Value);
-        
+
         var typeParam = state.FirstOrDefault(kvp => kvp.Key == "RequestType");
         Assert.Equal("non-streaming", typeParam.Value);
     } */
@@ -420,7 +437,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -442,7 +459,7 @@ public class LoggingIntegrationTests : IDisposable
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Verify that no logging methods were called when disabled
         disabledLogger.Verify(x => x.Log(
             It.IsAny<LogLevel>(),
@@ -471,25 +488,14 @@ public class LoggingIntegrationTests : IDisposable
             _serviceProvider?.Dispose();
         }
     }
-
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
 }
 
 /// <summary>
-/// Helper classes for testing logging functionality
+///     Helper classes for testing logging functionality
 /// </summary>
 public class TestLoggerFactory : ILoggerFactory
 {
-    private readonly Dictionary<string, ILogger> _loggers = new();
-
-    public void AddLogger<T>(TestLogger<T> logger)
-    {
-        _loggers[typeof(T).FullName!] = logger;
-    }
+    private readonly Dictionary<string, ILogger> _loggers = [];
 
     public ILogger CreateLogger(string categoryName)
     {
@@ -499,38 +505,60 @@ public class TestLoggerFactory : ILoggerFactory
     public void AddProvider(ILoggerProvider provider) { }
 
     public void Dispose() { }
+
+    public void AddLogger<T>(TestLogger<T> logger)
+    {
+        _loggers[typeof(T).FullName!] = logger;
+    }
 }
 
 public class TestLoggerProvider : ILoggerProvider
 {
-    public ILogger CreateLogger(string categoryName) => new TestLogger();
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new TestLogger();
+    }
+
     public void Dispose() { }
 }
 
 public class TestLogger : ILogger
 {
-    public List<LogEntry> LogEntries { get; } = new();
+    public List<LogEntry> LogEntries { get; } = [];
 
-    public IDisposable BeginScope<TState>(TState state) => new TestScope();
-    public bool IsEnabled(LogLevel logLevel) => true;
+    IDisposable ILogger.BeginScope<TState>(TState state)
+    {
+        return new TestScope();
+    }
 
-    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return true;
+    }
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter
+    )
     {
         var message = formatter(state, exception);
-        LogEntries.Add(new LogEntry
-        {
-            LogLevel = logLevel,
-            EventId = eventId,
-            State = state,
-            Exception = exception,
-            Message = message
-        });
+        LogEntries.Add(
+            new LogEntry
+            {
+                LogLevel = logLevel,
+                EventId = eventId,
+                State = state,
+                Exception = exception,
+                Message = message,
+            }
+        );
     }
 }
 
-public class TestLogger<T> : TestLogger, ILogger<T>
-{
-}
+public class TestLogger<T> : TestLogger, ILogger<T> { }
 
 public class LogEntry
 {

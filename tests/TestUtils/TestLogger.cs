@@ -1,14 +1,16 @@
-namespace AchieveAi.LmDotnetTools.TestUtils;
-
-using System;
 using System.Text.Json;
 
+namespace AchieveAi.LmDotnetTools.TestUtils;
+
 /// <summary>
-/// Helper for test debugging and diagnostics
+///     Helper for test debugging and diagnostics
 /// </summary>
 public static class TestLogger
 {
-    public static void Log(string message) => Console.WriteLine($"[TEST_LOG] {message}");
+    public static void Log(string message)
+    {
+        Console.WriteLine($"[TEST_LOG] {message}");
+    }
 
     public static void LogObject(string name, object? obj)
     {

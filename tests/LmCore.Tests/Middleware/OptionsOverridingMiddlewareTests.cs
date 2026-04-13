@@ -1,6 +1,6 @@
-using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 using System.Collections.Immutable;
 
+using AchieveAi.LmDotnetTools.LmCore.Core;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class OptionsOverridingMiddlewareTests
@@ -16,13 +16,13 @@ public class OptionsOverridingMiddlewareTests
         {
             Temperature = 0.7f,
             MaxToken = 100,
-            TopP = 0.8f
+            TopP = 0.8f,
         };
 
         var overridingOptions = new GenerateReplyOptions
         {
             Temperature = 0.3f,
-            TopP = 0.9f
+            TopP = 0.9f,
             // Intentionally not setting MaxToken to test partial overrides
         };
 
@@ -33,25 +33,27 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(
-          new[] { message },
-          originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -68,7 +70,7 @@ public class OptionsOverridingMiddlewareTests
         {
             Temperature = 0.3f,
             MaxToken = 200,
-            TopP = 0.9f
+            TopP = 0.9f,
         };
 
         // Create the middleware with overriding options
@@ -78,25 +80,27 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with null options
-        var context = new MiddlewareContext(
-          new[] { message },
-          null);
+        var context = new MiddlewareContext([message]);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -112,32 +116,18 @@ public class OptionsOverridingMiddlewareTests
         // Set up original options with functions array
         var originalFunctions = new[]
         {
-      new FunctionContract
-      {
-        Name = "originalFunction",
-        Description = "Original function"
-      }
-    };
-
-        var originalOptions = new GenerateReplyOptions
-        {
-            Functions = originalFunctions
+            new FunctionContract { Name = "originalFunction", Description = "Original function" },
         };
+
+        var originalOptions = new GenerateReplyOptions { Functions = originalFunctions };
 
         // Set up overriding options with different functions array
         var overridingFunctions = new[]
         {
-      new FunctionContract
-      {
-        Name = "overridingFunction",
-        Description = "Overriding function"
-      }
-    };
-
-        var overridingOptions = new GenerateReplyOptions
-        {
-            Functions = overridingFunctions
+            new FunctionContract { Name = "overridingFunction", Description = "Overriding function" },
         };
+
+        var overridingOptions = new GenerateReplyOptions { Functions = overridingFunctions };
 
         // Create the middleware with overriding options
         var middleware = new OptionsOverridingMiddleware(overridingOptions);
@@ -146,25 +136,27 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(
-          new[] { message },
-          originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -199,25 +191,32 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(
-          new[] { message },
-          originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock streaming agent to capture the options that are passed to it
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockStreamingAgent
-          .Setup(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } }.ToAsyncEnumerable());
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync(
+                new[]
+                {
+                    new TextMessage { Text = "Response", Role = Role.Assistant },
+                }.ToAsyncEnumerable()
+            );
 
         // Act
-        await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        _ = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -237,8 +236,8 @@ public class OptionsOverridingMiddlewareTests
             {
                 ["originalProp1"] = "value1",
                 ["originalProp2"] = 123,
-                ["propToOverride"] = "originalValue"
-            }.ToImmutableDictionary()
+                ["propToOverride"] = "originalValue",
+            }.ToImmutableDictionary(),
         };
 
         // Set up overriding options that should add new properties,
@@ -249,8 +248,8 @@ public class OptionsOverridingMiddlewareTests
             {
                 ["newProp1"] = "newValue1",
                 ["propToOverride"] = "overriddenValue",
-                ["strProp"] = "strProp" // This will remain null in the merged result
-            }.ToImmutableDictionary()
+                ["strProp"] = "strProp", // This will remain null in the merged result
+            }.ToImmutableDictionary(),
         };
 
         // Create the middleware with overriding options
@@ -260,25 +259,27 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(
-          new[] { message },
-          originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -309,9 +310,9 @@ public class OptionsOverridingMiddlewareTests
                 {
                     ["original1"] = "originalNested1",
                     ["original2"] = "originalNested2",
-                    ["toOverride"] = "originalNestedOverride"
-                }
-            }.ToImmutableDictionary()
+                    ["toOverride"] = "originalNestedOverride",
+                },
+            }.ToImmutableDictionary(),
         };
 
         // Set up overriding options with nested dictionary
@@ -323,9 +324,9 @@ public class OptionsOverridingMiddlewareTests
                 {
                     ["new1"] = "newNested1",
                     ["toOverride"] = "newNestedOverride",
-                    ["nullValue"] = null
-                }
-            }.ToImmutableDictionary()
+                    ["nullValue"] = null,
+                },
+            }.ToImmutableDictionary(),
         };
 
         // Create the middleware with overriding options
@@ -335,25 +336,27 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(
-          new[] { message },
-          originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync([new TextMessage { Text = "Response", Role = Role.Assistant }]);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);

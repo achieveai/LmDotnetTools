@@ -1,88 +1,210 @@
+using System.Text.RegularExpressions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
-using System.Text.RegularExpressions;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Implementation of narrative-based document segmentation.
-/// Analyzes logical flow, temporal sequences, and causal relationships to create coherent narrative segments.
+///     Implementation of narrative-based document segmentation.
+///     Analyzes logical flow, temporal sequences, and causal relationships to create coherent narrative segments.
 /// </summary>
-public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationService
+public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmentationService
 {
-    private readonly ILlmProviderIntegrationService _llmService;
-    private readonly ISegmentationPromptManager _promptManager;
-    private readonly ILogger<NarrativeBasedSegmentationService> _logger;
-
     // Temporal sequence markers
     private static readonly HashSet<string> TemporalMarkers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "first", "second", "third", "then", "next", "after", "before", "during", "while",
-        "when", "since", "until", "finally", "lastly", "meanwhile", "simultaneously",
-        "previously", "later", "earlier", "subsequently", "afterwards", "beforehand",
-        "initially", "originally", "eventually", "ultimately", "immediately", "instantly"
+        "first",
+        "second",
+        "third",
+        "then",
+        "next",
+        "after",
+        "before",
+        "during",
+        "while",
+        "when",
+        "since",
+        "until",
+        "finally",
+        "lastly",
+        "meanwhile",
+        "simultaneously",
+        "previously",
+        "later",
+        "earlier",
+        "subsequently",
+        "afterwards",
+        "beforehand",
+        "initially",
+        "originally",
+        "eventually",
+        "ultimately",
+        "immediately",
+        "instantly",
     };
 
     // Causal relationship indicators
     private static readonly HashSet<string> CausalMarkers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "because", "since", "due to", "as a result of", "caused by", "leads to",
-        "therefore", "thus", "consequently", "as a result", "hence", "accordingly",
-        "so", "if", "unless", "provided that", "in case", "given that", "assuming",
-        "enables", "triggers", "results in", "brings about", "produces", "generates"
+        "because",
+        "since",
+        "due to",
+        "as a result of",
+        "caused by",
+        "leads to",
+        "therefore",
+        "thus",
+        "consequently",
+        "as a result",
+        "hence",
+        "accordingly",
+        "so",
+        "if",
+        "unless",
+        "provided that",
+        "in case",
+        "given that",
+        "assuming",
+        "enables",
+        "triggers",
+        "results in",
+        "brings about",
+        "produces",
+        "generates",
     };
 
     // Logical progression indicators
     private static readonly HashSet<string> LogicalMarkers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "however", "but", "although", "despite", "nevertheless", "nonetheless",
-        "on the other hand", "in contrast", "conversely", "alternatively",
-        "furthermore", "moreover", "additionally", "besides", "also", "plus",
-        "similarly", "likewise", "in the same way", "correspondingly",
-        "for example", "for instance", "such as", "specifically", "namely"
+        "however",
+        "but",
+        "although",
+        "despite",
+        "nevertheless",
+        "nonetheless",
+        "on the other hand",
+        "in contrast",
+        "conversely",
+        "alternatively",
+        "furthermore",
+        "moreover",
+        "additionally",
+        "besides",
+        "also",
+        "plus",
+        "similarly",
+        "likewise",
+        "in the same way",
+        "correspondingly",
+        "for example",
+        "for instance",
+        "such as",
+        "specifically",
+        "namely",
     };
 
     // Narrative function indicators
     private static readonly Dictionary<NarrativeFunction, HashSet<string>> FunctionMarkers = new()
     {
-        [NarrativeFunction.Setup] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Setup] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "introduction", "context", "setting", "overview", "let me explain",
-            "to understand", "at the beginning", "to start"
+            "introduction",
+            "context",
+            "setting",
+            "overview",
+            "let me explain",
+            "to understand",
+            "at the beginning",
+            "to start",
         },
-        [NarrativeFunction.Background] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Background] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "background", "history", "context", "previously", "earlier", "before",
-            "backdrop", "foundation", "past", "prior to", "background information"
+            "background",
+            "history",
+            "context",
+            "previously",
+            "earlier",
+            "before",
+            "backdrop",
+            "foundation",
+            "past",
+            "prior to",
+            "background information",
         },
-        [NarrativeFunction.Development] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Development] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "development", "progress", "advancement", "evolution", "growth", "expansion",
-            "continuing", "proceeding", "moving forward"
+            "development",
+            "progress",
+            "advancement",
+            "evolution",
+            "growth",
+            "expansion",
+            "continuing",
+            "proceeding",
+            "moving forward",
         },
-        [NarrativeFunction.Complication] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Complication] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "however", "but", "problem", "issue", "challenge", "difficulty", "obstacle",
-            "complication", "conflict", "tension", "unfortunately", "unexpectedly"
+            "however",
+            "but",
+            "problem",
+            "issue",
+            "challenge",
+            "difficulty",
+            "obstacle",
+            "complication",
+            "conflict",
+            "tension",
+            "unfortunately",
+            "unexpectedly",
         },
-        [NarrativeFunction.Climax] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Climax] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "suddenly", "unexpectedly", "critically", "crucially", "key moment",
-            "turning point", "breakthrough", "revelation", "realization", "peak"
+            "suddenly",
+            "unexpectedly",
+            "critically",
+            "crucially",
+            "key moment",
+            "turning point",
+            "breakthrough",
+            "revelation",
+            "realization",
+            "peak",
         },
-        [NarrativeFunction.Resolution] = new(StringComparer.OrdinalIgnoreCase)
+        [NarrativeFunction.Resolution] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "conclusion", "ultimately", "in the end", "resolution", "solution",
-            "outcome", "result", "ending", "closure", "summary", "to summarize"
-        }
+            "conclusion",
+            "ultimately",
+            "in the end",
+            "resolution",
+            "solution",
+            "outcome",
+            "result",
+            "ending",
+            "closure",
+            "summary",
+            "to summarize",
+        },
     };
+
+    private static readonly string[] sourceArray = ["then", "next", "after", "subsequently"];
+    private static readonly string[] sourceArray0 = ["meanwhile", "simultaneously", "while"];
+    private static readonly string[] sourceArray1 = ["previously", "earlier", "before"];
+    private static readonly string[] sourceArray2 = ["because", "since", "due to"];
+    private static readonly string[] sourceArray3 = ["if", "unless", "provided that"];
+    private static readonly string[] sourceArray4 = ["enables", "allows", "permits"];
+    private static readonly string[] sourceArray5 = ["however", "but", "although"];
+    private static readonly string[] sourceArray6 = ["furthermore", "moreover", "additionally"];
+    private static readonly string[] sourceArray7 = ["for example", "for instance", "such as"];
+    private readonly ILlmProviderIntegrationService _llmService;
+    private readonly ILogger<NarrativeBasedSegmentationService> _logger;
+    private readonly ISegmentationPromptManager _promptManager;
 
     public NarrativeBasedSegmentationService(
         ILlmProviderIntegrationService llmService,
         ISegmentationPromptManager promptManager,
-        ILogger<NarrativeBasedSegmentationService> logger)
+        ILogger<NarrativeBasedSegmentationService> logger
+    )
     {
         _llmService = llmService ?? throw new ArgumentNullException(nameof(llmService));
         _promptManager = promptManager ?? throw new ArgumentNullException(nameof(promptManager));
@@ -90,16 +212,21 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
     }
 
     /// <summary>
-    /// Segments document content based on narrative flow and logical progression.
+    ///     Segments document content based on narrative flow and logical progression.
     /// </summary>
     public async Task<List<DocumentSegment>> SegmentByNarrativeAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
         NarrativeSegmentationOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Starting narrative-based segmentation for document type {DocumentType}, content length: {Length}",
-            documentType, content.Length);
+        ArgumentNullException.ThrowIfNull(content);
+        _logger.LogDebug(
+            "Starting narrative-based segmentation for document type {DocumentType}, content length: {Length}",
+            documentType,
+            content.Length
+        );
 
         options ??= new NarrativeSegmentationOptions();
 
@@ -129,7 +256,10 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
 
             // Step 5: Apply final quality checks
             segments = ApplyFinalQualityChecks(segments, options);
-            _logger.LogInformation("Completed narrative-based segmentation with {Count} final segments", segments.Count);
+            _logger.LogInformation(
+                "Completed narrative-based segmentation with {Count} final segments",
+                segments.Count
+            );
 
             return segments;
         }
@@ -141,13 +271,15 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
     }
 
     /// <summary>
-    /// Detects narrative transitions and flow boundaries in the document.
+    ///     Detects narrative transitions and flow boundaries in the document.
     /// </summary>
     public Task<List<NarrativeBoundary>> DetectNarrativeTransitionsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Detecting narrative transitions in content of length {Length}", content.Length);
 
         var boundaries = new List<NarrativeBoundary>();
@@ -159,41 +291,46 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         boundaries.AddRange(DetectFunctionalBoundaries(content));
 
         // Sort by position and remove duplicates
-        boundaries = boundaries
-            .OrderBy(b => b.Position)
-            .GroupBy(b => b.Position)
-            .Select(g => g.OrderByDescending(b => b.Confidence).First()) // Keep highest confidence boundary at each position
-            .ToList();
+        boundaries =
+        [
+            .. boundaries
+                .OrderBy(b => b.Position)
+                .GroupBy(b => b.Position)
+                .Select(g => g.OrderByDescending(b => b.Confidence).First()),
+        ];
 
         _logger.LogDebug("Detected {Count} unique narrative boundaries", boundaries.Count);
         return Task.FromResult(boundaries);
     }
 
     /// <summary>
-    /// Analyzes the logical flow and narrative structure of the document.
+    ///     Analyzes the logical flow and narrative structure of the document.
     /// </summary>
     public async Task<NarrativeFlowAnalysis> AnalyzeLogicalFlowAsync(
         string content,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Analyzing logical flow for content of length {Length}", content.Length);
 
-        var analysis = new NarrativeFlowAnalysis();
+        var analysis = new NarrativeFlowAnalysis
+        {
+            // Analyze overall narrative type
+            OverallNarrativeType = DetermineNarrativeType(content),
 
-        // Analyze overall narrative type
-        analysis.OverallNarrativeType = DetermineNarrativeType(content);
+            // Analyze temporal progression
+            TemporalProgression = DetermineTemporalProgression(content),
 
-        // Analyze temporal progression
-        analysis.TemporalProgression = DetermineTemporalProgression(content);
+            // Detect causal chains
+            CausalChain = await DetectCausalRelationshipsAsync(content, cancellationToken),
 
-        // Detect causal chains
-        analysis.CausalChain = await DetectCausalRelationshipsAsync(content, cancellationToken);
+            // Identify narrative elements
+            NarrativeElements = await IdentifyNarrativeArcElementsAsync(content, cancellationToken: cancellationToken),
 
-        // Identify narrative elements
-        analysis.NarrativeElements = await IdentifyNarrativeArcElementsAsync(content, cancellationToken: cancellationToken);
-
-        // Calculate quality scores
-        analysis.FlowCoherence = CalculateFlowCoherence(content);
+            // Calculate quality scores
+            FlowCoherence = CalculateFlowCoherence(content),
+        };
         analysis.LogicalConsistency = CalculateLogicalConsistency(content, analysis.CausalChain);
         analysis.TemporalConsistency = CalculateTemporalConsistency(content);
         analysis.NarrativeCompleteness = CalculateNarrativeCompleteness(content, analysis.NarrativeElements);
@@ -201,18 +338,24 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         // Identify narrative markers
         analysis.NarrativeMarkers = ExtractNarrativeMarkers(content);
 
-        _logger.LogDebug("Completed logical flow analysis with overall type: {NarrativeType}", analysis.OverallNarrativeType);
+        _logger.LogDebug(
+            "Completed logical flow analysis with overall type: {NarrativeType}",
+            analysis.OverallNarrativeType
+        );
         return analysis;
     }
 
     /// <summary>
-    /// Validates narrative-based segments for quality and coherence.
+    ///     Validates narrative-based segments for quality and coherence.
     /// </summary>
     public async Task<NarrativeSegmentationValidation> ValidateNarrativeSegmentsAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating {Count} narrative segments", segments.Count);
 
         var validation = new NarrativeSegmentationValidation();
@@ -232,44 +375,49 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         validation.TransitionQuality = CalculateOverallTransitionQuality(segments);
 
         // Calculate overall quality as weighted average
-        validation.OverallQuality = (
-            validation.FlowCoherence * 0.3 +
-            validation.LogicalConsistency * 0.25 +
-            validation.TemporalConsistency * 0.2 +
-            validation.NarrativeCompleteness * 0.15 +
-            validation.TransitionQuality * 0.1
-        );
+        validation.OverallQuality =
+            (validation.FlowCoherence * 0.3)
+            + (validation.LogicalConsistency * 0.25)
+            + (validation.TemporalConsistency * 0.2)
+            + (validation.NarrativeCompleteness * 0.15)
+            + (validation.TransitionQuality * 0.1);
 
         // Identify issues and generate recommendations
         validation.Issues = IdentifyValidationIssues(validation);
         validation.Recommendations = GenerateValidationRecommendations(validation);
 
-        _logger.LogDebug("Completed narrative validation with overall quality: {Quality:F2}", validation.OverallQuality);
+        _logger.LogDebug(
+            "Completed narrative validation with overall quality: {Quality:F2}",
+            validation.OverallQuality
+        );
         return validation;
     }
 
     /// <summary>
-    /// Identifies temporal sequences and chronological patterns in the content.
+    ///     Identifies temporal sequences and chronological patterns in the content.
     /// </summary>
     public Task<List<TemporalSequence>> IdentifyTemporalSequencesAsync(
         string content,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Identifying temporal sequences in content");
 
         var sequences = new List<TemporalSequence>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
 
             // Check for temporal markers
-            var temporalMarkers = TemporalMarkers.Where(marker =>
-                sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)).ToList();
+            var temporalMarkers = TemporalMarkers
+                .Where(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            if (temporalMarkers.Any())
+            if (temporalMarkers.Count != 0)
             {
                 var sequence = new TemporalSequence
                 {
@@ -278,7 +426,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                     TemporalMarkers = temporalMarkers,
                     SequentialOrder = i,
                     Confidence = CalculateTemporalConfidence(sentence, temporalMarkers),
-                    Type = DetermineTemporalType(sentence, temporalMarkers)
+                    Type = DetermineTemporalType(sentence, temporalMarkers),
                 };
 
                 sequences.Add(sequence);
@@ -290,18 +438,20 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
     }
 
     /// <summary>
-    /// Detects causal relationships between different parts of the document.
+    ///     Detects causal relationships between different parts of the document.
     /// </summary>
     public Task<List<CausalRelation>> DetectCausalRelationshipsAsync(
         string content,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Detecting causal relationships in content");
 
         var relations = new List<CausalRelation>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
@@ -321,7 +471,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                         EffectPosition = position + afterEffect,
                         CausalIndicator = marker,
                         Strength = CalculateCausalStrength(sentence, marker),
-                        Type = DetermineCausalType(marker)
+                        Type = DetermineCausalType(marker),
                     };
 
                     relations.Add(relation);
@@ -334,13 +484,15 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
     }
 
     /// <summary>
-    /// Identifies narrative arc elements (setup, development, climax, resolution) in the content.
+    ///     Identifies narrative arc elements (setup, development, climax, resolution) in the content.
     /// </summary>
     public Task<Dictionary<NarrativeFunction, List<int>>> IdentifyNarrativeArcElementsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Identifying narrative arc elements for document type {DocumentType}", documentType);
 
         var elements = new Dictionary<NarrativeFunction, List<int>>();
@@ -348,12 +500,12 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         // Initialize all functions with empty lists
         foreach (var function in Enum.GetValues<NarrativeFunction>())
         {
-            elements[function] = new List<int>();
+            elements[function] = [];
         }
 
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
@@ -376,7 +528,9 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         }
 
         // Remove empty entries
-        var nonEmptyElements = elements.Where(kvp => kvp.Value.Any()).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+        var nonEmptyElements = elements
+            .Where(kvp => kvp.Value.Count != 0)
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
 
         _logger.LogDebug("Identified narrative elements for {Count} functions", nonEmptyElements.Count);
         return Task.FromResult(nonEmptyElements);
@@ -384,20 +538,21 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
 
     #region Private Helper Methods
 
-    private List<NarrativeBoundary> DetectTemporalBoundaries(string content)
+    private static List<NarrativeBoundary> DetectTemporalBoundaries(string content)
     {
         var boundaries = new List<NarrativeBoundary>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
 
-            var foundMarkers = TemporalMarkers.Where(marker =>
-                sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)).ToList();
+            var foundMarkers = TemporalMarkers
+                .Where(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            if (foundMarkers.Any())
+            if (foundMarkers.Count != 0)
             {
                 var boundary = new NarrativeBoundary
                 {
@@ -406,7 +561,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                     TriggerPhrases = foundMarkers,
                     Confidence = CalculateTemporalConfidence(sentence, foundMarkers),
                     LogicalRelationship = LogicalRelationship.Sequential,
-                    TemporalRelationship = DetermineTemporalType(sentence, foundMarkers)
+                    TemporalRelationship = DetermineTemporalType(sentence, foundMarkers),
                 };
 
                 boundaries.Add(boundary);
@@ -416,20 +571,21 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return boundaries;
     }
 
-    private List<NarrativeBoundary> DetectCausalBoundaries(string content)
+    private static List<NarrativeBoundary> DetectCausalBoundaries(string content)
     {
         var boundaries = new List<NarrativeBoundary>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
 
-            var foundMarkers = CausalMarkers.Where(marker =>
-                sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)).ToList();
+            var foundMarkers = CausalMarkers
+                .Where(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            if (foundMarkers.Any())
+            if (foundMarkers.Count != 0)
             {
                 var boundary = new NarrativeBoundary
                 {
@@ -437,7 +593,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                     TransitionType = NarrativeTransitionType.Causal,
                     TriggerPhrases = foundMarkers,
                     Confidence = CalculateCausalBoundaryConfidence(sentence, foundMarkers),
-                    LogicalRelationship = LogicalRelationship.Causal
+                    LogicalRelationship = LogicalRelationship.Causal,
                 };
 
                 boundaries.Add(boundary);
@@ -447,20 +603,21 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return boundaries;
     }
 
-    private List<NarrativeBoundary> DetectLogicalBoundaries(string content)
+    private static List<NarrativeBoundary> DetectLogicalBoundaries(string content)
     {
         var boundaries = new List<NarrativeBoundary>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
 
-            var foundMarkers = LogicalMarkers.Where(marker =>
-                sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)).ToList();
+            var foundMarkers = LogicalMarkers
+                .Where(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            if (foundMarkers.Any())
+            if (foundMarkers.Count != 0)
             {
                 var boundary = new NarrativeBoundary
                 {
@@ -468,7 +625,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                     TransitionType = NarrativeTransitionType.Logical,
                     TriggerPhrases = foundMarkers,
                     Confidence = CalculateLogicalBoundaryConfidence(sentence, foundMarkers),
-                    LogicalRelationship = DetermineLogicalRelationship(foundMarkers)
+                    LogicalRelationship = DetermineLogicalRelationship(foundMarkers),
                 };
 
                 boundaries.Add(boundary);
@@ -478,12 +635,12 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return boundaries;
     }
 
-    private List<NarrativeBoundary> DetectFunctionalBoundaries(string content)
+    private static List<NarrativeBoundary> DetectFunctionalBoundaries(string content)
     {
         var boundaries = new List<NarrativeBoundary>();
         var sentences = SplitIntoSentences(content);
 
-        for (int i = 0; i < sentences.Length; i++)
+        for (var i = 0; i < sentences.Length; i++)
         {
             var sentence = sentences[i];
             var position = GetSentencePosition(content, sentences, i);
@@ -493,10 +650,11 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                 var function = functionKvp.Key;
                 var markers = functionKvp.Value;
 
-                var foundMarkers = markers.Where(marker =>
-                    sentence.Contains(marker, StringComparison.OrdinalIgnoreCase)).ToList();
+                var foundMarkers = markers
+                    .Where(marker => sentence.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
 
-                if (foundMarkers.Any())
+                if (foundMarkers.Count != 0)
                 {
                     var boundary = new NarrativeBoundary
                     {
@@ -505,7 +663,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                         Function = function,
                         TriggerPhrases = foundMarkers,
                         Confidence = CalculateFunctionalBoundaryConfidence(sentence, foundMarkers, function),
-                        LogicalRelationship = GetLogicalRelationshipForFunction(function)
+                        LogicalRelationship = GetLogicalRelationshipForFunction(function),
                     };
 
                     boundaries.Add(boundary);
@@ -517,14 +675,15 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return boundaries;
     }
 
-    private List<DocumentSegment> CreateSegmentsFromBoundaries(
+    private static List<DocumentSegment> CreateSegmentsFromBoundaries(
         string content,
         List<NarrativeBoundary> boundaries,
-        NarrativeSegmentationOptions options)
+        NarrativeSegmentationOptions options
+    )
     {
         var segments = new List<DocumentSegment>();
 
-        if (!boundaries.Any())
+        if (boundaries.Count == 0)
         {
             // No boundaries found, create a single segment
             var singleSegment = new DocumentSegment
@@ -538,21 +697,21 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                     ["segmentation_strategy"] = SegmentationStrategy.NarrativeBased.ToString(),
                     ["narrative_based"] = true,
                     ["boundary_count"] = 0,
-                    ["confidence"] = 0.5
-                }
+                    ["confidence"] = 0.5,
+                },
             };
-            return new List<DocumentSegment> { singleSegment };
+            return [singleSegment];
         }
 
         // Create segments from boundaries
-        for (int i = 0; i < boundaries.Count; i++)
+        for (var i = 0; i < boundaries.Count; i++)
         {
             var startPos = i == 0 ? 0 : boundaries[i - 1].Position;
             var endPos = boundaries[i].Position;
 
             if (endPos > startPos)
             {
-                var segmentContent = content.Substring(startPos, endPos - startPos).Trim();
+                var segmentContent = content[startPos..endPos].Trim();
 
                 if (segmentContent.Length >= options.MinSegmentSize)
                 {
@@ -571,13 +730,14 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                             ["boundary_confidence"] = boundaries[i].Confidence,
                             ["transition_type"] = boundaries[i].TransitionType.ToString(),
                             ["narrative_function"] = boundaries[i].Function.ToString(),
-                            ["logical_relationship"] = boundaries[i].LogicalRelationship.ToString()
-                        }
+                            ["logical_relationship"] = boundaries[i].LogicalRelationship.ToString(),
+                        },
                     };
 
                     if (boundaries[i].TemporalRelationship.HasValue)
                     {
-                        segment.Metadata["temporal_relationship"] = boundaries[i].TemporalRelationship!.Value.ToString();
+                        segment.Metadata["temporal_relationship"] = boundaries[i]
+                            .TemporalRelationship!.Value.ToString();
                     }
 
                     segments.Add(segment);
@@ -586,9 +746,9 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         }
 
         // Add final segment if needed
-        if (boundaries.Any() && boundaries.Last().Position < content.Length)
+        if (boundaries.Count != 0 && boundaries.Last().Position < content.Length)
         {
-            var finalContent = content.Substring(boundaries.Last().Position).Trim();
+            var finalContent = content[boundaries.Last().Position..].Trim();
             if (finalContent.Length >= options.MinSegmentSize)
             {
                 var finalSegment = new DocumentSegment
@@ -603,8 +763,8 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                         ["narrative_based"] = true,
                         ["start_position"] = boundaries.Last().Position,
                         ["end_position"] = content.Length,
-                        ["is_final_segment"] = true
-                    }
+                        ["is_final_segment"] = true,
+                    },
                 };
 
                 segments.Add(finalSegment);
@@ -618,7 +778,8 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         List<DocumentSegment> segments,
         string content,
         DocumentType documentType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // Implementation for LLM enhancement would go here
         // For now, return segments as-is
@@ -626,27 +787,28 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return Task.FromResult(segments);
     }
 
-    private Task<List<DocumentSegment>> MergeWeakNarrativeTransitionsAsync(
+    private static Task<List<DocumentSegment>> MergeWeakNarrativeTransitionsAsync(
         List<DocumentSegment> segments,
         NarrativeSegmentationOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var mergedSegments = new List<DocumentSegment>();
         DocumentSegment? currentSegment = null;
 
         foreach (var segment in segments)
         {
-            var confidence = segment.Metadata.ContainsKey("boundary_confidence")
-                ? Convert.ToDouble(segment.Metadata["boundary_confidence"])
+            var confidence = segment.Metadata.TryGetValue("boundary_confidence", out var confidenceValue)
+                ? Convert.ToDouble(confidenceValue)
                 : 1.0;
 
             if (confidence < options.MinNarrativeConfidence && currentSegment != null)
             {
                 // Merge with current segment
                 currentSegment.Content += " " + segment.Content;
-                currentSegment.Metadata["merged_segments"] = (currentSegment.Metadata.ContainsKey("merged_segments")
-                    ? (int)currentSegment.Metadata["merged_segments"]
-                    : 1) + 1;
+                currentSegment.Metadata["merged_segments"] =
+                    (currentSegment.Metadata.TryGetValue("merged_segments", out var mergedCount) ? (int)mergedCount : 1)
+                    + 1;
             }
             else
             {
@@ -654,6 +816,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                 {
                     mergedSegments.Add(currentSegment);
                 }
+
                 currentSegment = segment;
             }
         }
@@ -664,7 +827,7 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         }
 
         // Update sequence numbers
-        for (int i = 0; i < mergedSegments.Count; i++)
+        for (var i = 0; i < mergedSegments.Count; i++)
         {
             mergedSegments[i].SequenceNumber = i;
         }
@@ -672,7 +835,10 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return Task.FromResult(mergedSegments);
     }
 
-    private List<DocumentSegment> ApplyFinalQualityChecks(List<DocumentSegment> segments, NarrativeSegmentationOptions options)
+    private static List<DocumentSegment> ApplyFinalQualityChecks(
+        List<DocumentSegment> segments,
+        NarrativeSegmentationOptions options
+    )
     {
         var qualitySegments = new List<DocumentSegment>();
 
@@ -686,11 +852,10 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
                 {
                     CoherenceScore = CalculateSegmentCoherence(segment.Content),
                     IndependenceScore = CalculateSegmentIndependence(segment.Content),
-                    TopicConsistencyScore = CalculateNarrativeConsistency(segment.Content)
+                    TopicConsistencyScore = CalculateNarrativeConsistency(segment.Content),
                 };
 
-                segment.Quality.PassesQualityThreshold =
-                    segment.Quality.CoherenceScore >= options.MinFlowCoherence;
+                segment.Quality.PassesQualityThreshold = segment.Quality.CoherenceScore >= options.MinFlowCoherence;
 
                 qualitySegments.Add(segment);
             }
@@ -700,98 +865,125 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
     }
 
     // Utility methods for analysis
-    private string[] SplitIntoSentences(string content)
+    private static string[] SplitIntoSentences(string content)
     {
-        return Regex.Split(content, @"(?<=[.!?])\s+")
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .ToArray();
+        return [.. MyRegex().Split(content).Where(s => !string.IsNullOrWhiteSpace(s))];
     }
 
-    private int GetSentencePosition(string content, string[] sentences, int index)
+    private static int GetSentencePosition(string content, string[] sentences, int index)
     {
         var position = 0;
-        for (int i = 0; i < index; i++)
+        for (var i = 0; i < index; i++)
         {
             position = content.IndexOf(sentences[i], position) + sentences[i].Length;
         }
+
         return content.IndexOf(sentences[index], position);
     }
 
-    private double CalculateTemporalConfidence(string sentence, List<string> markers)
+    private static double CalculateTemporalConfidence(string sentence, List<string> markers)
     {
         var baseConfidence = 0.75; // Increased from 0.6 to give temporal boundaries higher priority
         var markerBonus = Math.Min(markers.Count * 0.1, 0.2);
         return Math.Min(baseConfidence + markerBonus, 1.0);
     }
 
-    private double CalculateCausalBoundaryConfidence(string sentence, List<string> markers)
+    private static double CalculateCausalBoundaryConfidence(string sentence, List<string> markers)
     {
         var baseConfidence = 0.7;
         var markerBonus = Math.Min(markers.Count * 0.1, 0.2);
         return Math.Min(baseConfidence + markerBonus, 1.0);
     }
 
-    private double CalculateLogicalBoundaryConfidence(string sentence, List<string> markers)
+    private static double CalculateLogicalBoundaryConfidence(string sentence, List<string> markers)
     {
         var baseConfidence = 0.65;
         var markerBonus = Math.Min(markers.Count * 0.1, 0.25);
         return Math.Min(baseConfidence + markerBonus, 1.0);
     }
 
-    private double CalculateFunctionalBoundaryConfidence(string sentence, List<string> markers, NarrativeFunction function)
+    private static double CalculateFunctionalBoundaryConfidence(
+        string sentence,
+        List<string> markers,
+        NarrativeFunction function
+    )
     {
         var baseConfidence = function switch
         {
             NarrativeFunction.Setup => 0.8,
             NarrativeFunction.Resolution => 0.8,
             NarrativeFunction.Climax => 0.75,
-            _ => 0.65
+            _ => 0.65,
         };
 
         var markerBonus = Math.Min(markers.Count * 0.05, 0.15);
         return Math.Min(baseConfidence + markerBonus, 1.0);
     }
 
-    private TemporalRelationship DetermineTemporalType(string sentence, List<string> markers)
+    private static TemporalRelationship DetermineTemporalType(string sentence, List<string> markers)
     {
-        if (markers.Any(m => new[] { "then", "next", "after", "subsequently" }.Contains(m.ToLower())))
+        if (markers.Any(m => sourceArray.Contains(m.ToLower())))
+        {
             return TemporalRelationship.Chronological;
-        if (markers.Any(m => new[] { "meanwhile", "simultaneously", "while" }.Contains(m.ToLower())))
+        }
+
+        if (markers.Any(m => sourceArray0.Contains(m.ToLower())))
+        {
             return TemporalRelationship.Simultaneous;
-        if (markers.Any(m => new[] { "previously", "earlier", "before" }.Contains(m.ToLower())))
+        }
+
+        if (markers.Any(m => sourceArray1.Contains(m.ToLower())))
+        {
             return TemporalRelationship.Flashback;
+        }
 
         return TemporalRelationship.Chronological; // Default
     }
 
-    private CausalType DetermineCausalType(string marker)
+    private static CausalType DetermineCausalType(string marker)
     {
         var lowerMarker = marker.ToLower();
-        if (new[] { "because", "since", "due to" }.Contains(lowerMarker))
+        if (sourceArray2.Contains(lowerMarker))
+        {
             return CausalType.Direct;
-        if (new[] { "if", "unless", "provided that" }.Contains(lowerMarker))
+        }
+
+        if (sourceArray3.Contains(lowerMarker))
+        {
             return CausalType.Conditional;
-        if (new[] { "enables", "allows", "permits" }.Contains(lowerMarker))
+        }
+
+        if (sourceArray4.Contains(lowerMarker))
+        {
             return CausalType.Necessary;
+        }
 
         return CausalType.Direct; // Default
     }
 
-    private LogicalRelationship DetermineLogicalRelationship(List<string> markers)
+    private static LogicalRelationship DetermineLogicalRelationship(List<string> markers)
     {
         var lowerMarkers = markers.Select(m => m.ToLower()).ToList();
 
-        if (lowerMarkers.Any(m => new[] { "however", "but", "although" }.Contains(m)))
+        if (lowerMarkers.Any(m => sourceArray5.Contains(m)))
+        {
             return LogicalRelationship.Contrasting;
-        if (lowerMarkers.Any(m => new[] { "furthermore", "moreover", "additionally" }.Contains(m)))
+        }
+
+        if (lowerMarkers.Any(m => sourceArray6.Contains(m)))
+        {
             return LogicalRelationship.Supporting;
-        if (lowerMarkers.Any(m => new[] { "for example", "for instance", "such as" }.Contains(m)))
+        }
+
+        if (lowerMarkers.Any(m => sourceArray7.Contains(m)))
+        {
             return LogicalRelationship.Explanatory;
+        }
 
         return LogicalRelationship.Sequential; // Default
     }
 
-    private LogicalRelationship GetLogicalRelationshipForFunction(NarrativeFunction function)
+    private static LogicalRelationship GetLogicalRelationshipForFunction(NarrativeFunction function)
     {
         return function switch
         {
@@ -799,11 +991,11 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
             NarrativeFunction.Development => LogicalRelationship.Sequential,
             NarrativeFunction.Complication => LogicalRelationship.Contrasting,
             NarrativeFunction.Resolution => LogicalRelationship.Causal,
-            _ => LogicalRelationship.Sequential
+            _ => LogicalRelationship.Sequential,
         };
     }
 
-    private double CalculateCausalStrength(string sentence, string marker)
+    private static double CalculateCausalStrength(string sentence, string marker)
     {
         var baseStrength = marker.ToLower() switch
         {
@@ -811,50 +1003,68 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
             "therefore" => 0.85,
             "consequently" => 0.8,
             "if" => 0.6,
-            _ => 0.7
+            _ => 0.7,
         };
 
         return baseStrength;
     }
 
-    private NarrativeType DetermineNarrativeType(string content)
+    private static NarrativeType DetermineNarrativeType(string content)
     {
-        var temporalCount = TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var temporalCount = TemporalMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
         var causalCount = CausalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
         var logicalCount = LogicalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
         if (temporalCount > causalCount && temporalCount > logicalCount)
+        {
             return NarrativeType.Sequential;
+        }
+
         if (causalCount > temporalCount && causalCount > logicalCount)
+        {
             return NarrativeType.Causal;
+        }
+
         if (logicalCount > 0)
+        {
             return NarrativeType.Argumentative;
+        }
 
         return NarrativeType.Descriptive; // Default
     }
 
-    private TemporalProgression DetermineTemporalProgression(string content)
+    private static TemporalProgression DetermineTemporalProgression(string content)
     {
         var linearMarkers = new[] { "first", "then", "next", "finally" };
         var nonLinearMarkers = new[] { "previously", "meanwhile", "earlier" };
 
         var linearCount = linearMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
-        var nonLinearCount = nonLinearMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var nonLinearCount = nonLinearMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
 
         if (linearCount > nonLinearCount * 2)
+        {
             return TemporalProgression.Linear;
+        }
+
         if (nonLinearCount > 0)
+        {
             return TemporalProgression.NonLinear;
+        }
 
         return TemporalProgression.Static; // Default
     }
 
-    private double CalculateFlowCoherence(string content)
+    private static double CalculateFlowCoherence(string content)
     {
         // Simple heuristic based on transition markers
-        var markerCount = TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase)) +
-                         CausalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase)) +
-                         LogicalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var markerCount =
+            TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            + CausalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            + LogicalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
         var sentences = SplitIntoSentences(content);
         var markerDensity = sentences.Length > 0 ? (double)markerCount / sentences.Length : 0;
@@ -862,37 +1072,49 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return Math.Min(markerDensity * 2, 1.0); // Scale to 0-1
     }
 
-    private double CalculateLogicalConsistency(string content, List<CausalRelation> causalChain)
+    private static double CalculateLogicalConsistency(string content, List<CausalRelation> causalChain)
     {
         // Base score from causal chain strength
-        var avgCausalStrength = causalChain.Any() ? causalChain.Average(c => c.Strength) : 0.5;
+        var avgCausalStrength = causalChain.Count != 0 ? causalChain.Average(c => c.Strength) : 0.5;
 
         // Factor in logical marker presence
-        var logicalMarkerCount = LogicalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var logicalMarkerCount = LogicalMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
         var sentences = SplitIntoSentences(content);
         var logicalDensity = sentences.Length > 0 ? (double)logicalMarkerCount / sentences.Length : 0;
 
         return (avgCausalStrength * 0.7) + (Math.Min(logicalDensity * 2, 1.0) * 0.3);
     }
 
-    private double CalculateTemporalConsistency(string content)
+    private static double CalculateTemporalConsistency(string content)
     {
-        var temporalMarkerCount = TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var temporalMarkerCount = TemporalMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
         var sentences = SplitIntoSentences(content);
         var temporalDensity = sentences.Length > 0 ? (double)temporalMarkerCount / sentences.Length : 0;
 
         return Math.Min(temporalDensity * 3, 1.0); // Scale to 0-1
     }
 
-    private double CalculateNarrativeCompleteness(string content, Dictionary<NarrativeFunction, List<int>> elements)
+    private static double CalculateNarrativeCompleteness(
+        string content,
+        Dictionary<NarrativeFunction, List<int>> elements
+    )
     {
-        var essentialFunctions = new[] { NarrativeFunction.Setup, NarrativeFunction.Development, NarrativeFunction.Resolution };
-        var presentCount = essentialFunctions.Count(func => elements.ContainsKey(func) && elements[func].Any());
+        var essentialFunctions = new[]
+        {
+            NarrativeFunction.Setup,
+            NarrativeFunction.Development,
+            NarrativeFunction.Resolution,
+        };
+        var presentCount = essentialFunctions.Count(func => elements.ContainsKey(func) && elements[func].Count != 0);
 
         return (double)presentCount / essentialFunctions.Length;
     }
 
-    private List<string> ExtractNarrativeMarkers(string content)
+    private static List<string> ExtractNarrativeMarkers(string content)
     {
         var markers = new List<string>();
 
@@ -900,12 +1122,13 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         markers.AddRange(CausalMarkers.Where(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase)));
         markers.AddRange(LogicalMarkers.Where(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase)));
 
-        return markers.Distinct().ToList();
+        return [.. markers.Distinct()];
     }
 
-    private Task<NarrativeSegmentValidationResult> ValidateIndividualSegmentAsync(
+    private static Task<NarrativeSegmentValidationResult> ValidateIndividualSegmentAsync(
         DocumentSegment segment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var result = new NarrativeSegmentValidationResult
         {
@@ -914,29 +1137,32 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
             LogicalConsistency = CalculateSegmentLogicalConsistency(segment.Content),
             TemporalConsistency = CalculateSegmentTemporalConsistency(segment.Content),
             NarrativeFunctionClarity = CalculateNarrativeFunctionClarity(segment),
-            TransitionQuality = CalculateSegmentTransitionQuality(segment)
+            TransitionQuality = CalculateSegmentTransitionQuality(segment),
         };
 
         // Add issues if scores are low
         if (result.FlowCoherence < 0.5)
         {
-            result.Issues.Add(new ValidationIssue
-            {
-                Type = ValidationIssueType.PoorCoherence,
-                Description = "Segment shows low narrative flow coherence",
-                Severity = Models.ValidationSeverity.Warning,
-                Position = 0
-            });
+            result.Issues.Add(
+                new ValidationIssue
+                {
+                    Type = ValidationIssueType.PoorCoherence,
+                    Description = "Segment shows low narrative flow coherence",
+                    Severity = ValidationSeverity.Warning,
+                    Position = 0,
+                }
+            );
         }
 
         return Task.FromResult(result);
     }
 
-    private double CalculateSegmentCoherence(string content)
+    private static double CalculateSegmentCoherence(string content)
     {
         // Simple heuristic based on narrative markers
-        var markerCount = TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase)) +
-                         CausalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var markerCount =
+            TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            + CausalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
         var sentences = SplitIntoSentences(content);
         var coherenceScore = sentences.Length > 0 ? Math.Min((double)markerCount / sentences.Length * 2, 1.0) : 0.5;
@@ -944,26 +1170,36 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return coherenceScore;
     }
 
-    private double CalculateSegmentIndependence(string content)
+    private static double CalculateSegmentIndependence(string content)
     {
         // Segments with clear beginnings and endings score higher
-        var hasIntro = FunctionMarkers[NarrativeFunction.Setup].Any(marker =>
-            content.Contains(marker, StringComparison.OrdinalIgnoreCase));
-        var hasConclusion = FunctionMarkers[NarrativeFunction.Resolution].Any(marker =>
-            content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var hasIntro = FunctionMarkers[NarrativeFunction.Setup]
+            .Any(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var hasConclusion = FunctionMarkers[NarrativeFunction.Resolution]
+            .Any(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
         var baseScore = 0.6;
-        if (hasIntro) baseScore += 0.2;
-        if (hasConclusion) baseScore += 0.2;
+        if (hasIntro)
+        {
+            baseScore += 0.2;
+        }
+
+        if (hasConclusion)
+        {
+            baseScore += 0.2;
+        }
 
         return Math.Min(baseScore, 1.0);
     }
 
-    private double CalculateNarrativeConsistency(string content)
+    private static double CalculateNarrativeConsistency(string content)
     {
         // Check for consistent narrative voice and flow
         var sentences = SplitIntoSentences(content);
-        if (sentences.Length <= 1) return 1.0;
+        if (sentences.Length <= 1)
+        {
+            return 1.0;
+        }
 
         // Simple heuristic: presence of connecting words
         var connectingWords = new[] { "and", "but", "however", "therefore", "then", "also" };
@@ -972,30 +1208,36 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return Math.Min((double)connectionCount / sentences.Length * 2, 1.0);
     }
 
-    private double CalculateSegmentLogicalConsistency(string content)
+    private static double CalculateSegmentLogicalConsistency(string content)
     {
-        var logicalMarkerCount = LogicalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var logicalMarkerCount = LogicalMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
         var sentences = SplitIntoSentences(content);
 
         return sentences.Length > 0 ? Math.Min((double)logicalMarkerCount / sentences.Length * 2, 1.0) : 0.5;
     }
 
-    private double CalculateSegmentTemporalConsistency(string content)
+    private static double CalculateSegmentTemporalConsistency(string content)
     {
-        var temporalMarkerCount = TemporalMarkers.Count(marker => content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        var temporalMarkerCount = TemporalMarkers.Count(marker =>
+            content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+        );
         var sentences = SplitIntoSentences(content);
 
         return sentences.Length > 0 ? Math.Min((double)temporalMarkerCount / sentences.Length * 2, 1.0) : 0.5;
     }
 
-    private double CalculateNarrativeFunctionClarity(DocumentSegment segment)
+    private static double CalculateNarrativeFunctionClarity(DocumentSegment segment)
     {
         // Check if the segment has clear narrative function indicators
-        if (segment.Metadata.ContainsKey("narrative_function"))
+        if (segment.Metadata.TryGetValue("narrative_function", out var value))
         {
-            var function = Enum.Parse<NarrativeFunction>(segment.Metadata["narrative_function"].ToString()!);
+            var function = Enum.Parse<NarrativeFunction>(value.ToString()!);
             var markers = FunctionMarkers[function];
-            var markerCount = markers.Count(marker => segment.Content.Contains(marker, StringComparison.OrdinalIgnoreCase));
+            var markerCount = markers.Count(marker =>
+                segment.Content.Contains(marker, StringComparison.OrdinalIgnoreCase)
+            );
 
             return Math.Min(markerCount * 0.3, 1.0);
         }
@@ -1003,39 +1245,33 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
         return 0.5; // Default if no function specified
     }
 
-    private double CalculateSegmentTransitionQuality(DocumentSegment segment)
+    private static double CalculateSegmentTransitionQuality(DocumentSegment segment)
     {
         // Check transition quality based on boundary confidence
-        if (segment.Metadata.ContainsKey("boundary_confidence"))
+        if (segment.Metadata.TryGetValue("boundary_confidence", out var value))
         {
-            return Convert.ToDouble(segment.Metadata["boundary_confidence"]);
+            return Convert.ToDouble(value);
         }
 
         return 0.6; // Default
     }
 
-    private double CalculateOverallFlowCoherence(List<DocumentSegment> segments, string originalContent)
+    private static double CalculateOverallFlowCoherence(List<DocumentSegment> segments, string originalContent)
     {
-        if (!segments.Any()) return 0;
-
-        return segments.Average(s => CalculateSegmentCoherence(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentCoherence(s.Content));
     }
 
-    private double CalculateOverallLogicalConsistency(List<DocumentSegment> segments)
+    private static double CalculateOverallLogicalConsistency(List<DocumentSegment> segments)
     {
-        if (!segments.Any()) return 0;
-
-        return segments.Average(s => CalculateSegmentLogicalConsistency(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentLogicalConsistency(s.Content));
     }
 
-    private double CalculateOverallTemporalConsistency(List<DocumentSegment> segments)
+    private static double CalculateOverallTemporalConsistency(List<DocumentSegment> segments)
     {
-        if (!segments.Any()) return 0;
-
-        return segments.Average(s => CalculateSegmentTemporalConsistency(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentTemporalConsistency(s.Content));
     }
 
-    private double CalculateOverallNarrativeCompleteness(List<DocumentSegment> segments, string originalContent)
+    private static double CalculateOverallNarrativeCompleteness(List<DocumentSegment> segments, string originalContent)
     {
         // Check if essential narrative functions are represented
         var functions = segments
@@ -1044,65 +1280,79 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
             .Distinct()
             .ToList();
 
-        var essentialFunctions = new[] { NarrativeFunction.Setup, NarrativeFunction.Development, NarrativeFunction.Resolution };
-        var presentCount = essentialFunctions.Count(func => functions.Contains(func));
+        var essentialFunctions = new[]
+        {
+            NarrativeFunction.Setup,
+            NarrativeFunction.Development,
+            NarrativeFunction.Resolution,
+        };
+        var presentCount = essentialFunctions.Count(functions.Contains);
 
         return (double)presentCount / essentialFunctions.Length;
     }
 
-    private double CalculateOverallTransitionQuality(List<DocumentSegment> segments)
+    private static double CalculateOverallTransitionQuality(List<DocumentSegment> segments)
     {
-        if (!segments.Any()) return 0;
+        if (segments.Count == 0)
+        {
+            return 0;
+        }
 
         var transitionScores = segments
             .Where(s => s.Metadata.ContainsKey("boundary_confidence"))
             .Select(s => Convert.ToDouble(s.Metadata["boundary_confidence"]))
             .ToList();
 
-        return transitionScores.Any() ? transitionScores.Average() : 0.6;
+        return transitionScores.Count != 0 ? transitionScores.Average() : 0.6;
     }
 
-    private List<ValidationIssue> IdentifyValidationIssues(NarrativeSegmentationValidation validation)
+    private static List<ValidationIssue> IdentifyValidationIssues(NarrativeSegmentationValidation validation)
     {
         var issues = new List<ValidationIssue>();
 
         if (validation.FlowCoherence < 0.5)
         {
-            issues.Add(new ValidationIssue
-            {
-                Type = ValidationIssueType.PoorCoherence,
-                Description = "Overall narrative flow coherence is low",
-                Severity = Models.ValidationSeverity.Warning,
-                Position = 0
-            });
+            issues.Add(
+                new ValidationIssue
+                {
+                    Type = ValidationIssueType.PoorCoherence,
+                    Description = "Overall narrative flow coherence is low",
+                    Severity = ValidationSeverity.Warning,
+                    Position = 0,
+                }
+            );
         }
 
         if (validation.LogicalConsistency < 0.5)
         {
-            issues.Add(new ValidationIssue
-            {
-                Type = ValidationIssueType.UnclearBoundaries,
-                Description = "Logical consistency across segments needs improvement",
-                Severity = Models.ValidationSeverity.Warning,
-                Position = 0
-            });
+            issues.Add(
+                new ValidationIssue
+                {
+                    Type = ValidationIssueType.UnclearBoundaries,
+                    Description = "Logical consistency across segments needs improvement",
+                    Severity = ValidationSeverity.Warning,
+                    Position = 0,
+                }
+            );
         }
 
         if (validation.NarrativeCompleteness < 0.6)
         {
-            issues.Add(new ValidationIssue
-            {
-                Type = ValidationIssueType.MissingContext,
-                Description = "Narrative structure appears incomplete",
-                Severity = Models.ValidationSeverity.Info,
-                Position = 0
-            });
+            issues.Add(
+                new ValidationIssue
+                {
+                    Type = ValidationIssueType.MissingContext,
+                    Description = "Narrative structure appears incomplete",
+                    Severity = ValidationSeverity.Info,
+                    Position = 0,
+                }
+            );
         }
 
         return issues;
     }
 
-    private List<string> GenerateValidationRecommendations(NarrativeSegmentationValidation validation)
+    private static List<string> GenerateValidationRecommendations(NarrativeSegmentationValidation validation)
     {
         var recommendations = new List<string>();
 
@@ -1128,6 +1378,9 @@ public class NarrativeBasedSegmentationService : INarrativeBasedSegmentationServ
 
         return recommendations;
     }
+
+    [GeneratedRegex(@"(?<=[.!?])\s+")]
+    private static partial Regex MyRegex();
 
     #endregion
 }

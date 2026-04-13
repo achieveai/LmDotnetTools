@@ -8,8 +8,10 @@ public enum ToolChoiceEnum
 {
     [JsonPropertyName("auto")]
     Auto,
+
     [JsonPropertyName("none")]
     None,
+
     [JsonPropertyName("any")]
-    Any
+    Any,
 }

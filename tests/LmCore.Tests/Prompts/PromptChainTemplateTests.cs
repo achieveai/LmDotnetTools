@@ -20,11 +20,11 @@ public class PromptChainTemplateTests
         // Arrange
         var promptName = "TemplateChainPrompt";
         var variables = new Dictionary<string, object>
-    {
-      { "name", "John" },
-      { "company", "AchieveAI" },
-      { "topic", "machine learning" }
-    };
+        {
+            { "name", "John" },
+            { "company", "AchieveAI" },
+            { "topic", "machine learning" },
+        };
 
         // Act
         var promptChain = _promptReader.GetPromptChain(promptName);
@@ -49,9 +49,12 @@ public class PromptChainTemplateTests
         // Arrange
         var promptName = "TemplateChainPromptWithList";
         var variables = new Dictionary<string, object>
-    {
-      { "interests", new List<string> { "AI", "Programming", "Science" } }
-    };
+        {
+            {
+                "interests",
+                new List<string> { "AI", "Programming", "Science" }
+            },
+        };
 
         // Act
         var promptChain = _promptReader.GetPromptChain(promptName);
@@ -74,7 +77,10 @@ public class PromptChainTemplateTests
 
         // Check assistant message with joined interests
         Assert.Equal("assistant", renderedMessages[2].Role.ToString().ToLower());
-        Assert.Contains("Based on your interests in AI, Programming, Science", ((ICanGetText)renderedMessages[2]).GetText());
+        Assert.Contains(
+            "Based on your interests in AI, Programming, Science",
+            ((ICanGetText)renderedMessages[2]).GetText()
+        );
     }
 
     [Fact]
@@ -83,18 +89,18 @@ public class PromptChainTemplateTests
         // Arrange
         var promptName = "TemplateChainPromptWithDictionary";
         var variables = new Dictionary<string, object>
-    {
-      { "company", "AchieveAI" },
-      {
-        "profile",
-        new Dictionary<string, object>
         {
-          { "Name", "Jane Smith" },
-          { "Age", "28" },
-          { "Interests", "Technology" }
-        }
-      }
-    };
+            { "company", "AchieveAI" },
+            {
+                "profile",
+                new Dictionary<string, object>
+                {
+                    { "Name", "Jane Smith" },
+                    { "Age", "28" },
+                    { "Interests", "Technology" },
+                }
+            },
+        };
 
         // Act
         var promptChain = _promptReader.GetPromptChain(promptName);
@@ -152,6 +158,6 @@ public class PromptChainTemplateTests
         var promptChain = _promptReader.GetPromptChain(promptName);
 
         // Act & Assert
-        Assert.Throws<NotSupportedException>(() => promptChain.PromptText());
+        _ = Assert.Throws<NotSupportedException>(() => promptChain.PromptText());
     }
 }

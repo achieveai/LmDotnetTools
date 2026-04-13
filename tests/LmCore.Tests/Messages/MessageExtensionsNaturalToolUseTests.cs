@@ -1,7 +1,3 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using Xunit;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 
 public class MessageExtensionsNaturalToolUseTests
@@ -10,19 +6,12 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithToolsCallAggregateMessage_TransformsCorrectly()
     {
         // Arrange
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = ImmutableList.Create(toolCall),
-            Role = Role.Assistant
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall], Role = Role.Assistant };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult)
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
@@ -30,7 +19,7 @@ public class MessageExtensionsNaturalToolUseTests
         var result = aggregateMessage.ToNaturalToolUse();
 
         // Assert
-        Assert.IsType<TextMessage>(result);
+        _ = Assert.IsType<TextMessage>(result);
         var textMessage = (TextMessage)result;
         Assert.Contains("<tool_call name=\"GetWeather\">", textMessage.Text);
         Assert.Contains("<tool_response name=\"GetWeather\">", textMessage.Text);
@@ -43,11 +32,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithNonAggregateMessage_ReturnsOriginalMessage()
     {
         // Arrange
-        var textMessage = new TextMessage
-        {
-            Text = "Hello, world!",
-            Role = Role.User
-        };
+        var textMessage = new TextMessage { Text = "Hello, world!", Role = Role.User };
 
         // Act
         var result = textMessage.ToNaturalToolUse();
@@ -63,7 +48,7 @@ public class MessageExtensionsNaturalToolUseTests
         IMessage nullMessage = null!;
 
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => nullMessage.ToNaturalToolUse());
+        _ = Assert.Throws<ArgumentNullException>(nullMessage.ToNaturalToolUse);
     }
 
     [Fact]
@@ -72,10 +57,10 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var textMessage = new TextMessage { Text = "Hello", Role = Role.User };
 
-        var toolCall = new ToolCall("TestFunction", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "test result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[] { textMessage, aggregateMessage };
@@ -86,7 +71,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Assert
         Assert.Equal(2, results.Count);
         Assert.Same(textMessage, results[0]); // First message unchanged
-        Assert.IsType<TextMessage>(results[1]); // Second message transformed
+        _ = Assert.IsType<TextMessage>(results[1]); // Second message transformed
         Assert.Contains("<tool_call name=\"TestFunction\">", ((TextMessage)results[1]).Text);
     }
 
@@ -94,23 +79,15 @@ public class MessageExtensionsNaturalToolUseTests
     public void CombineAsNaturalToolUse_WithMixedMessages_CombinesCorrectly()
     {
         // Arrange
-        var prefixMessage = new TextMessage
-        {
-            Text = "Let me check that for you.",
-            Role = Role.Assistant
-        };
+        var prefixMessage = new TextMessage { Text = "Let me check that for you.", Role = Role.Assistant };
 
-        var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
+        var toolCall = new ToolCall { FunctionName = "CheckWeather", FunctionArgs = "{\"city\":\"London\"}" };
         var toolResult = new ToolCallResult(null, "Cloudy, 18°C");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
-        var suffixMessage = new TextMessage
-        {
-            Text = "Hope that helps!",
-            Role = Role.Assistant
-        };
+        var suffixMessage = new TextMessage { Text = "Hope that helps!", Role = Role.Assistant };
 
         var messages = new IMessage[] { prefixMessage, aggregateMessage, suffixMessage };
 
@@ -144,7 +121,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void CombineAsNaturalToolUse_WithEmptyCollection_ReturnsEmptyTextMessage()
     {
         // Arrange
-        var emptyMessages = new IMessage[0];
+        var emptyMessages = Array.Empty<IMessage>();
 
         // Act
         var result = emptyMessages.CombineAsNaturalToolUse();
@@ -158,16 +135,16 @@ public class MessageExtensionsNaturalToolUseTests
     public void ContainsTransformableToolCalls_WithAggregateMessage_ReturnsTrue()
     {
         // Arrange
-        var toolCall = new ToolCall("TestFunc", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunc", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            aggregateMessage
+            aggregateMessage,
         };
 
         // Act
@@ -184,7 +161,7 @@ public class MessageExtensionsNaturalToolUseTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new TextMessage { Text = "World", Role = Role.Assistant }
+            new TextMessage { Text = "World", Role = Role.Assistant },
         };
 
         // Act
@@ -211,10 +188,10 @@ public class MessageExtensionsNaturalToolUseTests
     public void IsTransformableToolCall_WithAggregateMessage_ReturnsTrue()
     {
         // Arrange
-        var toolCall = new ToolCall("TestFunc", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunc", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -241,10 +218,10 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithInvalidAggregateMessage_ReturnsOriginalMessage()
     {
         // Arrange - Create an aggregate message that might cause transformation to fail
-        var toolCall = new ToolCall(null, null); // Invalid data
+        var toolCall = new ToolCall { FunctionName = null, FunctionArgs = null }; // Invalid data
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -253,7 +230,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Assert - Should still work due to graceful handling in transformer
         Assert.NotNull(result);
         // The transformer handles null function names gracefully, so this should actually transform
-        Assert.IsType<TextMessage>(result);
+        _ = Assert.IsType<TextMessage>(result);
     }
 
     [Fact]
@@ -263,7 +240,7 @@ public class MessageExtensionsNaturalToolUseTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "First message", Role = Role.User },
-            new TextMessage { Text = "Second message", Role = Role.Assistant }
+            new TextMessage { Text = "Second message", Role = Role.Assistant },
         };
 
         // Act

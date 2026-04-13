@@ -1,32 +1,38 @@
 using System.Collections.Immutable;
+using System.Text;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 /// <summary>
-/// Represents a model's internal chain-of-thought or reasoning text. Some providers (OpenAI o-series, DeepSeek-R, Anthropic Claude) return this
-/// alongside the assistant's answer. Keeping it in a dedicated message lets callers decide whether to display, log or
-/// omit the content.
+///     Represents a model's internal chain-of-thought or reasoning text. Some providers (OpenAI o-series, DeepSeek-R,
+///     Anthropic Claude) return this
+///     alongside the assistant's answer. Keeping it in a dedicated message lets callers decide whether to display, log or
+///     omit the content.
 /// </summary>
 [JsonConverter(typeof(ReasoningMessageJsonConverter))]
 public record ReasoningMessage : IMessage, ICanGetText
 {
     /// <summary>
-    /// The raw reasoning text provided by the model.  If <see cref="Visibility"/> is <see cref="ReasoningVisibility.Encrypted"/>,
-    /// the value is an opaque blob that must be preserved verbatim but should NOT be displayed to users.
+    ///     The raw reasoning text provided by the model.  If <see cref="Visibility" /> is
+    ///     <see cref="ReasoningVisibility.Encrypted" />,
+    ///     the value is an opaque blob that must be preserved verbatim but should NOT be displayed to users.
     /// </summary>
     [JsonPropertyName("reasoning")]
     public required string Reasoning { get; init; }
 
     /// <summary>
-    /// Indicates whether the reasoning is plain-text or an encrypted / redacted blob that should not be surfaced.
+    ///     Indicates whether the reasoning is plain-text or an encrypted / redacted blob that should not be surfaced.
     /// </summary>
     [JsonPropertyName("visibility")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ReasoningVisibility Visibility { get; init; } = ReasoningVisibility.Plain;
 
-    public string? GetText() => Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;
+    public string? GetText()
+    {
+        return Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;
+    }
 
     [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
@@ -40,13 +46,40 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
-    public BinaryData? GetBinary() => null;
-    public ToolCall? GetToolCalls() => null;
-    public IEnumerable<IMessage>? GetMessages() => null;
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 /// <summary>
-/// When streaming providers emit partial reasoning tokens we accumulate them using this message type.
+///     When streaming providers emit partial reasoning tokens we accumulate them using this message type.
 /// </summary>
 [JsonConverter(typeof(ReasoningUpdateMessageJsonConverter))]
 public record ReasoningUpdateMessage : IMessage, ICanGetText
@@ -54,7 +87,16 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonPropertyName("reasoning")]
     public required string Reasoning { get; init; }
 
-    public string? GetText() => Reasoning;
+    [JsonPropertyName("isUpdate")]
+    public bool IsUpdate { get; init; } = true;
+
+    [JsonPropertyName("visibility")]
+    public ReasoningVisibility? Visibility { get; init; }
+
+    public string? GetText()
+    {
+        return Reasoning;
+    }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
@@ -68,27 +110,59 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
-    [JsonPropertyName("isUpdate")]
-    public bool IsUpdate { get; init; } = true;
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
 
-    [JsonPropertyName("visibility")]
-    public ReasoningVisibility? Visibility { get; init; }
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 
-    public BinaryData? GetBinary() => null;
-    public ToolCall? GetToolCalls() => null;
-    public IEnumerable<IMessage>? GetMessages() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// Note: Encrypted reasoning is typically sent as a single chunk.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
+
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 /// <summary>
-/// Indicates how the reasoning text may be surfaced.
+///     Indicates how the reasoning text may be surfaced.
 /// </summary>
 public enum ReasoningVisibility
 {
     /// <summary>Reasoning is plain text (full chain-of-thought) and may be displayed to end-users or logs.</summary>
     Plain,
 
-    /// <summary>Reasoning is the provider-generated short summary of the chain-of-thought. It is safe to surface and
-    /// may be echoed back when encrypted reasoning is not available.</summary>
+    /// <summary>
+    ///     Reasoning is the provider-generated short summary of the chain-of-thought. It is safe to surface and
+    ///     may be echoed back when encrypted reasoning is not available.
+    /// </summary>
     Summary,
 
     /// <summary>Reasoning is an encrypted / redacted blob and must be preserved but hidden.</summary>
@@ -113,19 +187,27 @@ public class ReasoningUpdateMessageJsonConverter : ShadowPropertiesJsonConverter
 
 public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, ReasoningUpdateMessage>
 {
-    private readonly System.Text.StringBuilder _builder = new();
+    private readonly StringBuilder _builder = new();
+    public string? GenerationId { get; set; }
+    public ReasoningVisibility Visibility { get; set; } = ReasoningVisibility.Plain;
+    public string? ThreadId { get; set; }
+    public string? RunId { get; set; }
+    public string? ParentRunId { get; set; }
+    public int? MessageOrderIdx { get; set; }
 
     public string? FromAgent { get; set; }
     public Role Role { get; set; } = Role.Assistant;
-    public string? GenerationId { get; set; }
-    public ReasoningVisibility Visibility { get; set; } = ReasoningVisibility.Plain;
 
     public void Add(ReasoningUpdateMessage streamingMessageUpdate)
     {
-        _builder.Append(streamingMessageUpdate.Reasoning);
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
+        _ = _builder.Append(streamingMessageUpdate.Reasoning);
     }
 
-    IMessage IMessageBuilder.Build() => this.Build();
+    IMessage IMessageBuilder.Build()
+    {
+        return Build();
+    }
 
     public ReasoningMessage Build()
     {
@@ -136,6 +218,10 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
             Role = Role,
             GenerationId = GenerationId,
             Visibility = Visibility,
+            ThreadId = ThreadId,
+            RunId = RunId,
+            ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }

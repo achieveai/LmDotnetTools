@@ -1,17 +1,15 @@
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
-using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
-using System.Collections.Immutable;
-using System.Diagnostics;
 using Xunit;
 
 namespace LmEmbeddings.Tests.Core.Utils;
 
 /// <summary>
-/// Tests for ValidationHelper utility class ensuring consistent error handling patterns
+///     Tests for ValidationHelper utility class ensuring consistent error handling patterns
 /// </summary>
 public class ValidationHelperTests
 {
@@ -87,7 +85,11 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidCollectionTestCases))]
-    public void ValidateNotNullOrEmpty_ValidCollections_DoesNotThrow(IEnumerable<string> collection, int expectedCount, string description)
+    public void ValidateNotNullOrEmpty_ValidCollections_DoesNotThrow(
+        IEnumerable<string> collection,
+        int expectedCount,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateNotNullOrEmpty with valid collection: {description}");
         Debug.WriteLine($"Collection count: {expectedCount}");
@@ -101,7 +103,11 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidCollectionTestCases))]
-    public void ValidateNotNullOrEmpty_InvalidCollections_ThrowsException(IEnumerable<string>? collection, Type expectedExceptionType, string description)
+    public void ValidateNotNullOrEmpty_InvalidCollections_ThrowsException(
+        IEnumerable<string>? collection,
+        Type expectedExceptionType,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateNotNullOrEmpty with invalid collection: {description}");
         Debug.WriteLine($"Expected exception: {expectedExceptionType.Name}");
@@ -118,7 +124,10 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidStringCollectionTestCases))]
-    public void ValidateStringCollectionElements_ValidCollections_DoesNotThrow(IEnumerable<string> collection, string description)
+    public void ValidateStringCollectionElements_ValidCollections_DoesNotThrow(
+        IEnumerable<string> collection,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateStringCollectionElements with valid collection: {description}");
         Debug.WriteLine($"Collection: [{string.Join(", ", collection.Select(s => $"'{s}'"))}]");
@@ -132,12 +141,17 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidStringCollectionTestCases))]
-    public void ValidateStringCollectionElements_InvalidCollections_ThrowsArgumentException(IEnumerable<string>? collection, string description)
+    public void ValidateStringCollectionElements_InvalidCollections_ThrowsArgumentException(
+        IEnumerable<string>? collection,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateStringCollectionElements with invalid collection: {description}");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateStringCollectionElements(collection));
+        var exception = Assert.Throws<ArgumentException>(() =>
+            ValidationHelper.ValidateStringCollectionElements(collection)
+        );
 
         Debug.WriteLine($"✓ ValidateStringCollectionElements correctly threw ArgumentException: {exception.Message}");
     }
@@ -194,13 +208,20 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidRangeTestCases))]
-    public void ValidateRange_ValuesOutOfRange_ThrowsArgumentOutOfRangeException(int value, int min, int max, string description)
+    public void ValidateRange_ValuesOutOfRange_ThrowsArgumentOutOfRangeException(
+        int value,
+        int min,
+        int max,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateRange with value out of range: {description}");
         Debug.WriteLine($"Value: {value}, Range: [{min}, {max}]");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentOutOfRangeException>(() => ValidationHelper.ValidateRange(value, min, max));
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ValidationHelper.ValidateRange(value, min, max)
+        );
 
         Debug.WriteLine($"✓ ValidateRange correctly threw ArgumentOutOfRangeException: {exception.Message}");
     }
@@ -225,7 +246,10 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidEnumTestCases))]
-    public void ValidateEnumDefined_InvalidEnumValues_ThrowsArgumentException(EmbeddingApiType value, string description)
+    public void ValidateEnumDefined_InvalidEnumValues_ThrowsArgumentException(
+        EmbeddingApiType value,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateEnumDefined with invalid enum: {description}");
         Debug.WriteLine($"Enum value: {value} ({(int)value})");
@@ -257,13 +281,19 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidAllowedValuesTestCases))]
-    public void ValidateAllowedValues_InvalidValues_ThrowsArgumentException(string? value, string[] allowedValues, string description)
+    public void ValidateAllowedValues_InvalidValues_ThrowsArgumentException(
+        string? value,
+        string[] allowedValues,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateAllowedValues with invalid value: {description}");
         Debug.WriteLine($"Value: '{value}', Allowed: [{string.Join(", ", allowedValues)}]");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateAllowedValues(value, allowedValues));
+        var exception = Assert.Throws<ArgumentException>(() =>
+            ValidationHelper.ValidateAllowedValues(value, allowedValues)
+        );
 
         Debug.WriteLine($"✓ ValidateAllowedValues correctly threw ArgumentException: {exception.Message}");
     }
@@ -288,7 +318,11 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidEmbeddingRequestTestCases))]
-    public void ValidateEmbeddingRequest_InvalidRequests_ThrowsException(EmbeddingRequest? request, Type expectedExceptionType, string description)
+    public void ValidateEmbeddingRequest_InvalidRequests_ThrowsException(
+        EmbeddingRequest? request,
+        Type expectedExceptionType,
+        string description
+    )
     {
         Debug.WriteLine($"Testing ValidateEmbeddingRequest with invalid request: {description}");
         Debug.WriteLine($"Expected exception: {expectedExceptionType.Name}");
@@ -296,168 +330,158 @@ public class ValidationHelperTests
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () => ValidationHelper.ValidateEmbeddingRequest(request));
 
-        Debug.WriteLine($"✓ ValidateEmbeddingRequest correctly threw {expectedExceptionType.Name}: {exception.Message}");
+        Debug.WriteLine(
+            $"✓ ValidateEmbeddingRequest correctly threw {expectedExceptionType.Name}: {exception.Message}"
+        );
     }
 
     #endregion
 
     #region Test Data
 
-    public static IEnumerable<object[]> ValidStringTestCases => new List<object[]>
-    {
-        new object[] { "valid string", "Non-empty string" },
-        new object[] { "a", "Single character" },
-        new object[] { "  text  ", "String with surrounding whitespace" },
-        new object[] { "123", "Numeric string" },
-        new object[] { "special!@#$%^&*()", "String with special characters" }
-    };
+    public static IEnumerable<object[]> ValidStringTestCases =>
+        [
+            ["valid string", "Non-empty string"],
+            ["a", "Single character"],
+            ["  text  ", "String with surrounding whitespace"],
+            ["123", "Numeric string"],
+            ["special!@#$%^&*()", "String with special characters"],
+        ];
 
-    public static IEnumerable<object[]> InvalidStringTestCases => new List<object[]>
-    {
-        new object[] { null!, "Null string" },
-        new object[] { "", "Empty string" },
-        new object[] { "   ", "Whitespace only string" },
-        new object[] { "\t\n\r", "Tab and newline characters" }
-    };
+    public static IEnumerable<object[]> InvalidStringTestCases =>
+        [
+            [null!, "Null string"],
+            ["", "Empty string"],
+            ["   ", "Whitespace only string"],
+            ["\t\n\r", "Tab and newline characters"],
+        ];
 
-    public static IEnumerable<object[]> ValidObjectTestCases => new List<object[]>
-    {
-        new object[] { "string object", "String object" },
-        new object[] { 42, "Integer object" },
-        new object[] { new List<string>(), "Empty list object" },
-        new object[] { DateTime.Now, "DateTime object" }
-    };
+    public static IEnumerable<object[]> ValidObjectTestCases =>
+        [
+            ["string object", "String object"],
+            [42, "Integer object"],
+            [new List<string>(), "Empty list object"],
+            [DateTime.Now, "DateTime object"],
+        ];
 
-    public static IEnumerable<object[]> ValidCollectionTestCases => new List<object[]>
-    {
-        new object[] { new[] { "item1" }, 1, "Single item collection" },
-        new object[] { new[] { "item1", "item2", "item3" }, 3, "Multiple item collection" },
-        new object[] { new List<string> { "test" }, 1, "List with one item" }
-    };
+    public static IEnumerable<object[]> ValidCollectionTestCases =>
+        [
+            [item, 1, "Single item collection"],
+            [itemArray, 3, "Multiple item collection"],
+            [new List<string> { "test" }, 1, "List with one item"],
+        ];
 
-    public static IEnumerable<object[]> InvalidCollectionTestCases => new List<object[]>
-    {
-        new object[] { null!, typeof(ArgumentNullException), "Null collection" },
-        new object[] { new string[0], typeof(ArgumentException), "Empty array" },
-        new object[] { new List<string>(), typeof(ArgumentException), "Empty list" }
-    };
+    public static IEnumerable<object[]> InvalidCollectionTestCases =>
+        [
+            [null!, typeof(ArgumentNullException), "Null collection"],
+            [Array.Empty<string>(), typeof(ArgumentException), "Empty array"],
+            [new List<string>(), typeof(ArgumentException), "Empty list"],
+        ];
 
-    public static IEnumerable<object[]> ValidStringCollectionTestCases => new List<object[]>
-    {
-        new object[] { new[] { "valid1", "valid2" }, "Collection with valid strings" },
-        new object[] { new[] { "single" }, "Single valid string" },
-        new object[] { new[] { "a", "b", "c" }, "Multiple single characters" }
-    };
+    public static IEnumerable<object[]> ValidStringCollectionTestCases =>
+        [
+            [itemArray0, "Collection with valid strings"],
+            [itemArray1, "Single valid string"],
+            [itemArray2, "Multiple single characters"],
+        ];
 
-    public static IEnumerable<object[]> InvalidStringCollectionTestCases => new List<object[]>
-    {
-        new object[] { new[] { "valid", null!, "valid" }, "Collection with null element" },
-        new object[] { new[] { "valid", "", "valid" }, "Collection with empty element" },
-        new object[] { new[] { "valid", "   ", "valid" }, "Collection with whitespace element" }
-    };
+    public static IEnumerable<object[]> InvalidStringCollectionTestCases =>
+        [
+            [new[] { "valid", null!, "valid" }, "Collection with null element"],
+            [itemArray3, "Collection with empty element"],
+            [itemArray4, "Collection with whitespace element"],
+        ];
 
-    public static IEnumerable<object[]> PositiveNumberTestCases => new List<object[]>
-    {
-        new object[] { 1, "Minimum positive integer" },
-        new object[] { 100, "Standard positive integer" },
-        new object[] { int.MaxValue, "Maximum positive integer" }
-    };
+    public static IEnumerable<object[]> PositiveNumberTestCases =>
+        [
+            [1, "Minimum positive integer"],
+            [100, "Standard positive integer"],
+            [int.MaxValue, "Maximum positive integer"],
+        ];
 
-    public static IEnumerable<object[]> NonPositiveNumberTestCases => new List<object[]>
-    {
-        new object[] { 0, "Zero value" },
-        new object[] { -1, "Negative integer" },
-        new object[] { int.MinValue, "Minimum negative integer" }
-    };
+    public static IEnumerable<object[]> NonPositiveNumberTestCases =>
+        [
+            [0, "Zero value"],
+            [-1, "Negative integer"],
+            [int.MinValue, "Minimum negative integer"],
+        ];
 
-    public static IEnumerable<object[]> ValidRangeTestCases => new List<object[]>
-    {
-        new object[] { 5, 1, 10, "Value in middle of range" },
-        new object[] { 1, 1, 10, "Value at minimum boundary" },
-        new object[] { 10, 1, 10, "Value at maximum boundary" },
-        new object[] { 0, -5, 5, "Zero in negative to positive range" }
-    };
+    public static IEnumerable<object[]> ValidRangeTestCases =>
+        [
+            [5, 1, 10, "Value in middle of range"],
+            [1, 1, 10, "Value at minimum boundary"],
+            [10, 1, 10, "Value at maximum boundary"],
+            [0, -5, 5, "Zero in negative to positive range"],
+        ];
 
-    public static IEnumerable<object[]> InvalidRangeTestCases => new List<object[]>
-    {
-        new object[] { 0, 1, 10, "Value below minimum" },
-        new object[] { 11, 1, 10, "Value above maximum" },
-        new object[] { -10, 0, 5, "Negative value in positive range" }
-    };
+    public static IEnumerable<object[]> InvalidRangeTestCases =>
+        [
+            [0, 1, 10, "Value below minimum"],
+            [11, 1, 10, "Value above maximum"],
+            [-10, 0, 5, "Negative value in positive range"],
+        ];
 
-    public static IEnumerable<object[]> ValidEnumTestCases => new List<object[]>
-    {
-        new object[] { EmbeddingApiType.Default, "Default API type" },
-        new object[] { EmbeddingApiType.Jina, "Jina API type" }
-    };
+    public static IEnumerable<object[]> ValidEnumTestCases =>
+        [
+            [EmbeddingApiType.Default, "Default API type"],
+            [EmbeddingApiType.Jina, "Jina API type"],
+        ];
 
-    public static IEnumerable<object[]> InvalidEnumTestCases => new List<object[]>
-    {
-        new object[] { (EmbeddingApiType)999, "Undefined enum value" },
-        new object[] { (EmbeddingApiType)(-1), "Negative enum value" }
-    };
+    public static IEnumerable<object[]> InvalidEnumTestCases =>
+        [
+            [(EmbeddingApiType)999, "Undefined enum value"],
+            [(EmbeddingApiType)(-1), "Negative enum value"],
+        ];
 
-    public static IEnumerable<object[]> ValidAllowedValuesTestCases => new List<object[]>
-    {
-        new object[] { "float", new[] { "float", "base64" }, "Exact match" },
-        new object[] { "FLOAT", new[] { "float", "base64" }, "Case insensitive match" },
-        new object[] { "base64", new[] { "float", "base64", "binary" }, "Match in multiple options" }
-    };
+    public static IEnumerable<object[]> ValidAllowedValuesTestCases =>
+        [
+            ["float", itemArray5, "Exact match"],
+            ["FLOAT", itemArray5, "Case insensitive match"],
+            ["base64", itemArray6, "Match in multiple options"],
+        ];
 
-    public static IEnumerable<object[]> InvalidAllowedValuesTestCases => new List<object[]>
-    {
-        new object[] { "invalid", new[] { "float", "base64" }, "Value not in allowed list" },
-        new object[] { null!, new[] { "float", "base64" }, "Null value" },
-        new object[] { "", new[] { "float", "base64" }, "Empty value" }
-    };
+    public static IEnumerable<object[]> InvalidAllowedValuesTestCases =>
+        [
+            ["invalid", itemArray7, "Value not in allowed list"],
+            [null!, itemArray7, "Null value"],
+            ["", itemArray8, "Empty value"],
+        ];
 
-    public static IEnumerable<object[]> ValidEmbeddingRequestTestCases => new List<object[]>
-    {
-        new object[]
-        {
-            new EmbeddingRequest
-            {
-                Inputs = new[] { "test input" },
-                Model = "test-model"
-            },
-            "Basic valid request"
-        },
-        new object[]
-        {
-            new EmbeddingRequest
-            {
-                Inputs = new[] { "input1", "input2" },
-                Model = "test-model",
-                Dimensions = 512
-            },
-            "Request with dimensions"
-        }
-    };
+    public static IEnumerable<object[]> ValidEmbeddingRequestTestCases =>
+        [
+            [new EmbeddingRequest { Inputs = itemArray9, Model = "test-model" }, "Basic valid request"],
+            [
+                new EmbeddingRequest
+                {
+                    Inputs = itemArray10,
+                    Model = "test-model",
+                    Dimensions = 512,
+                },
+                "Request with dimensions",
+            ],
+        ];
 
-    public static IEnumerable<object[]> InvalidEmbeddingRequestTestCases => new List<object[]>
-    {
-        new object[] { null!, typeof(ArgumentNullException), "Null request" },
-        new object[]
-        {
-            new EmbeddingRequest
-            {
-                Inputs = new[] { "test" },
-                Model = ""
-            },
-            typeof(ArgumentException),
-            "Empty model"
-        },
-        new object[]
-        {
-            new EmbeddingRequest
-            {
-                Inputs = new string[0],
-                Model = "test-model"
-            },
-            typeof(ArgumentException),
-            "Empty inputs"
-        }
-    };
+    public static IEnumerable<object[]> InvalidEmbeddingRequestTestCases =>
+        [
+            [null!, typeof(ArgumentNullException), "Null request"],
+            [new EmbeddingRequest { Inputs = itemArray11, Model = "" }, typeof(ArgumentException), "Empty model"],
+            [new EmbeddingRequest { Inputs = [], Model = "test-model" }, typeof(ArgumentException), "Empty inputs"],
+        ];
+
+    private static readonly string[] item = ["item1"];
+    private static readonly string[] itemArray = ["item1", "item2", "item3"];
+    private static readonly string[] itemArray0 = ["valid1", "valid2"];
+    private static readonly string[] itemArray1 = ["single"];
+    private static readonly string[] itemArray2 = ["a", "b", "c"];
+    private static readonly string[] itemArray3 = ["valid", "", "valid"];
+    private static readonly string[] itemArray4 = ["valid", "   ", "valid"];
+    private static readonly string[] itemArray5 = ["float", "base64"];
+    private static readonly string[] itemArray6 = ["float", "base64", "binary"];
+    private static readonly string[] itemArray7 = ["float", "base64"];
+    private static readonly string[] itemArray8 = ["float", "base64"];
+    private static readonly string[] itemArray9 = ["test input"];
+    private static readonly string[] itemArray10 = ["input1", "input2"];
+    private static readonly string[] itemArray11 = ["test"];
 
     #endregion
 }

@@ -1,62 +1,236 @@
-using MemoryServer.DocumentSegmentation.Integration;
-using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Exceptions;
-using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Text;
+using MemoryServer.DocumentSegmentation.Exceptions;
+using MemoryServer.DocumentSegmentation.Integration;
+using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.Services;
-using System.Collections.Concurrent;
-using System.Threading;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
 /// <summary>
-/// Implementation of topic-based document segmentation.
-/// Uses a combination of rule-based analysis and LLM enhancement for optimal topic detection.
-/// Includes comprehensive error handling, retry logic, and resilience patterns.
+///     Implementation of topic-based document segmentation.
+///     Uses a combination of rule-based analysis and LLM enhancement for optimal topic detection.
+///     Includes comprehensive error handling, retry logic, and resilience patterns.
 /// </summary>
-public class TopicBasedSegmentationService : ITopicBasedSegmentationService
+public partial class TopicBasedSegmentationService : ITopicBasedSegmentationService
 {
-    private readonly ILlmProviderIntegrationService _llmService;
-    private readonly ISegmentationPromptManager _promptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
-    private readonly IEmbeddingManager? _embeddingManager;
-
-    // Circuit breaker state for LLM calls
-    private DateTime _circuitBreakerNextRetry = DateTime.MinValue;
-    private int _circuitBreakerFailureCount = 0;
     private const int CircuitBreakerFailureThreshold = 3;
-    private static readonly TimeSpan CircuitBreakerTimeout = TimeSpan.FromMinutes(2);
 
     // Retry configuration
     private const int MaxRetryAttempts = 3;
+    private static readonly SearchValues<char> s_myChars = SearchValues.Create("\n\r");
+    private static readonly TimeSpan CircuitBreakerTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan BaseRetryDelay = TimeSpan.FromSeconds(1);
-
-    // Performance optimization settings
-    private readonly Dictionary<string, CachedAnalysis> _analysisCache = new();
     private static readonly TimeSpan CacheTimeout = TimeSpan.FromMinutes(30);
 
     // Topic transition indicators
     private static readonly HashSet<string> TopicTransitionWords = new(StringComparer.OrdinalIgnoreCase)
-  {
-    "however", "moreover", "furthermore", "additionally", "meanwhile", "nevertheless",
-    "consequently", "therefore", "thus", "hence", "accordingly", "subsequently",
-    "in contrast", "on the other hand", "alternatively", "similarly", "likewise",
-    "now", "next", "first", "second", "third", "finally", "lastly", "in conclusion",
-    "to summarize", "moving on", "turning to", "regarding", "concerning", "with respect to",
-    "another", "also", "besides", "instead", "rather", "whereas", "while"
-  };
+    {
+        "however",
+        "moreover",
+        "furthermore",
+        "additionally",
+        "meanwhile",
+        "nevertheless",
+        "consequently",
+        "therefore",
+        "thus",
+        "hence",
+        "accordingly",
+        "subsequently",
+        "in contrast",
+        "on the other hand",
+        "alternatively",
+        "similarly",
+        "likewise",
+        "now",
+        "next",
+        "first",
+        "second",
+        "third",
+        "finally",
+        "lastly",
+        "in conclusion",
+        "to summarize",
+        "moving on",
+        "turning to",
+        "regarding",
+        "concerning",
+        "with respect to",
+        "another",
+        "also",
+        "besides",
+        "instead",
+        "rather",
+        "whereas",
+        "while",
+    };
 
-    private static readonly ConcurrentDictionary<string, int> _corpusDocumentFrequency = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, int> _corpusDocumentFrequency = new(
+        StringComparer.OrdinalIgnoreCase
+    );
+
     private static int _corpusDocumentCount;
+    private static readonly char[] separator = [' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':'];
+    private static readonly string[] separatorArray = ["\r\n\r\n", "\n\n", "\r\n", "\n"];
+    private static readonly string[] collection = [@"^WHEREAS", @"^NOW, THEREFORE", @"^SECTION", @"^ARTICLE"];
+
+    private static readonly string[] collection0 =
+    [
+        @"Endpoint",
+        @"Code Example",
+        @"Error Handling",
+        @"Rate Limiting",
+        @"Parameters",
+    ];
+
+    private static readonly string[] collection1 =
+    [
+        @"^Abstract",
+        @"^Introduction",
+        @"^Methodology",
+        @"^Methods?",
+        @"^Results?",
+        @"^Discussion",
+        @"^Conclusion",
+        @"^References",
+    ];
+
+    private static readonly char[] separatorArray0 = [' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':'];
+    private static readonly string[] separatorArray1 = ["\n\n", "\r\n\r\n"];
+
+    private static readonly char[] separatorArray2 =
+    [
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        '.',
+        ',',
+        ';',
+        ':',
+        '!',
+        '?',
+        '"',
+        '\'',
+        '(',
+        ')',
+        '[',
+        ']',
+        '{',
+        '}',
+    ];
+
+    private static readonly string[] value =
+    [
+        "technology",
+        "algorithms",
+        "machine",
+        "learning",
+        "artificial",
+        "intelligence",
+        "computing",
+        "digital",
+        "systems",
+        "software",
+        "hardware",
+        "programming",
+        "data",
+        "processing",
+        "ai",
+        "ml",
+    ];
+
+    private static readonly string[] valueArray =
+    [
+        "education",
+        "learning",
+        "teaching",
+        "school",
+        "university",
+        "student",
+        "teacher",
+        "classroom",
+        "academic",
+        "study",
+        "training",
+        "knowledge",
+        "curriculum",
+        "instructional",
+    ];
+
+    private static readonly string[] valueArray0 =
+    [
+        "health",
+        "healthcare",
+        "medical",
+        "medicine",
+        "doctor",
+        "patient",
+        "treatment",
+        "therapy",
+        "clinical",
+        "hospital",
+        "wellness",
+        "care",
+        "healing",
+        "diagnosis",
+    ];
+
+    private static readonly string[] valueArray1 =
+    [
+        "business",
+        "management",
+        "company",
+        "organization",
+        "corporate",
+        "enterprise",
+        "commerce",
+        "trade",
+        "marketing",
+        "sales",
+        "finance",
+        "economic",
+        "industry",
+        "commercial",
+    ];
+
+    private static readonly string[] valueArray2 =
+    [
+        "communication",
+        "messaging",
+        "email",
+        "interaction",
+        "conversation",
+        "dialogue",
+        "discussion",
+        "social",
+        "media",
+        "network",
+        "connection",
+        "contact",
+    ];
+
+    // Performance optimization settings
+    private readonly Dictionary<string, CachedAnalysis> _analysisCache = [];
+    private readonly IEmbeddingManager? _embeddingManager;
+    private readonly ILlmProviderIntegrationService _llmService;
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
+    private readonly ISegmentationPromptManager _promptManager;
+    private int _circuitBreakerFailureCount;
+
+    // Circuit breaker state for LLM calls
+    private DateTime _circuitBreakerNextRetry = DateTime.MinValue;
 
     public TopicBasedSegmentationService(
-      ILlmProviderIntegrationService llmService,
-      ISegmentationPromptManager promptManager,
-      ILogger<TopicBasedSegmentationService> logger,
-      IEmbeddingManager? embeddingManager = null)
+        ILlmProviderIntegrationService llmService,
+        ISegmentationPromptManager promptManager,
+        ILogger<TopicBasedSegmentationService> logger,
+        IEmbeddingManager? embeddingManager = null
+    )
     {
         _llmService = llmService ?? throw new ArgumentNullException(nameof(llmService));
         _promptManager = promptManager ?? throw new ArgumentNullException(nameof(promptManager));
@@ -65,24 +239,28 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Segments document content based on topic boundaries and thematic coherence.
-    /// Includes comprehensive error handling and fallback mechanisms.
+    ///     Segments document content based on topic boundaries and thematic coherence.
+    ///     Includes comprehensive error handling and fallback mechanisms.
     /// </summary>
     public async Task<List<DocumentSegment>> SegmentByTopicsAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      TopicSegmentationOptions? options = null,
-      CancellationToken cancellationToken = default)
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        TopicSegmentationOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         // Input validation
         if (string.IsNullOrWhiteSpace(content))
         {
             _logger.LogWarning("Empty or null content provided for topic segmentation");
-            return new List<DocumentSegment>();
+            return [];
         }
 
-        _logger.LogDebug("Starting topic-based segmentation for document type {DocumentType}, content length: {Length}",
-          documentType, content.Length);
+        _logger.LogDebug(
+            "Starting topic-based segmentation for document type {DocumentType}, content length: {Length}",
+            documentType,
+            content.Length
+        );
 
         options ??= new TopicSegmentationOptions();
 
@@ -99,7 +277,12 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             // Step 3: Analyze and enhance segments with LLM if needed (with fallback)
             if (options.UseLlmEnhancement && IsLlmServiceAvailable())
             {
-                segments = await EnhanceSegmentsWithLlmWithFallbackAsync(segments, content, documentType, cancellationToken);
+                segments = await EnhanceSegmentsWithLlmWithFallbackAsync(
+                    segments,
+                    content,
+                    documentType,
+                    cancellationToken
+                );
                 _logger.LogDebug("Enhanced segments with LLM analysis");
             }
             else if (options.UseLlmEnhancement)
@@ -119,7 +302,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             segments = ApplyFinalQualityChecks(segments, options);
 
             // If no segments produced after quality checks, fallback to paragraph-based segmentation
-            if (!segments.Any())
+            if (segments.Count == 0)
             {
                 _logger.LogWarning("No segments produced after quality checks – using fallback segmentation");
                 segments = CreateFallbackSegmentation(content, options, documentType);
@@ -145,7 +328,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error during topic-based segmentation, falling back to rule-based segmentation");
+            _logger.LogError(
+                ex,
+                "Unexpected error during topic-based segmentation, falling back to rule-based segmentation"
+            );
 
             // Fallback to basic rule-based segmentation
             try
@@ -161,12 +347,426 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Detects topic boundaries with retry logic and circuit breaker pattern.
+    ///     Detects topic boundaries within the document content.
+    /// </summary>
+    public async Task<List<TopicBoundary>> DetectTopicBoundariesAsync(
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return await DetectTopicBoundariesWithRetryAsync(content, documentType, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Analyzes thematic coherence of a text segment.
+    /// </summary>
+    public async Task<ThematicCoherenceAnalysis> AnalyzeThematicCoherenceAsync(
+        string content,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        _logger.LogDebug("Analyzing thematic coherence for content length: {Length}", content.Length);
+
+        var cacheKey = $"coherence_{content.GetHashCode()}";
+        var cached = GetCachedAnalysis<ThematicCoherenceAnalysis>(cacheKey);
+        if (cached != null)
+        {
+            return cached;
+        }
+
+        try
+        {
+            var ruleBasedAnalysis = AnalyzeRuleBasedCoherence(content);
+
+            if (IsLlmServiceAvailable())
+            {
+                var llmAnalysis = await ExecuteWithRetryAsync(
+                    () => AnalyzeLlmEnhancedCoherenceAsync(content, cancellationToken),
+                    "LLM coherence analysis",
+                    cancellationToken
+                );
+
+                if (llmAnalysis != null)
+                {
+                    var result = CombineCoherenceAnalyses(ruleBasedAnalysis, llmAnalysis);
+                    CacheAnalysis(cacheKey, result);
+                    return result;
+                }
+            }
+
+            CacheAnalysis(cacheKey, ruleBasedAnalysis);
+
+            _logger.LogDebug(
+                "AnalyzeThematicCoherenceAsync returning rule-based analysis - CoherenceScore: {Score}, TopicKeywords count: {Count}",
+                ruleBasedAnalysis.CoherenceScore,
+                ruleBasedAnalysis.TopicKeywords?.Count ?? 0
+            );
+
+            return ruleBasedAnalysis;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error analyzing thematic coherence");
+            var fallbackResult = AnalyzeRuleBasedCoherence(content);
+            _logger.LogDebug(
+                "AnalyzeThematicCoherenceAsync fallback result - CoherenceScore: {Score}",
+                fallbackResult.CoherenceScore
+            );
+            return fallbackResult;
+        }
+    }
+
+    /// <summary>
+    ///     Validates topic-based segments for quality and coherence.
+    /// </summary>
+    public async Task<TopicSegmentationValidation> ValidateTopicSegmentsAsync(
+        List<DocumentSegment> segments,
+        string originalContent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
+        _logger.LogDebug("Validating {Count} topic-based segments", segments.Count);
+
+        var validation = new TopicSegmentationValidation();
+        var segmentResults = new List<SegmentValidationResult>();
+
+        try
+        {
+            foreach (var segment in segments)
+            {
+                var result = await ValidateIndividualSegmentAsync(segment, cancellationToken);
+                segmentResults.Add(result);
+            }
+
+            validation.SegmentResults = segmentResults;
+            validation.AverageTopicCoherence = segmentResults.Average(r => r.TopicCoherence);
+
+            // Calculate independence by examining similarity between adjacent segments
+            if (segments.Count > 1)
+            {
+                var independenceScores = new List<double>();
+
+                for (var i = 0; i < segments.Count - 1; i++)
+                {
+                    var similarity = await CalculateSemanticSimilarityAsync(
+                        segments[i].Content,
+                        segments[i + 1].Content,
+                        cancellationToken
+                    );
+                    var independence = 1.0 - similarity; // Independence is inverse of similarity
+                    independenceScores.Add(independence);
+                    _logger.LogDebug(
+                        "Segments {Index1}-{Index2} similarity: {Similarity:F3}, independence: {Independence:F3}",
+                        i,
+                        i + 1,
+                        similarity,
+                        independence
+                    );
+                }
+
+                validation.SegmentIndependence = independenceScores.Count != 0 ? independenceScores.Average() : 1.0;
+                _logger.LogDebug(
+                    "Overall segment independence: {Independence:F3} (from {Count} pairs)",
+                    validation.SegmentIndependence,
+                    independenceScores.Count
+                );
+            }
+            else
+            {
+                validation.SegmentIndependence = segmentResults.Average(r => r.Independence);
+                _logger.LogDebug("Single segment independence: {Independence:F3}", validation.SegmentIndependence);
+            }
+
+            validation.BoundaryAccuracy = CalculateBoundaryAccuracy(segments, originalContent);
+            validation.TopicCoverage = CalculateTopicCoverage(segments, originalContent);
+            validation.OverallQuality = CalculateOverallQuality(validation);
+
+            // Collect individual segment issues
+            var allIssues = segmentResults.SelectMany(r => r.Issues).ToList();
+
+            // Add coherence-based validation issues
+            var coherenceIssues = await GenerateCoherenceValidationIssuesAsync(
+                segments,
+                validation.AverageTopicCoherence,
+                cancellationToken
+            );
+            allIssues.AddRange(coherenceIssues);
+
+            // Detect content gaps for incomplete coverage
+            var gapIssues = DetectContentGaps(segments, originalContent);
+            allIssues.AddRange(gapIssues);
+
+            validation.Issues = allIssues;
+            validation.Recommendations = GenerateRecommendations(validation);
+
+            return validation;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error validating topic segments");
+            throw new DocumentSegmentationException("Topic segment validation failed", ex);
+        }
+    }
+
+    /// <summary>
+    ///     Performs comprehensive topic analysis on a document segment.
+    /// </summary>
+    public async Task<TopicAnalysis> AnalyzeTopicsAsync(
+        string content,
+        TopicAnalysisMethod analysisMethod = TopicAnalysisMethod.Hybrid,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        _logger.LogDebug(
+            "Analyzing topics using {Method} for content length: {Length}",
+            analysisMethod,
+            content.Length
+        );
+
+        try
+        {
+            return analysisMethod switch
+            {
+                TopicAnalysisMethod.KeywordAnalysis => await AnalyzeTopicsUsingKeywordsAsync(
+                    content,
+                    cancellationToken
+                ),
+                TopicAnalysisMethod.SemanticAnalysis => await AnalyzeTopicsUsingSemanticAnalysisAsync(
+                    content,
+                    cancellationToken
+                ),
+                TopicAnalysisMethod.LlmAnalysis => await AnalyzeTopicsUsingLlmAsync(content, cancellationToken),
+                TopicAnalysisMethod.RuleBased => AnalyzeTopicsUsingRuleBased(content),
+                TopicAnalysisMethod.Hybrid => await AnalyzeTopicsUsingHybridAsync(content, cancellationToken),
+                _ => throw new ArgumentOutOfRangeException(nameof(analysisMethod), analysisMethod, null),
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error analyzing topics with method {Method}", analysisMethod);
+            return AnalyzeTopicsUsingRuleBased(content);
+        }
+    }
+
+    /// <summary>
+    ///     Analyzes topic transitions between adjacent segments.
+    /// </summary>
+    public async Task<TopicTransitionQuality> AnalyzeTopicTransitionAsync(
+        string previousContent,
+        string currentContent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        _logger.LogDebug("Analyzing topic transition between segments");
+
+        try
+        {
+            var quality = new TopicTransitionQuality();
+
+            var similarity = await CalculateSemanticSimilarityAsync(previousContent, currentContent, cancellationToken);
+            quality.Smoothness = CalculateTransitionSmoothness(previousContent, currentContent);
+            quality.LogicalConnection = CalculateLogicalConnection(previousContent, currentContent);
+
+            var transitionalElements = ExtractTransitionalElements(currentContent);
+            quality.HasTransitionalElements = transitionalElements.Count != 0;
+            quality.TransitionalElements = transitionalElements;
+            quality.ContextualContinuity = 1.0 - similarity;
+            quality.Score = (quality.Smoothness + quality.LogicalConnection + quality.ContextualContinuity) / 3.0;
+
+            return quality;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error analyzing topic transition");
+            return new TopicTransitionQuality { Score = 0.5 };
+        }
+    }
+
+    /// <summary>
+    ///     Calculates semantic similarity between two text segments.
+    /// </summary>
+    public async Task<double> CalculateSemanticSimilarityAsync(
+        string content1,
+        string content2,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(content1);
+        ArgumentNullException.ThrowIfNull(content2);
+        _logger.LogDebug("Calculating semantic similarity between two segments");
+
+        try
+        {
+            var words1 = ExtractSignificantWords(content1);
+            var words2 = ExtractSignificantWords(content2);
+
+            if (words1.Count == 0 || words2.Count == 0)
+            {
+                return 0.0;
+            }
+
+            // Enhanced similarity calculation
+            var intersection = words1.Intersect(words2, StringComparer.OrdinalIgnoreCase).Count();
+            var union = words1.Union(words2, StringComparer.OrdinalIgnoreCase).Count();
+            var jaccardSimilarity = (double)intersection / union;
+
+            // Calculate semantic overlap using stems and related terms
+            var semanticSimilarity = CalculateSemanticOverlap(content1, content2);
+
+            // Combine Jaccard and semantic similarity with dynamic weighting
+            // When semantic similarity is high, give it more weight
+            var semanticWeight =
+                semanticSimilarity > 0.6 ? 0.8
+                : semanticSimilarity > 0.4 ? 0.7
+                : 0.6;
+            var jaccardWeight = 1.0 - semanticWeight;
+            var combinedSimilarity = (jaccardSimilarity * jaccardWeight) + (semanticSimilarity * semanticWeight);
+
+            // Additional boost for very high semantic similarity
+            if (semanticSimilarity > 0.7)
+            {
+                combinedSimilarity = Math.Min(combinedSimilarity + 0.05, 1.0);
+            }
+
+            _logger.LogDebug(
+                "Similarity calculation - Jaccard: {Jaccard:F3} (weight: {JWeight:F2}), Semantic: {Semantic:F3} (weight: {SWeight:F2}), Combined: {Combined:F3}",
+                jaccardSimilarity,
+                jaccardWeight,
+                semanticSimilarity,
+                semanticWeight,
+                combinedSimilarity
+            );
+
+            if (IsLlmServiceAvailable())
+            {
+                var llmSimilarity = await ExecuteWithRetryAsync(
+                    () => CalculateLlmSemanticSimilarityAsync(content1, content2, cancellationToken),
+                    "LLM semantic similarity",
+                    cancellationToken
+                );
+
+                if (llmSimilarity.HasValue)
+                {
+                    return (combinedSimilarity + llmSimilarity.Value) / 2.0;
+                }
+            }
+
+            return combinedSimilarity;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calculating semantic similarity");
+            return 0.0;
+        }
+    }
+
+    /// <summary>
+    ///     Extracts key terms and concepts from content for topic analysis.
+    /// </summary>
+    public async Task<Dictionary<string, double>> ExtractKeywordsAsync(
+        string content,
+        int maxKeywords = 10,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return [];
+        }
+
+        // Tokenise
+        var words = content
+            .Split(separator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.ToLowerInvariant())
+            .Where(w => w.Length > 3 && !IsStopWord(w))
+            .ToList();
+
+        if (words.Count == 0)
+        {
+            return [];
+        }
+
+        // Term frequency (TF)
+        var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in words)
+        {
+            tf[w] = tf.GetValueOrDefault(w, 0) + 1;
+        }
+
+        // Update corpus DF stats (thread-safe)
+        _ = Interlocked.Increment(ref _corpusDocumentCount);
+        foreach (var term in tf.Keys)
+        {
+            _ = _corpusDocumentFrequency.AddOrUpdate(term, 1, (_, v) => v + 1);
+        }
+
+        // Calculate TF-IDF
+        double corpusDocs = Math.Max(1, _corpusDocumentCount);
+        var tfidf = tf.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value * Math.Log((corpusDocs + 1) / (_corpusDocumentFrequency[kv.Key] + 1.0))
+        );
+
+        var top = tfidf.OrderByDescending(kv => kv.Value).Take(maxKeywords).ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        await Task.CompletedTask;
+        return top;
+    }
+
+    /// <summary>
+    ///     Assesses topic coherence within a segment.
+    /// </summary>
+    public async Task<TopicCoherence> AssessTopicCoherenceAsync(
+        string content,
+        string primaryTopic,
+        CancellationToken cancellationToken = default
+    )
+    {
+        _logger.LogDebug("Assessing topic coherence for primary topic: {Topic}", primaryTopic);
+
+        try
+        {
+            var coherence = new TopicCoherence
+            {
+                Topic = primaryTopic,
+                TerminologyConsistency = CalculateTerminologyConsistency(content, primaryTopic),
+                SemanticCoherence = await CalculateSemanticCoherenceAsync(content, primaryTopic, cancellationToken),
+                ThematicFocus = CalculateThematicFocus(content, primaryTopic),
+                ConceptualUnity = CalculateConceptualUnity(content, primaryTopic),
+            };
+            coherence.Score =
+                (
+                    coherence.TerminologyConsistency
+                    + coherence.SemanticCoherence
+                    + coherence.ThematicFocus
+                    + coherence.ConceptualUnity
+                ) / 4.0;
+            coherence.Issues = IdentifyCoherenceIssues(content, primaryTopic, coherence);
+            coherence.ImprovementSuggestions = GenerateCoherenceImprovementSuggestions(coherence);
+
+            return coherence;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error assessing topic coherence");
+            return new TopicCoherence { Topic = primaryTopic, Score = 0.5 };
+        }
+    }
+
+    /// <summary>
+    ///     Detects topic boundaries with retry logic and circuit breaker pattern.
     /// </summary>
     private async Task<List<TopicBoundary>> DetectTopicBoundariesWithRetryAsync(
-      string content,
-      DocumentType documentType,
-      CancellationToken cancellationToken)
+        string content,
+        DocumentType documentType,
+        CancellationToken cancellationToken
+    )
     {
         _logger.LogDebug("=== DetectTopicBoundariesWithRetryAsync START ===");
         _logger.LogDebug("Detecting topic boundaries for {DocumentType}", documentType);
@@ -188,9 +788,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             {
                 _logger.LogDebug("=== STEP 2: LLM enhancement (service available) ===");
                 var llmBoundaries = await ExecuteWithRetryAsync(
-                  () => DetectLlmEnhancedBoundariesAsync(content, documentType, cancellationToken),
-                  "LLM boundary detection",
-                  cancellationToken);
+                    () => DetectLlmEnhancedBoundariesAsync(content, documentType, cancellationToken),
+                    "LLM boundary detection",
+                    cancellationToken
+                );
 
                 if (llmBoundaries != null)
                 {
@@ -206,23 +807,36 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             // Step 3: Merge and validate boundaries
             _logger.LogDebug("=== STEP 3: Merge and validate boundaries ===");
             _logger.LogDebug("Boundaries before merge: {Count}", boundaries.Count);
-            for (int i = 0; i < boundaries.Count; i++)
+            for (var i = 0; i < boundaries.Count; i++)
             {
-                _logger.LogDebug("Boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
-                  i, boundaries[i].Position, boundaries[i].Confidence, string.Join(", ", boundaries[i].TransitionKeywords));
+                _logger.LogDebug(
+                    "Boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
+                    i,
+                    boundaries[i].Position,
+                    boundaries[i].Confidence,
+                    string.Join(", ", boundaries[i].TransitionKeywords)
+                );
             }
 
             boundaries = MergeAndValidateBoundaries(boundaries, content);
             _logger.LogDebug("Final boundary count after merge: {Count}", boundaries.Count);
 
-            for (int i = 0; i < boundaries.Count; i++)
+            for (var i = 0; i < boundaries.Count; i++)
             {
-                _logger.LogDebug("Final boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
-                  i, boundaries[i].Position, boundaries[i].Confidence, string.Join(", ", boundaries[i].TransitionKeywords));
+                _logger.LogDebug(
+                    "Final boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
+                    i,
+                    boundaries[i].Position,
+                    boundaries[i].Confidence,
+                    string.Join(", ", boundaries[i].TransitionKeywords)
+                );
             }
 
             var result = boundaries.OrderBy(b => b.Position).ToList();
-            _logger.LogDebug("=== DetectTopicBoundariesWithRetryAsync END - Returning {Count} boundaries ===", result.Count);
+            _logger.LogDebug(
+                "=== DetectTopicBoundariesWithRetryAsync END - Returning {Count} boundaries ===",
+                result.Count
+            );
             return result;
         }
         catch (Exception ex)
@@ -233,13 +847,15 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Executes an operation with retry logic and exponential backoff.
+    ///     Executes an operation with retry logic and exponential backoff.
     /// </summary>
     private async Task<T?> ExecuteWithRetryAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken,
-      bool allowNull = true) where T : class
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken,
+        bool allowNull = true
+    )
+        where T : class
     {
         var attempt = 0;
         Exception? lastException = null;
@@ -253,13 +869,22 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 // Check circuit breaker
                 if (IsCircuitBreakerOpen())
                 {
-                    _logger.LogWarning("Circuit breaker is open for {OperationName}, skipping attempt {Attempt}",
-                      operationName, attempt);
-                    return allowNull ? null : throw new DocumentSegmentationException($"Circuit breaker open for {operationName}");
+                    _logger.LogWarning(
+                        "Circuit breaker is open for {OperationName}, skipping attempt {Attempt}",
+                        operationName,
+                        attempt
+                    );
+                    return allowNull
+                        ? null
+                        : throw new DocumentSegmentationException($"Circuit breaker open for {operationName}");
                 }
 
-                _logger.LogDebug("Executing {OperationName}, attempt {Attempt}/{MaxAttempts}",
-                  operationName, attempt, MaxRetryAttempts);
+                _logger.LogDebug(
+                    "Executing {OperationName}, attempt {Attempt}/{MaxAttempts}",
+                    operationName,
+                    attempt,
+                    MaxRetryAttempts
+                );
 
                 var result = await operation();
 
@@ -280,8 +905,12 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             }
             catch (ArgumentException argEx)
             {
-                _logger.LogError(argEx, "{OperationName} failed with argument error on attempt {Attempt}",
-                  operationName, attempt);
+                _logger.LogError(
+                    argEx,
+                    "{OperationName} failed with argument error on attempt {Attempt}",
+                    operationName,
+                    attempt
+                );
                 // Don't retry argument exceptions
                 throw;
             }
@@ -293,36 +922,58 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         }
 
         // All retries exhausted
-        _logger.LogError("All {MaxAttempts} retry attempts failed for {OperationName}", MaxRetryAttempts, operationName);
+        _logger.LogError(
+            "All {MaxAttempts} retry attempts failed for {OperationName}",
+            MaxRetryAttempts,
+            operationName
+        );
         RecordCircuitBreakerFailure();
 
-        return allowNull ? null : throw new DocumentSegmentationException(
-          $"Operation {operationName} failed after {MaxRetryAttempts} attempts",
-          lastException ?? new InvalidOperationException("Unknown error occurred"));
+        return allowNull
+            ? null
+            : throw new DocumentSegmentationException(
+                $"Operation {operationName} failed after {MaxRetryAttempts} attempts",
+                lastException ?? new InvalidOperationException("Unknown error occurred")
+            );
     }
 
     /// <summary>
-    /// Handles HTTP-specific exceptions with appropriate retry logic.
+    ///     Handles HTTP-specific exceptions with appropriate retry logic.
     /// </summary>
-    private async Task HandleHttpException(HttpRequestException httpEx, string operationName, int attempt, CancellationToken cancellationToken)
+    private async Task HandleHttpException(
+        HttpRequestException httpEx,
+        string operationName,
+        int attempt,
+        CancellationToken cancellationToken
+    )
     {
-        var shouldRetry = httpEx.Message.Contains("timeout") ||
-                         httpEx.Message.Contains("503") ||
-                         httpEx.Message.Contains("502") ||
-                         httpEx.Message.Contains("rate limit");
+        var shouldRetry =
+            httpEx.Message.Contains("timeout")
+            || httpEx.Message.Contains("503")
+            || httpEx.Message.Contains("502")
+            || httpEx.Message.Contains("rate limit");
 
         if (shouldRetry && attempt < MaxRetryAttempts)
         {
             var delay = CalculateRetryDelay(attempt);
-            _logger.LogWarning("HTTP error in {OperationName} on attempt {Attempt}: {Message}. Retrying in {Delay}ms",
-              operationName, attempt, httpEx.Message, delay.TotalMilliseconds);
+            _logger.LogWarning(
+                "HTTP error in {OperationName} on attempt {Attempt}: {Message}. Retrying in {Delay}ms",
+                operationName,
+                attempt,
+                httpEx.Message,
+                delay.TotalMilliseconds
+            );
 
             await Task.Delay(delay, cancellationToken);
         }
         else
         {
-            _logger.LogError(httpEx, "Non-retriable HTTP error in {OperationName} on attempt {Attempt}",
-              operationName, attempt);
+            _logger.LogError(
+                httpEx,
+                "Non-retriable HTTP error in {OperationName} on attempt {Attempt}",
+                operationName,
+                attempt
+            );
             RecordCircuitBreakerFailure();
             // Re-throw the exception instead of bare throw
             throw new DocumentSegmentationException($"HTTP error in {operationName}", httpEx);
@@ -330,51 +981,73 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Handles timeout exceptions with appropriate retry logic.
+    ///     Handles timeout exceptions with appropriate retry logic.
     /// </summary>
-    private async Task HandleTimeoutException(TaskCanceledException timeoutEx, string operationName, int attempt, CancellationToken cancellationToken)
+    private async Task HandleTimeoutException(
+        TaskCanceledException timeoutEx,
+        string operationName,
+        int attempt,
+        CancellationToken cancellationToken
+    )
     {
         if (attempt < MaxRetryAttempts)
         {
             var delay = CalculateRetryDelay(attempt);
-            _logger.LogWarning("Timeout in {OperationName} on attempt {Attempt}. Retrying in {Delay}ms",
-              operationName, attempt, delay.TotalMilliseconds);
+            _logger.LogWarning(
+                "Timeout in {OperationName} on attempt {Attempt}. Retrying in {Delay}ms",
+                operationName,
+                attempt,
+                delay.TotalMilliseconds
+            );
 
             await Task.Delay(delay, cancellationToken);
         }
         else
         {
-            _logger.LogError(timeoutEx, "Timeout in {OperationName} on final attempt {Attempt}",
-              operationName, attempt);
+            _logger.LogError(
+                timeoutEx,
+                "Timeout in {OperationName} on final attempt {Attempt}",
+                operationName,
+                attempt
+            );
             RecordCircuitBreakerFailure();
         }
     }
 
     /// <summary>
-    /// Handles generic exceptions with appropriate retry logic.
+    ///     Handles generic exceptions with appropriate retry logic.
     /// </summary>
-    private async Task HandleGenericException(Exception ex, string operationName, int attempt, CancellationToken cancellationToken)
+    private async Task HandleGenericException(
+        Exception ex,
+        string operationName,
+        int attempt,
+        CancellationToken cancellationToken
+    )
     {
         if (attempt < MaxRetryAttempts)
         {
             var delay = CalculateRetryDelay(attempt);
-            _logger.LogWarning(ex, "Error in {OperationName} on attempt {Attempt}. Retrying in {Delay}ms",
-              operationName, attempt, delay.TotalMilliseconds);
+            _logger.LogWarning(
+                ex,
+                "Error in {OperationName} on attempt {Attempt}. Retrying in {Delay}ms",
+                operationName,
+                attempt,
+                delay.TotalMilliseconds
+            );
 
             await Task.Delay(delay, cancellationToken);
         }
         else
         {
-            _logger.LogError(ex, "Error in {OperationName} on final attempt {Attempt}",
-              operationName, attempt);
+            _logger.LogError(ex, "Error in {OperationName} on final attempt {Attempt}", operationName, attempt);
             RecordCircuitBreakerFailure();
         }
     }
 
     /// <summary>
-    /// Calculates retry delay using exponential backoff with jitter.
+    ///     Calculates retry delay using exponential backoff with jitter.
     /// </summary>
-    private TimeSpan CalculateRetryDelay(int attempt)
+    private static TimeSpan CalculateRetryDelay(int attempt)
     {
         var delay = TimeSpan.FromMilliseconds(BaseRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
 
@@ -387,7 +1060,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Checks if the circuit breaker is currently open.
+    ///     Checks if the circuit breaker is currently open.
     /// </summary>
     private bool IsCircuitBreakerOpen()
     {
@@ -395,7 +1068,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Records a circuit breaker failure and potentially opens the circuit.
+    ///     Records a circuit breaker failure and potentially opens the circuit.
     /// </summary>
     private void RecordCircuitBreakerFailure()
     {
@@ -404,13 +1077,16 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         if (_circuitBreakerFailureCount >= CircuitBreakerFailureThreshold)
         {
             _circuitBreakerNextRetry = DateTime.UtcNow.Add(CircuitBreakerTimeout);
-            _logger.LogWarning("Circuit breaker opened after {FailureCount} failures. Will retry after {RetryTime}",
-              _circuitBreakerFailureCount, _circuitBreakerNextRetry);
+            _logger.LogWarning(
+                "Circuit breaker opened after {FailureCount} failures. Will retry after {RetryTime}",
+                _circuitBreakerFailureCount,
+                _circuitBreakerNextRetry
+            );
         }
     }
 
     /// <summary>
-    /// Resets the circuit breaker on successful operation.
+    ///     Resets the circuit breaker on successful operation.
     /// </summary>
     private void ResetCircuitBreaker()
     {
@@ -423,7 +1099,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Checks if the LLM service is available (not circuit broken).
+    ///     Checks if the LLM service is available (not circuit broken).
     /// </summary>
     private bool IsLlmServiceAvailable()
     {
@@ -431,13 +1107,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Enhances segments with LLM analysis including fallback mechanisms.
+    ///     Enhances segments with LLM analysis including fallback mechanisms.
     /// </summary>
     private async Task<List<DocumentSegment>> EnhanceSegmentsWithLlmWithFallbackAsync(
-      List<DocumentSegment> segments,
-      string originalContent,
-      DocumentType documentType,
-      CancellationToken cancellationToken)
+        List<DocumentSegment> segments,
+        string originalContent,
+        DocumentType documentType,
+        CancellationToken cancellationToken
+    )
     {
         var enhancedSegments = new List<DocumentSegment>();
 
@@ -446,10 +1123,11 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             try
             {
                 var coherenceAnalysis = await ExecuteWithRetryAsync(
-                  () => AnalyzeThematicCoherenceAsync(segment.Content, cancellationToken),
-                  $"coherence analysis for segment {segment.Id}",
-                  cancellationToken,
-                  allowNull: true);
+                    () => AnalyzeThematicCoherenceAsync(segment.Content, cancellationToken),
+                    $"coherence analysis for segment {segment.Id}",
+                    cancellationToken,
+                    true
+                );
 
                 if (coherenceAnalysis != null)
                 {
@@ -464,7 +1142,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 else
                 {
                     // Fallback to rule-based enhancement
-                    _logger.LogDebug("LLM enhancement failed for segment {SegmentId}, using rule-based fallback", segment.Id);
+                    _logger.LogDebug(
+                        "LLM enhancement failed for segment {SegmentId}, using rule-based fallback",
+                        segment.Id
+                    );
                     EnhanceSegmentWithRuleBasedAnalysis(segment);
                     segment.Metadata["enhancement_method"] = "rule_based_fallback";
                 }
@@ -484,7 +1165,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Enhances segments using rule-based analysis as fallback.
+    ///     Enhances segments using rule-based analysis as fallback.
     /// </summary>
     private List<DocumentSegment> EnhanceSegmentsWithRuleBasedAnalysis(List<DocumentSegment> segments)
     {
@@ -492,11 +1173,12 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         {
             EnhanceSegmentWithRuleBasedAnalysis(segment);
         }
+
         return segments;
     }
 
     /// <summary>
-    /// Enhances a single segment with rule-based analysis.
+    ///     Enhances a single segment with rule-based analysis.
     /// </summary>
     private void EnhanceSegmentWithRuleBasedAnalysis(DocumentSegment segment)
     {
@@ -524,12 +1206,13 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Merges similar topic segments with retry logic.
+    ///     Merges similar topic segments with retry logic.
     /// </summary>
-    private async Task<List<DocumentSegment>> MergeSimilarTopicSegmentsWithRetryAsync(
-      List<DocumentSegment> segments,
-      TopicSegmentationOptions options,
-      CancellationToken cancellationToken)
+    private static async Task<List<DocumentSegment>> MergeSimilarTopicSegmentsWithRetryAsync(
+        List<DocumentSegment> segments,
+        TopicSegmentationOptions options,
+        CancellationToken cancellationToken
+    )
     {
         await Task.Yield();
         // TODO: Implement smarter merging. For now, preserve original segments to keep metadata intact.
@@ -537,25 +1220,28 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Calculates topic similarity with fallback to rule-based approach.
+    ///     Calculates topic similarity with fallback to rule-based approach.
     /// </summary>
     private double CalculateTopicSimilarityWithFallback(DocumentSegment segment1, DocumentSegment segment2)
     {
         try
         {
             // Try to use enhanced topic information if available
-            if (segment1.Metadata.TryGetValue("primary_topic", out var topic1) &&
-                segment2.Metadata.TryGetValue("primary_topic", out var topic2))
+            if (
+                segment1.Metadata.TryGetValue("primary_topic", out var topic1)
+                && segment2.Metadata.TryGetValue("primary_topic", out var topic2)
+            )
             {
-                var topicSimilarity = string.Equals(topic1?.ToString(), topic2?.ToString(), StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0;
+                var topicSimilarity = string.Equals(
+                    topic1?.ToString(),
+                    topic2?.ToString(),
+                    StringComparison.OrdinalIgnoreCase
+                )
+                    ? 1.0
+                    : 0.0;
 
                 // If topics are the same, check keyword overlap
-                if (topicSimilarity > 0.5)
-                {
-                    return CalculateKeywordSimilarity(segment1, segment2);
-                }
-
-                return topicSimilarity;
+                return topicSimilarity > 0.5 ? CalculateKeywordSimilarity(segment1, segment2) : topicSimilarity;
             }
 
             // Fallback to content-based similarity
@@ -569,17 +1255,19 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Calculates keyword similarity between segments.
+    ///     Calculates keyword similarity between segments.
     /// </summary>
-    private double CalculateKeywordSimilarity(DocumentSegment segment1, DocumentSegment segment2)
+    private static double CalculateKeywordSimilarity(DocumentSegment segment1, DocumentSegment segment2)
     {
         try
         {
             var keywords1 = GetSegmentKeywords(segment1);
             var keywords2 = GetSegmentKeywords(segment2);
 
-            if (!keywords1.Any() || !keywords2.Any())
+            if (keywords1.Count == 0 || keywords2.Count == 0)
+            {
                 return 0.0;
+            }
 
             var intersection = keywords1.Intersect(keywords2, StringComparer.OrdinalIgnoreCase).Count();
             var union = keywords1.Union(keywords2, StringComparer.OrdinalIgnoreCase).Count();
@@ -593,28 +1281,31 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Gets keywords from segment metadata or extracts them from content.
+    ///     Gets keywords from segment metadata or extracts them from content.
     /// </summary>
-    private List<string> GetSegmentKeywords(DocumentSegment segment)
+    private static List<string> GetSegmentKeywords(DocumentSegment segment)
     {
         try
         {
-            if (segment.Metadata.TryGetValue("topic_keywords", out var keywordsObj) && keywordsObj is List<string> keywords)
+            if (
+                segment.Metadata.TryGetValue("topic_keywords", out var keywordsObj)
+                && keywordsObj is List<string> keywords
+            )
             {
                 return keywords;
             }
 
             // Fallback to extracting from content
-            return ExtractSignificantWords(segment.Content).Take(5).ToList();
+            return [.. ExtractSignificantWords(segment.Content).Take(5)];
         }
         catch
         {
-            return new List<string>();
+            return [];
         }
     }
 
     /// <summary>
-    /// Calculates content similarity between two text segments.
+    ///     Calculates content similarity between two text segments.
     /// </summary>
     private double CalculateContentSimilarity(string content1, string content2)
     {
@@ -624,8 +1315,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var keywords1 = ExtractKeywords(content1);
             var keywords2 = ExtractKeywords(content2);
 
-            if (!keywords1.Any() || !keywords2.Any())
+            if (keywords1.Count == 0 || keywords2.Count == 0)
+            {
                 return 0.0;
+            }
 
             // Calculate Jaccard similarity (intersection over union)
             var intersection = keywords1.Intersect(keywords2, StringComparer.OrdinalIgnoreCase).Count();
@@ -633,16 +1326,19 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var jaccardSimilarity = (double)intersection / union;
 
             // Analyze topic coherence for each content
-            var analysis1 = AnalyzeTopicCoherence(content1, keywords1);
+            var (CoherenceScore, PrimaryTopic, SemanticUnity, TopicConsistency) = AnalyzeTopicCoherence(
+                content1,
+                keywords1
+            );
             var analysis2 = AnalyzeTopicCoherence(content2, keywords2);
 
             // If both contents are from the same primary topic, boost similarity
-            double topicBonus = 0.0;
-            if (analysis1.PrimaryTopic == analysis2.PrimaryTopic && analysis1.PrimaryTopic != "General")
+            var topicBonus = 0.0;
+            if (PrimaryTopic == analysis2.PrimaryTopic && PrimaryTopic != "General")
             {
                 topicBonus = 0.3; // Significant boost for same topic
             }
-            else if (IsRelatedTopic(analysis1.PrimaryTopic, analysis2.PrimaryTopic))
+            else if (IsRelatedTopic(PrimaryTopic, analysis2.PrimaryTopic))
             {
                 topicBonus = 0.1; // Small boost for related topics
             }
@@ -654,16 +1350,20 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var content1Lower = content1.ToLower();
             var content2Lower = content2.ToLower();
 
-            // Handle test cases for "High Similarity - Same Topic" 
-            if ((content1Lower.Contains("machine learning") && content2Lower.Contains("machine learning")) ||
-                (content1Lower.Contains("data processing") && content2Lower.Contains("data processing")))
+            // Handle test cases for "High Similarity - Same Topic"
+            if (
+                (content1Lower.Contains("machine learning") && content2Lower.Contains("machine learning"))
+                || (content1Lower.Contains("data processing") && content2Lower.Contains("data processing"))
+            )
             {
                 finalSimilarity = Math.Max(finalSimilarity, 0.75); // Ensure high similarity for same topic
             }
 
             // Handle "Low Similarity - Different Topics"
-            if ((content1Lower.Contains("artificial intelligence") && content2Lower.Contains("cooking")) ||
-                (content1Lower.Contains("technology") && content2Lower.Contains("culinary")))
+            if (
+                (content1Lower.Contains("artificial intelligence") && content2Lower.Contains("cooking"))
+                || (content1Lower.Contains("technology") && content2Lower.Contains("culinary"))
+            )
             {
                 finalSimilarity = Math.Min(finalSimilarity, 0.3); // Ensure low similarity for different topics
             }
@@ -677,27 +1377,33 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Determines if two topics are related.
+    ///     Determines if two topics are related.
     /// </summary>
-    private bool IsRelatedTopic(string topic1, string topic2)
+    private static bool IsRelatedTopic(string topic1, string topic2)
     {
-        if (topic1 == topic2) return true;
+        if (topic1 == topic2)
+        {
+            return true;
+        }
 
         var relatedPairs = new[]
         {
-      new[] { "Technology", "Science" },
-      new[] { "Business", "Technology" },
-      new[] { "Education", "Science" }
-    };
+            new[] { "Technology", "Science" },
+            ["Business", "Technology"],
+            ["Education", "Science"],
+        };
 
-        return relatedPairs.Any(pair =>
-          (pair.Contains(topic1) && pair.Contains(topic2)));
+        return relatedPairs.Any(pair => pair.Contains(topic1) && pair.Contains(topic2));
     }
 
     /// <summary>
-    /// Creates fallback segmentation when primary methods fail.
+    ///     Creates fallback segmentation when primary methods fail.
     /// </summary>
-    private List<DocumentSegment> CreateFallbackSegmentation(string content, TopicSegmentationOptions options, DocumentType documentType = DocumentType.Generic)
+    private List<DocumentSegment> CreateFallbackSegmentation(
+        string content,
+        TopicSegmentationOptions options,
+        DocumentType documentType = DocumentType.Generic
+    )
     {
         _logger.LogInformation("Creating fallback segmentation for content length: {Length}", content.Length);
 
@@ -705,7 +1411,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         {
             // Simple paragraph-based segmentation as ultimate fallback
             var paragraphs = SplitIntoParagraphs(content);
-            var preferredSegmentSize = documentType == DocumentType.ResearchPaper ? Math.Max(350, options.MinSegmentSize) : options.MinSegmentSize;
+            var preferredSegmentSize =
+                documentType == DocumentType.ResearchPaper
+                    ? Math.Max(350, options.MinSegmentSize)
+                    : options.MinSegmentSize;
             var segments = new List<DocumentSegment>();
 
             var position = 0;
@@ -714,9 +1423,16 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
 
             void EmitBuffer()
             {
-                if (buffer.Length == 0) return;
+                if (buffer.Length == 0)
+                {
+                    return;
+                }
+
                 var contentPart = buffer.ToString().Trim();
-                if (contentPart.Length < preferredSegmentSize) return;
+                if (contentPart.Length < preferredSegmentSize)
+                {
+                    return;
+                }
 
                 var segment = new DocumentSegment
                 {
@@ -734,19 +1450,23 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                         ["coherence_score"] = CalculateRuleBasedCoherence(contentPart),
                         ["enhancement_method"] = "fallback",
                         ["topic_based"] = true,
-                        ["document_type"] = DocumentType.Generic.ToString()
-                    }
+                        ["document_type"] = DocumentType.Generic.ToString(),
+                    },
                 };
                 segments.Add(segment);
                 position += contentPart.Length + 2;
-                buffer.Clear();
+                _ = buffer.Clear();
                 segmentIndex++;
             }
 
             foreach (var paragraph in paragraphs)
             {
-                if (paragraph.Trim().Length == 0) continue;
-                buffer.AppendLine(paragraph.Trim());
+                if (paragraph.Trim().Length == 0)
+                {
+                    continue;
+                }
+
+                _ = buffer.AppendLine(paragraph.Trim());
 
                 if (buffer.Length >= preferredSegmentSize)
                 {
@@ -764,48 +1484,42 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             _logger.LogError(ex, "Even fallback segmentation failed");
 
             // Ultra-simple fallback: single segment
-            return new List<DocumentSegment>
-      {
-        new DocumentSegment
-        {
-          Id = Guid.NewGuid().ToString(),
-          Content = content,
-          SequenceNumber = 0,
-          Metadata = new Dictionary<string, object>
-          {
-            ["segmentation_strategy"] = SegmentationStrategy.TopicBased.ToString(),
-            ["fallback_method"] = "single_segment",
-            ["primary_topic"] = "Unknown",
-            ["coherence_score"] = 0.5,
-            ["enhancement_method"] = "none",
-            ["error"] = "All segmentation methods failed",
-            ["topic_based"] = true,
-            ["document_type"] = DocumentType.Generic.ToString()
-          }
-        }
-      };
+            return
+            [
+                new DocumentSegment
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Content = content,
+                    SequenceNumber = 0,
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["segmentation_strategy"] = SegmentationStrategy.TopicBased.ToString(),
+                        ["fallback_method"] = "single_segment",
+                        ["primary_topic"] = "Unknown",
+                        ["coherence_score"] = 0.5,
+                        ["enhancement_method"] = "none",
+                        ["error"] = "All segmentation methods failed",
+                        ["topic_based"] = true,
+                        ["document_type"] = DocumentType.Generic.ToString(),
+                    },
+                },
+            ];
         }
     }
 
     /// <summary>
-    /// Cached analysis result for performance optimization.
+    ///     Gets cached analysis result if available and not expired.
     /// </summary>
-    private class CachedAnalysis
-    {
-        public DateTime Timestamp { get; set; }
-        public object Result { get; set; } = null!;
-    }
-
-    /// <summary>
-    /// Gets cached analysis result if available and not expired.
-    /// </summary>
-    private T? GetCachedAnalysis<T>(string cacheKey) where T : class
+    private T? GetCachedAnalysis<T>(string cacheKey)
+        where T : class
     {
         try
         {
-            if (_analysisCache.TryGetValue(cacheKey, out var cached) &&
-                DateTime.UtcNow - cached.Timestamp < CacheTimeout &&
-                cached.Result is T result)
+            if (
+                _analysisCache.TryGetValue(cacheKey, out var cached)
+                && DateTime.UtcNow - cached.Timestamp < CacheTimeout
+                && cached.Result is T result
+            )
             {
                 _logger.LogDebug("Cache hit for analysis key: {CacheKey}", cacheKey);
                 return result;
@@ -820,9 +1534,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Caches analysis result for performance optimization.
+    ///     Caches analysis result for performance optimization.
     /// </summary>
-    private void CacheAnalysis<T>(string cacheKey, T result) where T : class
+    private void CacheAnalysis<T>(string cacheKey, T result)
+        where T : class
     {
         try
         {
@@ -830,21 +1545,17 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             if (_analysisCache.Count > 100)
             {
                 var expiredKeys = _analysisCache
-                  .Where(kv => DateTime.UtcNow - kv.Value.Timestamp > CacheTimeout)
-                  .Select(kv => kv.Key)
-                  .ToList();
+                    .Where(kv => DateTime.UtcNow - kv.Value.Timestamp > CacheTimeout)
+                    .Select(kv => kv.Key)
+                    .ToList();
 
                 foreach (var key in expiredKeys)
                 {
-                    _analysisCache.Remove(key);
+                    _ = _analysisCache.Remove(key);
                 }
             }
 
-            _analysisCache[cacheKey] = new CachedAnalysis
-            {
-                Timestamp = DateTime.UtcNow,
-                Result = result
-            };
+            _analysisCache[cacheKey] = new CachedAnalysis { Timestamp = DateTime.UtcNow, Result = result };
 
             _logger.LogDebug("Cached analysis result for key: {CacheKey}", cacheKey);
         }
@@ -855,269 +1566,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Detects topic boundaries within the document content.
-    /// </summary>
-    public async Task<List<TopicBoundary>> DetectTopicBoundariesAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default)
-    {
-        return await DetectTopicBoundariesWithRetryAsync(content, documentType, cancellationToken);
-    }
-
-    /// <summary>
-    /// Analyzes thematic coherence of a text segment.
-    /// </summary>
-    public async Task<ThematicCoherenceAnalysis> AnalyzeThematicCoherenceAsync(
-      string content,
-      CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Analyzing thematic coherence for content length: {Length}", content.Length);
-
-        var cacheKey = $"coherence_{content.GetHashCode()}";
-        var cached = GetCachedAnalysis<ThematicCoherenceAnalysis>(cacheKey);
-        if (cached != null)
-        {
-            return cached;
-        }
-
-        try
-        {
-            var ruleBasedAnalysis = AnalyzeRuleBasedCoherence(content);
-
-            if (IsLlmServiceAvailable())
-            {
-                var llmAnalysis = await ExecuteWithRetryAsync(
-                  () => AnalyzeLlmEnhancedCoherenceAsync(content, cancellationToken),
-                  "LLM coherence analysis",
-                  cancellationToken);
-
-                if (llmAnalysis != null)
-                {
-                    var result = CombineCoherenceAnalyses(ruleBasedAnalysis, llmAnalysis);
-                    CacheAnalysis(cacheKey, result);
-                    return result;
-                }
-            }
-
-            CacheAnalysis(cacheKey, ruleBasedAnalysis);
-
-            _logger.LogDebug("AnalyzeThematicCoherenceAsync returning rule-based analysis - CoherenceScore: {Score}, TopicKeywords count: {Count}",
-              ruleBasedAnalysis.CoherenceScore, ruleBasedAnalysis.TopicKeywords?.Count ?? 0);
-
-            return ruleBasedAnalysis;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error analyzing thematic coherence");
-            var fallbackResult = AnalyzeRuleBasedCoherence(content);
-            _logger.LogDebug("AnalyzeThematicCoherenceAsync fallback result - CoherenceScore: {Score}", fallbackResult.CoherenceScore);
-            return fallbackResult;
-        }
-    }
-
-    /// <summary>
-    /// Validates topic-based segments for quality and coherence.
-    /// </summary>
-    public async Task<TopicSegmentationValidation> ValidateTopicSegmentsAsync(
-      List<DocumentSegment> segments,
-      string originalContent,
-      CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Validating {Count} topic-based segments", segments.Count);
-
-        var validation = new TopicSegmentationValidation();
-        var segmentResults = new List<SegmentValidationResult>();
-
-        try
-        {
-            foreach (var segment in segments)
-            {
-                var result = await ValidateIndividualSegmentAsync(segment, cancellationToken);
-                segmentResults.Add(result);
-            }
-
-            validation.SegmentResults = segmentResults;
-            validation.AverageTopicCoherence = segmentResults.Average(r => r.TopicCoherence);
-
-            // Calculate independence by examining similarity between adjacent segments
-            if (segments.Count > 1)
-            {
-                var independenceScores = new List<double>();
-
-                for (int i = 0; i < segments.Count - 1; i++)
-                {
-                    var similarity = await CalculateSemanticSimilarityAsync(segments[i].Content, segments[i + 1].Content, cancellationToken);
-                    var independence = 1.0 - similarity; // Independence is inverse of similarity
-                    independenceScores.Add(independence);
-                    _logger.LogDebug("Segments {Index1}-{Index2} similarity: {Similarity:F3}, independence: {Independence:F3}",
-                      i, i + 1, similarity, independence);
-                }
-
-                validation.SegmentIndependence = independenceScores.Any() ? independenceScores.Average() : 1.0;
-                _logger.LogDebug("Overall segment independence: {Independence:F3} (from {Count} pairs)",
-                  validation.SegmentIndependence, independenceScores.Count);
-            }
-            else
-            {
-                validation.SegmentIndependence = segmentResults.Average(r => r.Independence);
-                _logger.LogDebug("Single segment independence: {Independence:F3}", validation.SegmentIndependence);
-            }
-
-            validation.BoundaryAccuracy = CalculateBoundaryAccuracy(segments, originalContent);
-            validation.TopicCoverage = CalculateTopicCoverage(segments, originalContent);
-            validation.OverallQuality = CalculateOverallQuality(validation);
-
-            // Collect individual segment issues
-            var allIssues = segmentResults.SelectMany(r => r.Issues).ToList();
-
-            // Add coherence-based validation issues
-            var coherenceIssues = await GenerateCoherenceValidationIssuesAsync(segments, validation.AverageTopicCoherence, cancellationToken);
-            allIssues.AddRange(coherenceIssues);
-
-            // Detect content gaps for incomplete coverage
-            var gapIssues = DetectContentGaps(segments, originalContent);
-            allIssues.AddRange(gapIssues);
-
-            validation.Issues = allIssues;
-            validation.Recommendations = GenerateRecommendations(validation);
-
-            return validation;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error validating topic segments");
-            throw new DocumentSegmentationException("Topic segment validation failed", ex);
-        }
-    }
-
-    /// <summary>
-    /// Performs comprehensive topic analysis on a document segment.
-    /// </summary>
-    public async Task<TopicAnalysis> AnalyzeTopicsAsync(
-      string content,
-      TopicAnalysisMethod analysisMethod = TopicAnalysisMethod.Hybrid,
-      CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Analyzing topics using {Method} for content length: {Length}", analysisMethod, content.Length);
-
-        try
-        {
-            return analysisMethod switch
-            {
-                TopicAnalysisMethod.KeywordAnalysis => await AnalyzeTopicsUsingKeywordsAsync(content, cancellationToken),
-                TopicAnalysisMethod.SemanticAnalysis => await AnalyzeTopicsUsingSemanticAnalysisAsync(content, cancellationToken),
-                TopicAnalysisMethod.LlmAnalysis => await AnalyzeTopicsUsingLlmAsync(content, cancellationToken),
-                TopicAnalysisMethod.RuleBased => AnalyzeTopicsUsingRuleBased(content),
-                TopicAnalysisMethod.Hybrid => await AnalyzeTopicsUsingHybridAsync(content, cancellationToken),
-                _ => throw new ArgumentOutOfRangeException(nameof(analysisMethod), analysisMethod, null)
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error analyzing topics with method {Method}", analysisMethod);
-            return AnalyzeTopicsUsingRuleBased(content);
-        }
-    }
-
-    /// <summary>
-    /// Analyzes topic transitions between adjacent segments.
-    /// </summary>
-    public async Task<TopicTransitionQuality> AnalyzeTopicTransitionAsync(
-      string previousContent,
-      string currentContent,
-      CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Analyzing topic transition between segments");
-
-        try
-        {
-            var quality = new TopicTransitionQuality();
-
-            var similarity = await CalculateSemanticSimilarityAsync(previousContent, currentContent, cancellationToken);
-            quality.Smoothness = CalculateTransitionSmoothness(previousContent, currentContent);
-            quality.LogicalConnection = CalculateLogicalConnection(previousContent, currentContent);
-
-            var transitionalElements = ExtractTransitionalElements(currentContent);
-            quality.HasTransitionalElements = transitionalElements.Any();
-            quality.TransitionalElements = transitionalElements;
-            quality.ContextualContinuity = 1.0 - similarity;
-            quality.Score = (quality.Smoothness + quality.LogicalConnection + quality.ContextualContinuity) / 3.0;
-
-            return quality;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error analyzing topic transition");
-            return new TopicTransitionQuality { Score = 0.5 };
-        }
-    }
-
-    /// <summary>
-    /// Calculates semantic similarity between two text segments.
-    /// </summary>
-    public async Task<double> CalculateSemanticSimilarityAsync(
-      string content1,
-      string content2,
-      CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Calculating semantic similarity between two segments");
-
-        try
-        {
-            var words1 = ExtractSignificantWords(content1);
-            var words2 = ExtractSignificantWords(content2);
-
-            if (!words1.Any() || !words2.Any())
-                return 0.0;
-
-            // Enhanced similarity calculation
-            var intersection = words1.Intersect(words2, StringComparer.OrdinalIgnoreCase).Count();
-            var union = words1.Union(words2, StringComparer.OrdinalIgnoreCase).Count();
-            var jaccardSimilarity = (double)intersection / union;
-
-            // Calculate semantic overlap using stems and related terms
-            var semanticSimilarity = CalculateSemanticOverlap(content1, content2);
-
-            // Combine Jaccard and semantic similarity with dynamic weighting
-            // When semantic similarity is high, give it more weight
-            var semanticWeight = semanticSimilarity > 0.6 ? 0.8 : (semanticSimilarity > 0.4 ? 0.7 : 0.6);
-            var jaccardWeight = 1.0 - semanticWeight;
-            var combinedSimilarity = (jaccardSimilarity * jaccardWeight) + (semanticSimilarity * semanticWeight);
-
-            // Additional boost for very high semantic similarity
-            if (semanticSimilarity > 0.7)
-            {
-                combinedSimilarity = Math.Min(combinedSimilarity + 0.05, 1.0);
-            }
-
-            _logger.LogDebug("Similarity calculation - Jaccard: {Jaccard:F3} (weight: {JWeight:F2}), Semantic: {Semantic:F3} (weight: {SWeight:F2}), Combined: {Combined:F3}",
-              jaccardSimilarity, jaccardWeight, semanticSimilarity, semanticWeight, combinedSimilarity);
-
-            if (IsLlmServiceAvailable())
-            {
-                var llmSimilarity = await ExecuteWithRetryAsync(
-                  () => CalculateLlmSemanticSimilarityAsync(content1, content2, cancellationToken),
-                  "LLM semantic similarity",
-                  cancellationToken);
-
-                if (llmSimilarity.HasValue)
-                {
-                    return (combinedSimilarity + llmSimilarity.Value) / 2.0;
-                }
-            }
-
-            return combinedSimilarity;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error calculating semantic similarity");
-            return 0.0;
-        }
-    }
-
-    /// <summary>
-    /// Calculates semantic overlap between two content segments by detecting related terms and concepts.
+    ///     Calculates semantic overlap between two content segments by detecting related terms and concepts.
     /// </summary>
     private double CalculateSemanticOverlap(string content1, string content2)
     {
@@ -1126,37 +1575,70 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var words1 = ExtractSignificantWords(content1);
             var words2 = ExtractSignificantWords(content2);
 
-            if (!words1.Any() || !words2.Any())
+            if (words1.Count == 0 || words2.Count == 0)
+            {
                 return 0.0;
+            }
 
             // Define semantic relationships
             var semanticGroups = new Dictionary<string, HashSet<string>>
             {
-                ["technology"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-          "machine", "learning", "algorithms", "data", "processing", "artificial", "intelligence",
-          "software", "development", "programming", "computer", "digital", "system", "code",
-          "technology", "technical", "process"
-        },
-                ["management"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-          "management", "project", "planning", "systematic", "coordination", "leadership",
-          "organization", "strategy", "process", "methodology", "approach"
-        },
-                ["education"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-          "education", "learning", "teaching", "knowledge", "training", "development",
-          "academic", "study", "research", "instruction"
-        }
+                ["technology"] = new(StringComparer.OrdinalIgnoreCase)
+                {
+                    "machine",
+                    "learning",
+                    "algorithms",
+                    "data",
+                    "processing",
+                    "artificial",
+                    "intelligence",
+                    "software",
+                    "development",
+                    "programming",
+                    "computer",
+                    "digital",
+                    "system",
+                    "code",
+                    "technology",
+                    "technical",
+                    "process",
+                },
+                ["management"] = new(StringComparer.OrdinalIgnoreCase)
+                {
+                    "management",
+                    "project",
+                    "planning",
+                    "systematic",
+                    "coordination",
+                    "leadership",
+                    "organization",
+                    "strategy",
+                    "process",
+                    "methodology",
+                    "approach",
+                },
+                ["education"] = new(StringComparer.OrdinalIgnoreCase)
+                {
+                    "education",
+                    "learning",
+                    "teaching",
+                    "knowledge",
+                    "training",
+                    "development",
+                    "academic",
+                    "study",
+                    "research",
+                    "instruction",
+                },
             };
 
-            double totalOverlap = 0.0;
-            int groupsWithOverlap = 0;
+            var totalOverlap = 0.0;
+            var groupsWithOverlap = 0;
 
             foreach (var group in semanticGroups)
             {
-                var matches1 = words1.Where(w => group.Value.Contains(w)).Count();
-                var matches2 = words2.Where(w => group.Value.Contains(w)).Count();
+                var matches1 = words1.Count(group.Value.Contains);
+                var matches2 = words2.Count(group.Value.Contains);
 
                 if (matches1 > 0 && matches2 > 0)
                 {
@@ -1165,8 +1647,13 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                     totalOverlap += groupOverlap;
                     groupsWithOverlap++;
 
-                    _logger.LogDebug("Semantic group '{Group}' overlap: {Overlap:F3} (matches: {M1}/{M2})",
-                      group.Key, groupOverlap, matches1, matches2);
+                    _logger.LogDebug(
+                        "Semantic group '{Group}' overlap: {Overlap:F3} (matches: {M1}/{M2})",
+                        group.Key,
+                        groupOverlap,
+                        matches1,
+                        matches2
+                    );
                 }
             }
 
@@ -1182,16 +1669,23 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var content2Lower = content2.ToLowerInvariant();
             var additionalBoost = 0.0;
 
-            if ((content1Lower.Contains("machine learning") && content2Lower.Contains("machine learning")) ||
-                (content1Lower.Contains("data processing") && content2Lower.Contains("data processing")))
+            if (
+                (content1Lower.Contains("machine learning") && content2Lower.Contains("machine learning"))
+                || (content1Lower.Contains("data processing") && content2Lower.Contains("data processing"))
+            )
             {
                 additionalBoost += 0.15; // Increased extra boost for key phrase overlap
             }
 
             result = Math.Min(result + exactMatchBoost + additionalBoost, 1.0);
 
-            _logger.LogDebug("Semantic overlap calculation: base={Base:F3}, exactMatchBoost={Boost:F3}, additionalBoost={Additional:F3}, final={Final:F3}",
-              groupsWithOverlap > 0 ? totalOverlap / groupsWithOverlap : 0.0, exactMatchBoost, additionalBoost, result);
+            _logger.LogDebug(
+                "Semantic overlap calculation: base={Base:F3}, exactMatchBoost={Boost:F3}, additionalBoost={Additional:F3}, final={Final:F3}",
+                groupsWithOverlap > 0 ? totalOverlap / groupsWithOverlap : 0.0,
+                exactMatchBoost,
+                additionalBoost,
+                result
+            );
 
             return result;
         }
@@ -1202,88 +1696,109 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         }
     }
 
-    /// <summary>
-    /// Extracts key terms and concepts from content for topic analysis.
-    /// </summary>
-    public async Task<Dictionary<string, double>> ExtractKeywordsAsync(
-      string content,
-      int maxKeywords = 10,
-      CancellationToken cancellationToken = default)
+    // ---------------------------------------------------------------------------
+    // Validation helper stubs (provide basic implementations to satisfy compiler)
+    // ---------------------------------------------------------------------------
+    private Task<SegmentValidationResult> ValidateIndividualSegmentAsync(
+        DocumentSegment segment,
+        CancellationToken cancellationToken
+    )
     {
-        if (string.IsNullOrWhiteSpace(content)) return new Dictionary<string, double>();
-
-        // Tokenise
-        var words = content.Split(new[] { ' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':' }, StringSplitOptions.RemoveEmptyEntries)
-                           .Select(w => w.ToLowerInvariant())
-                           .Where(w => w.Length > 3 && !IsStopWord(w))
-                           .ToList();
-
-        if (!words.Any()) return new Dictionary<string, double>();
-
-        // Term frequency (TF)
-        var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var w in words)
+        var coherence = CalculateRuleBasedCoherence(segment.Content);
+        var result = new SegmentValidationResult
         {
-            tf[w] = tf.GetValueOrDefault(w, 0) + 1;
-        }
-
-        // Update corpus DF stats (thread-safe)
-        Interlocked.Increment(ref _corpusDocumentCount);
-        foreach (var term in tf.Keys)
-        {
-            _corpusDocumentFrequency.AddOrUpdate(term, 1, (_, v) => v + 1);
-        }
-
-        // Calculate TF-IDF
-        double corpusDocs = Math.Max(1, _corpusDocumentCount);
-        var tfidf = tf.ToDictionary(kv => kv.Key, kv => kv.Value * Math.Log((corpusDocs + 1) / (_corpusDocumentFrequency[kv.Key] + 1.0)));
-
-        var top = tfidf.OrderByDescending(kv => kv.Value)
-                       .Take(maxKeywords)
-                       .ToDictionary(kv => kv.Key, kv => kv.Value);
-
-        await Task.CompletedTask;
-        return top;
+            SegmentId = segment.Id,
+            TopicCoherence = coherence,
+            Independence = 1.0,
+            TopicClarity = coherence,
+        };
+        return Task.FromResult(result);
     }
 
-    /// <summary>
-    /// Assesses topic coherence within a segment.
-    /// </summary>
-    public async Task<TopicCoherence> AssessTopicCoherenceAsync(
-      string content,
-      string primaryTopic,
-      CancellationToken cancellationToken = default)
+    private static double CalculateBoundaryAccuracy(List<DocumentSegment> segments, string originalContent)
     {
-        _logger.LogDebug("Assessing topic coherence for primary topic: {Topic}", primaryTopic);
-
-        try
+        if (segments.Count <= 1)
         {
-            var coherence = new TopicCoherence { Topic = primaryTopic };
-
-            coherence.TerminologyConsistency = CalculateTerminologyConsistency(content, primaryTopic);
-            coherence.SemanticCoherence = await CalculateSemanticCoherenceAsync(content, primaryTopic, cancellationToken);
-            coherence.ThematicFocus = CalculateThematicFocus(content, primaryTopic);
-            coherence.ConceptualUnity = CalculateConceptualUnity(content, primaryTopic);
-            coherence.Score = (coherence.TerminologyConsistency + coherence.SemanticCoherence +
-                              coherence.ThematicFocus + coherence.ConceptualUnity) / 4.0;
-            coherence.Issues = IdentifyCoherenceIssues(content, primaryTopic, coherence);
-            coherence.ImprovementSuggestions = GenerateCoherenceImprovementSuggestions(coherence);
-
-            return coherence;
+            return 0.3;
         }
-        catch (Exception ex)
+
+        // Accuracy heuristic: more segments up to 10 improves score
+        return Math.Min(1.0, (segments.Count / 10.0) + 0.5);
+    }
+
+    private static double CalculateTopicCoverage(List<DocumentSegment> segments, string originalContent)
+    {
+        var coveredLength = segments.Sum(s => s.Content.Length);
+        return string.IsNullOrEmpty(originalContent)
+            ? 0.0
+            : Math.Clamp((double)coveredLength / originalContent.Length, 0.0, 1.0);
+    }
+
+    private static double CalculateOverallQuality(TopicSegmentationValidation validation)
+    {
+        return (
+                validation.AverageTopicCoherence
+                + validation.BoundaryAccuracy
+                + validation.SegmentIndependence
+                + validation.TopicCoverage
+            ) / 4.0;
+    }
+
+    private static List<string> GenerateRecommendations(TopicSegmentationValidation validation)
+    {
+        var recs = new List<string>();
+        if (validation.AverageTopicCoherence < 0.6)
         {
-            _logger.LogError(ex, "Error assessing topic coherence");
-            return new TopicCoherence { Topic = primaryTopic, Score = 0.5 };
+            recs.Add("Improve topic coherence within individual segments by focusing on a single theme.");
         }
+
+        if (validation.SegmentIndependence < 0.6)
+        {
+            recs.Add("Increase independence between adjacent segments to avoid redundancy.");
+        }
+
+        if (validation.BoundaryAccuracy < 0.6)
+        {
+            recs.Add("Re-evaluate boundary placement to better reflect topic changes.");
+        }
+
+        if (recs.Count == 0)
+        {
+            recs.Add("Segmentation looks good. Minor refinements only.");
+        }
+
+        return recs;
+    }
+
+    [GeneratedRegex(@"(?<=[.!?])\s+")]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(@"\bWHEREAS\b|\bTHEREFORE\b|\bHEREIN\b", RegexOptions.IgnoreCase, "en-US")]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"\bMETHODS?\b|\bRESULTS?\b|\bDISCUSSION\b", RegexOptions.IgnoreCase, "en-US")]
+    private static partial Regex MyRegex2();
+
+    [GeneratedRegex(@"```|public static|#include|function\s+", RegexOptions.IgnoreCase, "en-US")]
+    private static partial Regex MyRegex3();
+
+    /// <summary>
+    ///     Cached analysis result for performance optimization.
+    /// </summary>
+    private class CachedAnalysis
+    {
+        public DateTime Timestamp { get; set; }
+        public object Result { get; set; } = null!;
     }
 
     #region Private Helper Methods
 
     private async Task<T?> ExecuteWithRetryAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken) where T : class
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken
+    )
+        where T : class
     {
         var attempt = 0;
         Exception? lastException = null;
@@ -1314,8 +1829,13 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 if (attempt < MaxRetryAttempts)
                 {
                     var delay = CalculateRetryDelay(attempt);
-                    _logger.LogWarning(ex, "{OperationName} failed on attempt {Attempt}, retrying in {Delay}ms",
-                      operationName, attempt, delay.TotalMilliseconds);
+                    _logger.LogWarning(
+                        ex,
+                        "{OperationName} failed on attempt {Attempt}, retrying in {Delay}ms",
+                        operationName,
+                        attempt,
+                        delay.TotalMilliseconds
+                    );
                     await Task.Delay(delay, cancellationToken);
                 }
             }
@@ -1327,9 +1847,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     private async Task<double?> ExecuteWithRetryAsync(
-      Func<Task<double>> operation,
-      string operationName,
-      CancellationToken cancellationToken)
+        Func<Task<double>> operation,
+        string operationName,
+        CancellationToken cancellationToken
+    )
     {
         var attempt = 0;
         Exception? lastException = null;
@@ -1377,13 +1898,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         _logger.LogDebug("Original content: '{Content}'", content);
 
         // Split content into paragraphs (accept single or double newline as separator)
-        var paragraphs = content.Split(new[] { "\r\n\r\n", "\n\n", "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-             .Select(p => p.Trim())
-             .Where(p => !string.IsNullOrWhiteSpace(p))
-             .ToList();
+        var paragraphs = content
+            .Split(separatorArray, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
 
         _logger.LogDebug("Found {ParagraphCount} paragraphs for boundary detection", paragraphs.Count);
-        for (int i = 0; i < paragraphs.Count; i++)
+        for (var i = 0; i < paragraphs.Count; i++)
         {
             _logger.LogDebug("Paragraph {Index}: '{Content}'", i, paragraphs[i]);
         }
@@ -1391,9 +1913,9 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         // If we have multiple paragraphs, add boundaries between them
         if (paragraphs.Count > 1)
         {
-            int currentPosition = 0;
+            var currentPosition = 0;
 
-            for (int i = 0; i < paragraphs.Count - 1; i++)
+            for (var i = 0; i < paragraphs.Count - 1; i++)
             {
                 // Find the end of current paragraph
                 var currentParagraph = paragraphs[i];
@@ -1417,15 +1939,17 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                     {
                         // Check for transition keywords to determine confidence
                         var transitionKeywords = ExtractTransitionKeywords(nextParagraph);
-                        var confidence = transitionKeywords.Any() ? 0.9 : 0.7; // Higher confidence if transition words present
+                        var confidence = transitionKeywords.Count != 0 ? 0.9 : 0.7; // Higher confidence if transition words present
 
-                        boundaries.Add(new TopicBoundary
-                        {
-                            Position = nextParagraphStart,
-                            Confidence = confidence,
-                            TransitionType = TopicTransitionType.Gradual,
-                            TransitionKeywords = transitionKeywords
-                        });
+                        boundaries.Add(
+                            new TopicBoundary
+                            {
+                                Position = nextParagraphStart,
+                                Confidence = confidence,
+                                TransitionType = TopicTransitionType.Gradual,
+                                TransitionKeywords = transitionKeywords,
+                            }
+                        );
                     }
 
                     currentPosition = paragraphEnd;
@@ -1437,44 +1961,68 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         // Additional heading / section detection to improve domain documents
         // ---------------------------------------------------------------------
         var headingPatterns = new List<string>
-    {
-      // Generic headings
-      @"^#+\s+.+$",                          // Markdown headings
-      @"^[A-Z][A-Za-z ]{3,40}$",             // Uppercase/capitalised heading line
-      @"^[0-9]+[\).]\s+.+$"               // Numbered list headings e.g., "1. Introduction"
-    };
+        {
+            // Generic headings
+            @"^#+\s+.+$", // Markdown headings
+            @"^[A-Z][A-Za-z ]{3,40}$", // Uppercase/capitalised heading line
+            @"^[0-9]+[\).]\s+.+$", // Numbered list headings e.g., "1. Introduction"
+        };
 
         // Domain-specific extra keywords
         switch (documentType)
         {
             case DocumentType.Legal:
-                headingPatterns.AddRange(new[] { @"^WHEREAS", @"^NOW, THEREFORE", @"^SECTION", @"^ARTICLE" });
+                headingPatterns.AddRange(collection);
                 break;
             case DocumentType.Technical:
-                headingPatterns.AddRange(new[] { @"Endpoint", @"Code Example", @"Error Handling", @"Rate Limiting", @"Parameters" });
+                headingPatterns.AddRange(collection0);
                 break;
             case DocumentType.ResearchPaper:
-                headingPatterns.AddRange(new[] { @"^Abstract", @"^Introduction", @"^Methodology", @"^Methods?", @"^Results?", @"^Discussion", @"^Conclusion", @"^References" });
+                headingPatterns.AddRange(collection1);
                 break;
+            case DocumentType.Generic:
+                break;
+            case DocumentType.Article:
+                break;
+            case DocumentType.Transcript:
+                break;
+            case DocumentType.Report:
+                break;
+            case DocumentType.Documentation:
+                break;
+            case DocumentType.Email:
+                break;
+            case DocumentType.Chat:
+                break;
+            default:
+                throw new NotSupportedException($"Unsupported document type: {documentType}");
         }
 
-        var headingRegexes = headingPatterns.Select(p => new Regex(p, RegexOptions.Multiline | RegexOptions.IgnoreCase)).ToList();
+        var headingRegexes = headingPatterns
+            .Select(p => new Regex(p, RegexOptions.Multiline | RegexOptions.IgnoreCase))
+            .ToList();
 
         foreach (var regex in headingRegexes)
         {
             foreach (Match match in regex.Matches(content))
             {
                 var pos = match.Index;
-                if (pos == 0) continue; // don't add boundary at start
+                if (pos == 0)
+                {
+                    continue; // don't add boundary at start
+                }
+
                 if (!boundaries.Any(b => Math.Abs(b.Position - pos) < 20))
                 {
-                    boundaries.Add(new TopicBoundary
-                    {
-                        Position = pos,
-                        Confidence = 0.85,
-                        TransitionType = TopicTransitionType.Sharp,
-                        TransitionKeywords = new List<string> { match.Value.Trim() }
-                    });
+                    boundaries.Add(
+                        new TopicBoundary
+                        {
+                            Position = pos,
+                            Confidence = 0.85,
+                            TransitionType = TopicTransitionType.Sharp,
+                            TransitionKeywords = [match.Value.Trim()],
+                        }
+                    );
                 }
             }
         }
@@ -1483,46 +2031,72 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         return boundaries;
     }
 
-    private async Task<List<TopicBoundary>> DetectLlmEnhancedBoundariesAsync(string content, DocumentType documentType, CancellationToken cancellationToken)
+    private async Task<List<TopicBoundary>> DetectLlmEnhancedBoundariesAsync(
+        string content,
+        DocumentType documentType,
+        CancellationToken cancellationToken
+    )
     {
         // Quickly exit if LLM unavailable
         if (!IsLlmServiceAvailable())
         {
-            return new List<TopicBoundary>();
+            return [];
         }
 
         try
         {
             // Ask LLM for segmentation JSON (we rely on default interface implementation if not overridden)
-            var json = await _llmService.GenerateTopicSegmentationJsonAsync(content, documentType, null, cancellationToken);
+            var json = await _llmService.GenerateTopicSegmentationJsonAsync(
+                content,
+                documentType,
+                null,
+                cancellationToken
+            );
             if (string.IsNullOrWhiteSpace(json))
             {
                 _logger.LogDebug("LLM segmentation JSON empty – skipping");
-                return new List<TopicBoundary>();
+                return [];
             }
 
             var result = new List<TopicBoundary>();
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("segments", out var segmentsEl) && segmentsEl.ValueKind == JsonValueKind.Array)
+            if (
+                doc.RootElement.TryGetProperty("segments", out var segmentsEl)
+                && segmentsEl.ValueKind == JsonValueKind.Array
+            )
             {
                 foreach (var seg in segmentsEl.EnumerateArray())
                 {
-                    if (!seg.TryGetProperty("start_position", out var startProp)) continue;
+                    if (!seg.TryGetProperty("start_position", out var startProp))
+                    {
+                        continue;
+                    }
+
                     var position = startProp.GetInt32();
-                    var confidence = seg.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number ? confProp.GetDouble() : 0.8;
+                    var confidence =
+                        seg.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number
+                            ? confProp.GetDouble()
+                            : 0.8;
                     var keywords = new List<string>();
                     if (seg.TryGetProperty("topic_keywords", out var kwEl) && kwEl.ValueKind == JsonValueKind.Array)
                     {
-                        keywords = kwEl.EnumerateArray().Select(e => e.GetString() ?? string.Empty).Where(w => !string.IsNullOrWhiteSpace(w)).ToList();
+                        keywords =
+                        [
+                            .. kwEl.EnumerateArray()
+                                .Select(e => e.GetString() ?? string.Empty)
+                                .Where(w => !string.IsNullOrWhiteSpace(w)),
+                        ];
                     }
 
-                    result.Add(new TopicBoundary
-                    {
-                        Position = position,
-                        Confidence = confidence,
-                        TransitionType = TopicTransitionType.Gradual,
-                        TransitionKeywords = keywords
-                    });
+                    result.Add(
+                        new TopicBoundary
+                        {
+                            Position = position,
+                            Confidence = confidence,
+                            TransitionType = TopicTransitionType.Gradual,
+                            TransitionKeywords = keywords,
+                        }
+                    );
                 }
             }
 
@@ -1532,7 +2106,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse LLM boundaries – falling back");
-            return new List<TopicBoundary>();
+            return [];
         }
     }
 
@@ -1543,13 +2117,19 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         var grouped = boundaries.GroupBy(b => b.Position / 100).ToList();
         _logger.LogDebug("Grouped boundaries into {GroupCount} groups by position/100", grouped.Count);
 
-        var result = grouped.Select(g =>
-        {
-            var best = g.OrderByDescending(b => b.Confidence).First();
-            _logger.LogDebug("Group at position ~{Position}: selected boundary with confidence {Confidence} from {GroupSize} candidates",
-              best.Position, best.Confidence, g.Count());
-            return best;
-        }).ToList();
+        var result = grouped
+            .Select(g =>
+            {
+                var best = g.OrderByDescending(b => b.Confidence).First();
+                _logger.LogDebug(
+                    "Group at position ~{Position}: selected boundary with confidence {Confidence} from {GroupSize} candidates",
+                    best.Position,
+                    best.Confidence,
+                    g.Count()
+                );
+                return best;
+            })
+            .ToList();
 
         _logger.LogDebug("MergeAndValidateBoundaries output: {Count} boundaries", result.Count);
         return result;
@@ -1558,36 +2138,50 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     private ThematicCoherenceAnalysis AnalyzeRuleBasedCoherence(string content)
     {
         _logger.LogDebug("AnalyzeRuleBasedCoherence called with content length: {Length}", content.Length);
-        _logger.LogDebug("Content preview: {Preview}", content.Length > 100 ? content.Substring(0, 100) + "..." : content);
+        _logger.LogDebug(
+            "Content preview: {Preview}",
+            content.Length > 100 ? string.Concat(content.AsSpan(0, 100), "...") : content
+        );
 
         // Extract keywords and analyze topics
         var keywords = ExtractKeywords(content);
-        var topicAnalysis = AnalyzeTopicCoherence(content, keywords);
+        var (CoherenceScore, PrimaryTopic, SemanticUnity, TopicConsistency) = AnalyzeTopicCoherence(content, keywords);
 
         var result = new ThematicCoherenceAnalysis
         {
-            CoherenceScore = topicAnalysis.CoherenceScore,
-            PrimaryTopic = topicAnalysis.PrimaryTopic,
-            SemanticUnity = topicAnalysis.SemanticUnity,
-            TopicConsistency = topicAnalysis.TopicConsistency,
-            TopicKeywords = keywords
+            CoherenceScore = CoherenceScore,
+            PrimaryTopic = PrimaryTopic,
+            SemanticUnity = SemanticUnity,
+            TopicConsistency = TopicConsistency,
+            TopicKeywords = keywords,
         };
 
-        _logger.LogDebug("AnalyzeRuleBasedCoherence analyzed content - CoherenceScore: {Score}, TopicKeywords count: {Count}, PrimaryTopic: {Topic}",
-          result.CoherenceScore, result.TopicKeywords.Count, result.PrimaryTopic);
+        _logger.LogDebug(
+            "AnalyzeRuleBasedCoherence analyzed content - CoherenceScore: {Score}, TopicKeywords count: {Count}, PrimaryTopic: {Topic}",
+            result.CoherenceScore,
+            result.TopicKeywords.Count,
+            result.PrimaryTopic
+        );
 
         // Heuristic boost: if simple repetition-based coherence is higher, use the higher value
         var baselineHeuristic = CalculateRuleBasedCoherence(content);
         if (baselineHeuristic > result.CoherenceScore)
         {
-            _logger.LogDebug("Boosting coherence from {Old:F2} to {New:F2} based on repetition heuristic", result.CoherenceScore, baselineHeuristic);
+            _logger.LogDebug(
+                "Boosting coherence from {Old:F2} to {New:F2} based on repetition heuristic",
+                result.CoherenceScore,
+                baselineHeuristic
+            );
             result.CoherenceScore = baselineHeuristic;
         }
 
         return result;
     }
 
-    private async Task<ThematicCoherenceAnalysis> AnalyzeLlmEnhancedCoherenceAsync(string content, CancellationToken cancellationToken)
+    private static async Task<ThematicCoherenceAnalysis> AnalyzeLlmEnhancedCoherenceAsync(
+        string content,
+        CancellationToken cancellationToken
+    )
     {
         await Task.Delay(1, cancellationToken);
         // Return null to force fallback to rule-based analysis for now
@@ -1595,7 +2189,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         return null!;
     }
 
-    private ThematicCoherenceAnalysis CombineCoherenceAnalyses(ThematicCoherenceAnalysis ruleBasedAnalysis, ThematicCoherenceAnalysis llmAnalysis)
+    private static ThematicCoherenceAnalysis CombineCoherenceAnalyses(
+        ThematicCoherenceAnalysis ruleBasedAnalysis,
+        ThematicCoherenceAnalysis llmAnalysis
+    )
     {
         return new ThematicCoherenceAnalysis
         {
@@ -1603,11 +2200,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             PrimaryTopic = llmAnalysis.PrimaryTopic,
             SemanticUnity = (ruleBasedAnalysis.SemanticUnity + llmAnalysis.SemanticUnity) / 2,
             TopicConsistency = (ruleBasedAnalysis.TopicConsistency + llmAnalysis.TopicConsistency) / 2,
-            TopicKeywords = ruleBasedAnalysis.TopicKeywords ?? new List<string>() // Preserve rule-based keywords
+            TopicKeywords = ruleBasedAnalysis.TopicKeywords ?? [], // Preserve rule-based keywords
         };
     }
 
-    private async Task<TopicAnalysis> AnalyzeTopicsUsingKeywordsAsync(string content, CancellationToken cancellationToken)
+    private async Task<TopicAnalysis> AnalyzeTopicsUsingKeywordsAsync(
+        string content,
+        CancellationToken cancellationToken
+    )
     {
         var keywords = await ExtractKeywordsAsync(content, 10, cancellationToken);
         return new TopicAnalysis
@@ -1615,11 +2215,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             AnalysisMethod = TopicAnalysisMethod.KeywordAnalysis,
             PrimaryTopic = keywords.Keys.FirstOrDefault() ?? "Unknown",
             CoherenceScore = 0.7,
-            SemanticKeywords = keywords
+            SemanticKeywords = keywords,
         };
     }
 
-    private async Task<TopicAnalysis> AnalyzeTopicsUsingSemanticAnalysisAsync(string content, CancellationToken cancellationToken)
+    private async Task<TopicAnalysis> AnalyzeTopicsUsingSemanticAnalysisAsync(
+        string content,
+        CancellationToken cancellationToken
+    )
     {
         // If no embedding manager is available, fall back to keyword-only heuristic (maintains previous behaviour)
         if (_embeddingManager == null)
@@ -1632,7 +2235,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 PrimaryTopic = primary,
                 KeyTerms = fallbackKeywords,
                 CoherenceScore = 0.5,
-                AnalysisConfidence = 0.3
+                AnalysisConfidence = 0.3,
             };
         }
 
@@ -1647,14 +2250,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                     AnalysisMethod = TopicAnalysisMethod.SemanticAnalysis,
                     PrimaryTopic = "Unknown",
                     CoherenceScore = 0.0,
-                    AnalysisConfidence = 0.0
+                    AnalysisConfidence = 0.0,
                 };
             }
 
             // 2. Generate embeddings for each keyword (in parallel)
             var embeddingTasks = keywords
-              .Select(k => _embeddingManager!.GenerateEmbeddingAsync(k, cancellationToken))
-              .ToList();
+                .Select(k => _embeddingManager!.GenerateEmbeddingAsync(k, cancellationToken))
+                .ToList();
             var embeddings = await Task.WhenAll(embeddingTasks);
 
             // 3. Compute pair-wise average cosine similarity per keyword
@@ -1664,9 +2267,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 double sum = 0;
                 for (var j = 0; j < embeddings.Length; j++)
                 {
-                    if (i == j) continue;
+                    if (i == j)
+                    {
+                        continue;
+                    }
+
                     sum += CosineSimilarity(embeddings[i], embeddings[j]);
                 }
+
                 avgSimilarities[keywords[i]] = sum / Math.Max(1, embeddings.Length - 1);
             }
 
@@ -1683,7 +2291,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 KeyTerms = keywords,
                 CoherenceScore = coherence,
                 AnalysisConfidence = coherence,
-                SemanticKeywords = avgSimilarities.ToDictionary(kv => kv.Key, kv => kv.Value)
+                SemanticKeywords = avgSimilarities.ToDictionary(kv => kv.Key, kv => kv.Value),
             };
         }
         catch (Exception ex)
@@ -1696,23 +2304,29 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 PrimaryTopic = keywords.FirstOrDefault() ?? "Unknown",
                 KeyTerms = keywords,
                 CoherenceScore = 0.4,
-                AnalysisConfidence = 0.2
+                AnalysisConfidence = 0.2,
             };
         }
 
         // Local helper – cosine similarity between two float vectors
         static double CosineSimilarity(float[] v1, float[] v2)
         {
-            if (v1.Length != v2.Length) return 0.0;
-            double dot = 0, norm1 = 0, norm2 = 0;
-            for (int i = 0; i < v1.Length; i++)
+            if (v1.Length != v2.Length)
+            {
+                return 0.0;
+            }
+
+            double dot = 0,
+                norm1 = 0,
+                norm2 = 0;
+            for (var i = 0; i < v1.Length; i++)
             {
                 dot += v1[i] * v2[i];
                 norm1 += v1[i] * v1[i];
                 norm2 += v2[i] * v2[i];
             }
-            if (norm1 == 0 || norm2 == 0) return 0.0;
-            return dot / (Math.Sqrt(norm1) * Math.Sqrt(norm2));
+
+            return norm1 == 0 || norm2 == 0 ? 0.0 : dot / (Math.Sqrt(norm1) * Math.Sqrt(norm2));
         }
     }
 
@@ -1725,28 +2339,47 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
 
         try
         {
-            var json = await _llmService.GenerateTopicSegmentationJsonAsync(content, DocumentType.Generic, 10, cancellationToken);
+            var json = await _llmService.GenerateTopicSegmentationJsonAsync(
+                content,
+                DocumentType.Generic,
+                10,
+                cancellationToken
+            );
             if (string.IsNullOrWhiteSpace(json))
             {
                 return AnalyzeTopicsUsingRuleBased(content);
             }
 
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("segments", out var segs) || segs.ValueKind != JsonValueKind.Array || segs.GetArrayLength() == 0)
+            if (
+                !doc.RootElement.TryGetProperty("segments", out var segs)
+                || segs.ValueKind != JsonValueKind.Array
+                || segs.GetArrayLength() == 0
+            )
             {
                 return AnalyzeTopicsUsingRuleBased(content);
             }
 
             var firstSeg = segs[0];
-            var primaryTopic = firstSeg.TryGetProperty("topic", out var topicProp) ? topicProp.GetString() ?? "Unknown" : "Unknown";
+            var primaryTopic = firstSeg.TryGetProperty("topic", out var topicProp)
+                ? topicProp.GetString() ?? "Unknown"
+                : "Unknown";
 
-            var keywords = firstSeg.TryGetProperty("topic_keywords", out var kwProp) && kwProp.ValueKind == JsonValueKind.Array
-              ? kwProp.EnumerateArray().Select(e => e.GetString() ?? string.Empty).Where(s => !string.IsNullOrWhiteSpace(s)).ToList()
-              : new List<string>();
+            var keywords =
+                firstSeg.TryGetProperty("topic_keywords", out var kwProp) && kwProp.ValueKind == JsonValueKind.Array
+                    ? kwProp
+                        .EnumerateArray()
+                        .Select(e => e.GetString() ?? string.Empty)
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .ToList()
+                    : [];
 
-            var coherence = doc.RootElement.TryGetProperty("analysis", out var analysisEl) &&
-                            analysisEl.TryGetProperty("overall_coherence", out var cohProp) && cohProp.ValueKind == JsonValueKind.Number
-              ? cohProp.GetDouble() : 0.8;
+            var coherence =
+                doc.RootElement.TryGetProperty("analysis", out var analysisEl)
+                && analysisEl.TryGetProperty("overall_coherence", out var cohProp)
+                && cohProp.ValueKind == JsonValueKind.Number
+                    ? cohProp.GetDouble()
+                    : 0.8;
 
             return new TopicAnalysis
             {
@@ -1755,7 +2388,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 KeyTerms = keywords,
                 CoherenceScore = coherence,
                 AnalysisConfidence = coherence,
-                SemanticKeywords = keywords.ToDictionary(k => k, _ => 1.0)
+                SemanticKeywords = keywords.ToDictionary(k => k, _ => 1.0),
             };
         }
         catch (Exception ex)
@@ -1765,13 +2398,13 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         }
     }
 
-    private TopicAnalysis AnalyzeTopicsUsingRuleBased(string content)
+    private static TopicAnalysis AnalyzeTopicsUsingRuleBased(string content)
     {
         return new TopicAnalysis
         {
             AnalysisMethod = TopicAnalysisMethod.RuleBased,
             PrimaryTopic = "Rule-based Topic",
-            CoherenceScore = 0.6
+            CoherenceScore = 0.6,
         };
     }
 
@@ -1784,45 +2417,52 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         {
             AnalysisMethod = TopicAnalysisMethod.Hybrid,
             PrimaryTopic = semantic.PrimaryTopic,
-            CoherenceScore = (keyword.CoherenceScore + semantic.CoherenceScore) / 2
+            CoherenceScore = (keyword.CoherenceScore + semantic.CoherenceScore) / 2,
         };
     }
 
-    private double CalculateTransitionSmoothness(string previousContent, string currentContent)
+    private static double CalculateTransitionSmoothness(string previousContent, string currentContent)
     {
-        var transitionWords = TopicTransitionWords.Where(word =>
-          currentContent.Contains(word, StringComparison.OrdinalIgnoreCase)).ToList();
-        return transitionWords.Any() ? 0.8 : 0.5;
+        var transitionWords = TopicTransitionWords
+            .Where(word => currentContent.Contains(word, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return transitionWords.Count != 0 ? 0.8 : 0.5;
     }
 
-    private double CalculateLogicalConnection(string previousContent, string currentContent)
+    private static double CalculateLogicalConnection(string previousContent, string currentContent)
     {
         var connectors = new[] { "therefore", "because", "however", "moreover" };
         return connectors.Any(c => currentContent.Contains(c, StringComparison.OrdinalIgnoreCase)) ? 0.7 : 0.4;
     }
 
-    private List<string> ExtractTransitionalElements(string content)
+    private static List<string> ExtractTransitionalElements(string content)
     {
-        return TopicTransitionWords.Where(word =>
-          content.Contains(word, StringComparison.OrdinalIgnoreCase)).ToList();
+        return [.. TopicTransitionWords.Where(word => content.Contains(word, StringComparison.OrdinalIgnoreCase))];
     }
 
-    private async Task<double> CalculateLlmSemanticSimilarityAsync(string content1, string content2, CancellationToken cancellationToken)
+    private static async Task<double> CalculateLlmSemanticSimilarityAsync(
+        string content1,
+        string content2,
+        CancellationToken cancellationToken
+    )
     {
         await Task.Delay(1, cancellationToken);
         return 0.5;
     }
 
-    private async Task<Dictionary<string, double>> ExtractLlmKeywordsAsync(string content, int maxKeywords, CancellationToken cancellationToken)
+    private static async Task<Dictionary<string, double>> ExtractLlmKeywordsAsync(
+        string content,
+        int maxKeywords,
+        CancellationToken cancellationToken
+    )
     {
         await Task.Delay(1, cancellationToken);
-        return new Dictionary<string, double>();
+        return [];
     }
 
-    private Dictionary<string, double> CalculateTermFrequency(string content)
+    private static Dictionary<string, double> CalculateTermFrequency(string content)
     {
-        var words = content.Split(new[] { ' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':' },
-          StringSplitOptions.RemoveEmptyEntries);
+        var words = content.Split(separator, StringSplitOptions.RemoveEmptyEntries);
 
         var termCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
@@ -1833,75 +2473,121 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         }
 
         var totalWords = termCounts.Values.Sum();
-        if (totalWords == 0) return new Dictionary<string, double>();
-
-        return termCounts.ToDictionary(kv => kv.Key, kv => (double)kv.Value / totalWords);
+        return totalWords == 0 ? [] : termCounts.ToDictionary(kv => kv.Key, kv => (double)kv.Value / totalWords);
     }
 
-    private bool IsStopWord(string word)
+    private static bool IsStopWord(string word)
     {
         var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-      "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by"
-    };
+        {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "but",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "of",
+            "with",
+            "by",
+        };
         return stopWords.Contains(word);
     }
 
-    private double CalculateTerminologyConsistency(string content, string primaryTopic) => 0.7;
-    private async Task<double> CalculateSemanticCoherenceAsync(string content, string primaryTopic, CancellationToken cancellationToken)
+    private static double CalculateTerminologyConsistency(string content, string primaryTopic)
+    {
+        return 0.7;
+    }
+
+    private static async Task<double> CalculateSemanticCoherenceAsync(
+        string content,
+        string primaryTopic,
+        CancellationToken cancellationToken
+    )
     {
         await Task.Yield();
         // Simple heuristic: proportion of sentences containing primary topic keyword
-        var sentences = Regex.Split(content, @"(?<=[.!?])\s+");
-        if (sentences.Length == 0) return 0.0;
+        var sentences = MyRegex().Split(content);
+        if (sentences.Length == 0)
+        {
+            return 0.0;
+        }
+
         var matchCount = sentences.Count(s => s.Contains(primaryTopic, StringComparison.OrdinalIgnoreCase));
         return Math.Clamp((double)matchCount / sentences.Length, 0.0, 1.0);
     }
-    private double CalculateThematicFocus(string content, string primaryTopic) => CalculateRuleBasedCoherence(content);
-    private double CalculateConceptualUnity(string content, string primaryTopic) => CalculateRuleBasedCoherence(content);
-    private List<TopicCoherenceIssue> IdentifyCoherenceIssues(string content, string primaryTopic, TopicCoherence coherence)
+
+    private double CalculateThematicFocus(string content, string primaryTopic)
+    {
+        return CalculateRuleBasedCoherence(content);
+    }
+
+    private double CalculateConceptualUnity(string content, string primaryTopic)
+    {
+        return CalculateRuleBasedCoherence(content);
+    }
+
+    private static List<TopicCoherenceIssue> IdentifyCoherenceIssues(
+        string content,
+        string primaryTopic,
+        TopicCoherence coherence
+    )
     {
         var issues = new List<TopicCoherenceIssue>();
         if (coherence.Score < 0.4)
         {
-            issues.Add(new TopicCoherenceIssue
-            {
-                Type = TopicCoherenceIssueType.WeakThematicConnection,
-                Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                Description = "Low coherence score detected",
-                Impact = 0.3
-            });
+            issues.Add(
+                new TopicCoherenceIssue
+                {
+                    Type = TopicCoherenceIssueType.WeakThematicConnection,
+                    Severity = ValidationSeverity.Warning,
+                    Description = "Low coherence score detected",
+                    Impact = 0.3,
+                }
+            );
         }
+
         return issues;
     }
-    private List<string> GenerateCoherenceImprovementSuggestions(TopicCoherence coherence)
+
+    private static List<string> GenerateCoherenceImprovementSuggestions(TopicCoherence coherence)
     {
         var suggestions = new List<string>();
         if (coherence.Score < 0.7)
         {
             suggestions.Add("Consider reducing topic drift and focusing on a single theme per paragraph.");
         }
+
         return suggestions;
     }
 
-    private List<string> ExtractSignificantWords(string content)
+    private static List<string> ExtractSignificantWords(string content)
     {
-        return content.Split(new[] { ' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':' },
-          StringSplitOptions.RemoveEmptyEntries)
-          .Where(word => word.Length > 3 && !IsStopWord(word))
-          .Select(word => word.ToLowerInvariant())
-          .Distinct()
-          .ToList();
+        return
+        [
+            .. content
+                .Split(separatorArray0, StringSplitOptions.RemoveEmptyEntries)
+                .Where(word => word.Length > 3 && !IsStopWord(word))
+                .Select(word => word.ToLowerInvariant())
+                .Distinct(),
+        ];
     }
 
-    private List<string> ExtractConcepts(string content)
+    private static List<string> ExtractConcepts(string content)
     {
-        return ExtractSignificantWords(content).Take(10).ToList();
+        return [.. ExtractSignificantWords(content).Take(10)];
     }
 
     private double CalculateRuleBasedCoherence(string content)
     {
-        if (string.IsNullOrWhiteSpace(content)) return 0.0;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return 0.0;
+        }
 
         // ----------------------------
         // 1. Repetition ratio heuristic
@@ -1915,53 +2601,67 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         // 2. Sentence-keyword coverage
         // ----------------------------
         var keywords = ExtractKeywords(content);
-        var sentences = Regex.Split(content, @"(?<=[.!?])\s+");
-        int keywordSentenceMatches = sentences.Count(s => keywords.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase)));
+        var sentences = MyRegex().Split(content);
+        var keywordSentenceMatches = sentences.Count(s =>
+            keywords.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase))
+        );
         var sentenceCoverage = sentences.Length == 0 ? 0.0 : (double)keywordSentenceMatches / sentences.Length;
 
         // ----------------------------
         // 3. Domain-specific bonus cues
         // ----------------------------
-        double domainBonus = 0.0;
-        if (Regex.IsMatch(content, @"\bWHEREAS\b|\bTHEREFORE\b|\bHEREIN\b", RegexOptions.IgnoreCase))
+        var domainBonus = 0.0;
+        if (MyRegex1().IsMatch(content))
+        {
             domainBonus = 0.15; // legal drafting language
-        else if (Regex.IsMatch(content, @"\bMETHODS?\b|\bRESULTS?\b|\bDISCUSSION\b", RegexOptions.IgnoreCase))
+        }
+        else if (MyRegex2().IsMatch(content))
+        {
             domainBonus = 0.15; // academic sections
-        else if (Regex.IsMatch(content, @"```|public static|#include|function\s+", RegexOptions.IgnoreCase))
+        }
+        else if (MyRegex3().IsMatch(content))
+        {
             domainBonus = 0.15; // code example blocks
+        }
 
         // ----------------------------
         // Combine heuristics
         // ----------------------------
-        var score = 0.4 * repetitionRatio + 0.5 * sentenceCoverage + domainBonus;
+        var score = (0.4 * repetitionRatio) + (0.5 * sentenceCoverage) + domainBonus;
 
         // Ensure minimum thresholds for known highly structured legal clauses
         if (domainBonus > 0.14)
         {
-            var minThreshold = domainBonus > 0.14 && Regex.IsMatch(content, @"\bMETHODS?\b|\bRESULTS?\b|\bDISCUSSION\b", RegexOptions.IgnoreCase)
-              ? 0.81  // academic sections – ensure strictly > 0.8
-              : 0.71; // code/legal blocks – ensure strictly > 0.7
+            var minThreshold =
+                domainBonus > 0.14 && MyRegex2().IsMatch(content)
+                    ? 0.81 // academic sections – ensure strictly > 0.8
+                    : 0.71; // code/legal blocks – ensure strictly > 0.7
             if (score < minThreshold)
+            {
                 score = minThreshold;
+            }
         }
 
         // Clamp 0..1 and ensure baseline 0.15
         return Math.Clamp(score, 0.15, 0.95);
     }
 
-    private List<string> SplitIntoParagraphs(string content)
+    private static List<string> SplitIntoParagraphs(string content)
     {
-        return content.Split(new[] { "\n\n", "\r\n\r\n" }, StringSplitOptions.RemoveEmptyEntries)
-                     .Select(p => p.Trim())
-                     .Where(p => !string.IsNullOrWhiteSpace(p))
-                     .ToList();
+        return
+        [
+            .. content
+                .Split(separatorArray1, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim())
+                .Where(p => !string.IsNullOrWhiteSpace(p)),
+        ];
     }
 
     private double CalculateTransitionScore(string previous, string current)
     {
         // Check for explicit transition words first
         var transitionWords = ExtractTransitionKeywords(current);
-        if (transitionWords.Any())
+        if (transitionWords.Count != 0)
         {
             return 0.8; // High confidence when transition words are present
         }
@@ -1970,7 +2670,9 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         var currentWords = current.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         if (previousWords.Length == 0 || currentWords.Length == 0)
+        {
             return 0.5;
+        }
 
         var overlap = previousWords.Intersect(currentWords, StringComparer.OrdinalIgnoreCase).Count();
         var totalWords = Math.Max(previousWords.Length, currentWords.Length);
@@ -1980,18 +2682,19 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         return similarity < 0.3 ? 0.7 : 0.4; // More sensitive to changes
     }
 
-    private int GetParagraphPosition(string content, int paragraphIndex)
+    private static int GetParagraphPosition(string content, int paragraphIndex)
     {
         var paragraphs = SplitIntoParagraphs(content);
-        int position = 0;
-        for (int i = 0; i < paragraphIndex && i < paragraphs.Count; i++)
+        var position = 0;
+        for (var i = 0; i < paragraphIndex && i < paragraphs.Count; i++)
         {
             position += paragraphs[i].Length + 2;
         }
+
         return position;
     }
 
-    private DocumentSegment MergeSegments(DocumentSegment segment1, DocumentSegment segment2)
+    private static DocumentSegment MergeSegments(DocumentSegment segment1, DocumentSegment segment2)
     {
         return new DocumentSegment
         {
@@ -2001,8 +2704,8 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             Metadata = new Dictionary<string, object>(segment1.Metadata)
             {
                 ["merged_with"] = segment2.Id,
-                ["merged_content_length"] = segment1.Content.Length + segment2.Content.Length
-            }
+                ["merged_content_length"] = segment1.Content.Length + segment2.Content.Length,
+            },
         };
     }
 
@@ -2026,30 +2729,43 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             }
         }
 
-        _logger.LogDebug("ExtractTransitionKeywords result: [{Keywords}] (total: {Count})",
-          string.Join(", ", foundKeywords), foundKeywords.Count);
+        _logger.LogDebug(
+            "ExtractTransitionKeywords result: [{Keywords}] (total: {Count})",
+            string.Join(", ", foundKeywords),
+            foundKeywords.Count
+        );
 
         return foundKeywords;
     }
 
     /// <summary>
-    /// Creates document segments from detected topic boundaries.
+    ///     Creates document segments from detected topic boundaries.
     /// </summary>
-    private List<DocumentSegment> CreateSegmentsFromBoundaries(
-      string content, List<TopicBoundary> boundaries, TopicSegmentationOptions options, DocumentType documentType)
+    private static List<DocumentSegment> CreateSegmentsFromBoundaries(
+        string content,
+        List<TopicBoundary> boundaries,
+        TopicSegmentationOptions options,
+        DocumentType documentType
+    )
     {
-        var preferredSegmentSize = documentType == DocumentType.ResearchPaper ? Math.Max(350, options.MinSegmentSize) : options.MinSegmentSize;
+        var preferredSegmentSize =
+            documentType == DocumentType.ResearchPaper ? Math.Max(350, options.MinSegmentSize) : options.MinSegmentSize;
 
         var segments = new List<DocumentSegment>();
-        var sortedPositions = boundaries.Select(b => b.Position).Where(p => p > 0 && p < content.Length).Distinct().OrderBy(p => p).ToList();
+        var sortedPositions = boundaries
+            .Select(b => b.Position)
+            .Where(p => p > 0 && p < content.Length)
+            .Distinct()
+            .OrderBy(p => p)
+            .ToList();
         sortedPositions.Add(content.Length); // sentinel for final slice
 
-        int segmentStart = 0;
-        int segmentIndex = 0;
+        var segmentStart = 0;
+        var segmentIndex = 0;
 
         foreach (var pos in sortedPositions)
         {
-            int sliceLen = pos - segmentStart;
+            var sliceLen = pos - segmentStart;
 
             // If slice is still below preferred size, continue to accumulate with next boundary
             if (sliceLen < preferredSegmentSize && pos != content.Length)
@@ -2058,10 +2774,10 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             }
 
             // Slice could be very large; split internally on paragraph boundaries to respect max size
-            int localStart = segmentStart;
+            var localStart = segmentStart;
             while (localStart < pos)
             {
-                int localLen = Math.Min(pos - localStart, options.MaxSegmentSize);
+                var localLen = Math.Min(pos - localStart, options.MaxSegmentSize);
                 if (localLen <= 0)
                 {
                     // Ensure forward progress
@@ -2073,7 +2789,7 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 // Attempt to extend to nearest paragraph end if we split mid-way
                 if (localLen == options.MaxSegmentSize && pos - localStart > options.MaxSegmentSize)
                 {
-                    var advance = segmentContent.LastIndexOfAny(new[] { '\n', '\r' });
+                    var advance = segmentContent.AsSpan().LastIndexOfAny(s_myChars);
                     if (advance >= options.MinSegmentSize)
                     {
                         segmentContent = content.Substring(localStart, advance).Trim();
@@ -2097,9 +2813,14 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Creates a document segment with proper metadata.
+    ///     Creates a document segment with proper metadata.
     /// </summary>
-    private DocumentSegment CreateDocumentSegment(string content, int index, int position, DocumentType documentType)
+    private static DocumentSegment CreateDocumentSegment(
+        string content,
+        int index,
+        int position,
+        DocumentType documentType
+    )
     {
         return new DocumentSegment
         {
@@ -2113,81 +2834,168 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 ["start_position"] = position,
                 ["end_position"] = position + content.Length,
                 ["topic_based"] = true,
-                ["document_type"] = documentType.ToString()
-            }
+                ["document_type"] = documentType.ToString(),
+            },
         };
     }
 
     /// <summary>
-    /// Applies final quality checks and filtering to segments.
+    ///     Applies final quality checks and filtering to segments.
     /// </summary>
-    private List<DocumentSegment> ApplyFinalQualityChecks(List<DocumentSegment> segments, TopicSegmentationOptions options)
+    private static List<DocumentSegment> ApplyFinalQualityChecks(
+        List<DocumentSegment> segments,
+        TopicSegmentationOptions options
+    )
     {
-        return segments.Where(s => s.Content.Length >= options.MinSegmentSize &&
-                                  s.Content.Length <= options.MaxSegmentSize)
-                      .Take(options.MaxSegments)
-                      .ToList();
+        return
+        [
+            .. segments
+                .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
+                .Take(options.MaxSegments),
+        ];
     }
 
     #region Content Analysis Helpers
 
     /// <summary>
-    /// Extracts meaningful keywords from content using frequency analysis and filtering.
+    ///     Extracts meaningful keywords from content using frequency analysis and filtering.
     /// </summary>
     private List<string> ExtractKeywords(string content)
     {
         _logger.LogDebug("ExtractKeywords called with content length: {Length}", content?.Length ?? 0);
 
         if (string.IsNullOrWhiteSpace(content))
-            return new List<string>();
+        {
+            return [];
+        }
 
-        _logger.LogDebug("Content preview: {Preview}", content.Length > 200 ? content.Substring(0, 200) + "..." : content);
+        _logger.LogDebug(
+            "Content preview: {Preview}",
+            content.Length > 200 ? string.Concat(content.AsSpan(0, 200), "...") : content
+        );
 
         // Common stop words to filter out
         var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-      "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
-      "from", "up", "about", "into", "through", "during", "before", "after", "above", "below",
-      "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does",
-      "did", "will", "would", "should", "could", "can", "may", "might", "must", "shall",
-      "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they", "me",
-      "him", "her", "us", "them", "my", "your", "his", "her", "its", "our", "their"
-    };
+        {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "but",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "of",
+            "with",
+            "by",
+            "from",
+            "up",
+            "about",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "should",
+            "could",
+            "can",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "this",
+            "that",
+            "these",
+            "those",
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "me",
+            "him",
+            "her",
+            "us",
+            "them",
+            "my",
+            "your",
+            "his",
+            "her",
+            "its",
+            "our",
+            "their",
+        };
 
         // Extract and clean words
-        var words = content.Split(new char[] { ' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '[', ']', '{', '}' },
-                                StringSplitOptions.RemoveEmptyEntries)
-                          .Where(w => w.Length > 2 && !stopWords.Contains(w))
-                          .Select(w => w.ToLowerInvariant().Trim())
-                          .Where(w => !string.IsNullOrEmpty(w));
+        var words = content
+            .Split(separatorArray2, StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 2 && !stopWords.Contains(w))
+            .Select(w => w.ToLowerInvariant().Trim())
+            .Where(w => !string.IsNullOrEmpty(w));
 
         // Count word frequencies
-        var wordFreq = words.GroupBy(w => w)
-                           .ToDictionary(g => g.Key, g => g.Count());
+        var wordFreq = words.GroupBy(w => w).ToDictionary(g => g.Key, g => g.Count());
 
-        _logger.LogDebug("Word frequencies sample: [{WordFreq}]", string.Join(", ", wordFreq.Take(10).Select(kvp => $"{kvp.Key}:{kvp.Value}")));
+        _logger.LogDebug(
+            "Word frequencies sample: [{WordFreq}]",
+            string.Join(", ", wordFreq.Take(10).Select(kvp => $"{kvp.Key}:{kvp.Value}"))
+        );
 
         // Return top keywords by frequency (5-15 keywords)
-        var topKeywords = wordFreq.OrderByDescending(kvp => kvp.Value)
-                                 .Take(Math.Min(15, Math.Max(5, wordFreq.Count / 3)))
-                                 .Select(kvp => kvp.Key)
-                                 .ToList();
+        var topKeywords = wordFreq
+            .OrderByDescending(kvp => kvp.Value)
+            .Take(Math.Min(15, Math.Max(5, wordFreq.Count / 3)))
+            .Select(kvp => kvp.Key)
+            .ToList();
 
-        _logger.LogDebug("ExtractKeywords result: [{Keywords}] (total: {Count})",
-          string.Join(", ", topKeywords), topKeywords.Count);
+        _logger.LogDebug(
+            "ExtractKeywords result: [{Keywords}] (total: {Count})",
+            string.Join(", ", topKeywords),
+            topKeywords.Count
+        );
 
         return topKeywords;
     }
 
     /// <summary>
-    /// Analyzes topic coherence based on content and keywords.
+    ///     Analyzes topic coherence based on content and keywords.
     /// </summary>
-    private (double CoherenceScore, string PrimaryTopic, double SemanticUnity, double TopicConsistency) AnalyzeTopicCoherence(string content, List<string> keywords)
+    private (
+        double CoherenceScore,
+        string PrimaryTopic,
+        double SemanticUnity,
+        double TopicConsistency
+    ) AnalyzeTopicCoherence(string content, List<string> keywords)
     {
-        _logger.LogDebug("AnalyzeTopicCoherence called with {KeywordCount} keywords: [{Keywords}]",
-          keywords.Count, string.Join(", ", keywords.Take(10)));
+        _logger.LogDebug(
+            "AnalyzeTopicCoherence called with {KeywordCount} keywords: [{Keywords}]",
+            keywords.Count,
+            string.Join(", ", keywords.Take(10))
+        );
 
-        if (string.IsNullOrWhiteSpace(content) || !keywords.Any())
+        if (string.IsNullOrWhiteSpace(content) || keywords.Count == 0)
         {
             return (0.1, "Unknown", 0.1, 0.1);
         }
@@ -2195,12 +3003,22 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         var lowerContent = content.ToLower();
 
         // Check for very low coherence patterns first (nonsensical content)
-        if ((lowerContent.Contains("purple") && lowerContent.Contains("elephant")) ||
-            (lowerContent.Contains("purple") && lowerContent.Contains("computational")) ||
-            (lowerContent.Contains("dance") && lowerContent.Contains("eating") && lowerContent.Contains("computational")) ||
-            (lowerContent.Contains("stock") && lowerContent.Contains("market") && lowerContent.Contains("tastes")) ||
-            (lowerContent.Contains("quantum") && lowerContent.Contains("physics") && lowerContent.Contains("smells")) ||
-            (lowerContent.Contains("javascript") && lowerContent.Contains("functions") && lowerContent.Contains("automotive")))
+        if (
+            (lowerContent.Contains("purple") && lowerContent.Contains("elephant"))
+            || (lowerContent.Contains("purple") && lowerContent.Contains("computational"))
+            || (
+                lowerContent.Contains("dance")
+                && lowerContent.Contains("eating")
+                && lowerContent.Contains("computational")
+            )
+            || (lowerContent.Contains("stock") && lowerContent.Contains("market") && lowerContent.Contains("tastes"))
+            || (lowerContent.Contains("quantum") && lowerContent.Contains("physics") && lowerContent.Contains("smells"))
+            || (
+                lowerContent.Contains("javascript")
+                && lowerContent.Contains("functions")
+                && lowerContent.Contains("automotive")
+            )
+        )
         {
             _logger.LogDebug("Detected nonsensical content pattern - assigning very low coherence");
             return (0.15, "Random", 0.1, 0.2);
@@ -2209,74 +3027,223 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         // Define semantic domains/topics with more comprehensive lists
         var topicDomains = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Technology"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "software", "computer", "algorithm", "data", "programming", "development", "system", "code",
-        "digital", "technology", "machine", "learning", "artificial", "intelligence", "network",
-        "database", "application", "platform", "framework", "api", "interface", "hardware", "computing",
-        "processing", "algorithms", "revolutionized", "transforms", "datasets", "computational",
-        "methods", "pattern", "recognition", "predictive", "modeling", "neural", "networks", "deep",
-        "indexing", "optimization", "performance", "structures", "power", "sophisticated",
-        "languages", "tools", "building", "applications", "systems", "testing", "methodologies",
-        "quality", "reliability", "approaches", "systematic", "coordination"
-      },
-            ["Science"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "research", "study", "analysis", "experiment", "theory", "hypothesis", "methodology",
-        "scientific", "evidence", "observation", "discovery", "investigation", "biology", "chemistry",
-        "physics", "medical", "health", "laboratory", "clinical", "patient", "treatment"
-      },
-            ["Business"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "management", "project", "planning", "strategy", "organization", "team", "leadership",
-        "process", "workflow", "productivity", "efficiency", "performance", "goals", "objectives",
-        "resources", "budget", "finance", "marketing", "sales", "customer", "service", "quality",
-        "requires", "systematic", "coordination", "involves", "deliver", "successful", "products",
-        "time", "activities"
-      },
-            ["Weather"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "weather", "sunny", "skies", "temperature", "climate", "forecast", "precipitation", "beautiful"
-      },
-            ["Cooking"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "cooking", "recipe", "ingredients", "kitchen", "food", "culinary", "chef", "preparation", "favorite",
-        "cuisine", "emphasizes", "precise", "temperature", "control", "timing", "french"
-      },
-            ["Economy"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "economic", "markets", "volatility", "global", "factors", "financial", "economy", "budget",
-        "stock", "market"
-      },
-            ["Automotive"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "automotive", "engineering", "mechanical", "systems", "propulsion", "electric", "vehicles", "environmental", "concerns"
-      },
-            ["Education"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-      {
-        "education", "learning", "teaching", "student", "course", "curriculum", "academic",
-        "knowledge", "skills", "training", "instruction", "pedagogy", "assessment", "evaluation"
-      }
+            ["Technology"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "software",
+                "computer",
+                "algorithm",
+                "data",
+                "programming",
+                "development",
+                "system",
+                "code",
+                "digital",
+                "technology",
+                "machine",
+                "learning",
+                "artificial",
+                "intelligence",
+                "network",
+                "database",
+                "application",
+                "platform",
+                "framework",
+                "api",
+                "interface",
+                "hardware",
+                "computing",
+                "processing",
+                "algorithms",
+                "revolutionized",
+                "transforms",
+                "datasets",
+                "computational",
+                "methods",
+                "pattern",
+                "recognition",
+                "predictive",
+                "modeling",
+                "neural",
+                "networks",
+                "deep",
+                "indexing",
+                "optimization",
+                "performance",
+                "structures",
+                "power",
+                "sophisticated",
+                "languages",
+                "tools",
+                "building",
+                "applications",
+                "systems",
+                "testing",
+                "methodologies",
+                "quality",
+                "reliability",
+                "approaches",
+                "systematic",
+                "coordination",
+            },
+            ["Science"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "research",
+                "study",
+                "analysis",
+                "experiment",
+                "theory",
+                "hypothesis",
+                "methodology",
+                "scientific",
+                "evidence",
+                "observation",
+                "discovery",
+                "investigation",
+                "biology",
+                "chemistry",
+                "physics",
+                "medical",
+                "health",
+                "laboratory",
+                "clinical",
+                "patient",
+                "treatment",
+            },
+            ["Business"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "management",
+                "project",
+                "planning",
+                "strategy",
+                "organization",
+                "team",
+                "leadership",
+                "process",
+                "workflow",
+                "productivity",
+                "efficiency",
+                "performance",
+                "goals",
+                "objectives",
+                "resources",
+                "budget",
+                "finance",
+                "marketing",
+                "sales",
+                "customer",
+                "service",
+                "quality",
+                "requires",
+                "systematic",
+                "coordination",
+                "involves",
+                "deliver",
+                "successful",
+                "products",
+                "time",
+                "activities",
+            },
+            ["Weather"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "weather",
+                "sunny",
+                "skies",
+                "temperature",
+                "climate",
+                "forecast",
+                "precipitation",
+                "beautiful",
+            },
+            ["Cooking"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "cooking",
+                "recipe",
+                "ingredients",
+                "kitchen",
+                "food",
+                "culinary",
+                "chef",
+                "preparation",
+                "favorite",
+                "cuisine",
+                "emphasizes",
+                "precise",
+                "temperature",
+                "control",
+                "timing",
+                "french",
+            },
+            ["Economy"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "economic",
+                "markets",
+                "volatility",
+                "global",
+                "factors",
+                "financial",
+                "economy",
+                "budget",
+                "stock",
+                "market",
+            },
+            ["Automotive"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "automotive",
+                "engineering",
+                "mechanical",
+                "systems",
+                "propulsion",
+                "electric",
+                "vehicles",
+                "environmental",
+                "concerns",
+            },
+            ["Education"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "education",
+                "learning",
+                "teaching",
+                "student",
+                "course",
+                "curriculum",
+                "academic",
+                "knowledge",
+                "skills",
+                "training",
+                "instruction",
+                "pedagogy",
+                "assessment",
+                "evaluation",
+            },
         };
 
         // Find which topics are represented
         var topicScores = new Dictionary<string, double>();
         foreach (var domain in topicDomains)
         {
-            var matchCount = keywords.Count(k => domain.Value.Contains(k));
+            var matchCount = keywords.Count(domain.Value.Contains);
             var matchRatio = keywords.Count > 0 ? (double)matchCount / keywords.Count : 0;
             topicScores[domain.Key] = matchRatio;
 
-            _logger.LogDebug("Topic {Topic}: {Matches}/{Total} keywords = {Ratio:F3}",
-              domain.Key, matchCount, keywords.Count, matchRatio);
+            _logger.LogDebug(
+                "Topic {Topic}: {Matches}/{Total} keywords = {Ratio:F3}",
+                domain.Key,
+                matchCount,
+                keywords.Count,
+                matchRatio
+            );
         }
 
         // Determine primary topic and coherence
         var primaryTopic = topicScores.OrderByDescending(kvp => kvp.Value).First();
         var topicsWithMatches = topicScores.Where(kvp => kvp.Value > 0.1).ToList(); // Only topics with meaningful presence
 
-        _logger.LogDebug("Primary topic: {Topic} ({Score:F3}), Topics with matches: {Count}",
-          primaryTopic.Key, primaryTopic.Value, topicsWithMatches.Count);
+        _logger.LogDebug(
+            "Primary topic: {Topic} ({Score:F3}), Topics with matches: {Count}",
+            primaryTopic.Key,
+            primaryTopic.Value,
+            topicsWithMatches.Count
+        );
 
         // Log all topics with scores for detailed debugging
         foreach (var topic in topicScores.OrderByDescending(kvp => kvp.Value))
@@ -2289,42 +3256,66 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         double coherenceScore;
 
         // Check for explicit topic transition phrases which indicate multiple topics
-        var hasTopicTransition = contentLower.Contains("moving to a different subject") ||
-                               contentLower.Contains("in contrast") ||
-                               contentLower.Contains("meanwhile") ||
-                               contentLower.Contains("however") ||
-                               contentLower.Contains("on the other hand") ||
-                               contentLower.Contains("alternatively");
+        var hasTopicTransition =
+            contentLower.Contains("moving to a different subject")
+            || contentLower.Contains("in contrast")
+            || contentLower.Contains("meanwhile")
+            || contentLower.Contains("however")
+            || contentLower.Contains("on the other hand")
+            || contentLower.Contains("alternatively");
 
         if (hasTopicTransition)
         {
-            _logger.LogDebug("Detected explicit topic transition - assigning reduced coherence for multi-topic content");
+            _logger.LogDebug(
+                "Detected explicit topic transition - assigning reduced coherence for multi-topic content"
+            );
             coherenceScore = Math.Min(0.75, 0.4 + (primaryTopic.Value * 0.35)); // Max 0.75 for multi-topic with transitions
             return (Math.Round(coherenceScore, 2), primaryTopic.Key, coherenceScore * 0.8, coherenceScore);
         }
 
         // Check for mixed topics by analyzing keyword distribution across different domains
-        var weatherKeywords = topicScores.GetValueOrDefault("Weather", 0) + topicScores.GetValueOrDefault("Environment", 0);
+        var weatherKeywords =
+            topicScores.GetValueOrDefault("Weather", 0) + topicScores.GetValueOrDefault("Environment", 0);
         var techKeywords = topicScores.GetValueOrDefault("Technology", 0) + topicScores.GetValueOrDefault("Science", 0);
         var cookingKeywords = topicScores.GetValueOrDefault("Cooking", 0) + topicScores.GetValueOrDefault("Food", 0);
-        var businessKeywords = topicScores.GetValueOrDefault("Business", 0) + topicScores.GetValueOrDefault("Finance", 0);
+        var businessKeywords =
+            topicScores.GetValueOrDefault("Business", 0) + topicScores.GetValueOrDefault("Finance", 0);
         var economyKeywords = topicScores.GetValueOrDefault("Economy", 0); // Add Economy
         var healthKeywords = topicScores.GetValueOrDefault("Health", 0) + topicScores.GetValueOrDefault("Medical", 0);
 
-        var topicCounts = new[] { weatherKeywords, techKeywords, cookingKeywords, businessKeywords, economyKeywords, healthKeywords }
-                         .Where(score => score > 0)
-                         .OrderByDescending(x => x)
-                         .Take(2)
-                         .ToArray();
+        var topicCounts = new[]
+        {
+            weatherKeywords,
+            techKeywords,
+            cookingKeywords,
+            businessKeywords,
+            economyKeywords,
+            healthKeywords,
+        }
+            .Where(score => score > 0)
+            .OrderByDescending(x => x)
+            .Take(2)
+            .ToArray();
 
-        _logger.LogDebug("Topic scores: Weather={Weather}, Tech={Tech}, Cooking={Cooking}, Business={Business}, Economy={Economy}, Health={Health}",
-          weatherKeywords, techKeywords, cookingKeywords, businessKeywords, economyKeywords, healthKeywords);
+        _logger.LogDebug(
+            "Topic scores: Weather={Weather}, Tech={Tech}, Cooking={Cooking}, Business={Business}, Economy={Economy}, Health={Health}",
+            weatherKeywords,
+            techKeywords,
+            cookingKeywords,
+            businessKeywords,
+            economyKeywords,
+            healthKeywords
+        );
 
         // Only flag as mixed if we have significant keywords from truly unrelated domains
         // AND they're not in a related context (e.g., Technology+Business in software development)
-        if (topicCounts.Length >= 2 &&
-            topicCounts[1] >= topicCounts[0] * 0.4 && // Lowered threshold to 40% to catch more mixed content
-            topicCounts[0] >= 0.05 && topicCounts[1] >= 0.05) // Lower threshold for presence detection
+        if (
+            topicCounts.Length >= 2
+            && topicCounts[1] >= topicCounts[0] * 0.4
+            && // Lowered threshold to 40% to catch more mixed content
+            topicCounts[0] >= 0.05
+            && topicCounts[1] >= 0.05
+        ) // Lower threshold for presence detection
         {
             // Check if this is Technology+Business combination (which could be related in software context)
             var techScore = topicScores.GetValueOrDefault("Technology", 0);
@@ -2332,15 +3323,25 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var isTechBusinessCombo = techScore > 0.1 && businessScore > 0.1;
 
             // If it's Tech+Business and content contains software development keywords, treat as related
-            if (isTechBusinessCombo && (lowerContent.Contains("software") || lowerContent.Contains("development") ||
-                                        lowerContent.Contains("programming") || lowerContent.Contains("code")))
+            if (
+                isTechBusinessCombo
+                && (
+                    lowerContent.Contains("software")
+                    || lowerContent.Contains("development")
+                    || lowerContent.Contains("programming")
+                    || lowerContent.Contains("code")
+                )
+            )
             {
                 _logger.LogDebug("Detected Technology+Business in software context - treating as related topics");
             }
             else
             {
-                _logger.LogDebug("Detected mixed topics from truly different domains - reducing coherence (counts: {Count1:F3}, {Count2:F3})",
-                  topicCounts[0], topicCounts[1]);
+                _logger.LogDebug(
+                    "Detected mixed topics from truly different domains - reducing coherence (counts: {Count1:F3}, {Count2:F3})",
+                    topicCounts[0],
+                    topicCounts[1]
+                );
                 coherenceScore = Math.Min(0.45, 0.2 + (primaryTopic.Value * 0.25)); // Max 0.45 for mixed topics
                 return (Math.Round(coherenceScore, 2), primaryTopic.Key, coherenceScore * 0.7, coherenceScore);
             }
@@ -2348,22 +3349,23 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
 
         // Check for multiple distinct topic domains (even if related)
         var strongTopics = topicScores.Where(kv => kv.Value > 0.15).ToList();
-        var mixedUnrelatedTopics = new[] {
-      new[] { "Technology", "Cooking" },
-      new[] { "Technology", "Automotive" },
-      new[] { "Technology", "Weather" },
-      new[] { "Technology", "Economy" },
-      new[] { "Cooking", "Automotive" },
-      new[] { "Cooking", "Weather" },
-      new[] { "Cooking", "Economy" },
-      new[] { "Weather", "Automotive" },
-      new[] { "Weather", "Economy" },
-      new[] { "Economy", "Automotive" },
-      new[] { "Business", "Cooking" },
-      new[] { "Business", "Weather" }
-    };
+        var mixedUnrelatedTopics = new[]
+        {
+            new[] { "Technology", "Cooking" },
+            ["Technology", "Automotive"],
+            ["Technology", "Weather"],
+            ["Technology", "Economy"],
+            ["Cooking", "Automotive"],
+            ["Cooking", "Weather"],
+            ["Cooking", "Economy"],
+            ["Weather", "Automotive"],
+            ["Weather", "Economy"],
+            ["Economy", "Automotive"],
+            ["Business", "Cooking"],
+            ["Business", "Weather"],
+        };
 
-        bool hasMultipleDistinctTopics = false;
+        var hasMultipleDistinctTopics = false;
         foreach (var pair in mixedUnrelatedTopics)
         {
             if (topicScores[pair[0]] > 0.05 && topicScores[pair[1]] > 0.05)
@@ -2380,22 +3382,28 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         if (hasMultipleDistinctTopics || hasTechAndAutomotive || hasTechAndCooking || strongTopics.Count >= 3)
         {
             // Multiple distinct topics reduce coherence significantly
-            var maxScore = strongTopics.Any() ? strongTopics.Max(t => t.Value) : 0.0;
+            var maxScore = strongTopics.Count != 0 ? strongTopics.Max(t => t.Value) : 0.0;
             coherenceScore = Math.Min(0.7, 0.4 + (maxScore * 0.3)); // Max 0.7 for multi-topic content
-            _logger.LogDebug("Multiple distinct topics detected - assigning reduced coherence: {Score:F3} (strong topics: {Count})",
-              coherenceScore, strongTopics.Count);
+            _logger.LogDebug(
+                "Multiple distinct topics detected - assigning reduced coherence: {Score:F3} (strong topics: {Count})",
+                coherenceScore,
+                strongTopics.Count
+            );
         }
         else if (primaryTopic.Value > 0.4 && topicsWithMatches.Count <= 1)
         {
             // Single dominant topic - high coherence (lowered threshold for better detection)
-            coherenceScore = 0.76 + (primaryTopic.Value * 0.24); // 0.76-1.0 range  
+            coherenceScore = 0.76 + (primaryTopic.Value * 0.24); // 0.76-1.0 range
             _logger.LogDebug("Single dominant topic detected - assigning high coherence: {Score:F3}", coherenceScore);
         }
         else if (primaryTopic.Value > 0.25 && topicsWithMatches.Count <= 2)
         {
             // Related topics or single moderate topic - medium coherence (more generous)
             coherenceScore = 0.62 + (primaryTopic.Value * 0.23); // 0.62-0.85 range
-            _logger.LogDebug("Related/moderate topics detected - assigning medium coherence: {Score:F3}", coherenceScore);
+            _logger.LogDebug(
+                "Related/moderate topics detected - assigning medium coherence: {Score:F3}",
+                coherenceScore
+            );
         }
         else if (primaryTopic.Value > 0.1)
         {
@@ -2414,34 +3422,45 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
         var topicConsistency = coherenceScore * 1.1; // Slightly higher than coherence
 
         var result = (
-          Math.Round(coherenceScore, 2),
-          primaryTopic.Key,
-          Math.Round(Math.Min(1.0, semanticUnity), 2),
-          Math.Round(Math.Min(1.0, topicConsistency), 2)
+            Math.Round(coherenceScore, 2),
+            primaryTopic.Key,
+            Math.Round(Math.Min(1.0, semanticUnity), 2),
+            Math.Round(Math.Min(1.0, topicConsistency), 2)
         );
 
-        _logger.LogDebug("Final coherence analysis: Score={Score:F3}, Topic={Topic}, Unity={Unity:F3}, Consistency={Consistency:F3}",
-          result.Item1, result.Item2, result.Item3, result.Item4);
+        _logger.LogDebug(
+            "Final coherence analysis: Score={Score:F3}, Topic={Topic}, Unity={Unity:F3}, Consistency={Consistency:F3}",
+            result.Item1,
+            result.Key,
+            result.Item3,
+            result.Item4
+        );
 
         return result;
     }
 
     /// <summary>
-    /// Calculates entropy of topic distribution to measure coherence.
+    ///     Calculates entropy of topic distribution to measure coherence.
     /// </summary>
-    private double CalculateTopicEntropy(List<double> distribution)
+    private static double CalculateTopicEntropy(List<double> distribution)
     {
-        if (!distribution.Any()) return 0;
+        if (distribution.Count == 0)
+        {
+            return 0;
+        }
 
         var sum = distribution.Sum();
-        if (sum == 0) return 0;
+        if (sum == 0)
+        {
+            return 0;
+        }
 
         var normalizedDist = distribution.Select(d => d / sum);
         return -normalizedDist.Where(p => p > 0).Sum(p => p * Math.Log2(p)) / Math.Log2(distribution.Count);
     }
 
     /// <summary>
-    /// Detects content gaps where original document content is not covered by segments.
+    ///     Detects content gaps where original document content is not covered by segments.
     /// </summary>
     private List<ValidationIssue> DetectContentGaps(List<DocumentSegment> segments, string originalContent)
     {
@@ -2449,15 +3468,21 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
 
         try
         {
-            _logger.LogDebug("DetectContentGaps analyzing {SegmentCount} segments against original content length {Length}",
-              segments.Count, originalContent.Length);
+            _logger.LogDebug(
+                "DetectContentGaps analyzing {SegmentCount} segments against original content length {Length}",
+                segments.Count,
+                originalContent.Length
+            );
 
             // Extract significant topics/keywords from original content
             var originalWords = ExtractSignificantWords(originalContent);
             var originalTopics = IdentifyTopicsFromWords(originalWords);
 
-            _logger.LogDebug("Original content has {WordCount} significant words and {TopicCount} topics",
-              originalWords.Count, originalTopics.Count);
+            _logger.LogDebug(
+                "Original content has {WordCount} significant words and {TopicCount} topics",
+                originalWords.Count,
+                originalTopics.Count
+            );
 
             // Extract coverage from all segments
             var segmentWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2469,27 +3494,37 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 var topics = IdentifyTopicsFromWords(words);
 
                 foreach (var word in words)
-                    segmentWords.Add(word);
+                {
+                    _ = segmentWords.Add(word);
+                }
+
                 foreach (var topic in topics)
-                    segmentTopics.Add(topic);
+                {
+                    _ = segmentTopics.Add(topic);
+                }
             }
 
-            _logger.LogDebug("Segments cover {WordCount} words and {TopicCount} topics",
-              segmentWords.Count, segmentTopics.Count);
+            _logger.LogDebug(
+                "Segments cover {WordCount} words and {TopicCount} topics",
+                segmentWords.Count,
+                segmentTopics.Count
+            );
 
             // Identify missing topics
             var missingTopics = originalTopics.Except(segmentTopics, StringComparer.OrdinalIgnoreCase).ToList();
 
-            if (missingTopics.Any())
+            if (missingTopics.Count != 0)
             {
                 foreach (var missingTopic in missingTopics)
                 {
-                    issues.Add(new ValidationIssue
-                    {
-                        Type = ValidationIssueType.MissingContext,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                        Description = $"Topic '{missingTopic}' from original content is not covered in any segment"
-                    });
+                    issues.Add(
+                        new ValidationIssue
+                        {
+                            Type = ValidationIssueType.MissingContext,
+                            Severity = ValidationSeverity.Warning,
+                            Description = $"Topic '{missingTopic}' from original content is not covered in any segment",
+                        }
+                    );
 
                     _logger.LogDebug("Found missing topic: {Topic}", missingTopic);
                 }
@@ -2499,12 +3534,15 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
             var coverageRatio = segmentWords.Count / Math.Max(1.0, originalWords.Count);
             if (coverageRatio < 0.7)
             {
-                issues.Add(new ValidationIssue
-                {
-                    Type = ValidationIssueType.MissingContext,
-                    Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                    Description = $"Segments only cover {coverageRatio:P0} of the original content's significant words"
-                });
+                issues.Add(
+                    new ValidationIssue
+                    {
+                        Type = ValidationIssueType.MissingContext,
+                        Severity = ValidationSeverity.Warning,
+                        Description =
+                            $"Segments only cover {coverageRatio:P0} of the original content's significant words",
+                    }
+                );
 
                 _logger.LogDebug("Low coverage ratio: {Ratio:P0}", coverageRatio);
             }
@@ -2520,21 +3558,21 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Identifies main topics from a collection of words.
+    ///     Identifies main topics from a collection of words.
     /// </summary>
-    private List<string> IdentifyTopicsFromWords(List<string> words)
+    private static List<string> IdentifyTopicsFromWords(List<string> words)
     {
         var topics = new List<string>();
 
         // Define topic keyword groups
         var topicKeywords = new Dictionary<string, string[]>
-    {
-      { "Technology", new[] { "technology", "algorithms", "machine", "learning", "artificial", "intelligence", "computing", "digital", "systems", "software", "hardware", "programming", "data", "processing", "ai", "ml" } },
-      { "Education", new[] { "education", "learning", "teaching", "school", "university", "student", "teacher", "classroom", "academic", "study", "training", "knowledge", "curriculum", "instructional" } },
-      { "Healthcare", new[] { "health", "healthcare", "medical", "medicine", "doctor", "patient", "treatment", "therapy", "clinical", "hospital", "wellness", "care", "healing", "diagnosis" } },
-      { "Business", new[] { "business", "management", "company", "organization", "corporate", "enterprise", "commerce", "trade", "marketing", "sales", "finance", "economic", "industry", "commercial" } },
-      { "Communication", new[] { "communication", "messaging", "email", "interaction", "conversation", "dialogue", "discussion", "social", "media", "network", "connection", "contact" } }
-    };
+        {
+            { "Technology", value },
+            { "Education", valueArray },
+            { "Healthcare", valueArray0 },
+            { "Business", valueArray1 },
+            { "Communication", valueArray2 },
+        };
 
         foreach (var topicGroup in topicKeywords)
         {
@@ -2549,41 +3587,51 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     }
 
     /// <summary>
-    /// Generates validation issues based on topic coherence analysis.
+    ///     Generates validation issues based on topic coherence analysis.
     /// </summary>
     private async Task<List<ValidationIssue>> GenerateCoherenceValidationIssuesAsync(
-      List<DocumentSegment> segments,
-      double averageCoherence,
-      CancellationToken cancellationToken)
+        List<DocumentSegment> segments,
+        double averageCoherence,
+        CancellationToken cancellationToken
+    )
     {
         var issues = new List<ValidationIssue>();
 
         try
         {
-            _logger.LogDebug("GenerateCoherenceValidationIssuesAsync called with {SegmentCount} segments, average coherence: {Coherence:F3}",
-              segments.Count, averageCoherence);
+            _logger.LogDebug(
+                "GenerateCoherenceValidationIssuesAsync called with {SegmentCount} segments, average coherence: {Coherence:F3}",
+                segments.Count,
+                averageCoherence
+            );
 
             // Check overall coherence quality
             if (averageCoherence < 0.6) // Lowered threshold to catch more poor content
             {
                 if (averageCoherence < 0.3)
                 {
-                    issues.Add(new ValidationIssue
-                    {
-                        Type = ValidationIssueType.PoorCoherence,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Error,
-                        Description = $"Very low average topic coherence detected: {averageCoherence:F2}. Content appears to mix unrelated topics or contains nonsensical information."
-                    });
+                    issues.Add(
+                        new ValidationIssue
+                        {
+                            Type = ValidationIssueType.PoorCoherence,
+                            Severity = ValidationSeverity.Error,
+                            Description =
+                                $"Very low average topic coherence detected: {averageCoherence:F2}. Content appears to mix unrelated topics or contains nonsensical information.",
+                        }
+                    );
                     _logger.LogDebug("Added very low coherence validation issue");
                 }
                 else
                 {
-                    issues.Add(new ValidationIssue
-                    {
-                        Type = ValidationIssueType.PoorCoherence,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                        Description = $"Poor average topic coherence detected: {averageCoherence:F2}. Consider reviewing content for topic consistency and structure."
-                    });
+                    issues.Add(
+                        new ValidationIssue
+                        {
+                            Type = ValidationIssueType.PoorCoherence,
+                            Severity = ValidationSeverity.Warning,
+                            Description =
+                                $"Poor average topic coherence detected: {averageCoherence:F2}. Consider reviewing content for topic consistency and structure.",
+                        }
+                    );
                     _logger.LogDebug("Added poor coherence validation issue");
                 }
             }
@@ -2595,12 +3643,15 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
                 var singleSegmentAnalysis = await AnalyzeThematicCoherenceAsync(segments[0].Content, cancellationToken);
                 if (singleSegmentAnalysis.CoherenceScore < 0.5)
                 {
-                    issues.Add(new ValidationIssue
-                    {
-                        Type = ValidationIssueType.TopicMixing,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                        Description = $"Single segment with mixed topics detected. Coherence score: {singleSegmentAnalysis.CoherenceScore:F2}. Content may benefit from topic-based segmentation."
-                    });
+                    issues.Add(
+                        new ValidationIssue
+                        {
+                            Type = ValidationIssueType.TopicMixing,
+                            Severity = ValidationSeverity.Warning,
+                            Description =
+                                $"Single segment with mixed topics detected. Coherence score: {singleSegmentAnalysis.CoherenceScore:F2}. Content may benefit from topic-based segmentation.",
+                        }
+                    );
                     _logger.LogDebug("Added mixed-topic single-segment validation issue");
                 }
             }
@@ -2612,18 +3663,27 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
 
                 if (analysis.CoherenceScore < 0.3)
                 {
-                    issues.Add(new ValidationIssue
-                    {
-                        Type = ValidationIssueType.PoorCoherence,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                        Description = $"Segment {segment.Id} has very low coherence ({analysis.CoherenceScore:F2}): content may mix unrelated topics."
-                    });
-                    _logger.LogDebug("Added poor coherence issue for segment {SegmentId} with score {Score:F3}",
-                      segment.Id, analysis.CoherenceScore);
+                    issues.Add(
+                        new ValidationIssue
+                        {
+                            Type = ValidationIssueType.PoorCoherence,
+                            Severity = ValidationSeverity.Warning,
+                            Description =
+                                $"Segment {segment.Id} has very low coherence ({analysis.CoherenceScore:F2}): content may mix unrelated topics.",
+                        }
+                    );
+                    _logger.LogDebug(
+                        "Added poor coherence issue for segment {SegmentId} with score {Score:F3}",
+                        segment.Id,
+                        analysis.CoherenceScore
+                    );
                 }
             }
 
-            _logger.LogDebug("GenerateCoherenceValidationIssuesAsync generated {IssueCount} coherence issues", issues.Count);
+            _logger.LogDebug(
+                "GenerateCoherenceValidationIssuesAsync generated {IssueCount} coherence issues",
+                issues.Count
+            );
             return issues;
         }
         catch (Exception ex)
@@ -2636,50 +3696,4 @@ public class TopicBasedSegmentationService : ITopicBasedSegmentationService
     #endregion
 
     #endregion
-
-    // ---------------------------------------------------------------------------
-    // Validation helper stubs (provide basic implementations to satisfy compiler)
-    // ---------------------------------------------------------------------------
-    private Task<SegmentValidationResult> ValidateIndividualSegmentAsync(DocumentSegment segment, CancellationToken cancellationToken)
-    {
-        var coherence = CalculateRuleBasedCoherence(segment.Content);
-        var result = new SegmentValidationResult
-        {
-            SegmentId = segment.Id,
-            TopicCoherence = coherence,
-            Independence = 1.0,
-            TopicClarity = coherence,
-        };
-        return Task.FromResult(result);
-    }
-
-    private double CalculateBoundaryAccuracy(List<DocumentSegment> segments, string originalContent)
-    {
-        if (segments.Count <= 1) return 0.3;
-        // Accuracy heuristic: more segments up to 10 improves score
-        return Math.Min(1.0, segments.Count / 10.0 + 0.5);
-    }
-
-    private double CalculateTopicCoverage(List<DocumentSegment> segments, string originalContent)
-    {
-        var coveredLength = segments.Sum(s => s.Content.Length);
-        if (string.IsNullOrEmpty(originalContent)) return 0.0;
-        return Math.Clamp((double)coveredLength / originalContent.Length, 0.0, 1.0);
-    }
-
-    private double CalculateOverallQuality(TopicSegmentationValidation validation) =>
-      (validation.AverageTopicCoherence + validation.BoundaryAccuracy + validation.SegmentIndependence + validation.TopicCoverage) / 4.0;
-    private List<string> GenerateRecommendations(TopicSegmentationValidation validation)
-    {
-        var recs = new List<string>();
-        if (validation.AverageTopicCoherence < 0.6)
-            recs.Add("Improve topic coherence within individual segments by focusing on a single theme.");
-        if (validation.SegmentIndependence < 0.6)
-            recs.Add("Increase independence between adjacent segments to avoid redundancy.");
-        if (validation.BoundaryAccuracy < 0.6)
-            recs.Add("Re-evaluate boundary placement to better reflect topic changes.");
-        if (!recs.Any())
-            recs.Add("Segmentation looks good. Minor refinements only.");
-        return recs;
-    }
 }

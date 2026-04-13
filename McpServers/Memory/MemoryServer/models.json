@@ -91,6 +91,240 @@
      ]
    },
    {
+     "id": "gpt-5",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "structured-output"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:10",
+         "tokens_per_second": 85.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-5",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 2.0,
+           "completion_per_million": 8.0
+         },
+         "tags": ["flagship", "ultra-long-context", "premium"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-5",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 2.2,
+           "completion_per_million": 8.8
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-5",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 8.0
+             }
+           },
+           {
+             "name": "Azure OpenAI",
+             "model_name": "gpt-5",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 8.0
+             }
+           }
+         ],
+         "tags": ["fallback", "aggregator", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gpt-5-mini",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "structured-output", "small-model"],
+       "performance": {
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 120.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-5-mini",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.4,
+           "completion_per_million": 1.6
+         },
+         "tags": ["cost-effective", "fast", "balanced", "small-model"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-5-mini",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.44,
+           "completion_per_million": 1.76
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-5-mini",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.4,
+               "completion_per_million": 1.6
+             }
+           },
+           {
+             "name": "Azure OpenAI",
+             "model_name": "gpt-5-mini",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.4,
+               "completion_per_million": 1.6
+             }
+           }
+         ],
+         "tags": ["fallback", "cost-effective", "openai-compatible", "small-model"]
+       }
+     ]
+   },
+   {
+     "id": "gpt-5-nano",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 20
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "speed-optimized", "nano-model"],
+       "performance": {
+         "typical_latency": "00:00:01",
+         "max_latency": "00:00:05",
+         "tokens_per_second": 200.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-5-nano",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.1,
+           "completion_per_million": 0.4
+         },
+         "tags": ["ultra-fast", "cost-optimized", "high-volume", "nano-model"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-5-nano",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.11,
+           "completion_per_million": 0.44
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-5-nano",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.1,
+               "completion_per_million": 0.4
+             }
+           }
+         ],
+         "tags": ["fallback", "ultra-fast", "openai-compatible", "nano-model"]
+       }
+     ]
+   },
+   {
      "id": "gpt-4.1",
      "is_reasoning": false,
      "capabilities": {

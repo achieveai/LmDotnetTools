@@ -1,6 +1,4 @@
-using System.Collections.Immutable;
 using System.Diagnostics;
-using System.Linq;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -9,8 +7,6 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 public record ChatMessage
 {
-    public ChatMessage() { }
-
     [JsonPropertyName("role")]
     public RoleEnum? Role { get; set; }
 
@@ -38,7 +34,8 @@ public record ChatMessage
     // Some providers (e.g., OpenAI o-series) return a duplicate field "reasoning_content"
     // that mirrors "reasoning". We need to *read* it during deserialization but must **not**
     // emit it when serializing outbound requests (it would duplicate `reasoning`).
-    [JsonPropertyName("reasoning_content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    [JsonPropertyName("reasoning_content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ReasoningContent
     {
         // Write-only for deserialization; getter intentionally returns null so the
@@ -52,58 +49,54 @@ public record ChatMessage
     [JsonPropertyName("reasoning_details")]
     public List<ReasoningDetail>? ReasoningDetails { get; set; }
 
-    public record ReasoningDetail
-    {
-        [JsonPropertyName("type")] public string? Type { get; set; }
-        [JsonPropertyName("data")] public string? Data { get; set; }
-        // Some providers (OpenAI o-series) put summary text under a "summary" field instead of "data".
-        [JsonPropertyName("summary")] public string? Summary { get; set; }
-    }
-
-    private IEnumerable<IMessage> ToMessages(
-        string? name,
-        RoleEnum? role = null,
-        bool isStreaming = false)
+    private IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null, bool isStreaming = false)
     {
         role = Role ?? role ?? RoleEnum.Assistant;
         if (ToolCalls?.Count > 0)
         {
             if (isStreaming)
             {
-                var toolCallUpdates = ToolCalls.Select(tc =>
-                    new ToolCallUpdate
+                var toolCallUpdates = ToolCalls
+                    .Select(tc => new ToolCallUpdate
                     {
                         FunctionName = tc.Function.Name,
                         FunctionArgs = tc.Function.Arguments,
                         ToolCallId = tc.Id,
                         Index = tc.Index,
-                    }
-                ).ToArray();
+                    })
+                    .ToArray();
 
                 yield return new ToolsCallUpdateMessage
                 {
                     Role = ToRole(role!.Value),
-                    ToolCallUpdates = toolCallUpdates.ToImmutableList(),
+                    ToolCallUpdates = [.. toolCallUpdates],
                     FromAgent = name,
                     GenerationId = Id,
                 };
 
                 yield break;
             }
-            else
-            {
-                var toolCalls = ToolCalls.Select(tc =>
-                    new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id }
-                ).ToArray();
 
-                yield return new ToolsCallMessage
-                {
-                    Role = ToRole(role!.Value),
-                    ToolCalls = toolCalls.ToImmutableList(),
-                    FromAgent = name,
-                    GenerationId = Id
-                };
-            }
+            var toolCalls = ToolCalls
+                .Select(
+                    (tc, idx) =>
+                        new ToolCall
+                        {
+                            FunctionName = tc.Function.Name,
+                            FunctionArgs = tc.Function.Arguments,
+                            ToolCallId = tc.Id,
+                            ToolCallIdx = idx, // Assign sequential tool call index
+                        }
+                )
+                .ToArray();
+
+            yield return new ToolsCallMessage
+            {
+                Role = ToRole(role!.Value),
+                ToolCalls = [.. toolCalls],
+                FromAgent = name,
+                GenerationId = Id,
+            };
         }
 
         // Reasoning handling – emit all reasoning blocks, but prioritize reasoning_details visibility when text matches.
@@ -112,56 +105,66 @@ public record ChatMessage
         // First, process reasoning_details to capture proper visibility
         if (ReasoningDetails?.Count > 0)
         {
-            foreach (var detail in ReasoningDetails.Where(d => d.Type != null && d.Type.StartsWith("reasoning", StringComparison.OrdinalIgnoreCase)))
+            foreach (
+                var detail in ReasoningDetails.Where(d =>
+                    d.Type != null && d.Type.StartsWith("reasoning", StringComparison.OrdinalIgnoreCase)
+                )
+            )
             {
                 var detailText = detail.Data ?? detail.Summary;
-                if (string.IsNullOrEmpty(detailText)) continue;
-
-                var visibility = detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)
-                    ? ReasoningVisibility.Encrypted
-                    : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase)
-                        ? ReasoningVisibility.Summary
-                        : ReasoningVisibility.Plain;
-
-
-                if (isStreaming && visibility != ReasoningVisibility.Encrypted)
+                if (string.IsNullOrEmpty(detailText))
                 {
-                    yield return new ReasoningUpdateMessage
+                    continue;
+                }
+
+                var visibility =
+                    detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)
+                        ? ReasoningVisibility.Encrypted
+                    : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase) ? ReasoningVisibility.Summary
+                    : ReasoningVisibility.Plain;
+
+                yield return isStreaming && visibility != ReasoningVisibility.Encrypted
+                    ? new ReasoningUpdateMessage
                     {
                         Role = ToRole(role!.Value),
                         Reasoning = detailText!,
                         FromAgent = name,
                         GenerationId = Id,
-                        Visibility = visibility
-                    };
-                }
-                else
-                {
-                    yield return new ReasoningMessage
+                        Visibility = visibility,
+                    }
+                    : new ReasoningMessage
                     {
                         Role = ToRole(role!.Value),
                         Reasoning = detailText!,
                         FromAgent = name,
                         GenerationId = Id,
-                        Visibility = visibility
+                        Visibility = visibility,
                     };
-                }
 
-                processedReasoningTexts.Add(detailText);
+                _ = processedReasoningTexts.Add(detailText);
             }
         }
 
         // Then, emit top-level reasoning only if it wasn't already processed with proper visibility
         if (!string.IsNullOrEmpty(Reasoning) && !processedReasoningTexts.Contains(Reasoning))
         {
-            yield return new ReasoningUpdateMessage
-            {
-                Role = ToRole(role!.Value),
-                Reasoning = Reasoning!,
-                FromAgent = name,
-                GenerationId = Id,
-                Visibility = AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Plain
-            };
+            yield return isStreaming
+                ? new ReasoningUpdateMessage
+                {
+                    Role = ToRole(role!.Value),
+                    Reasoning = Reasoning!,
+                    FromAgent = name,
+                    GenerationId = Id,
+                    Visibility = ReasoningVisibility.Plain,
+                }
+                : new ReasoningMessage
+                {
+                    Role = ToRole(role!.Value),
+                    Reasoning = Reasoning!,
+                    FromAgent = name,
+                    GenerationId = Id,
+                    Visibility = ReasoningVisibility.Plain,
+                };
         }
 
         if (Content == null)
@@ -189,7 +192,7 @@ public record ChatMessage
                 Role = ToRole(role!.Value),
                 Text = contentText,
                 FromAgent = name,
-                GenerationId = Id
+                GenerationId = Id,
             };
         }
         else if (Content.Is<Union<TextContent, ImageContent>[]>())
@@ -203,14 +206,14 @@ public record ChatMessage
                         Role = ToRole(role!.Value),
                         Text = item.Get<TextContent>().Text,
                         FromAgent = name,
-                        GenerationId = Id
-                    } as IMessage
+                        GenerationId = Id,
+                    }
                     : new ImageMessage
                     {
                         Role = ToRole(role!.Value),
                         ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
                         FromAgent = name,
-                        GenerationId = Id
+                        GenerationId = Id,
                     };
             }
         }
@@ -220,17 +223,15 @@ public record ChatMessage
         }
     }
 
-    public IEnumerable<IMessage> ToStreamingMessages(
-        string? name,
-        RoleEnum? role = null)
+    public IEnumerable<IMessage> ToStreamingMessages(string? name, RoleEnum? role = null)
     {
-        return ToMessages(name, role, isStreaming: true);
+        return ToMessages(name, role, true);
     }
 
     // Keeping original non-streaming method as a wrapper for backward compatibility
     public IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null)
     {
-        return ToMessages(name, role, isStreaming: false);
+        return ToMessages(name, role, false);
     }
 
     public static Role ToRole(RoleEnum role)
@@ -247,20 +248,29 @@ public record ChatMessage
 
     public static RoleEnum ToRoleEnum(Role role)
     {
-        return role == LmCore.Messages.Role.System
-            ? RoleEnum.System
-            : role == LmCore.Messages.Role.User
-            ? RoleEnum.User
-            : role == LmCore.Messages.Role.Assistant
-            ? RoleEnum.Assistant
-            : role == LmCore.Messages.Role.Tool
-            ? RoleEnum.Tool
+        return role == LmCore.Messages.Role.System ? RoleEnum.System
+            : role == LmCore.Messages.Role.User ? RoleEnum.User
+            : role == LmCore.Messages.Role.Assistant ? RoleEnum.Assistant
+            : role == LmCore.Messages.Role.Tool ? RoleEnum.Tool
             : throw new ArgumentOutOfRangeException(nameof(role), role, null);
     }
 
     public static Union<string, Union<TextContent, ImageContent>[]> CreateContent(string text)
     {
         return new Union<string, Union<TextContent, ImageContent>[]>(text);
+    }
+
+    public record ReasoningDetail
+    {
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
+        [JsonPropertyName("data")]
+        public string? Data { get; set; }
+
+        // Some providers (OpenAI o-series) put summary text under a "summary" field instead of "data".
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
     }
 }
 
@@ -282,9 +292,7 @@ public record TextContent
 [DebuggerDisplay("{ImageUrl.DebuggerDisplay,nq}")]
 public record ImageContent
 {
-    public ImageContent(
-        string url,
-        string? altText = null)
+    public ImageContent(string url, string? altText = null)
     {
         Url = new ImageUrl(url, altText);
     }
@@ -305,20 +313,18 @@ public record ImageContent
         {
             get
             {
-                var formattedUrl = Url.Length <= 50
-                    ? Url : $"{Url.Substring(0, 23)}...{Url.Substring(Url.Length - 24)}";
+                var formattedUrl = Url.Length <= 50 ? Url : $"{Url[..23]}...{Url[^24..]}";
 
-                return AltText != null
-                    ? $"Url = {formattedUrl}, AltText = {AltText}"
-                    : $"Url = {formattedUrl}";
+                return AltText != null ? $"Url = {formattedUrl}, AltText = {AltText}" : $"Url = {formattedUrl}";
             }
         }
-    };
+    }
 }
 
 public record FunctionContent(
     [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("function")] FunctionCall Function)
+    [property: JsonPropertyName("function")] FunctionCall Function
+)
 {
     [JsonPropertyName("index")]
     public int? Index { get; init; }
@@ -329,7 +335,8 @@ public record FunctionContent(
 
 public record FunctionCall(
     [property: JsonPropertyName("name")] string? Name,
-    [property: JsonPropertyName("arguments")] string? Arguments)
+    [property: JsonPropertyName("arguments")] string? Arguments
+)
 { }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]

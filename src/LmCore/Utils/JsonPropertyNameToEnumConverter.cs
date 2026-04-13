@@ -4,11 +4,14 @@ using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
-public class JsonPropertyNameEnumConverter<T> : JsonConverter<T> where T : struct, Enum
+public class JsonPropertyNameEnumConverter<T> : JsonConverter<T>
+    where T : struct, Enum
 {
     public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        string value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
+        ArgumentNullException.ThrowIfNull(typeToConvert);
+
+        var value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
 
         foreach (var field in typeToConvert.GetFields())
         {
@@ -24,6 +27,8 @@ public class JsonPropertyNameEnumConverter<T> : JsonConverter<T> where T : struc
 
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+
         var field = value.GetType().GetField(value.ToString())!;
         var attribute = field.GetCustomAttribute<JsonPropertyNameAttribute>();
 

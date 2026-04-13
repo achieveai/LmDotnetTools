@@ -2,7 +2,6 @@ using MemoryServer.Models;
 using MemoryServer.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
 
 namespace MemoryServer.Tests.Services;
 
@@ -22,13 +21,10 @@ public class DeduplicationEngineTests
             EnableGracefulFallback = true,
             DeduplicationTimeout = TimeSpan.FromSeconds(2),
             ContextPreservationSensitivity = 0.7f,
-            EnableSourceRelationshipAnalysis = true
+            EnableSourceRelationshipAnalysis = true,
         };
 
-        var memoryServerOptions = new MemoryServerOptions
-        {
-            Deduplication = _options
-        };
+        var memoryServerOptions = new MemoryServerOptions { Deduplication = _options };
 
         var optionsWrapper = Options.Create(memoryServerOptions);
         var logger = new LoggerFactory().CreateLogger<DeduplicationEngine>();
@@ -41,8 +37,9 @@ public class DeduplicationEngineTests
     public async Task DeduplicateResultsAsync_WithNullResults_ThrowsArgumentNullException()
     {
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            _deduplicationEngine.DeduplicateResultsAsync(null!, _sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            _deduplicationEngine.DeduplicateResultsAsync(null!, _sessionContext)
+        );
     }
 
     [Fact]
@@ -65,17 +62,14 @@ public class DeduplicationEngineTests
     public async Task DeduplicateResultsAsync_WithSingleResult_ReturnsSameResult()
     {
         // Arrange
-        var results = new List<UnifiedSearchResult>
-        {
-            CreateMemoryResult(1, "Test memory content", 0.9f)
-        };
+        var results = new List<UnifiedSearchResult> { CreateMemoryResult(1, "Test memory content", 0.9f) };
 
         // Act
         var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults);
-        Assert.Single(deduplicationResults.Results);
+        _ = Assert.Single(deduplicationResults.Results);
         Assert.False(deduplicationResults.WasDeduplicationPerformed);
         Assert.Equal("Deduplication disabled or insufficient results", deduplicationResults.FallbackReason);
     }
@@ -89,7 +83,7 @@ public class DeduplicationEngineTests
             CreateMemoryResult(1, "This is a test memory about artificial intelligence", 0.9f),
             CreateMemoryResult(2, "This is a test memory about artificial intelligence", 0.8f), // Exact duplicate
             CreateMemoryResult(3, "This is a test memory about machine learning", 0.7f), // Different content
-            CreateMemoryResult(4, "This is test memory about artificial intelligence", 0.6f) // Very similar (missing 'a')
+            CreateMemoryResult(4, "This is test memory about artificial intelligence", 0.6f), // Very similar (missing 'a')
         };
 
         // Act
@@ -115,7 +109,7 @@ public class DeduplicationEngineTests
         {
             CreateMemoryResult(1, "John works at Microsoft", 0.9f),
             CreateEntityResult(2, "John", 0.8f), // Related entity, should be preserved as complementary
-            CreateMemoryResult(3, "Sarah works at Google", 0.7f)
+            CreateMemoryResult(3, "Sarah works at Google", 0.7f),
         };
 
         // Act
@@ -136,11 +130,15 @@ public class DeduplicationEngineTests
         var results = new List<UnifiedSearchResult>
         {
             CreateMemoryResult(1, "Duplicate content", 0.9f),
-            CreateMemoryResult(2, "Duplicate content", 0.8f)
+            CreateMemoryResult(2, "Duplicate content", 0.8f),
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext, disabledOptions);
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
+            results,
+            _sessionContext,
+            disabledOptions
+        );
 
         // Assert
         Assert.NotNull(deduplicationResults);
@@ -156,17 +154,21 @@ public class DeduplicationEngineTests
         var strictOptions = new DeduplicationOptions
         {
             EnableDeduplication = true,
-            SimilarityThreshold = 0.95f // Very high threshold
+            SimilarityThreshold = 0.95f, // Very high threshold
         };
 
         var results = new List<UnifiedSearchResult>
         {
             CreateMemoryResult(1, "John works at Microsoft in Seattle", 0.9f),
-            CreateMemoryResult(2, "John works at Microsoft in Redmond", 0.8f) // Similar but not identical
+            CreateMemoryResult(2, "John works at Microsoft in Redmond", 0.8f), // Similar but not identical
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext, strictOptions);
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
+            results,
+            _sessionContext,
+            strictOptions
+        );
 
         // Assert
         Assert.NotNull(deduplicationResults);
@@ -182,18 +184,22 @@ public class DeduplicationEngineTests
         var lenientOptions = new DeduplicationOptions
         {
             EnableDeduplication = true,
-            SimilarityThreshold = 0.5f // Low threshold
+            SimilarityThreshold = 0.5f, // Low threshold
         };
 
         var results = new List<UnifiedSearchResult>
         {
             CreateMemoryResult(1, "John works at Microsoft", 0.9f),
             CreateMemoryResult(2, "John is employed by Microsoft", 0.8f), // Somewhat similar
-            CreateMemoryResult(3, "Sarah works at Google", 0.7f) // Different
+            CreateMemoryResult(3, "Sarah works at Google", 0.7f), // Different
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext, lenientOptions);
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
+            results,
+            _sessionContext,
+            lenientOptions
+        );
 
         // Assert
         Assert.NotNull(deduplicationResults);
@@ -237,7 +243,7 @@ public class DeduplicationEngineTests
         {
             CreateMemoryResult(1, "Test content one", 0.9f),
             CreateMemoryResult(2, "Test content one", 0.8f), // Duplicate
-            CreateMemoryResult(3, "Test content two", 0.7f)
+            CreateMemoryResult(3, "Test content two", 0.7f),
         };
 
         // Act
@@ -255,8 +261,6 @@ public class DeduplicationEngineTests
         Assert.Empty(deduplicationResults.Metrics.Errors);
     }
 
-
-
     private static UnifiedSearchResult CreateMemoryResult(int id, string content, float score)
     {
         return new UnifiedSearchResult
@@ -271,8 +275,8 @@ public class DeduplicationEngineTests
             {
                 Id = id,
                 Content = content,
-                UserId = "test-user"
-            }
+                UserId = "test-user",
+            },
         };
     }
 
@@ -290,12 +294,18 @@ public class DeduplicationEngineTests
             {
                 Id = id,
                 Name = name,
-                UserId = "test-user"
-            }
+                UserId = "test-user",
+            },
         };
     }
 
-    private static UnifiedSearchResult CreateRelationshipResult(int id, string source, string relationshipType, string target, float score)
+    private static UnifiedSearchResult CreateRelationshipResult(
+        int id,
+        string source,
+        string relationshipType,
+        string target,
+        float score
+    )
     {
         return new UnifiedSearchResult
         {
@@ -311,8 +321,8 @@ public class DeduplicationEngineTests
                 Source = source,
                 RelationshipType = relationshipType,
                 Target = target,
-                UserId = "test-user"
-            }
+                UserId = "test-user",
+            },
         };
     }
 }

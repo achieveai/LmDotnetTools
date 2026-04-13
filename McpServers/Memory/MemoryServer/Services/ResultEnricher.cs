@@ -5,26 +5,29 @@ using Microsoft.Extensions.Options;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Result enrichment engine that provides minimal enrichment to enhance
-/// user understanding without overwhelming the results (max 2 items per result).
+///     Result enrichment engine that provides minimal enrichment to enhance
+///     user understanding without overwhelming the results (max 2 items per result).
 /// </summary>
 public class ResultEnricher : IResultEnricher
 {
+    private readonly IGraphRepository _graphRepository;
     private readonly ILogger<ResultEnricher> _logger;
     private readonly EnrichmentOptions _options;
-    private readonly IGraphRepository _graphRepository;
 
     public ResultEnricher(
         IOptions<MemoryServerOptions> options,
         IGraphRepository graphRepository,
-        ILogger<ResultEnricher> logger)
+        ILogger<ResultEnricher> logger
+    )
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value?.Enrichment ?? throw new ArgumentNullException(nameof(options));
         _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
 
-        _logger.LogInformation("ResultEnricher initialized with max {MaxItems} related items per result",
-            _options.MaxRelatedItems);
+        _logger.LogInformation(
+            "ResultEnricher initialized with max {MaxItems} related items per result",
+            _options.MaxRelatedItems
+        );
     }
 
     public bool IsEnrichmentAvailable()
@@ -36,10 +39,10 @@ public class ResultEnricher : IResultEnricher
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
         EnrichmentOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        if (results == null)
-            throw new ArgumentNullException(nameof(results));
+        ArgumentNullException.ThrowIfNull(results);
 
         options ??= _options;
         var totalStopwatch = Stopwatch.StartNew();
@@ -52,27 +55,41 @@ public class ResultEnricher : IResultEnricher
             // If enrichment is disabled or no results, return original results as enriched
             if (!options.EnableEnrichment || results.Count == 0)
             {
-                return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed,
-                    "Enrichment disabled or no results");
+                return CreateFallbackResults(
+                    results,
+                    metrics,
+                    totalStopwatch.Elapsed,
+                    "Enrichment disabled or no results"
+                );
             }
 
             // Perform enrichment with timeout
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(options.EnrichmentTimeout);
 
-            var enrichedResults = await PerformEnrichmentAsync(results, sessionContext, options, metrics, timeoutCts.Token);
+            var enrichedResults = await PerformEnrichmentAsync(
+                results,
+                sessionContext,
+                options,
+                metrics,
+                timeoutCts.Token
+            );
 
             totalStopwatch.Stop();
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
-            _logger.LogInformation("Enrichment completed: {ResultCount} results enriched, {RelatedItemsAdded} related items added in {Duration}ms",
-                metrics.ResultsEnriched, metrics.RelatedItemsAdded, metrics.TotalDuration.TotalMilliseconds);
+            _logger.LogInformation(
+                "Enrichment completed: {ResultCount} results enriched, {RelatedItemsAdded} related items added in {Duration}ms",
+                metrics.ResultsEnriched,
+                metrics.RelatedItemsAdded,
+                metrics.TotalDuration.TotalMilliseconds
+            );
 
             return new EnrichmentResults
             {
                 Results = enrichedResults,
                 Metrics = metrics,
-                WasEnrichmentPerformed = true
+                WasEnrichmentPerformed = true,
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -88,7 +105,9 @@ public class ResultEnricher : IResultEnricher
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, "Enrichment timed out");
         }
@@ -101,7 +120,9 @@ public class ResultEnricher : IResultEnricher
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, $"Enrichment failed: {ex.Message}");
         }
@@ -112,7 +133,8 @@ public class ResultEnricher : IResultEnricher
         SessionContext sessionContext,
         EnrichmentOptions options,
         EnrichmentMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var enrichedResults = new List<EnrichedSearchResult>();
 
@@ -133,24 +155,35 @@ public class ResultEnricher : IResultEnricher
                 Metadata = result.Metadata,
                 OriginalMemory = result.OriginalMemory,
                 OriginalEntity = result.OriginalEntity,
-                OriginalRelationship = result.OriginalRelationship
+                OriginalRelationship = result.OriginalRelationship,
             };
 
             // Enrich based on result type
-            bool wasEnriched = false;
-
-            switch (result.Type)
+            var wasEnriched = result.Type switch
             {
-                case UnifiedResultType.Memory:
-                    wasEnriched = await EnrichMemoryResultAsync(enrichedResult, sessionContext, options, metrics, cancellationToken);
-                    break;
-                case UnifiedResultType.Entity:
-                    wasEnriched = await EnrichEntityResultAsync(enrichedResult, sessionContext, options, metrics, cancellationToken);
-                    break;
-                case UnifiedResultType.Relationship:
-                    wasEnriched = await EnrichRelationshipResultAsync(enrichedResult, sessionContext, options, metrics, cancellationToken);
-                    break;
-            }
+                UnifiedResultType.Memory => await EnrichMemoryResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                UnifiedResultType.Entity => await EnrichEntityResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                UnifiedResultType.Relationship => await EnrichRelationshipResultAsync(
+                    enrichedResult,
+                    sessionContext,
+                    options,
+                    metrics,
+                    cancellationToken
+                ),
+                _ => throw new NotSupportedException($"Unsupported result type: {result.Type}"),
+            };
 
             if (wasEnriched)
             {
@@ -168,13 +201,16 @@ public class ResultEnricher : IResultEnricher
         SessionContext sessionContext,
         EnrichmentOptions options,
         EnrichmentMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (result.OriginalMemory == null)
+        {
             return Task.FromResult(false);
+        }
 
         var relationshipStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
@@ -209,19 +245,26 @@ public class ResultEnricher : IResultEnricher
         SessionContext sessionContext,
         EnrichmentOptions options,
         EnrichmentMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (result.OriginalEntity == null)
+        {
             return false;
+        }
 
         var contextStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
             // Find relationships involving this entity
             var relationships = await _graphRepository.GetRelationshipsForEntityAsync(
-                result.OriginalEntity.Name, sessionContext, null, cancellationToken);
+                result.OriginalEntity.Name,
+                sessionContext,
+                null,
+                cancellationToken
+            );
 
             if (relationships?.Any() == true)
             {
@@ -233,15 +276,17 @@ public class ResultEnricher : IResultEnricher
 
                 foreach (var relationship in topRelationships)
                 {
-                    result.RelatedRelationships.Add(new RelatedItem
-                    {
-                        Type = UnifiedResultType.Relationship,
-                        Id = relationship.Id,
-                        Content = $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
-                        RelevanceScore = relationship.Confidence,
-                        Confidence = relationship.Confidence,
-                        RelationshipExplanation = $"Direct relationship involving this entity"
-                    });
+                    result.RelatedRelationships.Add(
+                        new RelatedItem
+                        {
+                            Type = UnifiedResultType.Relationship,
+                            Id = relationship.Id,
+                            Content = $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
+                            RelevanceScore = relationship.Confidence,
+                            Confidence = relationship.Confidence,
+                            RelationshipExplanation = "Direct relationship involving this entity",
+                        }
+                    );
 
                     metrics.RelatedItemsAdded++;
                     wasEnriched = true;
@@ -281,25 +326,41 @@ public class ResultEnricher : IResultEnricher
         SessionContext sessionContext,
         EnrichmentOptions options,
         EnrichmentMetrics metrics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (result.OriginalRelationship == null)
+        {
             return false;
+        }
 
         var contextStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
             // Find entities involved in this relationship
             var sourceEntity = await _graphRepository.GetEntityByNameAsync(
-                result.OriginalRelationship.Source, sessionContext, cancellationToken);
+                result.OriginalRelationship.Source,
+                sessionContext,
+                cancellationToken
+            );
             var targetEntity = await _graphRepository.GetEntityByNameAsync(
-                result.OriginalRelationship.Target, sessionContext, cancellationToken);
+                result.OriginalRelationship.Target,
+                sessionContext,
+                cancellationToken
+            );
 
             var relatedEntities = new List<Entity>();
-            if (sourceEntity != null) relatedEntities.Add(sourceEntity);
-            if (targetEntity != null) relatedEntities.Add(targetEntity);
+            if (sourceEntity != null)
+            {
+                relatedEntities.Add(sourceEntity);
+            }
+
+            if (targetEntity != null)
+            {
+                relatedEntities.Add(targetEntity);
+            }
 
             var topEntities = relatedEntities
                 .Where(e => e.Confidence >= options.MinRelevanceScore)
@@ -309,15 +370,17 @@ public class ResultEnricher : IResultEnricher
 
             foreach (var entity in topEntities)
             {
-                result.RelatedEntities.Add(new RelatedItem
-                {
-                    Type = UnifiedResultType.Entity,
-                    Id = entity.Id,
-                    Content = entity.Name,
-                    RelevanceScore = entity.Confidence,
-                    Confidence = entity.Confidence,
-                    RelationshipExplanation = $"Entity involved in this relationship"
-                });
+                result.RelatedEntities.Add(
+                    new RelatedItem
+                    {
+                        Type = UnifiedResultType.Entity,
+                        Id = entity.Id,
+                        Content = entity.Name,
+                        RelevanceScore = entity.Confidence,
+                        Confidence = entity.Confidence,
+                        RelationshipExplanation = "Entity involved in this relationship",
+                    }
+                );
 
                 metrics.RelatedItemsAdded++;
                 wasEnriched = true;
@@ -351,16 +414,16 @@ public class ResultEnricher : IResultEnricher
         return wasEnriched;
     }
 
-    private string GenerateMemoryRelevanceExplanation(EnrichedSearchResult result)
+    private static string GenerateMemoryRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
 
-        if (result.RelatedEntities.Any())
+        if (result.RelatedEntities.Count != 0)
         {
             explanations.Add($"Contains {result.RelatedEntities.Count} related entities");
         }
 
-        if (result.RelatedRelationships.Any())
+        if (result.RelatedRelationships.Count != 0)
         {
             explanations.Add($"Contains {result.RelatedRelationships.Count} relationships");
         }
@@ -370,16 +433,16 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High relevance match");
         }
 
-        return explanations.Any()
+        return explanations.Count != 0
             ? $"Memory relevant because: {string.Join(", ", explanations)}"
             : "Memory matches search criteria";
     }
 
-    private string GenerateEntityRelevanceExplanation(EnrichedSearchResult result)
+    private static string GenerateEntityRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
 
-        if (result.RelatedRelationships.Any())
+        if (result.RelatedRelationships.Count != 0)
         {
             explanations.Add($"Connected through {result.RelatedRelationships.Count} relationships");
         }
@@ -389,16 +452,16 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High confidence entity");
         }
 
-        return explanations.Any()
+        return explanations.Count != 0
             ? $"Entity relevant because: {string.Join(", ", explanations)}"
             : "Entity matches search criteria";
     }
 
-    private string GenerateRelationshipRelevanceExplanation(EnrichedSearchResult result)
+    private static string GenerateRelationshipRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
 
-        if (result.RelatedEntities.Any())
+        if (result.RelatedEntities.Count != 0)
         {
             explanations.Add($"Involves {result.RelatedEntities.Count} relevant entities");
         }
@@ -408,42 +471,45 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High confidence relationship");
         }
 
-        return explanations.Any()
+        return explanations.Count != 0
             ? $"Relationship relevant because: {string.Join(", ", explanations)}"
             : "Relationship matches search criteria";
     }
 
-    private EnrichmentResults CreateFallbackResults(
+    private static EnrichmentResults CreateFallbackResults(
         List<UnifiedSearchResult> results,
         EnrichmentMetrics metrics,
         TimeSpan duration,
-        string reason)
+        string reason
+    )
     {
         metrics.TotalDuration = duration;
 
         // Convert UnifiedSearchResult to EnrichedSearchResult without enrichment
-        var enrichedResults = results.Select(r => new EnrichedSearchResult
-        {
-            Type = r.Type,
-            Id = r.Id,
-            Content = r.Content,
-            SecondaryContent = r.SecondaryContent,
-            Score = r.Score,
-            Source = r.Source,
-            CreatedAt = r.CreatedAt,
-            Confidence = r.Confidence,
-            Metadata = r.Metadata,
-            OriginalMemory = r.OriginalMemory,
-            OriginalEntity = r.OriginalEntity,
-            OriginalRelationship = r.OriginalRelationship
-        }).ToList();
+        var enrichedResults = results
+            .Select(r => new EnrichedSearchResult
+            {
+                Type = r.Type,
+                Id = r.Id,
+                Content = r.Content,
+                SecondaryContent = r.SecondaryContent,
+                Score = r.Score,
+                Source = r.Source,
+                CreatedAt = r.CreatedAt,
+                Confidence = r.Confidence,
+                Metadata = r.Metadata,
+                OriginalMemory = r.OriginalMemory,
+                OriginalEntity = r.OriginalEntity,
+                OriginalRelationship = r.OriginalRelationship,
+            })
+            .ToList();
 
         return new EnrichmentResults
         {
             Results = enrichedResults,
             Metrics = metrics,
             WasEnrichmentPerformed = false,
-            FallbackReason = reason
+            FallbackReason = reason,
         };
     }
 }

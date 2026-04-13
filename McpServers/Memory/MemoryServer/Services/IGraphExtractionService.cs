@@ -3,13 +3,13 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Interface for extracting entities and relationships from conversation content.
-/// Uses LLM providers to analyze text and build knowledge graphs.
+///     Interface for extracting entities and relationships from conversation content.
+///     Uses LLM providers to analyze text and build knowledge graphs.
 /// </summary>
 public interface IGraphExtractionService
 {
     /// <summary>
-    /// Extracts entities from conversation content.
+    ///     Extracts entities from conversation content.
     /// </summary>
     /// <param name="content">The conversation content to analyze.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -22,11 +22,12 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Extracts both entities and relationships from conversation content in a single operation.
-    /// More efficient than calling both methods separately.
+    ///     Extracts both entities and relationships from conversation content in a single operation.
+    ///     More efficient than calling both methods separately.
     /// </summary>
     /// <param name="content">The conversation content to analyze.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -39,10 +40,11 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Analyzes existing graph data and suggests updates based on new conversation content.
+    ///     Analyzes existing graph data and suggests updates based on new conversation content.
     /// </summary>
     /// <param name="content">The new conversation content.</param>
     /// <param name="existingEntities">Existing entities in the session.</param>
@@ -59,10 +61,11 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Validates and cleans extracted entities to ensure consistency.
+    ///     Validates and cleans extracted entities to ensure consistency.
     /// </summary>
     /// <param name="entities">Raw extracted entities.</param>
     /// <param name="sessionContext">Session context for validation.</param>
@@ -73,10 +76,11 @@ public interface IGraphExtractionService
         IEnumerable<Entity> entities,
         SessionContext sessionContext,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Validates and cleans extracted relationships to ensure consistency.
+    ///     Validates and cleans extracted relationships to ensure consistency.
     /// </summary>
     /// <param name="relationships">Raw extracted relationships.</param>
     /// <param name="sessionContext">Session context for validation.</param>
@@ -87,5 +91,6 @@ public interface IGraphExtractionService
         IEnumerable<Relationship> relationships,
         SessionContext sessionContext,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

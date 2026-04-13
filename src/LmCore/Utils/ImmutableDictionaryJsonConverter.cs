@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Custom JsonConverter for ImmutableDictionary to handle serialization and deserialization.
+///     Custom JsonConverter for ImmutableDictionary to handle serialization and deserialization.
 /// </summary>
 /// <typeparam name="TKey">The type of keys in the dictionary.</typeparam>
 /// <typeparam name="TValue">The type of values in the dictionary.</typeparam>
@@ -16,9 +16,8 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
     private readonly Type _valueType;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ImmutableDictionaryJsonConverter{TKey, TValue}"/> class.
+    ///     Initializes a new instance of the <see cref="ImmutableDictionaryJsonConverter{TKey, TValue}" /> class.
     /// </summary>
-
     public ImmutableDictionaryJsonConverter()
     {
         _keyType = typeof(TKey);
@@ -29,7 +28,8 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
     public override ImmutableDictionary<TKey, TValue> Read(
         ref Utf8JsonReader reader,
         Type typeToConvert,
-        JsonSerializerOptions options)
+        JsonSerializerOptions options
+    )
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
@@ -59,14 +59,14 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
             else
             {
                 // For non-string keys, deserialize using the key converter
-                string propertyName = reader.GetString()!;
+                var propertyName = reader.GetString()!;
                 using var document = JsonDocument.Parse($"\"{propertyName}\"");
                 var keyReader = document.RootElement.GetRawText();
                 key = JsonSerializer.Deserialize<TKey>(keyReader, options)!;
             }
 
             // Read the value
-            reader.Read();
+            _ = reader.Read();
             TValue value;
 
             value = JsonSerializer.Deserialize<TValue>(ref reader, options)!;
@@ -81,8 +81,12 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
     public override void Write(
         Utf8JsonWriter writer,
         ImmutableDictionary<TKey, TValue> value,
-        JsonSerializerOptions options)
+        JsonSerializerOptions options
+    )
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
 
         foreach (var kvp in value)
@@ -149,7 +153,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
         writer.WriteEndObject();
     }
 
-    private void WriteObjectValue(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
+    private static void WriteObjectValue(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
     {
         if (value == null)
         {

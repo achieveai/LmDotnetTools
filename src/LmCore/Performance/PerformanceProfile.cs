@@ -1,8 +1,8 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Aggregates performance data over time periods for profiling and analysis.
-/// Provides statistical insights into provider performance patterns.
+///     Aggregates performance data over time periods for profiling and analysis.
+///     Provides statistical insights into provider performance patterns.
 /// </summary>
 public record PerformanceProfile
 {
@@ -31,10 +31,10 @@ public record PerformanceProfile
     public int RetriedRequests { get; init; }
 
     /// <summary>Success rate as a percentage (0-100)</summary>
-    public double SuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Retry rate as a percentage (0-100)</summary>
-    public double RetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double RetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Average request duration</summary>
     public TimeSpan AverageRequestDuration { get; init; }
@@ -76,10 +76,10 @@ public record PerformanceProfile
     public double AverageResponseSizeBytes => TotalRequests > 0 ? (double)TotalResponseBytes / TotalRequests : 0;
 
     /// <summary>Most common error types and their counts</summary>
-    public Dictionary<string, int> ErrorTypes { get; init; } = new();
+    public Dictionary<string, int> ErrorTypes { get; init; } = [];
 
     /// <summary>HTTP status code distribution</summary>
-    public Dictionary<int, int> StatusCodeDistribution { get; init; } = new();
+    public Dictionary<int, int> StatusCodeDistribution { get; init; } = [];
 
     /// <summary>Creates a performance profile from a collection of request metrics</summary>
     /// <param name="metrics">Collection of request metrics</param>
@@ -89,27 +89,32 @@ public record PerformanceProfile
     public static PerformanceProfile FromMetrics(
         IEnumerable<RequestMetrics> metrics,
         string provider = "",
-        string model = "")
+        string model = ""
+    )
     {
         var metricsList = metrics.ToList();
 
-        if (!metricsList.Any())
+        if (metricsList.Count == 0)
         {
             return new PerformanceProfile
             {
                 Provider = provider,
                 Model = model,
                 PeriodStart = DateTimeOffset.UtcNow,
-                PeriodEnd = DateTimeOffset.UtcNow
+                PeriodEnd = DateTimeOffset.UtcNow,
             };
         }
 
         // Filter by provider and model if specified
         if (!string.IsNullOrEmpty(provider))
-            metricsList = metricsList.Where(m => m.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase)).ToList();
+        {
+            metricsList = [.. metricsList.Where(m => m.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase))];
+        }
 
         if (!string.IsNullOrEmpty(model))
-            metricsList = metricsList.Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase)).ToList();
+        {
+            metricsList = [.. metricsList.Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase))];
+        }
 
         var successfulRequests = metricsList.Where(m => m.IsSuccess).ToList();
         var failedRequests = metricsList.Where(m => !m.IsSuccess).ToList();
@@ -132,11 +137,12 @@ public record PerformanceProfile
             SuccessfulRequests = successfulRequests.Count,
             FailedRequests = failedRequests.Count,
             RetriedRequests = retriedRequests.Count,
-            AverageRequestDuration = durations.Any() ? TimeSpan.FromTicks((long)durations.Average(d => d.Ticks)) : TimeSpan.Zero,
-            MinRequestDuration = durations.Any() ? durations.Min() : TimeSpan.Zero,
-            MaxRequestDuration = durations.Any() ? durations.Max() : TimeSpan.Zero,
-            P95RequestDuration = durations.Any() ? durations[(int)(durations.Count * 0.95)] : TimeSpan.Zero,
-            P99RequestDuration = durations.Any() ? durations[(int)(durations.Count * 0.99)] : TimeSpan.Zero,
+            AverageRequestDuration =
+                durations.Count != 0 ? TimeSpan.FromTicks((long)durations.Average(d => d.Ticks)) : TimeSpan.Zero,
+            MinRequestDuration = durations.Count != 0 ? durations.Min() : TimeSpan.Zero,
+            MaxRequestDuration = durations.Count != 0 ? durations.Max() : TimeSpan.Zero,
+            P95RequestDuration = durations.Count != 0 ? durations[(int)(durations.Count * 0.95)] : TimeSpan.Zero,
+            P99RequestDuration = durations.Count != 0 ? durations[(int)(durations.Count * 0.99)] : TimeSpan.Zero,
             TotalTokens = totalTokens,
             PromptTokens = inputTokens,
             CompletionTokens = outputTokens,
@@ -149,7 +155,7 @@ public record PerformanceProfile
             StatusCodeDistribution = metricsList
                 .Where(m => m.StatusCode > 0)
                 .GroupBy(m => m.StatusCode)
-                .ToDictionary(g => g.Key, g => g.Count())
+                .ToDictionary(g => g.Key, g => g.Count()),
         };
     }
 }

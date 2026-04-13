@@ -1,15 +1,13 @@
+using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
-using FluentAssertions;
-using System.IO;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
 /// <summary>
-/// Unit tests for SegmentationPromptManager service.
+///     Unit tests for SegmentationPromptManager service.
 /// </summary>
 public class SegmentationPromptManagerTests : IDisposable
 {
@@ -33,12 +31,20 @@ public class SegmentationPromptManagerTests : IDisposable
                 FilePath = _testPromptsPath,
                 DefaultLanguage = "en",
                 EnableHotReload = false,
-                CacheExpiration = TimeSpan.FromMinutes(30)
-            }
+                CacheExpiration = TimeSpan.FromMinutes(30),
+            },
         };
 
         var optionsWrapper = Options.Create(_options);
         _promptManager = new SegmentationPromptManager(_logger, optionsWrapper);
+    }
+
+    public void Dispose()
+    {
+        if (File.Exists(_testPromptsPath))
+        {
+            File.Delete(_testPromptsPath);
+        }
     }
 
     [Fact]
@@ -48,12 +54,12 @@ public class SegmentationPromptManagerTests : IDisposable
         var result = await _promptManager.GetPromptAsync(SegmentationStrategy.TopicBased);
 
         // Assert
-        result.Should().NotBeNull();
-        result.SystemPrompt.Should().NotBeEmpty();
-        result.UserPrompt.Should().NotBeEmpty();
-        result.ExpectedFormat.Should().Be("json");
-        result.MaxTokens.Should().BeGreaterThan(0);
-        result.Temperature.Should().BeInRange(0.0, 1.0);
+        _ = result.Should().NotBeNull();
+        _ = result.SystemPrompt.Should().NotBeEmpty();
+        _ = result.UserPrompt.Should().NotBeEmpty();
+        _ = result.ExpectedFormat.Should().Be("json");
+        _ = result.MaxTokens.Should().BeGreaterThan(0);
+        _ = result.Temperature.Should().BeInRange(0.0, 1.0);
     }
 
     [Fact]
@@ -63,9 +69,9 @@ public class SegmentationPromptManagerTests : IDisposable
         var result = await _promptManager.GetPromptAsync((SegmentationStrategy)999); // Invalid strategy
 
         // Assert
-        result.Should().NotBeNull();
-        result.SystemPrompt.Should().NotBeEmpty();
-        result.UserPrompt.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.SystemPrompt.Should().NotBeEmpty();
+        _ = result.UserPrompt.Should().NotBeEmpty();
     }
 
     [Fact]
@@ -75,10 +81,10 @@ public class SegmentationPromptManagerTests : IDisposable
         var result = await _promptManager.GetQualityValidationPromptAsync();
 
         // Assert
-        result.Should().NotBeNull();
-        result.SystemPrompt.Should().NotBeEmpty();
-        result.UserPrompt.Should().NotBeEmpty();
-        result.ExpectedFormat.Should().Be("json");
+        _ = result.Should().NotBeNull();
+        _ = result.SystemPrompt.Should().NotBeEmpty();
+        _ = result.UserPrompt.Should().NotBeEmpty();
+        _ = result.ExpectedFormat.Should().Be("json");
     }
 
     [Theory]
@@ -87,15 +93,14 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(DocumentType.Technical)]
     [InlineData(DocumentType.Email)]
     [InlineData(DocumentType.Chat)]
-    public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(
-      DocumentType documentType)
+    public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(DocumentType documentType)
     {
         // Act
         var result = await _promptManager.GetDomainInstructionsAsync(documentType);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
     }
 
     [Fact]
@@ -105,7 +110,7 @@ public class SegmentationPromptManagerTests : IDisposable
         var result = await _promptManager.ValidatePromptConfigurationAsync();
 
         // Assert
-        result.Should().BeTrue();
+        _ = result.Should().BeTrue();
     }
 
     [Fact]
@@ -115,7 +120,7 @@ public class SegmentationPromptManagerTests : IDisposable
         var result = await _promptManager.ReloadPromptsAsync();
 
         // Assert
-        result.Should().BeTrue();
+        _ = result.Should().BeTrue();
     }
 
     [Theory]
@@ -123,23 +128,23 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(SegmentationStrategy.StructureBased)]
     [InlineData(SegmentationStrategy.NarrativeBased)]
     [InlineData(SegmentationStrategy.Hybrid)]
-    public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(
-      SegmentationStrategy strategy)
+    public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(SegmentationStrategy strategy)
     {
         // Act
         var result = await _promptManager.GetPromptAsync(strategy);
 
         // Assert
-        result.Should().NotBeNull();
-        result.SystemPrompt.Should().NotBeEmpty();
-        result.UserPrompt.Should().NotBeEmpty();
-        result.UserPrompt.Should().Contain("{DocumentContent}"); // Should have placeholder
-        result.UserPrompt.Should().Contain("{DocumentType}"); // Should have placeholder
+        _ = result.Should().NotBeNull();
+        _ = result.SystemPrompt.Should().NotBeEmpty();
+        _ = result.UserPrompt.Should().NotBeEmpty();
+        _ = result.UserPrompt.Should().Contain("{DocumentContent}"); // Should have placeholder
+        _ = result.UserPrompt.Should().Contain("{DocumentType}"); // Should have placeholder
     }
 
     private void CreateTestPromptsFile()
     {
-        var testYamlContent = @"
+        var testYamlContent =
+            @"
 # Test prompts configuration
 topic_based:
   system_prompt: |
@@ -208,13 +213,5 @@ domain_instructions:
 ";
 
         File.WriteAllText(_testPromptsPath, testYamlContent);
-    }
-
-    public void Dispose()
-    {
-        if (File.Exists(_testPromptsPath))
-        {
-            File.Delete(_testPromptsPath);
-        }
     }
 }

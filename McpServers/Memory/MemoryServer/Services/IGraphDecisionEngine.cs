@@ -3,13 +3,13 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Interface for the graph decision engine that handles conflict resolution and update logic.
-/// Implements the Strategy pattern for different decision-making approaches.
+///     Interface for the graph decision engine that handles conflict resolution and update logic.
+///     Implements the Strategy pattern for different decision-making approaches.
 /// </summary>
 public interface IGraphDecisionEngine
 {
     /// <summary>
-    /// Analyzes extracted entities and relationships to determine what updates should be made to the graph.
+    ///     Analyzes extracted entities and relationships to determine what updates should be made to the graph.
     /// </summary>
     /// <param name="extractedEntities">Entities extracted from conversation content.</param>
     /// <param name="extractedRelationships">Relationships extracted from conversation content.</param>
@@ -20,10 +20,11 @@ public interface IGraphDecisionEngine
         List<Entity> extractedEntities,
         List<Relationship> extractedRelationships,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Resolves conflicts when multiple entities or relationships refer to the same real-world object.
+    ///     Resolves conflicts when multiple entities or relationships refer to the same real-world object.
     /// </summary>
     /// <param name="existingEntity">The existing entity in the graph.</param>
     /// <param name="newEntity">The newly extracted entity.</param>
@@ -34,10 +35,11 @@ public interface IGraphDecisionEngine
         Entity existingEntity,
         Entity newEntity,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Resolves conflicts when multiple relationships refer to the same connection.
+    ///     Resolves conflicts when multiple relationships refer to the same connection.
     /// </summary>
     /// <param name="existingRelationship">The existing relationship in the graph.</param>
     /// <param name="newRelationship">The newly extracted relationship.</param>
@@ -48,10 +50,11 @@ public interface IGraphDecisionEngine
         Relationship existingRelationship,
         Relationship newRelationship,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Validates that a proposed graph update is consistent and doesn't violate business rules.
+    ///     Validates that a proposed graph update is consistent and doesn't violate business rules.
     /// </summary>
     /// <param name="instruction">The graph decision instruction to validate.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -60,10 +63,11 @@ public interface IGraphDecisionEngine
     Task<bool> ValidateGraphUpdateAsync(
         GraphDecisionInstruction instruction,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
-    /// Determines the confidence score for a proposed graph update based on various factors.
+    ///     Determines the confidence score for a proposed graph update based on various factors.
     /// </summary>
     /// <param name="instruction">The graph decision instruction to score.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
@@ -72,5 +76,6 @@ public interface IGraphDecisionEngine
     Task<float> CalculateUpdateConfidenceAsync(
         GraphDecisionInstruction instruction,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

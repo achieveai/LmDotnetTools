@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 namespace AchieveAi.LmDotnetTools.LmConfig.Logging;
 
 /// <summary>
-/// Defines structured event IDs for logging throughout the LmConfig library.
+///     Defines structured event IDs for logging throughout the LmConfig library.
 /// </summary>
 public static class LogEventIds
 {

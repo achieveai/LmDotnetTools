@@ -1,5 +1,5 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Xunit.Abstractions;
 
@@ -7,16 +7,13 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 
 public class OpenAIProviderUsageTests
 {
-    private readonly ITestOutputHelper _output;
     private readonly JsonSerializerOptions _options;
+    private readonly ITestOutputHelper _output;
 
     public OpenAIProviderUsageTests(ITestOutputHelper output)
     {
         _output = output;
-        _options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-        };
+        _options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     }
 
     [Fact]
@@ -24,18 +21,18 @@ public class OpenAIProviderUsageTests
     {
         // Arrange - Real OpenAI API response format
         var openAiJson = """
-        {
-            "prompt_tokens": 10,
-            "completion_tokens": 148,
-            "total_tokens": 158,
-            "input_tokens_details": {
-                "cached_tokens": 5
-            },
-            "output_tokens_details": {
-                "reasoning_tokens": 128
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 148,
+                "total_tokens": 158,
+                "input_tokens_details": {
+                    "cached_tokens": 5
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": 128
+                }
             }
-        }
-        """;
+            """;
 
         // Act
         var usage = JsonSerializer.Deserialize<OpenAIProviderUsage>(openAiJson, _options);
@@ -61,14 +58,14 @@ public class OpenAIProviderUsageTests
     {
         // Arrange - OpenRouter API response format with direct fields
         var openRouterJson = """
-        {
-            "prompt_tokens": 10,
-            "completion_tokens": 148,
-            "total_tokens": 158,
-            "reasoning_tokens": 100,
-            "cached_tokens": 8
-        }
-        """;
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 148,
+                "total_tokens": 158,
+                "reasoning_tokens": 100,
+                "cached_tokens": 8
+            }
+            """;
 
         // Act
         var usage = JsonSerializer.Deserialize<OpenAIProviderUsage>(openRouterJson, _options);
@@ -98,7 +95,7 @@ public class OpenAIProviderUsageTests
             TotalTokens = 158,
             TotalCost = 0.05,
             InputTokenDetails = new OpenAIInputTokenDetails { CachedTokens = 5 },
-            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 128 }
+            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 128 },
         };
 
         // Act
@@ -128,7 +125,7 @@ public class OpenAIProviderUsageTests
             TotalTokens = 158,
             TotalCost = 0.05,
             InputTokenDetails = new InputTokenDetails { CachedTokens = 5 },
-            OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = 128 }
+            OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = 128 },
         };
 
         // Act
@@ -154,7 +151,7 @@ public class OpenAIProviderUsageTests
         var usage = new OpenAIProviderUsage
         {
             ReasoningTokens = 100, // OpenRouter direct field
-            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 50 } // OpenAI nested
+            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 50 }, // OpenAI nested
         };
 
         // Act & Assert
@@ -168,7 +165,7 @@ public class OpenAIProviderUsageTests
         var usage = new OpenAIProviderUsage
         {
             ReasoningTokens = 0, // Default value
-            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 75 }
+            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 75 },
         };
 
         // Act & Assert
@@ -182,7 +179,7 @@ public class OpenAIProviderUsageTests
         var usage = new OpenAIProviderUsage
         {
             CachedTokens = 20, // OpenRouter direct field
-            InputTokenDetails = new OpenAIInputTokenDetails { CachedTokens = 10 } // OpenAI nested
+            InputTokenDetails = new OpenAIInputTokenDetails { CachedTokens = 10 }, // OpenAI nested
         };
 
         // Act & Assert
@@ -196,7 +193,7 @@ public class OpenAIProviderUsageTests
         var usage = new OpenAIProviderUsage
         {
             CachedTokens = 0, // Default value
-            InputTokenDetails = new OpenAIInputTokenDetails { CachedTokens = 15 }
+            InputTokenDetails = new OpenAIInputTokenDetails { CachedTokens = 15 },
         };
 
         // Act & Assert
@@ -212,7 +209,7 @@ public class OpenAIProviderUsageTests
             PromptTokens = 10,
             CompletionTokens = 148,
             TotalTokens = 158,
-            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 128 }
+            OutputTokenDetails = new OpenAIOutputTokenDetails { ReasoningTokens = 128 },
         };
 
         // Act

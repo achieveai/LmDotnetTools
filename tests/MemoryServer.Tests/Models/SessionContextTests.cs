@@ -4,15 +4,19 @@ using MemoryServer.Tests.TestUtilities;
 namespace MemoryServer.Tests.Models;
 
 /// <summary>
-/// Unit tests for the SessionContext model.
-/// Tests session matching logic and factory methods.
+///     Unit tests for the SessionContext model.
+///     Tests session matching logic and factory methods.
 /// </summary>
 public class SessionContextTests
 {
     [Theory]
     [MemberData(nameof(MemoryTestDataFactory.GetSessionMatchingTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public void Matches_WithVariousSessionContexts_ReturnsExpectedResult(
-        SessionContext context1, SessionContext context2, bool expectedMatch, string description)
+        SessionContext context1,
+        SessionContext context2,
+        bool expectedMatch,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing session matching: {description}");
@@ -55,19 +59,24 @@ public class SessionContextTests
     [Theory]
     [MemberData(nameof(GetFactoryMethodTestData))]
     public void FactoryMethods_WithVariousInputs_CreateCorrectSessionContext(
-        string factoryMethod, string userId, string? agentId, string? runId, string description)
+        string factoryMethod,
+        string userId,
+        string? agentId,
+        string? runId,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing factory method: {description}");
         Debug.WriteLine($"Method: {factoryMethod}, UserId: {userId}, AgentId: {agentId}, RunId: {runId}");
 
         // Act
-        SessionContext context = factoryMethod switch
+        var context = factoryMethod switch
         {
             "ForUser" => SessionContext.ForUser(userId),
             "ForAgent" => SessionContext.ForAgent(userId, agentId!),
             "ForRun" => SessionContext.ForRun(userId, agentId!, runId!),
-            _ => throw new ArgumentException($"Unknown factory method: {factoryMethod}")
+            _ => throw new ArgumentException($"Unknown factory method: {factoryMethod}"),
         };
 
         Debug.WriteLine($"Created context: {context}");
@@ -83,7 +92,10 @@ public class SessionContextTests
     [Theory]
     [MemberData(nameof(GetSessionScopeTestData))]
     public void GetScope_WithVariousSessionContexts_ReturnsCorrectScope(
-        SessionContext context, SessionScope expectedScope, string description)
+        SessionContext context,
+        SessionScope expectedScope,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing GetScope: {description}");
@@ -102,7 +114,10 @@ public class SessionContextTests
     [Theory]
     [MemberData(nameof(GetToStringTestData))]
     public void ToString_WithVariousSessionContexts_ReturnsExpectedFormat(
-        SessionContext context, string expectedFormat, string description)
+        SessionContext context,
+        string expectedFormat,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing ToString: {description}");
@@ -120,8 +135,7 @@ public class SessionContextTests
 
     [Theory]
     [MemberData(nameof(GetSessionIsolationTestData))]
-    public void SessionIsolation_WithDifferentUsers_DoesNotMatch(
-        string user1, string user2, string description)
+    public void SessionIsolation_WithDifferentUsers_DoesNotMatch(string user1, string user2, string description)
     {
         // Arrange
         Debug.WriteLine($"Testing session isolation: {description}");
@@ -142,7 +156,11 @@ public class SessionContextTests
     [Theory]
     [MemberData(nameof(GetHierarchicalMatchingTestData))]
     public void HierarchicalMatching_WithDifferentLevels_MatchesCorrectly(
-        SessionContext broader, SessionContext narrower, bool shouldMatch, string description)
+        SessionContext broader,
+        SessionContext narrower,
+        bool shouldMatch,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing hierarchical matching: {description}");
@@ -164,27 +182,64 @@ public class SessionContextTests
         yield return new object[] { "ForUser", "user1", null!, null!, "ForUser factory method" };
         yield return new object[] { "ForAgent", "user1", "agent1", null!, "ForAgent factory method" };
         yield return new object[] { "ForRun", "user1", "agent1", "run1", "ForRun factory method" };
-        yield return new object[] { "ForUser", "user-with-special-chars!@#", null!, null!, "ForUser with special characters" };
+        yield return new object[]
+        {
+            "ForUser",
+            "user-with-special-chars!@#",
+            null!,
+            null!,
+            "ForUser with special characters",
+        };
         yield return new object[] { "ForAgent", "user1", "agent-with-dashes", null!, "ForAgent with dashes" };
         yield return new object[] { "ForRun", "user1", "agent1", "run-123-abc", "ForRun with complex run ID" };
     }
 
     public static IEnumerable<object[]> GetSessionScopeTestData()
     {
-        yield return new object[] { SessionContext.ForUser("user1"), SessionScope.User, "User-only context should have User scope" };
-        yield return new object[] { SessionContext.ForAgent("user1", "agent1"), SessionScope.Agent, "User-agent context should have Agent scope" };
-        yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), SessionScope.Run, "Full context should have Run scope" };
+        yield return new object[]
+        {
+            SessionContext.ForUser("user1"),
+            SessionScope.User,
+            "User-only context should have User scope",
+        };
+        yield return new object[]
+        {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionScope.Agent,
+            "User-agent context should have Agent scope",
+        };
+        yield return new object[]
+        {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            SessionScope.Run,
+            "Full context should have Run scope",
+        };
 
         // Edge case: user-run without agent (unusual but possible)
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
-        yield return new object[] { userRunContext, SessionScope.Run, "User-run context (no agent) should have Run scope" };
+        yield return new object[]
+        {
+            userRunContext,
+            SessionScope.Run,
+            "User-run context (no agent) should have Run scope",
+        };
     }
 
     public static IEnumerable<object[]> GetToStringTestData()
     {
         yield return new object[] { SessionContext.ForUser("user1"), "user1", "User-only context toString" };
-        yield return new object[] { SessionContext.ForAgent("user1", "agent1"), "user1/agent1", "User-agent context toString" };
-        yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), "user1/agent1/run1", "Full context toString" };
+        yield return new object[]
+        {
+            SessionContext.ForAgent("user1", "agent1"),
+            "user1/agent1",
+            "User-agent context toString",
+        };
+        yield return new object[]
+        {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            "user1/agent1/run1",
+            "Full context toString",
+        };
 
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
         yield return new object[] { userRunContext, "user1//run1", "User-run context (no agent) toString" };
@@ -203,51 +258,57 @@ public class SessionContextTests
     {
         // The actual implementation uses strict matching, not hierarchical matching
         // User level should NOT match agent level (strict matching)
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForUser("user1"),
             SessionContext.ForAgent("user1", "agent1"),
             false,
-            "User context should not match user-agent context (strict matching)"
+            "User context should not match user-agent context (strict matching)",
         };
 
         // User level should NOT match run level (strict matching)
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForUser("user1"),
             SessionContext.ForRun("user1", "agent1", "run1"),
             false,
-            "User context should not match full context (strict matching)"
+            "User context should not match full context (strict matching)",
         };
 
         // Agent level should NOT match run level (strict matching)
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForAgent("user1", "agent1"),
             SessionContext.ForRun("user1", "agent1", "run1"),
             false,
-            "User-agent context should not match full context (strict matching)"
+            "User-agent context should not match full context (strict matching)",
         };
 
         // Different agents should not match
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForAgent("user1", "agent1"),
             SessionContext.ForAgent("user1", "agent2"),
             false,
-            "Different agents should not match"
+            "Different agents should not match",
         };
 
         // Different runs should not match
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForRun("user1", "agent1", "run1"),
             SessionContext.ForRun("user1", "agent1", "run2"),
             false,
-            "Different runs should not match"
+            "Different runs should not match",
         };
 
         // Same contexts should match
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForAgent("user1", "agent1"),
             SessionContext.ForAgent("user1", "agent1"),
             true,
-            "Same agent contexts should match"
+            "Same agent contexts should match",
         };
     }
 }

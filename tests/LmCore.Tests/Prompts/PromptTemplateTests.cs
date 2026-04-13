@@ -19,11 +19,7 @@ public class PromptTemplateTests
     {
         // Arrange
         var promptName = "TemplatePrompt";
-        var variables = new Dictionary<string, object>
-    {
-      { "name", "John" },
-      { "company", "AchieveAI" }
-    };
+        var variables = new Dictionary<string, object> { { "name", "John" }, { "company", "AchieveAI" } };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -39,9 +35,12 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePromptWithList";
         var variables = new Dictionary<string, object>
-    {
-      { "items", new List<string> { "Apple", "Banana", "Cherry" } }
-    };
+        {
+            {
+                "items",
+                new List<string> { "Apple", "Banana", "Cherry" }
+            },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -61,17 +60,17 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePromptWithDictionary";
         var variables = new Dictionary<string, object>
-    {
-      {
-        "profile",
-        new Dictionary<string, object>
         {
-          { "Name", "John Doe" },
-          { "Age", "30" },
-          { "Occupation", "Developer" }
-        }
-      }
-    };
+            {
+                "profile",
+                new Dictionary<string, object>
+                {
+                    { "Name", "John Doe" },
+                    { "Age", "30" },
+                    { "Occupation", "Developer" },
+                }
+            },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -90,11 +89,7 @@ public class PromptTemplateTests
     {
         // Arrange
         var promptName = "TemplatePrompt";
-        var variables = new Dictionary<string, object>
-    {
-      { "invalidName", "John" },
-      { "company", "AchieveAI" }
-    };
+        var variables = new Dictionary<string, object> { { "invalidName", "John" }, { "company", "AchieveAI" } };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);

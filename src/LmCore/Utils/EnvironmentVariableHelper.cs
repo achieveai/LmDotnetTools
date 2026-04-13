@@ -1,14 +1,12 @@
-using System;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
-/// Utility for handling environment variables in production code.
+///     Utility for handling environment variables in production code.
 /// </summary>
 public static class EnvironmentVariableHelper
 {
     /// <summary>
-    /// Gets API key from environment variables with fallback options.
+    ///     Gets API key from environment variables with fallback options.
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -38,7 +36,7 @@ public static class EnvironmentVariableHelper
     }
 
     /// <summary>
-    /// Gets API base URL from environment variables with fallback options.
+    ///     Gets API base URL from environment variables with fallback options.
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -47,7 +45,8 @@ public static class EnvironmentVariableHelper
     public static string GetApiBaseUrlFromEnv(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "https://api.openai.com/v1")
+        string defaultValue = "https://api.openai.com/v1"
+    )
     {
         var baseUrl = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(baseUrl))
@@ -71,7 +70,7 @@ public static class EnvironmentVariableHelper
     }
 
     /// <summary>
-    /// Gets environment variable value with fallback options.
+    ///     Gets environment variable value with fallback options.
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -80,7 +79,8 @@ public static class EnvironmentVariableHelper
     public static string GetEnvironmentVariableWithFallback(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "")
+        string defaultValue = ""
+    )
     {
         var value = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(value))

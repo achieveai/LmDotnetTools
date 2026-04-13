@@ -3,15 +3,15 @@ using dotenv.net;
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
-/// Shared utility for loading environment variables in test scenarios
+///     Shared utility for loading environment variables in test scenarios
 /// </summary>
 public static class EnvironmentHelper
 {
-    private static bool _envLoaded = false;
-    private static readonly object _lockObject = new object();
+    private static bool _envLoaded;
+    private static readonly object _lockObject = new();
 
     /// <summary>
-    /// Loads environment variables from .env file if not already loaded.
+    ///     Loads environment variables from .env file if not already loaded.
     /// </summary>
     /// <param name="envFilePath">Optional path to .env file.</param>
     public static void LoadEnvIfNeeded(string? envFilePath = null)
@@ -29,10 +29,7 @@ public static class EnvironmentHelper
                 if (File.Exists(envFilePath))
                 {
                     Console.WriteLine($"File exists at {envFilePath}");
-                    DotEnv.Load(options: new DotEnvOptions(
-                      envFilePaths: new[] { envFilePath },
-                      ignoreExceptions: false
-                    ));
+                    DotEnv.Load(new DotEnvOptions(envFilePaths: [envFilePath], ignoreExceptions: false));
                 }
                 else
                 {
@@ -42,17 +39,14 @@ public static class EnvironmentHelper
             else
             {
                 // Try to find the .env.test file in the workspace root
-                string workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
-                string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
+                var workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+                var workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
 
                 Console.WriteLine($"Loading environment variables from workspace root: {workspaceEnvPath}");
                 if (File.Exists(workspaceEnvPath))
                 {
                     Console.WriteLine($"File exists at {workspaceEnvPath}");
-                    DotEnv.Load(options: new DotEnvOptions(
-                      envFilePaths: new[] { workspaceEnvPath },
-                      ignoreExceptions: false
-                    ));
+                    DotEnv.Load(new DotEnvOptions(envFilePaths: [workspaceEnvPath], ignoreExceptions: false));
                 }
                 else
                 {
@@ -65,13 +59,17 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Gets API key from environment variables with fallback options
+    ///     Gets API key from environment variables with fallback options
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
     /// <param name="defaultValue">Default value if no keys found</param>
     /// <returns>API key value</returns>
-    public static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "test-api-key")
+    public static string GetApiKeyFromEnv(
+        string primaryKey,
+        string[]? fallbackKeys = null,
+        string defaultValue = "test-api-key"
+    )
     {
         LoadEnvIfNeeded();
 
@@ -97,7 +95,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Gets API base URL from environment variables with fallback options
+    ///     Gets API base URL from environment variables with fallback options
     /// </summary>
     /// <param name="primaryKey">Primary environment variable name</param>
     /// <param name="fallbackKeys">Fallback environment variable names</param>
@@ -106,7 +104,8 @@ public static class EnvironmentHelper
     public static string GetApiBaseUrlFromEnv(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "https://api.openai.com/v1")
+        string defaultValue = "https://api.openai.com/v1"
+    )
     {
         LoadEnvIfNeeded();
 
@@ -132,7 +131,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Resets the environment loading state (useful for testing)
+    ///     Resets the environment loading state (useful for testing)
     /// </summary>
     public static void ResetEnvironmentState()
     {
@@ -143,7 +142,7 @@ public static class EnvironmentHelper
     }
 
     /// <summary>
-    /// Finds the workspace root directory by looking for solution files
+    ///     Finds the workspace root directory by looking for solution files
     /// </summary>
     /// <param name="startPath">Starting directory path</param>
     /// <returns>Workspace root directory path</returns>
@@ -154,9 +153,11 @@ public static class EnvironmentHelper
         while (currentDir != null)
         {
             // Look for solution files or other workspace indicators
-            if (currentDir.GetFiles("*.sln").Length > 0 ||
-                currentDir.GetDirectories(".git").Length > 0 ||
-                currentDir.GetFiles(".env.test").Length > 0)
+            if (
+                currentDir.GetFiles("*.sln").Length > 0
+                || currentDir.GetDirectories(".git").Length > 0
+                || currentDir.GetFiles(".env.test").Length > 0
+            )
             {
                 return currentDir.FullName;
             }

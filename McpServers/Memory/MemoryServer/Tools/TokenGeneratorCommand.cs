@@ -1,55 +1,39 @@
 using System.CommandLine;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Options;
 using MemoryServer.Configuration;
 using MemoryServer.Services;
 using MemoryServer.Utils;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Tools;
 
 /// <summary>
-/// CLI command for generating JWT tokens
+///     CLI command for generating JWT tokens
 /// </summary>
 public static class TokenGeneratorCommand
 {
     /// <summary>
-    /// Creates the generate-token command
+    ///     Creates the generate-token command
     /// </summary>
     /// <returns>The configured command</returns>
     public static Command CreateCommand()
     {
-        var userIdOption = new Option<string>(
-            name: "--userId",
-            description: "The user identifier for the token")
-        {
-            IsRequired = true
-        };
+        var userIdOption = new Option<string>("--userId", "The user identifier for the token") { IsRequired = true };
 
-        var agentIdOption = new Option<string>(
-            name: "--agentId",
-            description: "The agent identifier for the token")
-        {
-            IsRequired = true
-        };
+        var agentIdOption = new Option<string>("--agentId", "The agent identifier for the token") { IsRequired = true };
 
         var command = new Command("generate-token", "Generate a JWT token for authentication")
         {
             userIdOption,
-            agentIdOption
+            agentIdOption,
         };
 
-        command.SetHandler(async (userId, agentId) =>
-        {
-            await GenerateTokenAsync(userId, agentId);
-        }, userIdOption, agentIdOption);
+        command.SetHandler(GenerateTokenAsync, userIdOption, agentIdOption);
 
         return command;
     }
 
     /// <summary>
-    /// Generates a JWT token for the specified user and agent
+    ///     Generates a JWT token for the specified user and agent
     /// </summary>
     /// <param name="userId">The user identifier</param>
     /// <param name="agentId">The agent identifier</param>
@@ -63,8 +47,11 @@ public static class TokenGeneratorCommand
             // Build configuration
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: true)
-                .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+                .AddJsonFile("appsettings.json", true)
+                .AddJsonFile(
+                    $"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json",
+                    true
+                )
                 .AddEnvironmentVariables()
                 .Build();
 
@@ -72,16 +59,13 @@ public static class TokenGeneratorCommand
             var services = new ServiceCollection();
 
             // Configure JWT options
-            services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+            _ = services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
 
             // Add logging
-            services.AddLogging(builder =>
-            {
-                builder.AddConsole();
-            });
+            _ = services.AddLogging(builder => builder.AddConsole());
 
             // Add token service
-            services.AddScoped<ITokenService, TokenService>();
+            _ = services.AddScoped<ITokenService, TokenService>();
 
             var serviceProvider = services.BuildServiceProvider();
 
@@ -90,7 +74,9 @@ public static class TokenGeneratorCommand
             if (!jwtOptions.IsValid())
             {
                 Console.Error.WriteLine("❌ JWT configuration is invalid. Please check your JWT settings.");
-                Console.Error.WriteLine($"   - Secret: {(string.IsNullOrEmpty(jwtOptions.Secret) ? "Missing" : "Present")}");
+                Console.Error.WriteLine(
+                    $"   - Secret: {(string.IsNullOrEmpty(jwtOptions.Secret) ? "Missing" : "Present")}"
+                );
                 Console.Error.WriteLine($"   - Issuer: {jwtOptions.Issuer}");
                 Console.Error.WriteLine($"   - Audience: {jwtOptions.Audience}");
                 Console.Error.WriteLine($"   - ExpirationMinutes: {jwtOptions.ExpirationMinutes}");
@@ -107,7 +93,9 @@ public static class TokenGeneratorCommand
             Console.WriteLine();
             Console.WriteLine($"UserId: {userId}");
             Console.WriteLine($"AgentId: {agentId}");
-            Console.WriteLine($"Expires: {DateTime.UtcNow.AddMinutes(jwtOptions.ExpirationMinutes):yyyy-MM-dd HH:mm:ss} UTC");
+            Console.WriteLine(
+                $"Expires: {DateTime.UtcNow.AddMinutes(jwtOptions.ExpirationMinutes):yyyy-MM-dd HH:mm:ss} UTC"
+            );
             Console.WriteLine();
             Console.WriteLine("Token:");
             Console.WriteLine(token);

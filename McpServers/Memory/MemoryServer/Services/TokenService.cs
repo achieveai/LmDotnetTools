@@ -1,14 +1,14 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using MemoryServer.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using MemoryServer.Configuration;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Service for generating and validating JWT tokens
+///     Service for generating and validating JWT tokens
 /// </summary>
 public class TokenService : ITokenService
 {
@@ -18,6 +18,7 @@ public class TokenService : ITokenService
 
     public TokenService(IOptions<JwtOptions> jwtOptions, ILogger<TokenService> logger)
     {
+        ArgumentNullException.ThrowIfNull(jwtOptions);
         _jwtOptions = jwtOptions.Value;
         _logger = logger;
 
@@ -30,7 +31,7 @@ public class TokenService : ITokenService
     }
 
     /// <summary>
-    /// Generates a JWT token for the specified user and agent
+    ///     Generates a JWT token for the specified user and agent
     /// </summary>
     /// <param name="userId">The user identifier</param>
     /// <param name="agentId">The agent identifier</param>
@@ -38,10 +39,14 @@ public class TokenService : ITokenService
     public string GenerateToken(string userId, string agentId)
     {
         if (string.IsNullOrEmpty(userId))
+        {
             throw new ArgumentException("UserId cannot be null or empty", nameof(userId));
+        }
 
         if (string.IsNullOrEmpty(agentId))
+        {
             throw new ArgumentException("AgentId cannot be null or empty", nameof(agentId));
+        }
 
         var tokenHandler = new JwtSecurityTokenHandler();
         var credentials = new SigningCredentials(_signingKey, SecurityAlgorithms.HmacSha256);
@@ -51,8 +56,12 @@ public class TokenService : ITokenService
             new Claim(JwtRegisteredClaimNames.Sub, userId),
             new Claim("userId", userId),
             new Claim("agentId", agentId),
-            new Claim(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new Claim(
+                JwtRegisteredClaimNames.Iat,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64
+            ),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
         var tokenDescriptor = new SecurityTokenDescriptor
@@ -61,7 +70,7 @@ public class TokenService : ITokenService
             Expires = DateTime.UtcNow.AddMinutes(_jwtOptions.ExpirationMinutes),
             Issuer = _jwtOptions.Issuer,
             Audience = _jwtOptions.Audience,
-            SigningCredentials = credentials
+            SigningCredentials = credentials,
         };
 
         var token = tokenHandler.CreateToken(tokenDescriptor);
@@ -73,14 +82,16 @@ public class TokenService : ITokenService
     }
 
     /// <summary>
-    /// Validates a JWT token and extracts claims
+    ///     Validates a JWT token and extracts claims
     /// </summary>
     /// <param name="token">The JWT token to validate</param>
     /// <returns>True if the token is valid, false otherwise</returns>
     public bool ValidateToken(string token)
     {
         if (string.IsNullOrEmpty(token))
+        {
             return false;
+        }
 
         try
         {
@@ -94,15 +105,19 @@ public class TokenService : ITokenService
                 ValidateAudience = true,
                 ValidAudience = _jwtOptions.Audience,
                 ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero
+                ClockSkew = TimeSpan.Zero,
             };
 
-            tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
+            _ = tokenHandler.ValidateToken(token, validationParameters, out var validatedToken);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Token validation failed for token: {Token}", token[..Math.Min(token.Length, 20)] + "...");
+            _logger.LogWarning(
+                ex,
+                "Token validation failed for token: {Token}",
+                token[..Math.Min(token.Length, 20)] + "..."
+            );
             return false;
         }
     }

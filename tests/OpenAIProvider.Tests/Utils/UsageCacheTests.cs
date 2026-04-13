@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Utils;
 
@@ -11,7 +10,12 @@ public class UsageCacheTests : IDisposable
 
     public UsageCacheTests()
     {
-        _cache = new UsageCache(ttlSeconds: 1); // 1 second TTL for fast testing
+        _cache = new UsageCache(1); // 1 second TTL for fast testing
+    }
+
+    public void Dispose()
+    {
+        _cache?.Dispose();
     }
 
     [Fact]
@@ -35,8 +39,7 @@ public class UsageCacheTests : IDisposable
             CompletionTokens = 50,
             TotalTokens = 150,
             TotalCost = 0.01,
-            ExtraProperties = ImmutableDictionary<string, object?>.Empty
-                .Add("model", "gpt-4")
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("model", "gpt-4"),
         };
 
         // Act
@@ -66,7 +69,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act
@@ -94,7 +97,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act & Assert - should not crash
@@ -115,7 +118,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act
@@ -158,15 +161,10 @@ public class UsageCacheTests : IDisposable
     public void Constructor_WithCustomTtl_UsesCorrectTtl()
     {
         // Arrange & Act
-        using var customCache = new UsageCache(ttlSeconds: 600);
+        using var customCache = new UsageCache(600);
         var stats = customCache.GetStatistics();
 
         // Assert
         Assert.Equal(600, stats.TtlSeconds);
-    }
-
-    public void Dispose()
-    {
-        _cache?.Dispose();
     }
 }

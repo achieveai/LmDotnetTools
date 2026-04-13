@@ -1,0 +1,46 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  AchieveAi.LmDotnetTools.LmCore -> D:\Source\repos\LmDotnetTools\src\LmCore\bin\Debug\net8.0\AchieveAi.LmDotnetTools.LmCore.dll
+  AchieveAi.LmDotnetTools.LmCore -> D:\Source\repos\LmDotnetTools\src\LmCore\bin\Debug\net9.0\AchieveAi.LmDotnetTools.LmCore.dll
+  AchieveAi.LmDotnetTools.McpSampleServer -> D:\Source\repos\LmDotnetTools\src\McpSampleServer\bin\Debug\net9.0\AchieveAi.LmDotnetTools.McpSampleServer.dll
+  AchieveAi.LmDotnetTools.AgUi.DataObjects -> D:\Source\repos\LmDotnetTools\src\AG-UI\AchieveAi.LmDotnetTools.AgUi.DataObjects\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.DataObjects.dll
+  AchieveAi.LmDotnetTools.LmEmbeddings -> D:\Source\repos\LmDotnetTools\src\LmEmbeddings\bin\Debug\net8.0\AchieveAi.LmDotnetTools.LmEmbeddings.dll
+  AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider -> D:\Source\repos\LmDotnetTools\src\ClaudeAgentSdkProvider\bin\Debug\net8.0\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.dll
+  AchieveAi.LmDotnetTools.OpenAIProvider -> D:\Source\repos\LmDotnetTools\src\OpenAIProvider\bin\Debug\net9.0\AchieveAi.LmDotnetTools.OpenAIProvider.dll
+  AchieveAi.LmDotnetTools.LmEmbeddings -> D:\Source\repos\LmDotnetTools\src\LmEmbeddings\bin\Debug\net9.0\AchieveAi.LmDotnetTools.LmEmbeddings.dll
+  AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider -> D:\Source\repos\LmDotnetTools\src\ClaudeAgentSdkProvider\bin\Debug\net9.0\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.dll
+  AchieveAi.LmDotnetTools.AnthropicProvider -> D:\Source\repos\LmDotnetTools\src\AnthropicProvider\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AnthropicProvider.dll
+  AchieveAi.LmDotnetTools.OpenAIProvider -> D:\Source\repos\LmDotnetTools\src\OpenAIProvider\bin\Debug\net8.0\AchieveAi.LmDotnetTools.OpenAIProvider.dll
+  AchieveAi.LmDotnetTools.AnthropicProvider -> D:\Source\repos\LmDotnetTools\src\AnthropicProvider\bin\Debug\net9.0\AchieveAi.LmDotnetTools.AnthropicProvider.dll
+  AchieveAi.LmDotnetTools.LmConfig -> D:\Source\repos\LmDotnetTools\src\LmConfig\bin\Debug\net8.0\AchieveAi.LmDotnetTools.LmConfig.dll
+  LmTestUtils -> D:\Source\repos\LmDotnetTools\src\LmTestUtils\bin\Debug\net9.0\LmTestUtils.dll
+  AchieveAi.LmDotnetTools.McpMiddleware -> D:\Source\repos\LmDotnetTools\src\McpMiddleware\bin\Debug\net9.0\AchieveAi.LmDotnetTools.McpMiddleware.dll
+  LmTestUtils -> D:\Source\repos\LmDotnetTools\src\LmTestUtils\bin\Debug\net8.0\LmTestUtils.dll
+  AchieveAi.LmDotnetTools.Misc -> D:\Source\repos\LmDotnetTools\src\Misc\bin\Debug\net8.0\AchieveAi.LmDotnetTools.Misc.dll
+  LmTestUtils.Tests -> D:\Source\repos\LmDotnetTools\tests\LmTestUtils.Tests\bin\Debug\net9.0\LmTestUtils.Tests.dll
+  ModelConfigGenerator -> D:\Source\repos\LmDotnetTools\src\Tools\ModelConfigGenerator\bin\Debug\net8.0\AchieveAi.LmDotnetTools.ModelConfigGenerator.dll
+  AchieveAi.LmDotnetTools.TestUtils -> D:\Source\repos\LmDotnetTools\tests\TestUtils\bin\Debug\net9.0\AchieveAi.LmDotnetTools.TestUtils.dll
+  AchieveAi.LmDotnetTools.AgUi.Persistence -> D:\Source\repos\LmDotnetTools\src\AG-UI\AchieveAi.LmDotnetTools.AgUi.Persistence\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.Persistence.dll
+  AchieveAi.LmDotnetTools.AgUi.Protocol -> D:\Source\repos\LmDotnetTools\src\AG-UI\AchieveAi.LmDotnetTools.AgUi.Protocol\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.Protocol.dll
+  OpenAIProvider.Tests -> D:\Source\repos\LmDotnetTools\tests\OpenAIProvider.Tests\bin\Debug\net9.0\OpenAIProvider.Tests.dll
+  McpIntegrationTests -> D:\Source\repos\LmDotnetTools\tests\McpIntegrationTests\bin\Debug\net9.0\McpIntegrationTests.dll
+  AchieveAi.LmDotnetTools.LmConfig -> D:\Source\repos\LmDotnetTools\src\LmConfig\bin\Debug\net9.0\AchieveAi.LmDotnetTools.LmConfig.dll
+  AchieveAi.LmDotnetTools.AgUi.AspNetCore -> D:\Source\repos\LmDotnetTools\src\AG-UI\AchieveAi.LmDotnetTools.AgUi.AspNetCore\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.AspNetCore.dll
+  AchieveAi.LmDotnetTools.AgUi.Tests -> D:\Source\repos\LmDotnetTools\tests\AG-UI.Tests\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.Tests.dll
+  ClaudeAgentSdkProvider.Tests -> D:\Source\repos\LmDotnetTools\tests\ClaudeAgentSdkProvider.Tests\bin\Debug\net9.0\ClaudeAgentSdkProvider.Tests.dll
+  ModelConfigGenerator.Tests -> D:\Source\repos\LmDotnetTools\tests\ModelConfigGenerator.Tests\bin\Debug\net8.0\AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests.dll
+  LmConfigUsageExample -> D:\Source\repos\LmDotnetTools\example\LmConfigUsageExample\bin\Debug\net9.0\LmConfigUsageExample.dll
+  AchieveAi.LmDotnetTools.Misc -> D:\Source\repos\LmDotnetTools\src\Misc\bin\Debug\net9.0\AchieveAi.LmDotnetTools.Misc.dll
+  MemoryServer -> D:\Source\repos\LmDotnetTools\McpServers\Memory\MemoryServer\bin\Debug\net9.0\MemoryServer.dll
+  AchieveAi.LmDotnetTools.AgUi.Sample -> D:\Source\repos\LmDotnetTools\src\AG-UI\AchieveAi.LmDotnetTools.AgUi.Sample\bin\Debug\net8.0\AchieveAi.LmDotnetTools.AgUi.Sample.dll
+  AnthropicProvider.Tests -> D:\Source\repos\LmDotnetTools\tests\AnthropicProvider.Tests\bin\Debug\net9.0\AnthropicProvider.Tests.dll
+  AchieveAi.LmDotnetTools.LmEmbeddings.Tests -> D:\Source\repos\LmDotnetTools\tests\LmEmbeddings.Tests\bin\Debug\net9.0\AchieveAi.LmDotnetTools.LmEmbeddings.Tests.dll
+  ExamplePythonMCPClient -> D:\Source\repos\LmDotnetTools\example\ExamplePythonMCPClient\bin\Debug\net9.0\ExamplePythonMCPClient.dll
+  AchieveAi.LmDotnetTools.LmCore.Tests -> D:\Source\repos\LmDotnetTools\tests\LmCore.Tests\bin\Debug\net9.0\AchieveAi.LmDotnetTools.LmCore.Tests.dll
+  MemoryServer.Tests -> D:\Source\repos\LmDotnetTools\tests\MemoryServer.Tests\bin\Debug\net9.0\MemoryServer.Tests.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:05.20

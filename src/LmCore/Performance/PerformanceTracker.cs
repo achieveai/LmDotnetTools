@@ -1,16 +1,13 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
 /// <summary>
-/// Default implementation of IPerformanceTracker that provides comprehensive performance tracking
-/// across all providers with thread-safe operations.
+///     Default implementation of IPerformanceTracker that provides comprehensive performance tracking
+///     across all providers with thread-safe operations.
 /// </summary>
 public class PerformanceTracker : IPerformanceTracker
 {
     private readonly object _lock = new();
-    private readonly Dictionary<string, ProviderStatistics> _providerStats = new();
-
-    /// <summary>Maximum number of recent metrics to keep per provider</summary>
-    public int MaxRecentMetricsPerProvider { get; init; } = 1000;
+    private readonly Dictionary<string, ProviderStatistics> _providerStats = [];
 
     /// <summary>Creates a new PerformanceTracker instance</summary>
     /// <param name="maxRecentMetricsPerProvider">Maximum recent metrics to retain per provider</param>
@@ -19,12 +16,17 @@ public class PerformanceTracker : IPerformanceTracker
         MaxRecentMetricsPerProvider = maxRecentMetricsPerProvider;
     }
 
+    /// <summary>Maximum number of recent metrics to keep per provider</summary>
+    public int MaxRecentMetricsPerProvider { get; init; } = 1000;
+
     /// <summary>Records a request metric</summary>
     /// <param name="metric">The request metric to record</param>
     public void TrackRequest(RequestMetrics metric)
     {
         if (metric == null || string.IsNullOrEmpty(metric.Provider))
+        {
             return;
+        }
 
         lock (_lock)
         {
@@ -44,7 +46,9 @@ public class PerformanceTracker : IPerformanceTracker
     public ProviderStatistics? GetProviderStatistics(string provider)
     {
         if (string.IsNullOrEmpty(provider))
+        {
             return null;
+        }
 
         lock (_lock)
         {
@@ -76,7 +80,7 @@ public class PerformanceTracker : IPerformanceTracker
                 Provider = provider,
                 Model = model,
                 PeriodStart = DateTimeOffset.UtcNow,
-                PeriodEnd = DateTimeOffset.UtcNow
+                PeriodEnd = DateTimeOffset.UtcNow,
             };
         }
 
@@ -88,7 +92,7 @@ public class PerformanceTracker : IPerformanceTracker
                 Provider = provider,
                 Model = model,
                 PeriodStart = DateTimeOffset.UtcNow,
-                PeriodEnd = DateTimeOffset.UtcNow
+                PeriodEnd = DateTimeOffset.UtcNow,
             };
         }
 
@@ -105,9 +109,7 @@ public class PerformanceTracker : IPerformanceTracker
 
         lock (_lock)
         {
-            return _providerStats.Values
-                .Select(stats => stats.GetProfileSince(sinceTime))
-                .ToList();
+            return [.. _providerStats.Values.Select(stats => stats.GetProfileSince(sinceTime))];
         }
     }
 
@@ -116,7 +118,9 @@ public class PerformanceTracker : IPerformanceTracker
     public void ResetProviderStatistics(string provider)
     {
         if (string.IsNullOrEmpty(provider))
+        {
             return;
+        }
 
         lock (_lock)
         {
@@ -145,24 +149,28 @@ public class PerformanceTracker : IPerformanceTracker
     /// <returns>Top performing models</returns>
     public IEnumerable<(string Provider, string Model, ModelStatistics Stats)> GetTopModels(
         int count = 10,
-        string orderBy = "requests")
+        string orderBy = "requests"
+    )
     {
         lock (_lock)
         {
             var allModels = _providerStats
-                .SelectMany(kvp => kvp.Value.ModelStatistics.Select(ms =>
-                    (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value)))
+                .SelectMany(kvp =>
+                    kvp.Value.ModelStatistics.Select(ms => (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value))
+                )
                 .ToList();
+
+            ArgumentNullException.ThrowIfNull(orderBy);
 
             var ordered = orderBy.ToLower() switch
             {
                 "tokens" => allModels.OrderByDescending(m => m.Stats.TotalTokens),
                 "success_rate" => allModels.OrderByDescending(m => m.Stats.SuccessRate),
                 "avg_duration" => allModels.OrderBy(m => m.Stats.AverageRequestDuration),
-                _ => allModels.OrderByDescending(m => m.Stats.TotalRequests)
+                _ => allModels.OrderByDescending(m => m.Stats.TotalRequests),
             };
 
-            return ordered.Take(count).ToList();
+            return [.. ordered.Take(count)];
         }
     }
 
@@ -174,13 +182,13 @@ public class PerformanceTracker : IPerformanceTracker
         {
             var allProviders = _providerStats.Values.ToList();
 
-            if (!allProviders.Any())
+            if (allProviders.Count == 0)
             {
                 return new OverallStatistics
                 {
                     TotalProviders = 0,
                     TotalModels = 0,
-                    ProviderSummaries = new Dictionary<string, ProviderSummary>()
+                    ProviderSummaries = [],
                 };
             }
 
@@ -202,8 +210,9 @@ public class PerformanceTracker : IPerformanceTracker
                     TotalRequests = p.TotalRequests,
                     SuccessRate = p.SuccessRate,
                     AverageRequestDuration = p.AverageRequestDuration,
-                    TotalTokens = p.TotalTokensProcessed
-                });
+                    TotalTokens = p.TotalTokensProcessed,
+                }
+            );
 
             return new OverallStatistics
             {
@@ -215,7 +224,7 @@ public class PerformanceTracker : IPerformanceTracker
                 RetriedRequests = retriedRequests,
                 TotalTokensProcessed = totalTokens,
                 TotalProcessingTime = totalProcessingTime,
-                ProviderSummaries = providerSummaries
+                ProviderSummaries = providerSummaries,
             };
         }
     }

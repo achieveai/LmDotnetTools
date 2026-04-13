@@ -1,6 +1,6 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json.Serialization;
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -11,7 +11,13 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("text")]
     public required string Text { get; init; }
 
-    public string? GetText() => Text;
+    [JsonPropertyName("isThinking")]
+    public bool IsThinking { get; init; }
+
+    public string? GetText()
+    {
+        return Text;
+    }
 
     [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
@@ -25,14 +31,36 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
-    [JsonPropertyName("isThinking")]
-    public bool IsThinking { get; init; }
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 
-    public ToolCall? GetToolCalls() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessage>
@@ -45,11 +73,7 @@ public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessag
 
 public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage>
 {
-    private readonly StringBuilder _textBuilder = new StringBuilder();
-
-    public string? FromAgent { get; set; }
-
-    public Role Role { get; set; }
+    private readonly StringBuilder _textBuilder = new();
 
     public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
@@ -57,14 +81,27 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public bool IsThinking { get; set; }
 
+    public string? ThreadId { get; set; }
+
+    public string? RunId { get; set; }
+
+    public string? ParentRunId { get; set; }
+
+    public int? MessageOrderIdx { get; set; }
+
+    public string? FromAgent { get; set; }
+
+    public Role Role { get; set; }
+
     IMessage IMessageBuilder.Build()
     {
-        return this.Build();
+        return Build();
     }
 
     public void Add(TextUpdateMessage streamingMessageUpdate)
     {
-        _textBuilder.Append(streamingMessageUpdate.Text);
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
+        _ = _textBuilder.Append(streamingMessageUpdate.Text);
 
         // Set IsThinking from the update
         IsThinking = streamingMessageUpdate.IsThinking;
@@ -96,7 +133,11 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
             Role = Role,
             Metadata = Metadata,
             GenerationId = GenerationId,
-            IsThinking = IsThinking
+            IsThinking = IsThinking,
+            ThreadId = ThreadId,
+            RunId = RunId,
+            ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }

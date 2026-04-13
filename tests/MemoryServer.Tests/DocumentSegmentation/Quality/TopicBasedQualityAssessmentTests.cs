@@ -2,26 +2,23 @@ using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Moq;
-using System.Text;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Quality;
 
 /// <summary>
-/// Advanced quality assessment tests for Topic-Based Segmentation.
-/// Tests sophisticated quality metrics and validation algorithms.
+///     Advanced quality assessment tests for Topic-Based Segmentation.
+///     Tests sophisticated quality metrics and validation algorithms.
 /// </summary>
 public class TopicBasedQualityAssessmentTests
 {
+    private readonly ILogger<TopicBasedSegmentationService> _logger;
     private readonly Mock<ILlmProviderIntegrationService> _mockLlmService;
     private readonly Mock<ISegmentationPromptManager> _mockPromptManager;
-    private readonly ILogger<TopicBasedSegmentationService> _logger;
-    private readonly TopicBasedSegmentationService _service;
     private readonly ITestOutputHelper _output;
+    private readonly TopicBasedSegmentationService _service;
 
     public TopicBasedQualityAssessmentTests(ITestOutputHelper output)
     {
@@ -29,16 +26,10 @@ public class TopicBasedQualityAssessmentTests
         _mockLlmService = new Mock<ILlmProviderIntegrationService>();
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
 
-        var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Information);
-        });
+        var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
-        _service = new TopicBasedSegmentationService(
-          _mockLlmService.Object,
-          _mockPromptManager.Object,
-          _logger);
+        _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -48,34 +39,40 @@ public class TopicBasedQualityAssessmentTests
     [Theory]
     [MemberData(nameof(TopicCoherenceTestCases))]
     public async Task AnalyzeThematicCoherence_WithVariousContent_ReturnsAccurateCoherenceScores(
-      string testName,
-      string content,
-      double expectedMinCoherence,
-      double expectedMaxCoherence,
-      string description)
+        string testName,
+        string content,
+        double expectedMinCoherence,
+        double expectedMaxCoherence,
+        string description
+    )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running coherence test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Content length: {content.Length} characters");
+        Debug.WriteLine($"Running coherence test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}");
+        Debug.WriteLine($"Content length: {content.Length} characters");
 
         // Act
         var result = await _service.AnalyzeThematicCoherenceAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CoherenceScore.Should().BeInRange(expectedMinCoherence, expectedMaxCoherence,
-          $"Coherence score for {testName} should be between {expectedMinCoherence:F2} and {expectedMaxCoherence:F2}");
+        _ = result.Should().NotBeNull();
+        _ = result
+            .CoherenceScore.Should()
+            .BeInRange(
+                expectedMinCoherence,
+                expectedMaxCoherence,
+                $"Coherence score for {testName} should be between {expectedMinCoherence:F2} and {expectedMaxCoherence:F2}"
+            );
 
-        System.Diagnostics.Debug.WriteLine($"Actual coherence score: {result.CoherenceScore:F2}");
-        System.Diagnostics.Debug.WriteLine($"Primary topic: {result.PrimaryTopic}");
-        System.Diagnostics.Debug.WriteLine($"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]");
+        Debug.WriteLine($"Actual coherence score: {result.CoherenceScore:F2}");
+        Debug.WriteLine($"Primary topic: {result.PrimaryTopic}");
+        Debug.WriteLine($"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]");
 
         // Additional quality checks
-        result.SemanticUnity.Should().BeInRange(0.0, 1.0);
-        result.TopicConsistency.Should().BeInRange(0.0, 1.0);
-        result.PrimaryTopic.Should().NotBeNullOrWhiteSpace();
+        _ = result.SemanticUnity.Should().BeInRange(0.0, 1.0);
+        _ = result.TopicConsistency.Should().BeInRange(0.0, 1.0);
+        _ = result.PrimaryTopic.Should().NotBeNullOrWhiteSpace();
 
         _output.WriteLine($"{testName}: Score={result.CoherenceScore:F2}, Topic={result.PrimaryTopic}");
     }
@@ -84,7 +81,8 @@ public class TopicBasedQualityAssessmentTests
     public async Task AnalyzeThematicCoherence_WithMultipleTopics_IdentifiesTopicTransitions()
     {
         // Arrange
-        var multiTopicContent = @"
+        var multiTopicContent =
+            @"
       Artificial intelligence has revolutionized data processing. Machine learning algorithms 
       can now identify patterns in vast datasets with remarkable accuracy.
       
@@ -95,26 +93,26 @@ public class TopicBasedQualityAssessmentTests
       Electric vehicles are becoming more prevalent due to environmental concerns.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Multi-topic content: {multiTopicContent}");
+        Debug.WriteLine($"Multi-topic content: {multiTopicContent}");
 
         // Act
         var result = await _service.AnalyzeThematicCoherenceAsync(multiTopicContent);
 
-        System.Diagnostics.Debug.WriteLine($"Coherence result: Score={result.CoherenceScore:F3}, PrimaryTopic={result.PrimaryTopic}");
+        Debug.WriteLine($"Coherence result: Score={result.CoherenceScore:F3}, PrimaryTopic={result.PrimaryTopic}");
 
         // Assert
-        result.Should().NotBeNull();
+        _ = result.Should().NotBeNull();
 
         // Multiple topics should result in lower coherence
-        result.CoherenceScore.Should().BeLessThan(0.8,
-          "Content with multiple distinct topics should have lower coherence");
+        _ = result
+            .CoherenceScore.Should()
+            .BeLessThan(0.8, "Content with multiple distinct topics should have lower coherence");
 
         // Should identify topic diversity
-        result.TopicKeywords.Should().HaveCountGreaterThan(5,
-          "Multi-topic content should have diverse keywords");
+        _ = result.TopicKeywords.Should().HaveCountGreaterThan(5, "Multi-topic content should have diverse keywords");
 
-        System.Diagnostics.Debug.WriteLine($"Multi-topic coherence: {result.CoherenceScore:F2}");
-        System.Diagnostics.Debug.WriteLine($"Keywords found: [{string.Join(", ", result.TopicKeywords)}]");
+        Debug.WriteLine($"Multi-topic coherence: {result.CoherenceScore:F2}");
+        Debug.WriteLine($"Keywords found: [{string.Join(", ", result.TopicKeywords)}]");
     }
 
     #endregion
@@ -124,40 +122,42 @@ public class TopicBasedQualityAssessmentTests
     [Theory]
     [MemberData(nameof(SimilarityTestCases))]
     public async Task AnalyzeSegmentSimilarity_WithVariousSegmentPairs_ReturnsAccurateSimilarity(
-      string testName,
-      string segment1,
-      string segment2,
-      double expectedMinSimilarity,
-      double expectedMaxSimilarity,
-      string description)
+        string testName,
+        string segment1,
+        string segment2,
+        double expectedMinSimilarity,
+        double expectedMaxSimilarity,
+        string description
+    )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running similarity test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Segment 1 length: {segment1.Length}");
-        System.Diagnostics.Debug.WriteLine($"Segment 2 length: {segment2.Length}");
+        Debug.WriteLine($"Running similarity test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Segment 1 length: {segment1.Length}");
+        Debug.WriteLine($"Segment 2 length: {segment2.Length}");
 
-        var segments = new List<DocumentSegment>
-    {
-      CreateSegment("1", segment1, 0),
-      CreateSegment("2", segment2, 1)
-    };
+        var segments = new List<DocumentSegment> { CreateSegment("1", segment1, 0), CreateSegment("2", segment2, 1) };
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(segments, segment1 + "\n\n" + segment2);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Check segment independence (inverse of similarity)
         var independence = validation.SegmentIndependence;
         var similarity = 1.0 - independence; // Convert independence to similarity
 
-        similarity.Should().BeInRange(expectedMinSimilarity, expectedMaxSimilarity,
-          $"Similarity for {testName} should be between {expectedMinSimilarity:F2} and {expectedMaxSimilarity:F2}");
+        _ = similarity
+            .Should()
+            .BeInRange(
+                expectedMinSimilarity,
+                expectedMaxSimilarity,
+                $"Similarity for {testName} should be between {expectedMinSimilarity:F2} and {expectedMaxSimilarity:F2}"
+            );
 
-        System.Diagnostics.Debug.WriteLine($"Calculated similarity: {similarity:F2}");
-        System.Diagnostics.Debug.WriteLine($"Segment independence: {independence:F2}");
+        Debug.WriteLine($"Calculated similarity: {similarity:F2}");
+        Debug.WriteLine($"Segment independence: {independence:F2}");
 
         _output.WriteLine($"{testName}: Similarity={similarity:F2}, Independence={independence:F2}");
     }
@@ -167,36 +167,38 @@ public class TopicBasedQualityAssessmentTests
     {
         // Arrange
         var similarSegments = new List<DocumentSegment>
-    {
-      CreateSegment("1", "Machine learning algorithms process data efficiently.", 0),
-      CreateSegment("2", "Data processing using machine learning is very efficient.", 1),
-      CreateSegment("3", "Artificial intelligence handles information processing well.", 2)
-    };
+        {
+            CreateSegment("1", "Machine learning algorithms process data efficiently.", 0),
+            CreateSegment("2", "Data processing using machine learning is very efficient.", 1),
+            CreateSegment("3", "Artificial intelligence handles information processing well.", 2),
+        };
 
         var originalContent = string.Join("\n\n", similarSegments.Select(s => s.Content));
-        System.Diagnostics.Debug.WriteLine($"Testing similar segments with content length: {originalContent.Length}");
+        Debug.WriteLine($"Testing similar segments with content length: {originalContent.Length}");
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(similarSegments, originalContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Should identify low independence due to similarity
-        validation.SegmentIndependence.Should().BeLessThan(0.7,
-          "Similar segments should have low independence scores");
+        _ = validation
+            .SegmentIndependence.Should()
+            .BeLessThan(0.7, "Similar segments should have low independence scores");
 
         // Should recommend consolidation
-        var consolidationRecommendations = validation.Recommendations
-          .Where(r => r.Contains("merge", StringComparison.OrdinalIgnoreCase) ||
-                      r.Contains("consolidat", StringComparison.OrdinalIgnoreCase))
-          .ToList();
+        var consolidationRecommendations = validation
+            .Recommendations.Where(r =>
+                r.Contains("merge", StringComparison.OrdinalIgnoreCase)
+                || r.Contains("consolidat", StringComparison.OrdinalIgnoreCase)
+            )
+            .ToList();
 
-        consolidationRecommendations.Should().NotBeEmpty(
-          "Should recommend consolidating similar segments");
+        _ = consolidationRecommendations.Should().NotBeEmpty("Should recommend consolidating similar segments");
 
-        System.Diagnostics.Debug.WriteLine($"Independence score: {validation.SegmentIndependence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Consolidation recommendations: {consolidationRecommendations.Count}");
+        Debug.WriteLine($"Independence score: {validation.SegmentIndependence:F2}");
+        Debug.WriteLine($"Consolidation recommendations: {consolidationRecommendations.Count}");
     }
 
     #endregion
@@ -206,41 +208,51 @@ public class TopicBasedQualityAssessmentTests
     [Theory]
     [MemberData(nameof(TopicCoverageTestCases))]
     public async Task ValidateTopicCoverage_WithVariousDocuments_AssessesCompleteness(
-      string testName,
-      string originalDocument,
-      List<string> segmentContents,
-      double expectedMinCoverage,
-      double expectedMaxCoverage,
-      string description)
+        string testName,
+        string originalDocument,
+        List<string> segmentContents,
+        double expectedMinCoverage,
+        double expectedMaxCoverage,
+        string description
+    )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running coverage test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Original document length: {originalDocument.Length}");
-        System.Diagnostics.Debug.WriteLine($"Number of segments: {segmentContents.Count}");
+        Debug.WriteLine($"Running coverage test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Original document length: {originalDocument.Length}");
+        Debug.WriteLine($"Number of segments: {segmentContents.Count}");
 
-        var segments = segmentContents.Select((content, index) =>
-          CreateSegment((index + 1).ToString(), content, index)).ToList();
+        var segments = segmentContents
+            .Select((content, index) => CreateSegment((index + 1).ToString(), content, index))
+            .ToList();
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(segments, originalDocument);
 
         // Assert
-        validation.Should().NotBeNull();
-        validation.TopicCoverage.Should().BeInRange(expectedMinCoverage, expectedMaxCoverage,
-          $"Topic coverage for {testName} should be between {expectedMinCoverage:F2} and {expectedMaxCoverage:F2}");
+        _ = validation.Should().NotBeNull();
+        _ = validation
+            .TopicCoverage.Should()
+            .BeInRange(
+                expectedMinCoverage,
+                expectedMaxCoverage,
+                $"Topic coverage for {testName} should be between {expectedMinCoverage:F2} and {expectedMaxCoverage:F2}"
+            );
 
-        System.Diagnostics.Debug.WriteLine($"Actual topic coverage: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"Actual topic coverage: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
 
-        _output.WriteLine($"{testName}: Coverage={validation.TopicCoverage:F2}, Quality={validation.OverallQuality:F2}");
+        _output.WriteLine(
+            $"{testName}: Coverage={validation.TopicCoverage:F2}, Quality={validation.OverallQuality:F2}"
+        );
     }
 
     [Fact]
     public async Task ValidateTopicCoverage_WithIncompleteSegmentation_IdentifiesGaps()
     {
         // Arrange
-        var completeDocument = @"
+        var completeDocument =
+            @"
       Technology has transformed modern communication. Email, instant messaging, and video calls
       have revolutionized how we interact professionally and personally.
       
@@ -253,29 +265,32 @@ public class TopicBasedQualityAssessmentTests
 
         // Segments that only cover first two topics (missing healthcare)
         var incompleteSegments = new List<DocumentSegment>
-    {
-      CreateSegment("1", "Technology has transformed modern communication. Email and messaging changed interactions.", 0),
-      CreateSegment("2", "Education systems evolved with online learning platforms for global access.", 1)
-    };
+        {
+            CreateSegment(
+                "1",
+                "Technology has transformed modern communication. Email and messaging changed interactions.",
+                0
+            ),
+            CreateSegment("2", "Education systems evolved with online learning platforms for global access.", 1),
+        };
 
-        System.Diagnostics.Debug.WriteLine($"Testing incomplete coverage with {incompleteSegments.Count} segments");
+        Debug.WriteLine($"Testing incomplete coverage with {incompleteSegments.Count} segments");
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(incompleteSegments, completeDocument);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Should detect incomplete coverage
-        validation.TopicCoverage.Should().BeLessThan(0.9,
-          "Incomplete segmentation should have low topic coverage");
+        _ = validation.TopicCoverage.Should().BeLessThan(0.9, "Incomplete segmentation should have low topic coverage");
 
         // Should identify content gaps
         var gapIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.MissingContext).ToList();
-        gapIssues.Should().NotBeEmpty("Should identify content gaps in incomplete segmentation");
+        _ = gapIssues.Should().NotBeEmpty("Should identify content gaps in incomplete segmentation");
 
-        System.Diagnostics.Debug.WriteLine($"Coverage score: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"Gap issues found: {gapIssues.Count}");
+        Debug.WriteLine($"Coverage score: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"Gap issues found: {gapIssues.Count}");
     }
 
     #endregion
@@ -285,46 +300,49 @@ public class TopicBasedQualityAssessmentTests
     [Theory]
     [MemberData(nameof(QualityBenchmarkTestCases))]
     public async Task QualityBenchmarkSuite_WithKnownGoodBadExamples_ProducesExpectedScores(
-      string benchmarkName,
-      string content,
-      SegmentationStrategy strategy,
-      double expectedMinQuality,
-      double expectedMaxQuality,
-      string qualityDescription)
+        string benchmarkName,
+        string content,
+        SegmentationStrategy strategy,
+        double expectedMinQuality,
+        double expectedMaxQuality,
+        string qualityDescription
+    )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running benchmark: {benchmarkName}");
-        System.Diagnostics.Debug.WriteLine($"Strategy: {strategy}");
-        System.Diagnostics.Debug.WriteLine($"Quality description: {qualityDescription}");
+        Debug.WriteLine($"Running benchmark: {benchmarkName}");
+        Debug.WriteLine($"Strategy: {strategy}");
+        Debug.WriteLine($"Quality description: {qualityDescription}");
 
-        var options = new TopicSegmentationOptions
-        {
-            UseLlmEnhancement = false,
-            MinSegmentSize = 50
-        };
+        var options = new TopicSegmentationOptions { UseLlmEnhancement = false, MinSegmentSize = 50 };
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(content, DocumentType.Generic, options);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, content);
 
         // Assert
-        validation.Should().NotBeNull();
-        validation.OverallQuality.Should().BeInRange(expectedMinQuality, expectedMaxQuality,
-          $"Quality for {benchmarkName} should be between {expectedMinQuality:F2} and {expectedMaxQuality:F2}");
+        _ = validation.Should().NotBeNull();
+        _ = validation
+            .OverallQuality.Should()
+            .BeInRange(
+                expectedMinQuality,
+                expectedMaxQuality,
+                $"Quality for {benchmarkName} should be between {expectedMinQuality:F2} and {expectedMaxQuality:F2}"
+            );
 
-        System.Diagnostics.Debug.WriteLine($"Segments created: {segments.Count()}");
-        System.Diagnostics.Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"Topic coherence: {validation.AverageTopicCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Boundary accuracy: {validation.BoundaryAccuracy:F2}");
+        Debug.WriteLine($"Segments created: {segments.Count}");
+        Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"Topic coherence: {validation.AverageTopicCoherence:F2}");
+        Debug.WriteLine($"Boundary accuracy: {validation.BoundaryAccuracy:F2}");
 
-        _output.WriteLine($"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count()}");
+        _output.WriteLine($"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count}");
     }
 
     [Fact]
     public async Task QualityBenchmark_WithExcellentSegmentation_AchievesHighScores()
     {
         // Arrange - Well-structured content with clear topic boundaries
-        var excellentContent = @"
+        var excellentContent =
+            @"
       Introduction to Machine Learning
       
       Machine learning is a subset of artificial intelligence that enables computers to learn
@@ -351,37 +369,41 @@ public class TopicBasedQualityAssessmentTests
       important as ML systems become more prevalent in decision-making processes.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Testing excellent content with length: {excellentContent.Length}");
+        Debug.WriteLine($"Testing excellent content with length: {excellentContent.Length}");
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(excellentContent, DocumentType.Technical);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, excellentContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Excellent content should achieve high quality scores
-        validation.OverallQuality.Should().BeGreaterThan(0.7,
-          "Well-structured content should achieve high overall quality");
+        _ = validation
+            .OverallQuality.Should()
+            .BeGreaterThan(0.7, "Well-structured content should achieve high overall quality");
 
-        validation.AverageTopicCoherence.Should().BeGreaterThan(0.75,
-          "Clear topics should have high coherence scores");
+        _ = validation
+            .AverageTopicCoherence.Should()
+            .BeGreaterThan(0.75, "Clear topics should have high coherence scores");
 
-        validation.TopicCoverage.Should().BeGreaterThan(0.8,
-          "Comprehensive segmentation should have high topic coverage");
+        _ = validation
+            .TopicCoverage.Should()
+            .BeGreaterThan(0.8, "Comprehensive segmentation should have high topic coverage");
 
-        System.Diagnostics.Debug.WriteLine($"Excellent content results:");
-        System.Diagnostics.Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Boundary accuracy: {validation.BoundaryAccuracy:F2}");
+        Debug.WriteLine("Excellent content results:");
+        Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
+        Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"  Boundary accuracy: {validation.BoundaryAccuracy:F2}");
     }
 
     [Fact]
     public async Task QualityBenchmark_WithPoorSegmentation_IdentifiesIssues()
     {
         // Arrange - Poorly structured content with mixed topics
-        var poorContent = @"
+        var poorContent =
+            @"
       Random thoughts about various topics. Technology is important but also cooking
       is great. I like pizza and machine learning algorithms. The weather today is
       nice and database optimization requires indexing. My cat likes to play with
@@ -390,30 +412,30 @@ public class TopicBasedQualityAssessmentTests
       color is blue which reminds me of deep learning neural networks.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
+        Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
 
         // Act
-        var segments = await _service.SegmentByTopicsAsync(poorContent, DocumentType.Generic);
+        var segments = await _service.SegmentByTopicsAsync(poorContent);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, poorContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Poor content should result in quality issues
-        validation.Issues.Should().NotBeEmpty("Poor content should generate quality issues");
+        _ = validation.Issues.Should().NotBeEmpty("Poor content should generate quality issues");
 
         // Should identify coherence problems
         var coherenceIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
-        coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
+        _ = coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
 
-        System.Diagnostics.Debug.WriteLine($"Poor content results:");
-        System.Diagnostics.Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Issues found: {validation.Issues.Count}");
-        System.Diagnostics.Debug.WriteLine($"  Coherence issues: {coherenceIssues.Count}");
+        Debug.WriteLine("Poor content results:");
+        Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"  Issues found: {validation.Issues.Count}");
+        Debug.WriteLine($"  Coherence issues: {coherenceIssues.Count}");
 
         foreach (var issue in validation.Issues.Take(3))
         {
-            System.Diagnostics.Debug.WriteLine($"  Issue: {issue.Type} - {issue.Description}");
+            Debug.WriteLine($"  Issue: {issue.Type} - {issue.Description}");
         }
     }
 
@@ -421,123 +443,119 @@ public class TopicBasedQualityAssessmentTests
 
     #region Test Data Providers
 
-    public static IEnumerable<object[]> TopicCoherenceTestCases => new List<object[]>
-  {
-    new object[]
-    {
-      "High Coherence - Single Topic",
-      @"Machine learning algorithms have revolutionized data analysis in recent years. These 
+    public static IEnumerable<object[]> TopicCoherenceTestCases =>
+        [
+            [
+                "High Coherence - Single Topic",
+                @"Machine learning algorithms have revolutionized data analysis in recent years. These 
         computational methods enable pattern recognition and predictive modeling across various 
         industries. Deep learning, a subset of machine learning, uses neural networks to process 
         complex data structures. The applications of these technologies continue to expand as 
         computing power increases and datasets become more sophisticated.",
-      0.75, 1.0,
-      "Focused content about machine learning should have high coherence"
-    },
-    new object[]
-    {
-      "Medium Coherence - Related Topics",
-      @"Software development requires careful planning and systematic approaches. Programming 
+                0.75,
+                1.0,
+                "Focused content about machine learning should have high coherence",
+            ],
+            [
+                "Medium Coherence - Related Topics",
+                @"Software development requires careful planning and systematic approaches. Programming 
         languages provide the tools for building applications and systems. Testing methodologies 
         ensure code quality and reliability. Project management coordinates these activities to 
         deliver successful software products on time and within budget.",
-      0.6, 0.85,
-      "Related software development topics should have medium-high coherence"
-    },
-    new object[]
-    {
-      "Low Coherence - Mixed Topics",
-      @"The weather is beautiful today with sunny skies. Database optimization requires proper 
+                0.6,
+                0.85,
+                "Related software development topics should have medium-high coherence",
+            ],
+            [
+                "Low Coherence - Mixed Topics",
+                @"The weather is beautiful today with sunny skies. Database optimization requires proper 
         indexing strategies for performance. My favorite recipe includes fresh ingredients and 
         careful preparation. Economic markets show volatility due to various global factors.",
-      0.0, 0.5,
-      "Unrelated mixed topics should have low coherence"
-    },
-    new object[]
-    {
-      "Very Low Coherence - Random Content",
-      @"Purple elephants dance while eating computational algorithms. The stock market tastes 
+                0.0,
+                0.5,
+                "Unrelated mixed topics should have low coherence",
+            ],
+            [
+                "Very Low Coherence - Random Content",
+                @"Purple elephants dance while eating computational algorithms. The stock market tastes 
         like JavaScript functions mixed with automotive engineering principles. Quantum physics 
         smells like database normalization procedures on a Tuesday afternoon.",
-      0.0, 0.3,
-      "Nonsensical random content should have very low coherence"
-    }
-  };
+                0.0,
+                0.3,
+                "Nonsensical random content should have very low coherence",
+            ],
+        ];
 
-    public static IEnumerable<object[]> SimilarityTestCases => new List<object[]>
-  {
-    new object[]
-    {
-      "High Similarity - Same Topic",
-      "Machine learning algorithms process data to identify patterns and make predictions.",
-      "Data processing using machine learning helps identify patterns for predictive analysis.",
-      0.7, 1.0,
-      "Segments about the same topic should have high similarity"
-    },
-    new object[]
-    {
-      "Medium Similarity - Related Topics",
-      "Software development requires systematic planning and organized approaches to coding.",
-      "Project management in technology involves coordinating development teams and resources.",
-      0.4, 0.7,
-      "Related but distinct topics should have medium similarity"
-    },
-    new object[]
-    {
-      "Low Similarity - Different Topics",
-      "Artificial intelligence transforms how we process and analyze large datasets.",
-      "Cooking techniques vary significantly across different cultural traditions and regions.",
-      0.0, 0.4,
-      "Completely different topics should have low similarity"
-    }
-  };
+    public static IEnumerable<object[]> SimilarityTestCases =>
+        [
+            [
+                "High Similarity - Same Topic",
+                "Machine learning algorithms process data to identify patterns and make predictions.",
+                "Data processing using machine learning helps identify patterns for predictive analysis.",
+                0.7,
+                1.0,
+                "Segments about the same topic should have high similarity",
+            ],
+            [
+                "Medium Similarity - Related Topics",
+                "Software development requires systematic planning and organized approaches to coding.",
+                "Project management in technology involves coordinating development teams and resources.",
+                0.4,
+                0.7,
+                "Related but distinct topics should have medium similarity",
+            ],
+            [
+                "Low Similarity - Different Topics",
+                "Artificial intelligence transforms how we process and analyze large datasets.",
+                "Cooking techniques vary significantly across different cultural traditions and regions.",
+                0.0,
+                0.4,
+                "Completely different topics should have low similarity",
+            ],
+        ];
 
-    public static IEnumerable<object[]> TopicCoverageTestCases => new List<object[]>
-  {
-    new object[]
-    {
-      "Complete Coverage",
-      @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
-      new List<string>
-      {
-        "Technology advances rapidly in various fields.",
-        "Education systems evolve with new methodologies.",
-        "Healthcare improves continuously with innovations."
-      },
-      0.85, 1.0,
-      "Complete segmentation should achieve high coverage"
-    },
-    new object[]
-    {
-      "Partial Coverage",
-      @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
-      new List<string>
-      {
-        "Technology advances rapidly in various fields.",
-        "Education systems evolve with new methodologies."
-      },
-      0.5, 0.8,
-      "Partial segmentation should achieve medium coverage"
-    },
-    new object[]
-    {
-      "Poor Coverage",
-      @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
-      new List<string>
-      {
-        "Technology advances rapidly."
-      },
-      0.2, 0.6,
-      "Minimal segmentation should achieve low coverage"
-    }
-  };
+    public static IEnumerable<object[]> TopicCoverageTestCases =>
+        [
+            [
+                "Complete Coverage",
+                @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
+                new List<string>
+                {
+                    "Technology advances rapidly in various fields.",
+                    "Education systems evolve with new methodologies.",
+                    "Healthcare improves continuously with innovations.",
+                },
+                0.85,
+                1.0,
+                "Complete segmentation should achieve high coverage",
+            ],
+            [
+                "Partial Coverage",
+                @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
+                new List<string>
+                {
+                    "Technology advances rapidly in various fields.",
+                    "Education systems evolve with new methodologies.",
+                },
+                0.5,
+                0.8,
+                "Partial segmentation should achieve medium coverage",
+            ],
+            [
+                "Poor Coverage",
+                @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
+                new List<string> { "Technology advances rapidly." },
+                0.2,
+                0.6,
+                "Minimal segmentation should achieve low coverage",
+            ],
+        ];
 
-    public static IEnumerable<object[]> QualityBenchmarkTestCases => new List<object[]>
-  {
-    new object[]
-    {
-      "Excellent Structure",
-      @"Introduction: This document covers three main areas.
+    public static IEnumerable<object[]> QualityBenchmarkTestCases =>
+        [
+            [
+                "Excellent Structure",
+                @"Introduction: This document covers three main areas.
         
         Section 1: Technology
         Modern technology has transformed our daily lives through automation and connectivity.
@@ -546,31 +564,32 @@ public class TopicBasedQualityAssessmentTests
         Educational systems have adapted to include digital learning platforms and resources.
         
         Conclusion: These changes represent significant progress in human development.",
-      SegmentationStrategy.TopicBased,
-      0.7, 1.0,
-      "Well-structured content with clear sections should achieve high quality"
-    },
-    new object[]
-    {
-      "Good Structure",
-      @"Technology continues to advance rapidly in various fields. Artificial intelligence and 
+                SegmentationStrategy.TopicBased,
+                0.7,
+                1.0,
+                "Well-structured content with clear sections should achieve high quality",
+            ],
+            [
+                "Good Structure",
+                @"Technology continues to advance rapidly in various fields. Artificial intelligence and 
         machine learning are revolutionizing data analysis. These innovations impact multiple 
         industries from healthcare to finance, creating new opportunities and challenges.",
-      SegmentationStrategy.TopicBased,
-      0.6, 0.85,
-      "Coherent content should achieve good quality scores"
-    },
-    new object[]
-    {
-      "Poor Structure",
-      @"Random thoughts about stuff. Technology is good but cooking is better. I like cats and 
+                SegmentationStrategy.TopicBased,
+                0.6,
+                0.85,
+                "Coherent content should achieve good quality scores",
+            ],
+            [
+                "Poor Structure",
+                @"Random thoughts about stuff. Technology is good but cooking is better. I like cats and 
         databases need optimization. The weather affects machine learning somehow. Economic 
         principles relate to quantum physics in my opinion.",
-      SegmentationStrategy.TopicBased,
-      0.2, 0.6,
-      "Incoherent content should achieve lower quality scores"
-    }
-  };
+                SegmentationStrategy.TopicBased,
+                0.2,
+                0.6,
+                "Incoherent content should achieve lower quality scores",
+            ],
+        ];
 
     #endregion
 
@@ -578,22 +597,23 @@ public class TopicBasedQualityAssessmentTests
 
     private void SetupDefaultMocks()
     {
-        _mockPromptManager.Setup(x => x.GetPromptAsync(
-            It.IsAny<SegmentationStrategy>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(new PromptTemplate
-          {
-              SystemPrompt = "You are an advanced topic analysis expert.",
-              UserPrompt = "Analyze the following content for quality assessment: {DocumentContent}",
-              ExpectedFormat = "json"
-          });
+        _ = _mockPromptManager
+            .Setup(x =>
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
+            )
+            .ReturnsAsync(
+                new PromptTemplate
+                {
+                    SystemPrompt = "You are an advanced topic analysis expert.",
+                    UserPrompt = "Analyze the following content for quality assessment: {DocumentContent}",
+                    ExpectedFormat = "json",
+                }
+            );
 
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-          .ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
-    private DocumentSegment CreateSegment(string id, string content, int sequenceNumber)
+    private static DocumentSegment CreateSegment(string id, string content, int sequenceNumber)
     {
         return new DocumentSegment
         {
@@ -604,8 +624,8 @@ public class TopicBasedQualityAssessmentTests
             {
                 ["start_position"] = sequenceNumber * 100,
                 ["end_position"] = (sequenceNumber * 100) + content.Length,
-                ["segmentation_strategy"] = SegmentationStrategy.TopicBased.ToString()
-            }
+                ["segmentation_strategy"] = SegmentationStrategy.TopicBased.ToString(),
+            },
         };
     }
 

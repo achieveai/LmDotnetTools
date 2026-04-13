@@ -1,23 +1,20 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;
 
 public class UsageSerializationTests
 {
-    private readonly ITestOutputHelper _output;
     private readonly JsonSerializerOptions _options;
+    private readonly ITestOutputHelper _output;
 
     public UsageSerializationTests(ITestOutputHelper output)
     {
         _output = output;
         // Set up the options to match how the Usage class would be serialized in production
         // Even though UsageShadowPropertiesJsonConverter is applied via attribute, this makes the test more explicit
-        _options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-        };
+        _options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     }
 
     [Fact]
@@ -31,7 +28,7 @@ public class UsageSerializationTests
             TotalTokens = 0,
             TotalCost = null,
             InputTokenDetails = null,
-            OutputTokenDetails = null
+            OutputTokenDetails = null,
         };
 
         // Act
@@ -53,7 +50,7 @@ public class UsageSerializationTests
             TotalTokens = 150,
             TotalCost = 0.05,
             InputTokenDetails = null,
-            OutputTokenDetails = null
+            OutputTokenDetails = null,
         };
 
         // Act
@@ -74,10 +71,7 @@ public class UsageSerializationTests
             PromptTokens = 100,
             CompletionTokens = 50,
             TotalTokens = 150,
-            OutputTokenDetails = new OutputTokenDetails
-            {
-                ReasoningTokens = 25
-            }
+            OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = 25 },
         };
 
         // Act
@@ -85,7 +79,8 @@ public class UsageSerializationTests
         _output.WriteLine($"Serialized JSON: {json}");
 
         // Assert
-        var expectedJson = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{"reasoning_tokens":25}}""";
+        var expectedJson =
+            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{"reasoning_tokens":25}}""";
         Assert.Equal(expectedJson, json);
     }
 
@@ -100,8 +95,8 @@ public class UsageSerializationTests
             TotalTokens = 150,
             OutputTokenDetails = new OutputTokenDetails
             {
-                ReasoningTokens = 0 // Default value
-            }
+                ReasoningTokens = 0, // Default value
+            },
         };
 
         // Act
@@ -111,7 +106,8 @@ public class UsageSerializationTests
         // Assert
         // With ShadowPropertiesJsonConverter, the empty OutputTokenDetails object is included
         // because the object itself is not null, even though its properties have default values
-        var expectedJson = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{}}""";
+        var expectedJson =
+            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{}}""";
         Assert.Equal(expectedJson, json);
         // The OutputTokenDetails will contain an empty object or the reasoning_tokens with value 0
     }
@@ -138,7 +134,8 @@ public class UsageSerializationTests
     public void Usage_ShouldDeserializeWithOutputTokenDetails()
     {
         // Arrange
-        var json = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{"reasoning_tokens":25}}""";
+        var json =
+            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"output_tokens_details":{"reasoning_tokens":25}}""";
 
         // Act
         var usage = JsonSerializer.Deserialize<Usage>(json, _options);
@@ -158,7 +155,8 @@ public class UsageSerializationTests
     public void Usage_ShouldDeserializeWithInputTokenDetails()
     {
         // Arrange
-        var json = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"input_tokens_details":{"cached_tokens":30}}""";
+        var json =
+            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"input_tokens_details":{"cached_tokens":30}}""";
 
         // Act
         var usage = JsonSerializer.Deserialize<Usage>(json, _options);
@@ -178,7 +176,8 @@ public class UsageSerializationTests
     public void Usage_ShouldDeserializeWithBothTokenDetails()
     {
         // Arrange
-        var json = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"input_tokens_details":{"cached_tokens":30},"output_tokens_details":{"reasoning_tokens":25}}""";
+        var json =
+            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"input_tokens_details":{"cached_tokens":30},"output_tokens_details":{"reasoning_tokens":25}}""";
 
         // Act
         var usage = JsonSerializer.Deserialize<Usage>(json, _options);

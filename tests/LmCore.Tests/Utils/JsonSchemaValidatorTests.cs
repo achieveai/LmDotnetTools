@@ -1,5 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Utils;
 
 public class JsonSchemaValidatorTests
@@ -12,20 +12,25 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new() { Name = "param1", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "string" } }
-            }
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "param1",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "string" },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("", contract);
+        var result = _validator.Validate("", contract);
         Assert.False(result);
     }
 
     [Fact]
     public void Validate_NullSchema_ReturnsFalse()
     {
-        bool result = _validator.Validate("{}", null!);
+        var result = _validator.Validate("{}", null!);
         Assert.False(result);
     }
 
@@ -33,7 +38,7 @@ public class JsonSchemaValidatorTests
     public void Validate_InvalidJson_ReturnsFalse()
     {
         var contract = new FunctionContract { Name = "testFunction" };
-        bool result = _validator.Validate("invalid json", contract);
+        var result = _validator.Validate("invalid json", contract);
         Assert.False(result);
     }
 
@@ -41,7 +46,7 @@ public class JsonSchemaValidatorTests
     public void Validate_NoParameters_ReturnsTrue()
     {
         var contract = new FunctionContract { Name = "testFunction" };
-        bool result = _validator.Validate("{}", contract);
+        var result = _validator.Validate("{}", contract);
         Assert.True(result);
     }
 
@@ -51,13 +56,18 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new() { Name = "param1", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "string" } }
-            }
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "param1",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "string" },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{}", contract);
+        var result = _validator.Validate("{}", contract);
         Assert.False(result);
     }
 
@@ -67,13 +77,18 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new() { Name = "param1", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "string" } }
-            }
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "param1",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "string" },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"param1\": 123}", contract);
+        var result = _validator.Validate("{\"param1\": 123}", contract);
         Assert.False(result);
     }
 
@@ -83,15 +98,33 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new() { Name = "stringParam", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "string" } },
-                new() { Name = "numberParam", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "number" } },
-                new() { Name = "boolParam", IsRequired = true, ParameterType = new JsonSchemaObject { Type = "boolean" } }
-            }
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "stringParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "string" },
+                },
+                new FunctionParameterContract
+                {
+                    Name = "numberParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "number" },
+                },
+                new FunctionParameterContract
+                {
+                    Name = "boolParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "boolean" },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"stringParam\": \"test\", \"numberParam\": 42, \"boolParam\": true}", contract);
+        var result = _validator.Validate(
+            "{\"stringParam\": \"test\", \"numberParam\": 42, \"boolParam\": true}",
+            contract
+        );
         Assert.True(result);
     }
 
@@ -101,22 +134,18 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "enumParam",
                     IsRequired = true,
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new List<string> { "value1", "value2" }
-                    }
-                }
-            }
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = ["value1", "value2"] },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"enumParam\": \"value3\"}", contract);
+        var result = _validator.Validate("{\"enumParam\": \"value3\"}", contract);
         Assert.False(result);
     }
 
@@ -126,22 +155,18 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "enumParam",
                     IsRequired = true,
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new List<string> { "value1", "value2" }
-                    }
-                }
-            }
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = ["value1", "value2"] },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"enumParam\": \"value1\"}", contract);
+        var result = _validator.Validate("{\"enumParam\": \"value1\"}", contract);
         Assert.True(result);
     }
 
@@ -151,9 +176,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "rangeParam",
                     IsRequired = true,
@@ -161,13 +186,13 @@ public class JsonSchemaValidatorTests
                     {
                         Type = "number",
                         Minimum = 10,
-                        Maximum = 20
-                    }
-                }
-            }
+                        Maximum = 20,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"rangeParam\": 5}", contract);
+        var result = _validator.Validate("{\"rangeParam\": 5}", contract);
         Assert.False(result);
     }
 
@@ -177,9 +202,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "rangeParam",
                     IsRequired = true,
@@ -187,13 +212,13 @@ public class JsonSchemaValidatorTests
                     {
                         Type = "number",
                         Minimum = 10,
-                        Maximum = 20
-                    }
-                }
-            }
+                        Maximum = 20,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"rangeParam\": 15}", contract);
+        var result = _validator.Validate("{\"rangeParam\": 15}", contract);
         Assert.True(result);
     }
 
@@ -203,22 +228,22 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
                     ParameterType = new JsonSchemaObject
                     {
                         Type = "array",
-                        Items = new JsonSchemaObject { Type ="string" }
-                    }
-                }
-            }
+                        Items = new JsonSchemaObject { Type = "string" },
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
+        var result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
         Assert.True(result);
     }
 
@@ -228,9 +253,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -238,13 +263,13 @@ public class JsonSchemaValidatorTests
                     {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
-                        MinItems = 3
-                    }
-                }
-            }
+                        MinItems = 3,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
+        var result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
         Assert.False(result);
     }
 
@@ -254,9 +279,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -264,13 +289,13 @@ public class JsonSchemaValidatorTests
                     {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
-                        MaxItems = 1
-                    }
-                }
-            }
+                        MaxItems = 1,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
+        var result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
         Assert.False(result);
     }
 
@@ -280,9 +305,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -290,13 +315,13 @@ public class JsonSchemaValidatorTests
                     {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
-                        UniqueItems = true
-                    }
-                }
-            }
+                        UniqueItems = true,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item1\"]}", contract);
+        var result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item1\"]}", contract);
         Assert.False(result);
     }
 
@@ -306,9 +331,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "arrayParam",
                     IsRequired = true,
@@ -318,13 +343,13 @@ public class JsonSchemaValidatorTests
                         Items = new JsonSchemaObject { Type = "string" },
                         MinItems = 2,
                         MaxItems = 3,
-                        UniqueItems = true
-                    }
-                }
-            }
+                        UniqueItems = true,
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
+        var result = _validator.Validate("{\"arrayParam\": [\"item1\", \"item2\"]}", contract);
         Assert.True(result);
     }
 
@@ -334,9 +359,9 @@ public class JsonSchemaValidatorTests
         var contract = new FunctionContract
         {
             Name = "testFunction",
-            Parameters = new List<FunctionParameterContract>
-            {
-                new()
+            Parameters =
+            [
+                new FunctionParameterContract
                 {
                     Name = "objectParam",
                     IsRequired = true,
@@ -345,14 +370,17 @@ public class JsonSchemaValidatorTests
                         Type = "object",
                         Properties = new Dictionary<string, JsonSchemaObject>
                         {
-                            { "nested", new JsonSchemaObject { Type = "string" } }
-                        }
-                    }
-                }
-            }
+                            {
+                                "nested",
+                                new JsonSchemaObject { Type = "string" }
+                            },
+                        },
+                    },
+                },
+            ],
         };
 
-        bool result = _validator.Validate("{\"objectParam\": {\"nested\": \"value\"}}", contract);
+        var result = _validator.Validate("{\"objectParam\": {\"nested\": \"value\"}}", contract);
         Assert.True(result);
     }
 }

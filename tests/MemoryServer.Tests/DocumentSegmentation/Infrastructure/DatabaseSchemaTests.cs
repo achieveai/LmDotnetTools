@@ -1,14 +1,11 @@
-using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Infrastructure;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Xunit;
 using FluentAssertions;
+using MemoryServer.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Infrastructure;
 
 /// <summary>
-/// Integration tests to validate database schema creation and document segmentation table setup.
+///     Integration tests to validate database schema creation and document segmentation table setup.
 /// </summary>
 public class DatabaseSchemaTests : IAsyncDisposable
 {
@@ -17,6 +14,18 @@ public class DatabaseSchemaTests : IAsyncDisposable
     public DatabaseSchemaTests()
     {
         _sessionFactory = new TestSqliteSessionFactory(new LoggerFactory());
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sessionFactory is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (_sessionFactory is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     [Fact]
@@ -35,7 +44,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return result != null;
         });
 
-        segmentsTableExists.Should().BeTrue("document_segments table should be created");
+        _ = segmentsTableExists.Should().BeTrue("document_segments table should be created");
 
         // Assert - Check that segment_relationships table exists
         var relationshipsTableExists = await session.ExecuteAsync(async connection =>
@@ -47,7 +56,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return result != null;
         });
 
-        relationshipsTableExists.Should().BeTrue("segment_relationships table should be created");
+        _ = relationshipsTableExists.Should().BeTrue("segment_relationships table should be created");
     }
 
     [Fact]
@@ -68,22 +77,36 @@ public class DatabaseSchemaTests : IAsyncDisposable
             {
                 columnList.Add(reader.GetString(reader.GetOrdinal("name")));
             }
+
             return columnList;
         });
 
         // Assert - Check required columns exist
         var expectedColumns = new[]
         {
-      "id", "parent_document_id", "segment_id", "sequence_number", "content",
-      "title", "summary", "coherence_score", "independence_score",
-      "topic_consistency_score", "user_id", "agent_id", "run_id",
-      "created_at", "updated_at", "metadata"
-    };
+            "id",
+            "parent_document_id",
+            "segment_id",
+            "sequence_number",
+            "content",
+            "title",
+            "summary",
+            "coherence_score",
+            "independence_score",
+            "topic_consistency_score",
+            "user_id",
+            "agent_id",
+            "run_id",
+            "created_at",
+            "updated_at",
+            "metadata",
+        };
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns.Should().Contain(expectedColumn,
-              $"document_segments table should have {expectedColumn} column");
+            _ = columns
+                .Should()
+                .Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
         }
     }
 
@@ -105,21 +128,31 @@ public class DatabaseSchemaTests : IAsyncDisposable
             {
                 columnList.Add(reader.GetString(reader.GetOrdinal("name")));
             }
+
             return columnList;
         });
 
         // Assert - Check required columns exist
         var expectedColumns = new[]
         {
-      "id", "source_segment_id", "target_segment_id", "relationship_type",
-      "strength", "user_id", "agent_id", "run_id", "created_at",
-      "updated_at", "metadata"
-    };
+            "id",
+            "source_segment_id",
+            "target_segment_id",
+            "relationship_type",
+            "strength",
+            "user_id",
+            "agent_id",
+            "run_id",
+            "created_at",
+            "updated_at",
+            "metadata",
+        };
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns.Should().Contain(expectedColumn,
-              $"segment_relationships table should have {expectedColumn} column");
+            _ = columns
+                .Should()
+                .Contain(expectedColumn, $"segment_relationships table should have {expectedColumn} column");
         }
     }
 
@@ -145,12 +178,17 @@ public class DatabaseSchemaTests : IAsyncDisposable
                     indexList.Add(indexName);
                 }
             }
+
             return indexList;
         });
 
         // Assert - Check that performance indexes exist (for test schema, we have basic indexes)
-        indexes.Should().Contain(i => i.Contains("document_segments"),
-          "Performance indexes should be created for document_segments table");
+        _ = indexes
+            .Should()
+            .Contain(
+                i => i.Contains("document_segments"),
+                "Performance indexes should be created for document_segments table"
+            );
     }
 
     [Fact]
@@ -163,7 +201,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         await session.ExecuteAsync(async connection =>
         {
             // Test coherence_score constraint (should be 0.0-1.0) - in test schema, constraints might be relaxed
-            const string insertSql = @"
+            const string insertSql =
+                @"
         INSERT INTO document_segments 
         (parent_document_id, segment_id, sequence_number, content, user_id, coherence_score) 
         VALUES (1, 'test-seg', 1, 'test content', 'test-user', 1.5)";
@@ -175,7 +214,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             // Production constraints would prevent coherence_score > 1.0
             try
             {
-                await command.ExecuteNonQueryAsync();
+                _ = await command.ExecuteNonQueryAsync();
                 // If we get here, the test schema allows it (which is fine for testing)
             }
             catch
@@ -194,7 +233,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Act - Insert data for different sessions
         await session.ExecuteAsync(async connection =>
         {
-            const string insertSql = @"
+            const string insertSql =
+                @"
         INSERT INTO document_segments 
         (parent_document_id, segment_id, sequence_number, content, user_id, agent_id, run_id) 
         VALUES 
@@ -203,13 +243,14 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
             using var command = connection.CreateCommand();
             command.CommandText = insertSql;
-            await command.ExecuteNonQueryAsync();
+            _ = await command.ExecuteNonQueryAsync();
         });
 
         // Assert - Verify session isolation query patterns work
         var user1Count = await session.ExecuteAsync(async connection =>
         {
-            const string countSql = @"
+            const string countSql =
+                @"
         SELECT COUNT(*) FROM document_segments 
         WHERE user_id = 'user1' AND agent_id = 'agent1' AND run_id = 'run1'";
 
@@ -221,7 +262,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         var user2Count = await session.ExecuteAsync(async connection =>
         {
-            const string countSql = @"
+            const string countSql =
+                @"
         SELECT COUNT(*) FROM document_segments 
         WHERE user_id = 'user2' AND agent_id = 'agent2' AND run_id = 'run2'";
 
@@ -231,19 +273,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return Convert.ToInt32(result);
         });
 
-        user1Count.Should().Be(1, "User1 should see only their segments");
-        user2Count.Should().Be(1, "User2 should see only their segments");
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_sessionFactory is IAsyncDisposable asyncDisposable)
-        {
-            await asyncDisposable.DisposeAsync();
-        }
-        else if (_sessionFactory is IDisposable disposable)
-        {
-            disposable.Dispose();
-        }
+        _ = user1Count.Should().Be(1, "User1 should see only their segments");
+        _ = user2Count.Should().Be(1, "User2 should see only their segments");
     }
 }

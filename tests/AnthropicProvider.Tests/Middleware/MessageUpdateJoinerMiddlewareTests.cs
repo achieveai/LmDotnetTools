@@ -1,32 +1,34 @@
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
+using System.Reflection;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using System.Collections.Immutable;
-using System.Reflection;
-using System.Text.Json;
-using Xunit;
-
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
-public class MessageUpdateJoinerMiddlewareTests
+public class MessageUpdateJoinerMiddlewareTests : LoggingTestBase
 {
+    public MessageUpdateJoinerMiddlewareTests(ITestOutputHelper output) : base(output) { }
+
     /// <summary>
-    /// Gets the path to test files
+    ///     Gets the path to test files
     /// </summary>
     private static string GetTestFilesPath()
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation);
-        if (currentDir == null)
-        {
-            throw new InvalidOperationException("Could not determine current directory");
-        }
+        var currentDir =
+            Path.GetDirectoryName(assemblyLocation)
+            ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
+        // Check for both .git directory (normal repo) and .git file (worktree)
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, ".git"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -46,7 +48,7 @@ public class MessageUpdateJoinerMiddlewareTests
         // Arrange
         // Get paths to test files
         var testFilesPath = GetTestFilesPath();
-        Console.WriteLine($"Test files path: {testFilesPath}");
+        Logger.LogTrace("Test files path: {TestFilesPath}", testFilesPath);
 
         var streamingResponsePath = Path.Combine(testFilesPath, "example_streaming_response2.txt");
         var expectedOutputPath = Path.Combine(testFilesPath, "streaming_responses2_lmcore.json");
@@ -63,9 +65,7 @@ public class MessageUpdateJoinerMiddlewareTests
         }
 
         // Create the mock HTTP handler that reads from the file using MockHttpHandlerBuilder
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithStreamingFile(streamingResponsePath)
-            .Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithStreamingFile(streamingResponsePath).Build();
 
         var httpClient = new HttpClient(handler);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
@@ -78,7 +78,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Set up middleware context with a dummy message (required for validation, but content doesn't matter for this test)
         var dummyMessage = new TextMessage { Text = "Test message", Role = Role.User };
-        var context = new MiddlewareContext(new[] { dummyMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([dummyMessage], new GenerateReplyOptions());
 
         // Read the expected output from the JSON file and directly parse the JSON array
         var expectedJson = await File.ReadAllTextAsync(expectedOutputPath);
@@ -105,10 +105,10 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Contains(actualMessages, m => m is UsageMessage);
 
         // Remove the UsageMessage for comparison with expected
-        var actualMessagesWithoutUsage = actualMessages.Where(m => !(m is UsageMessage)).ToList();
+        var actualMessagesWithoutUsage = actualMessages.Where(m => m is not UsageMessage).ToList();
 
         // Verify the content of the messages
-        for (int i = 0; i < expectedMessages.Count; i++)
+        for (var i = 0; i < expectedMessages.Count; i++)
         {
             var expected = expectedMessages[i];
             var actual = actualMessagesWithoutUsage[i];
@@ -123,22 +123,20 @@ public class MessageUpdateJoinerMiddlewareTests
             else if (expected is ToolsCallMessage expectedTool && actual is ToolsCallMessage actualTool)
             {
                 Assert.Equal(expectedTool.ToolCalls.Count, actualTool.ToolCalls.Count);
-                Assert.Equal(expectedTool.ToolCalls[0].FunctionName, actualTool.ToolCalls[0].FunctionName);
-
-                // Handle possible null FunctionArgs
-                if (expectedTool.ToolCalls[0].FunctionArgs != null && actualTool.ToolCalls[0].FunctionArgs != null)
+                for (var toolCallIndex = 0; toolCallIndex < expectedTool.ToolCalls.Count; toolCallIndex++)
                 {
-                    // Use null-forgiving operator at assignment to indicate we've verified non-null
-                    var expectedArgs = expectedTool.ToolCalls[0].FunctionArgs!;
-                    var actualArgs = actualTool.ToolCalls[0].FunctionArgs!;
-                    Assert.Contains(expectedArgs, actualArgs);
+                    var expectedToolCall = expectedTool.ToolCalls[toolCallIndex];
+                    var actualToolCall = actualTool.ToolCalls[toolCallIndex];
+
+                    Assert.Equal(expectedToolCall.FunctionName, actualToolCall.FunctionName);
+                    AssertFunctionArgsEquivalent(expectedToolCall.FunctionArgs, actualToolCall.FunctionArgs);
                 }
             }
         }
     }
 
     /// <summary>
-    /// Parses messages from JSON without using a converter
+    ///     Parses messages from JSON without using a converter
     /// </summary>
     private static List<IMessage> ParseMessagesFromJson(string json)
     {
@@ -160,16 +158,19 @@ public class MessageUpdateJoinerMiddlewareTests
                 var role = GetRoleFromElement(element);
                 var fromAgent = GetStringProperty(element, "from_agent");
 
-                result.Add(new TextMessage
-                {
-                    Text = text,
-                    Role = role,
-                    FromAgent = fromAgent
-                });
+                result.Add(
+                    new TextMessage
+                    {
+                        Text = text,
+                        Role = role,
+                        FromAgent = fromAgent,
+                    }
+                );
             }
-            else if (element.TryGetProperty("tool_calls", out var _) ||
-                    (element.TryGetProperty("source", out var sourceElement) &&
-                     sourceElement.GetString() == "tool-call"))
+            else if (
+                element.TryGetProperty("tool_calls", out _)
+                || (element.TryGetProperty("source", out var sourceElement) && sourceElement.GetString() == "tool-call")
+            )
             {
                 // It's a ToolsCallMessage
                 var role = GetRoleFromElement(element);
@@ -187,20 +188,26 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(new ToolCall(functionName, functionArgs)
-                        {
-                            ToolCallId = toolCallId
-                        });
+                        toolCalls.Add(
+                            new ToolCall
+                            {
+                                FunctionName = functionName,
+                                FunctionArgs = functionArgs,
+                                ToolCallId = toolCallId,
+                            }
+                        );
                     }
                 }
 
-                result.Add(new ToolsCallMessage
-                {
-                    Role = role,
-                    FromAgent = fromAgent,
-                    GenerationId = generationId,
-                    ToolCalls = toolCalls.ToImmutableList()
-                });
+                result.Add(
+                    new ToolsCallMessage
+                    {
+                        Role = role,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        ToolCalls = [.. toolCalls],
+                    }
+                );
             }
         }
 
@@ -218,7 +225,7 @@ public class MessageUpdateJoinerMiddlewareTests
                 "user" => Role.User,
                 "system" => Role.System,
                 "tool" => Role.Tool,
-                _ => Role.None
+                _ => Role.None,
             };
         }
 
@@ -227,11 +234,45 @@ public class MessageUpdateJoinerMiddlewareTests
 
     private static string? GetStringProperty(JsonElement element, string propertyName)
     {
-        if (element.TryGetProperty(propertyName, out var property))
+        return element.TryGetProperty(propertyName, out var property)
+            ? property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null
+            : null;
+    }
+
+    private static void AssertFunctionArgsEquivalent(string? expectedArgs, string? actualArgs)
+    {
+        if (expectedArgs == null || actualArgs == null)
         {
-            return property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+            Assert.Equal(expectedArgs, actualArgs);
+            return;
         }
 
-        return null;
+        if (TryParseJsonElement(expectedArgs, out var expectedJson) && TryParseJsonElement(actualArgs, out var actualJson))
+        {
+            Assert.True(
+                JsonElement.DeepEquals(expectedJson, actualJson),
+                $"Expected JSON args '{expectedArgs}' but got '{actualArgs}'."
+            );
+            return;
+        }
+
+        Assert.Equal(expectedArgs, actualArgs);
+    }
+
+    private static bool TryParseJsonElement(string value, out JsonElement jsonElement)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(value);
+            jsonElement = doc.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            jsonElement = default;
+            return false;
+        }
     }
 }

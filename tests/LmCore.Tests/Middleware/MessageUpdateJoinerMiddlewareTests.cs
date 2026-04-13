@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
-
+using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageUpdateJoinerMiddlewareTests
@@ -17,14 +16,18 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Mock the agent to return our test message
         var mockAgent = new Mock<IAgent>();
-        mockAgent
-          .Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-          .ReturnsAsync(new[] { message });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([message]);
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
@@ -33,20 +36,25 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.NotNull(result);
         var firstMessage = result.FirstOrDefault();
         Assert.NotNull(firstMessage);
-        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)firstMessage).GetText());
+        Assert.Equal(message.Text, ((ICanGetText)firstMessage).GetText());
 
         // Verify the agent was called exactly once
-        mockAgent.Verify(a => a.GenerateReplyAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockAgent.Verify(
+            a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
     public async Task InvokeStreamingAsync_JoinTextMessages()
     {
         // Arrange
-        string testString = "This is a test";
+        var testString = "This is a test";
         // Default behavior is to not preserve update messages
         var middleware = new MessageUpdateJoinerMiddleware();
         var cancellationToken = CancellationToken.None;
@@ -56,17 +64,18 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent
-          .Setup(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
@@ -80,22 +89,27 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Assert - With current implementation of ProcessTextUpdate, no update messages should be emitted
         // since it just returns the original message and preserveUpdateMessages is false
-        Assert.Single(results);
+        _ = Assert.Single(results);
 
         Assert.Equal(testString, ((ICanGetText)results[0]).GetText());
 
         // Verify the streaming agent was called exactly once
-        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockStreamingAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
     public async Task InvokeStreaminAsync_ValidateUsage()
     {
         // Arrange
-        string testString = "This is a test";
+        var testString = "This is a test";
         // Set preserveUpdateMessages to true to see all messages
         var middleware = new MessageUpdateJoinerMiddleware();
         var cancellationToken = CancellationToken.None;
@@ -116,25 +130,25 @@ public class MessageUpdateJoinerMiddlewareTests
         {
             Usage = usage,
             FromAgent = "test-agent",
-            Role = Role.Assistant
+            Role = Role.Assistant,
         };
 
-        var updateMessages = new List<IMessage>(textUpdates);
-        updateMessages.Add(usageMessage);
+        var updateMessages = new List<IMessage>(textUpdates) { usageMessage };
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent
-          .Setup(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
@@ -151,16 +165,16 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Check that the first message is the text message with the complete text
         var textMessage = results[0];
-        Assert.IsType<TextMessage>(textMessage);
+        _ = Assert.IsType<TextMessage>(textMessage);
         Assert.NotNull(textMessage);
-        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)textMessage).GetText());
+        Assert.Equal(testString, ((ICanGetText)textMessage).GetText());
 
         // Verify that the text message doesn't have usage metadata
         Assert.Null(textMessage.Metadata);
 
         // Check that the second message is a usage message
         var usageMessageResult = results[1];
-        Assert.IsType<UsageMessage>(usageMessageResult);
+        _ = Assert.IsType<UsageMessage>(usageMessageResult);
         var typedUsageMessage = (UsageMessage)usageMessageResult;
 
         // Verify the usage data is correct
@@ -170,16 +184,21 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal(20, typedUsageMessage.Usage.TotalTokens);
 
         // Verify the streaming agent was called exactly once
-        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockStreamingAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     #region Helper Methods
 
     // Helper method to split string on spaces while including spaces in the parts
-    private List<string> SplitStringPreservingSpaces(string input)
+    private static List<string> SplitStringPreservingSpaces(string input)
     {
         var result = new List<string>();
         var words = input.Split(' ');
@@ -188,7 +207,7 @@ public class MessageUpdateJoinerMiddlewareTests
         result.Add(words[0]);
 
         // Add remaining words with preceding space
-        for (int i = 1; i < words.Length; i++)
+        for (var i = 1; i < words.Length; i++)
         {
             result.Add(" " + words[i]);
         }
@@ -203,14 +222,11 @@ public class MessageUpdateJoinerMiddlewareTests
 
         foreach (var part in parts)
         {
-            messages.Add(new TextUpdateMessage
-            {
-                Text = part,
-                Role = Role.Assistant
-            });
+            messages.Add(new TextUpdateMessage { Text = part, Role = Role.Assistant });
         }
 
         return messages;
     }
+
     #endregion
 }

@@ -1,0 +1,60 @@
+{
+  "id": "msg_server_tool_01",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-20250514",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'll search for that information."
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01ABC",
+      "name": "web_search",
+      "input": {
+        "query": "current weather San Francisco"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_01ABC",
+      "content": [
+        {
+          "type": "web_search_result",
+          "url": "https://weather.example.com/sf",
+          "title": "San Francisco Weather - Current Conditions",
+          "encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mi1mZjM5LTQ1NGUtODgxNC1kNjNjNTk1ZWI3Y...",
+          "page_age": "2 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "url": "https://forecast.example.com/ca/sf",
+          "title": "SF Bay Area Forecast",
+          "encrypted_content": "Eo8BCioIAhgBIiQyYjQ0OWJmZi1lNm...",
+          "page_age": "1 hour ago"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "text": "Based on my search, the current weather in San Francisco is 65 degrees and partly cloudy.",
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "url": "https://weather.example.com/sf",
+          "title": "San Francisco Weather - Current Conditions",
+          "cited_text": "Current temperature: 65°F, partly cloudy with winds from the west at 12 mph.",
+          "encrypted_index": "enc_idx_01ABC",
+          "start_char_index": 34,
+          "end_char_index": 90
+        }
+      ]
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 150,
+    "output_tokens": 250
+  }
+}

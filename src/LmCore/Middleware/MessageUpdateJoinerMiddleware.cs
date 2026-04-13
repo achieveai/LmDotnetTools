@@ -6,58 +6,68 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that joins update messages into larger messages for more efficient processing.
+///     Middleware that joins update messages into larger messages for more efficient processing.
 /// </summary>
 public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware"/> class.
+    ///     Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware" /> class.
     /// </summary>
     /// <param name="name">Optional name for the middleware.</param>
-    /// 
-    public MessageUpdateJoinerMiddleware(
-        string? name = null)
+    public MessageUpdateJoinerMiddleware(string? name = null)
     {
         Name = name ?? nameof(MessageUpdateJoinerMiddleware);
     }
 
     /// <summary>
-    /// Gets the name of the middleware.
+    ///     Gets the name of the middleware.
     /// </summary>
     public string? Name { get; }
 
     /// <summary>
-    /// Invokes the middleware for synchronous scenarios.
+    ///     Invokes the middleware for synchronous scenarios.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming responses, we just pass through to the agent
+        ArgumentNullException.ThrowIfNull(agent);
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 
     /// <summary>
-    /// Invokes the middleware for streaming scenarios, joining update messages into larger messages.
+    ///     Invokes the middleware for streaming scenarios, joining update messages into larger messages.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        var sourceStream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        ArgumentNullException.ThrowIfNull(agent);
+        var sourceStream = await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken
+        );
         return TransformStreamWithBuilder(sourceStream, cancellationToken);
     }
 
-    private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
+    private static async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         // Track a single active builder instead of a dictionary
         IMessageBuilder? activeBuilder = null;
         Type? activeBuilderType = null;
         Type? lastMessageType = null;
+
+        // Track the number of completed tool calls for ToolCallIdx assignment
+        var completedToolCallCount = 0;
 
         // Use the usage accumulator to track usage data
         var usageAccumulator = new UsageAccumulator();
@@ -67,24 +77,53 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // If we receive a usage message, store it to emit at the end
             if (message is UsageMessage usage)
             {
-                usageAccumulator.AddUsageFromMessage(usage);
+                _ = usageAccumulator.AddUsageFromMessage(usage);
                 continue; // Don't yield usage message yet
             }
 
             // Check if the message has usage in metadata (legacy support)
             if (message.Metadata != null && message.Metadata.ContainsKey("usage"))
             {
-                usageAccumulator.AddUsageFromMessageMetadata(message);
+                _ = usageAccumulator.AddUsageFromMessageMetadata(message);
             }
 
             // Check if we're switching message types and need to complete current builder
             if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
+                // Track if we're completing a tool call builder
+                if (activeBuilder is ToolCallMessageBuilder)
+                {
+                    completedToolCallCount++;
+                }
+
                 // Complete the previous builder before processing the new message
                 var builtMessage = activeBuilder.Build();
                 activeBuilder = null;
                 activeBuilderType = null;
                 yield return builtMessage;
+            }
+
+            // Check if tool call ID/Index changed for singular ToolCallUpdateMessage
+            // (ToolCallMessage builder handles single tool call, so we need to complete it when a new one starts)
+            if (message is ToolCallUpdateMessage toolCallMsg
+                && activeBuilder is ToolCallMessageBuilder currentBuilder
+                && activeBuilderType == typeof(ToolCallMessage))
+            {
+                var isDifferentToolCall =
+                    (currentBuilder.CurrentToolCallId != null && toolCallMsg.ToolCallId != null
+                        && currentBuilder.CurrentToolCallId != toolCallMsg.ToolCallId)
+                    || (currentBuilder.CurrentIndex != null && toolCallMsg.Index != null
+                        && currentBuilder.CurrentIndex != toolCallMsg.Index);
+
+                if (isDifferentToolCall)
+                {
+                    // Complete the previous tool call before starting the new one
+                    completedToolCallCount++;
+                    var builtMessage = activeBuilder.Build();
+                    activeBuilder = null;
+                    activeBuilderType = null;
+                    yield return builtMessage;
+                }
             }
 
             // Update last message type
@@ -94,14 +133,20 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             var processedMessage = ProcessStreamingMessage(
                 message,
                 ref activeBuilder,
-                ref activeBuilderType);
+                ref activeBuilderType,
+                completedToolCallCount
+            );
 
             // Only emit the message if it's not being accumulated by a builder
-            bool isBeingAccumulated = activeBuilder != null &&
-                (message is TextUpdateMessage ||
-                 message is ReasoningUpdateMessage ||
-                 message is ToolsCallUpdateMessage ||
-                 (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)));
+            var isBeingAccumulated =
+                activeBuilder != null
+                && (
+                    message is TextUpdateMessage
+                    || message is ReasoningUpdateMessage
+                    || message is ToolsCallUpdateMessage
+                    || message is ToolCallUpdateMessage
+                    || (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage))
+                );
 
             if (!isBeingAccumulated)
             {
@@ -123,36 +168,48 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private IMessage ProcessStreamingMessage(
+    private static IMessage ProcessStreamingMessage(
         IMessage message,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType,
+        int toolCallIdx
+    )
     {
-        // Handle tool call updates (ToolsCallUpdateMessage)
+        // Handle tool call updates (ToolsCallUpdateMessage - plural)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
             return ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
         }
+        // Handle tool call updates (ToolCallUpdateMessage - singular)
+        else if (message is ToolCallUpdateMessage toolCallSingularUpdate)
+        {
+            return ProcessToolCallSingularUpdate(
+                toolCallSingularUpdate,
+                toolCallIdx,
+                ref activeBuilder,
+                ref activeBuilderType
+            );
+        }
         // For text update messages
-        else if (message is TextUpdateMessage textUpdate)
+
+        if (message is TextUpdateMessage textUpdate)
         {
             return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
         }
         // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
-        else if (message is ReasoningUpdateMessage reasoningUpdate)
-        {
-            return ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType);
-        }
 
-        return message;
+        return message is ReasoningUpdateMessage reasoningUpdate
+            ? ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType)
+            : message;
     }
 
-    private IMessage ProcessToolCallUpdate(
+    private static IMessage ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
-        Type builderType = typeof(ToolsCallMessage);
+        var builderType = typeof(ToolsCallMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {
@@ -160,7 +217,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             var builder = new ToolsCallMessageBuilder
             {
                 FromAgent = toolCallUpdate.FromAgent,
-                Role = toolCallUpdate.Role
+                Role = toolCallUpdate.Role,
+                MessageOrderIdx = toolCallUpdate.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -177,12 +235,47 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
+    private static IMessage ProcessToolCallSingularUpdate(
+        ToolCallUpdateMessage toolCallUpdate,
+        int toolCallIdx,
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType
+    )
+    {
+        var builderType = typeof(ToolCallMessage);
+
+        if (activeBuilder == null || activeBuilderType != builderType)
+        {
+            // Create a new builder for the first update
+            var builder = new ToolCallMessageBuilder
+            {
+                FromAgent = toolCallUpdate.FromAgent,
+                Role = toolCallUpdate.Role,
+                ToolCallIdx = toolCallIdx,
+                MessageOrderIdx = toolCallUpdate.MessageOrderIdx,
+            };
+            activeBuilder = builder;
+            activeBuilderType = builderType;
+            builder.Add(toolCallUpdate);
+            // Return the original update for the first time
+            return toolCallUpdate;
+        }
+        else
+        {
+            // Add to existing builder
+            var builder = (ToolCallMessageBuilder)activeBuilder;
+            builder.Add(toolCallUpdate);
+            return toolCallUpdate;
+        }
+    }
+
     private static IMessage ProcessTextUpdate(
         TextUpdateMessage textUpdateMessage,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
-        Type builderType = typeof(TextMessage);
+        var builderType = typeof(TextMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {
@@ -191,7 +284,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             {
                 FromAgent = textUpdateMessage.FromAgent,
                 Role = textUpdateMessage.Role,
-                GenerationId = textUpdateMessage.GenerationId
+                GenerationId = textUpdateMessage.GenerationId,
+                MessageOrderIdx = textUpdateMessage.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -215,12 +309,13 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private IMessage ProcessReasoningUpdate(
+    private static IMessage ProcessReasoningUpdate(
         ReasoningUpdateMessage reasoningUpdate,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
-        Type builderType = typeof(ReasoningMessage);
+        var builderType = typeof(ReasoningMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {
@@ -230,7 +325,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = reasoningUpdate.FromAgent,
                 Role = reasoningUpdate.Role,
                 GenerationId = reasoningUpdate.GenerationId,
-                Visibility = ReasoningVisibility.Plain // Default to Plain for updates
+                Visibility = ReasoningVisibility.Plain, // Default to Plain for updates
+                MessageOrderIdx = reasoningUpdate.MessageOrderIdx,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;

@@ -52,7 +52,7 @@ public class PromptReaderTests
         var promptName = "NonExistentPrompt";
 
         // Act & Assert
-        Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName));
+        _ = Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName));
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public class PromptReaderTests
         var version = "v2.0";
 
         // Act & Assert
-        Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName, version));
+        _ = Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName, version));
     }
 
     [Fact]
@@ -83,7 +83,10 @@ public class PromptReaderTests
         Assert.Equal("user", promptChain.Messages[1].Role.ToString().ToLower());
         Assert.Equal("What can you tell me about programming?", ((ICanGetText)promptChain.Messages[1]).GetText());
         Assert.Equal("assistant", promptChain.Messages[2].Role.ToString().ToLower());
-        Assert.Equal("Programming is the process of creating a set of instructions for computers.", ((ICanGetText)promptChain.Messages[2]).GetText());
+        Assert.Equal(
+            "Programming is the process of creating a set of instructions for computers.",
+            ((ICanGetText)promptChain.Messages[2]).GetText()
+        );
     }
 
     [Fact]
@@ -93,6 +96,6 @@ public class PromptReaderTests
         var promptName = "SimplePrompt";
 
         // Act & Assert
-        Assert.Throws<InvalidOperationException>(() => _promptReader.GetPromptChain(promptName));
+        _ = Assert.Throws<InvalidOperationException>(() => _promptReader.GetPromptChain(promptName));
     }
 }

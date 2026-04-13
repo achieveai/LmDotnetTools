@@ -1,18 +1,15 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
-
-using System;
 using System.Collections.Immutable;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
+
 /// <summary>
-/// Tests for validating that the shadow property pattern works correctly for serialization.
+///     Tests for validating that the shadow property pattern works correctly for serialization.
 /// </summary>
 public class ShadowPropertySerializationTests
 {
@@ -27,21 +24,17 @@ public class ShadowPropertySerializationTests
     public void Usage_WithExtraProperties_SerializesInline()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         var usage = new Usage
         {
             PromptTokens = 10,
             CompletionTokens = 20,
-            TotalTokens = 30
+            TotalTokens = 30,
         };
 
         // Add extra properties
-        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05)
-                              .SetExtraProperty("cached", true);
+        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05).SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -72,7 +65,8 @@ public class ShadowPropertySerializationTests
     public void Usage_WithExtraProperties_DeserializesCorrectly()
     {
         // Arrange
-        var json = @"{
+        var json =
+            @"{
       ""prompt_tokens"": 10,
       ""completion_tokens"": 20,
       ""total_tokens"": 30,
@@ -105,19 +99,15 @@ public class ShadowPropertySerializationTests
     public void GenerateReplyOptions_WithExtraProperties_SerializesInline()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         var replyOptions = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
             Temperature = 0.7f,
             MaxToken = 1000,
-            ExtraProperties = ImmutableDictionary<string, object?>.Empty
-            .Add("function_call", "auto")
-            .Add("top_k", 50)
+            RequestResponseDumpFileName = "/tmp/request-response-dump",
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("function_call", "auto").Add("top_k", 50),
         };
 
         // Act
@@ -143,13 +133,18 @@ public class ShadowPropertySerializationTests
 
         Assert.True(doc.RootElement.TryGetProperty("top_k", out var topK));
         Assert.Equal(50, topK.GetInt32());
+
+        // Non-serializable diagnostic property should never be emitted.
+        Assert.False(doc.RootElement.TryGetProperty("request_response_dump_file_name", out _));
+        Assert.False(doc.RootElement.TryGetProperty("RequestResponseDumpFileName", out _));
     }
 
     [Fact]
     public void GenerateReplyOptions_WithExtraProperties_DeserializesCorrectly()
     {
         // Arrange
-        var json = @"{
+        var json =
+            @"{
       ""model"": ""gpt-4"",
       ""temperature"": 0.7,
       ""max_tokens"": 1000,
@@ -194,14 +189,32 @@ public class ShadowPropertySerializationTests
         }
     }
 
-    public record Person(string Name, int Age, string? Address = null);
+    [Fact]
+    public void GenerateReplyOptions_Merge_PropagatesRequestResponseDumpFileName()
+    {
+        var baseOptions = new GenerateReplyOptions
+        {
+            ModelId = "gpt-4",
+            RequestResponseDumpFileName = "/tmp/base-dump",
+        };
+
+        var overridingOptions = new GenerateReplyOptions
+        {
+            ModelId = "gpt-4.1",
+            RequestResponseDumpFileName = "/tmp/override-dump",
+        };
+
+        var merged = baseOptions.Merge(overridingOptions);
+
+        Assert.Equal("/tmp/override-dump", merged.RequestResponseDumpFileName);
+    }
 
     [Fact]
     public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_SimpleType()
     {
         // Generate schema using .NET 9 API
-        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Person));
-        string schemaJson = dotnetSchema.ToJsonString();
+        var dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Person));
+        var schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
 
@@ -218,25 +231,12 @@ public class ShadowPropertySerializationTests
         Assert.Contains("Age", schemaObj.Required ?? []);
     }
 
-    public class UserProfile
-    {
-        public string DisplayName { get; set; } = string.Empty;
-        public int Level { get; set; }
-    }
-
-    public class UserAccount
-    {
-        public Guid Id { get; set; }
-        public string Email { get; set; } = string.Empty;
-        public UserProfile? Profile { get; set; }
-    }
-
     [Fact]
     public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_NestedType()
     {
         // Generate schema using .NET 9 API
-        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
-        string schemaJson = dotnetSchema.ToJsonString();
+        var dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
+        var schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
 
@@ -255,5 +255,20 @@ public class ShadowPropertySerializationTests
         // If Profile is nullable, type may be ["object", "null"] or similar
         // We check that type contains "object" or is "object"
         Assert.Equal("object", profileProp.Type.GetTypeString());
+    }
+
+    public record Person(string Name, int Age, string? Address = null);
+
+    public class UserProfile
+    {
+        public string DisplayName { get; set; } = string.Empty;
+        public int Level { get; set; }
+    }
+
+    public class UserAccount
+    {
+        public Guid Id { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public UserProfile? Profile { get; set; }
     }
 }

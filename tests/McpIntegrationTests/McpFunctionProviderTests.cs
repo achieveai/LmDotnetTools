@@ -1,8 +1,6 @@
-using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -66,7 +64,7 @@ public class McpFunctionProviderTests
         var registry = new FunctionRegistry();
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var (contracts, handlers) = registry.Build();
 
         // Assert
@@ -87,7 +85,7 @@ public class McpFunctionProviderTests
         var registry = new FunctionRegistry();
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var middleware = registry.BuildMiddleware("McpTestMiddleware");
 
         // Assert
@@ -99,7 +97,7 @@ public class McpFunctionProviderTests
     public void McpFunctionProvider_WithNullAssembly_UsesCallingAssembly()
     {
         // Arrange & Act
-        var provider = new McpFunctionProvider(null);
+        var provider = new McpFunctionProvider();
 
         // Assert
         Assert.NotNull(provider.ProviderName);

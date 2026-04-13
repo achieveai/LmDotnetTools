@@ -1,5 +1,5 @@
-using System.Text.Json;
 using System.Collections.Immutable;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 
@@ -12,6 +12,8 @@ namespace AchieveAi.LmDotnetTools.Example.ModelUsageExamples;
 public class EmbeddingServiceUsageExample
 {
     private readonly ServerEmbeddings _embeddingService;
+    private static readonly string[] sourceArray = new[] { "float" };
+    private static readonly string[] values = new[] { "N/A" };
 
     public EmbeddingServiceUsageExample(ServerEmbeddings embeddingService)
     {
@@ -25,7 +27,7 @@ public class EmbeddingServiceUsageExample
     public async Task<string> ProcessDocumentsWithStructuredErrorHandlingAsync(List<string> documents)
     {
         var result = await _embeddingService.GenerateEmbeddingsWithMetricsAsync(documents);
-        
+
         if (!result.Success)
         {
             // The ErrorModels provide structured information that can be:
@@ -33,17 +35,19 @@ public class EmbeddingServiceUsageExample
             // 2. Sent to monitoring systems (Application Insights, DataDog)
             // 3. Used for automated retry logic
             // 4. Parsed by alerting systems
-            
+
             var errorJson = JsonSerializer.Serialize(result.Error, new JsonSerializerOptions { WriteIndented = true });
-            
+
             // Example: Automated retry decision based on structured error
             if (result.Error?.IsRetryable == true)
             {
                 await Task.Delay(result.Error.RetryAfterMs ?? 1000);
-                Console.WriteLine($"Retrying after {result.Error.RetryAfterMs}ms due to retryable error: {result.Error.Code}");
+                Console.WriteLine(
+                    $"Retrying after {result.Error.RetryAfterMs}ms due to retryable error: {result.Error.Code}"
+                );
                 // Could implement actual retry logic here
             }
-            
+
             // Example: Different handling based on error source
             var actionRequired = result.Error?.Source switch
             {
@@ -51,7 +55,7 @@ public class EmbeddingServiceUsageExample
                 ErrorSource.RateLimit => "Implement backoff strategy and reduce request rate",
                 ErrorSource.Api => "Check service status and network connectivity",
                 ErrorSource.Validation => "Fix input validation errors in client code",
-                _ => "General error handling required"
+                _ => "General error handling required",
             };
 
             return $"Error Processing Documents:\n{errorJson}\n\nRecommended Action: {actionRequired}";
@@ -60,9 +64,8 @@ public class EmbeddingServiceUsageExample
         // Success case with performance metrics
         var metrics = result.Metrics;
         var performanceJson = JsonSerializer.Serialize(metrics, new JsonSerializerOptions { WriteIndented = true });
-        
-        return $"Successfully processed {result.Data?.Count} documents.\n" +
-               $"Performance Metrics:\n{performanceJson}";
+
+        return $"Successfully processed {result.Data?.Count} documents.\n" + $"Performance Metrics:\n{performanceJson}";
     }
 
     /// <summary>
@@ -77,7 +80,7 @@ public class EmbeddingServiceUsageExample
             "Short text",
             "Medium length text that represents typical document content with several sentences and more complexity.",
             new string('A', 1000), // Long text
-            "Unicode test: 🌟 Emojis and special characters! 日本語 テスト"
+            "Unicode test: 🌟 Emojis and special characters! 日本語 テスト",
         };
 
         var profile = await _embeddingService.AnalyzePerformanceAsync(testCases);
@@ -91,9 +94,9 @@ public class EmbeddingServiceUsageExample
         // 5. Capacity planning
 
         var optimizationRecommendations = GenerateOptimizationRecommendations(profile);
-        
-        return $"Performance Analysis Results:\n{profileJson}\n\n" +
-               $"Optimization Recommendations:\n{optimizationRecommendations}";
+
+        return $"Performance Analysis Results:\n{profileJson}\n\n"
+            + $"Optimization Recommendations:\n{optimizationRecommendations}";
     }
 
     /// <summary>
@@ -117,12 +120,12 @@ public class EmbeddingServiceUsageExample
             HealthStatus.Healthy => "✅ Service is operating normally",
             HealthStatus.Degraded => "⚠️ Service is operational but with reduced performance",
             HealthStatus.Unhealthy => "❌ Service is experiencing issues and may be unavailable",
-            _ => "❓ Health status is unknown"
+            _ => "❓ Health status is unknown",
         };
 
-        return $"Health Check Results:\n{healthJson}\n\n" +
-               $"Status: {healthSummary}\n" +
-               $"Response Time: {healthResult.ResponseTimeMs:F2}ms";
+        return $"Health Check Results:\n{healthJson}\n\n"
+            + $"Status: {healthSummary}\n"
+            + $"Response Time: {healthResult.ResponseTimeMs:F2}ms";
     }
 
     /// <summary>
@@ -143,34 +146,44 @@ public class EmbeddingServiceUsageExample
         {
             // Example: Structured logging with Serilog
             Console.WriteLine("Structured Log Entry:");
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                Level = "Information",
-                Message = "Embedding generation completed",
-                RequestId = result.Metrics.RequestId,
-                Service = result.Metrics.Service,
-                DurationMs = result.Metrics.DurationMs,
-                InputCount = result.Metrics.InputCount,
-                TotalTokens = result.Metrics.TotalTokens,
-                Success = result.Metrics.Success,
-                TimingBreakdown = result.Metrics.TimingBreakdown
-            }, new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        Level = "Information",
+                        Message = "Embedding generation completed",
+                        RequestId = result.Metrics.RequestId,
+                        Service = result.Metrics.Service,
+                        DurationMs = result.Metrics.DurationMs,
+                        InputCount = result.Metrics.InputCount,
+                        TotalTokens = result.Metrics.TotalTokens,
+                        Success = result.Metrics.Success,
+                        TimingBreakdown = result.Metrics.TimingBreakdown,
+                    },
+                    new JsonSerializerOptions { WriteIndented = true }
+                )
+            );
         }
         else if (!result.Success && result.Error != null)
         {
             // Example: Structured error logging
             Console.WriteLine("Structured Error Log:");
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                Level = "Error",
-                Message = "Embedding generation failed",
-                Error = result.Error,
-                Metrics = result.Metrics
-            }, new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        Level = "Error",
+                        Message = "Embedding generation failed",
+                        Error = result.Error,
+                        Metrics = result.Metrics,
+                    },
+                    new JsonSerializerOptions { WriteIndented = true }
+                )
+            );
         }
     }
 
-    private string GenerateOptimizationRecommendations(PerformanceProfile profile)
+    private static string GenerateOptimizationRecommendations(PerformanceProfile profile)
     {
         var recommendations = new List<string>();
 
@@ -194,7 +207,9 @@ public class EmbeddingServiceUsageExample
         // Error rate analysis
         if (profile.ErrorRates.ErrorRatePercent > 5)
         {
-            recommendations.Add($"• High error rate ({profile.ErrorRates.ErrorRatePercent:F1}%) - review error handling and retry logic");
+            recommendations.Add(
+                $"• High error rate ({profile.ErrorRates.ErrorRatePercent:F1}%) - review error handling and retry logic"
+            );
         }
 
         if (profile.ErrorRates.AverageRetries > 1)
@@ -202,7 +217,7 @@ public class EmbeddingServiceUsageExample
             recommendations.Add("• High retry frequency suggests network or service issues");
         }
 
-        return recommendations.Count > 0 
+        return recommendations.Count > 0
             ? string.Join("\n", recommendations)
             : "• No optimization opportunities identified - service is performing well";
     }
@@ -211,7 +226,7 @@ public class EmbeddingServiceUsageExample
     /// Example 5: Configuration Validation
     /// Shows how ConfigurationModels can validate service setup
     /// </summary>
-    public Task<ServiceConfiguration> ValidateAndCreateConfigurationAsync()
+    public static Task<ServiceConfiguration> ValidateAndCreateConfigurationAsync()
     {
         // The ConfigurationModels enable comprehensive service configuration
         // that can be validated, versioned, and managed centrally
@@ -229,28 +244,28 @@ public class EmbeddingServiceUsageExample
                     Type = "Bearer",
                     Credentials = "sk-embed-text-v1.5.f16.gguf",
                 },
-                TimeoutMs = 30000
+                TimeoutMs = 30000,
             },
             DefaultModel = new ModelConfiguration
             {
                 Id = "nomic-embed-text-v1.5",
                 Name = "Nomic Embed Text v1.5",
                 EmbeddingSize = 1536,
-                MaxInputTokens = 8192
+                MaxInputTokens = 8192,
             },
             Resilience = new ResilienceConfiguration
             {
                 MaxRetries = 3,
                 BaseDelayMs = 1000,
-                Strategy = RetryStrategy.Linear
+                Strategy = RetryStrategy.Linear,
             },
             Capabilities = new ServiceCapabilities
             {
                 SupportsBatch = true,
                 SupportsReranking = false,
                 MaxBatchSize = 100,
-                EncodingFormats = new[] { "float" }.ToImmutableList()
-            }
+                EncodingFormats = sourceArray.ToImmutableList(),
+            },
         };
 
         // Configuration can be:
@@ -278,52 +293,58 @@ public class EmbeddingServiceUsageExample
                 "The quick brown fox jumps over the lazy dog.",
                 "Machine learning models are transforming natural language processing.",
                 "Local embedding servers provide better privacy and control over data.",
-                "Performance monitoring helps identify bottlenecks in production systems."
+                "Performance monitoring helps identify bottlenecks in production systems.",
             };
 
             var result = await _embeddingService.GenerateEmbeddingsWithMetricsAsync(testDocuments);
 
             if (result.Success && result.Data != null)
             {
-                var summary = "✅ INTEGRATION TEST SUCCESSFUL\n\n" +
-                    "📊 Results Summary:\n" +
-                    $"• Processed {result.Data.Count} documents\n" +
-                    $"• Generated embeddings with {result.Data.FirstOrDefault()?.Count ?? 0} dimensions\n" +
-                    $"• Request ID: {result.Metrics?.RequestId}\n" +
-                    $"• Duration: {result.Metrics?.DurationMs:F2}ms\n" +
-                    $"• Service: {result.Metrics?.Service}\n" +
-                    $"• Model: {result.Metrics?.Model}\n\n" +
-                    "🔍 Performance Metrics:\n" +
-                    $"• Input Count: {result.Metrics?.InputCount}\n" +
-                    $"• Estimated Tokens: {result.Metrics?.TotalTokens}\n" +
-                    $"• Success: {result.Metrics?.Success}\n" +
-                    $"• Validation Time: {result.Metrics?.TimingBreakdown?.ValidationMs:F2}ms\n" +
-                    $"• Server Processing: {result.Metrics?.TimingBreakdown?.ServerProcessingMs:F2}ms\n\n" +
-                    "📋 Sample Embedding Vector (first 10 dimensions):\n" +
-                    string.Join(", ", result.Data.FirstOrDefault()?.Take(10)?.Select(f => f.ToString("F4")) ?? new[] { "N/A" }) + "...\n\n" +
-                    "🎯 This demonstrates how ErrorModels and PerformanceModels provide:\n" +
-                    "• Structured success/failure handling\n" +
-                    "• Detailed performance insights\n" +
-                    "• Request tracing capabilities\n" +
-                    "• Automated monitoring data";
+                var summary =
+                    "✅ INTEGRATION TEST SUCCESSFUL\n\n"
+                    + "📊 Results Summary:\n"
+                    + $"• Processed {result.Data.Count} documents\n"
+                    + $"• Generated embeddings with {result.Data.FirstOrDefault()?.Count ?? 0} dimensions\n"
+                    + $"• Request ID: {result.Metrics?.RequestId}\n"
+                    + $"• Duration: {result.Metrics?.DurationMs:F2}ms\n"
+                    + $"• Service: {result.Metrics?.Service}\n"
+                    + $"• Model: {result.Metrics?.Model}\n\n"
+                    + "🔍 Performance Metrics:\n"
+                    + $"• Input Count: {result.Metrics?.InputCount}\n"
+                    + $"• Estimated Tokens: {result.Metrics?.TotalTokens}\n"
+                    + $"• Success: {result.Metrics?.Success}\n"
+                    + $"• Validation Time: {result.Metrics?.TimingBreakdown?.ValidationMs:F2}ms\n"
+                    + $"• Server Processing: {result.Metrics?.TimingBreakdown?.ServerProcessingMs:F2}ms\n\n"
+                    + "📋 Sample Embedding Vector (first 10 dimensions):\n"
+                    + string.Join(", ", result.Data.FirstOrDefault()?.Take(10)?.Select(f => f.ToString("F4")) ?? values)
+                    + "...\n\n"
+                    + "🎯 This demonstrates how ErrorModels and PerformanceModels provide:\n"
+                    + "• Structured success/failure handling\n"
+                    + "• Detailed performance insights\n"
+                    + "• Request tracing capabilities\n"
+                    + "• Automated monitoring data";
 
                 return summary;
             }
             else
             {
-                var errorDetails = JsonSerializer.Serialize(result.Error, new JsonSerializerOptions { WriteIndented = true });
-                return "❌ INTEGRATION TEST FAILED\n\n" +
-                    "Error Details:\n" +
-                    errorDetails + "\n\n" +
-                    "This demonstrates how ErrorModels provide structured error information for debugging and monitoring.";
+                var errorDetails = JsonSerializer.Serialize(
+                    result.Error,
+                    new JsonSerializerOptions { WriteIndented = true }
+                );
+                return "❌ INTEGRATION TEST FAILED\n\n"
+                    + "Error Details:\n"
+                    + errorDetails
+                    + "\n\n"
+                    + "This demonstrates how ErrorModels provide structured error information for debugging and monitoring.";
             }
         }
         catch (Exception ex)
         {
-            return "💥 INTEGRATION TEST EXCEPTION\n\n" +
-                $"Exception: {ex.GetType().Name}\n" +
-                $"Message: {ex.Message}\n\n" +
-                "This shows how exceptions are handled and can be converted to structured EmbeddingError models.";
+            return "💥 INTEGRATION TEST EXCEPTION\n\n"
+                + $"Exception: {ex.GetType().Name}\n"
+                + $"Message: {ex.Message}\n\n"
+                + "This shows how exceptions are handled and can be converted to structured EmbeddingError models.";
         }
     }
 }
@@ -340,10 +361,11 @@ public class Program
 
         // Create embedding service with user's actual configuration
         var embeddingService = new ServerEmbeddings(
-            endpoint: "http://192.168.11.139:8078", 
-            model: "nomic-embed-text-v1.5", 
+            endpoint: "http://192.168.11.139:8078",
+            model: "nomic-embed-text-v1.5",
             embeddingSize: 1536,
-            apiKey: "sk-embed-text-v1.5.f16.gguf");
+            apiKey: "sk-embed-text-v1.5.f16.gguf"
+        );
 
         var examples = new EmbeddingServiceUsageExample(embeddingService);
 
@@ -382,7 +404,7 @@ public class Program
 
             // Demonstrate configuration management
             Console.WriteLine("=== Configuration Management ===");
-            var config = await examples.ValidateAndCreateConfigurationAsync();
+            var config = await EmbeddingServiceUsageExample.ValidateAndCreateConfigurationAsync();
             var configJson = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
             Console.WriteLine($"Service Configuration:\n{configJson}");
         }
@@ -401,4 +423,4 @@ public class Program
         Console.WriteLine("   • ConfigurationModels: Service health and configuration management");
         Console.WriteLine(new string('=', 70));
     }
-} 
+}

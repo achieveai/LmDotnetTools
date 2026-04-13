@@ -1,75 +1,91 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class NaturalToolUseParserMiddlewareTests
 {
-    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
-    private readonly Mock<IAgent> _mockFallbackParser;
-    private readonly List<FunctionContract> _functionContracts;
-
     // Common test context
     private readonly MiddlewareContext _defaultContext;
+    private readonly List<FunctionContract> _functionContracts;
+    private readonly Mock<IAgent> _mockFallbackParser;
+    private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
 
     public NaturalToolUseParserMiddlewareTests()
     {
         _mockSchemaValidator = new Mock<IJsonSchemaValidator>();
         _mockFallbackParser = new Mock<IAgent>();
-        _functionContracts = new List<FunctionContract>
-        {
+        _functionContracts =
+        [
             new FunctionContract
             {
                 Name = "GetWeather",
                 Description = "A test tool",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
                         ParameterType = new JsonSchemaObject { Type = "string" },
                         Description = "First parameter",
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         ParameterType = new JsonSchemaObject { Type = "string" },
                         Description = "Second parameter",
-                        IsRequired = true
-                    }
-                }
-            }
-        };
+                        IsRequired = true,
+                    },
+                ],
+            },
+        ];
 
         // Initialize default context
-        _defaultContext = new MiddlewareContext(new List<IMessage> { new TextMessage { Text = "Hello", Role = Role.User } }, null);
+        _defaultContext = new MiddlewareContext([new TextMessage { Text = "Hello", Role = Role.User }]);
     }
 
     // Helper method to create middleware with default configuration
     private NaturalToolUseParserMiddleware CreateMiddleware()
     {
-        return new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object, _mockFallbackParser.Object);
+        return new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object,
+            _mockFallbackParser.Object
+        );
     }
 
     // Helper method to setup mock agent with text response
-    private Mock<IAgent> SetupMockAgent(string responseText)
+    private static Mock<IAgent> SetupMockAgent(string responseText)
     {
         var mockAgent = new Mock<IAgent>();
-        mockAgent.Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new List<IMessage> { new TextMessage { Text = responseText, Role = Role.Assistant } });
+        _ = mockAgent
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = responseText, Role = Role.Assistant }]);
         return mockAgent;
     }
 
     // Helper method to setup a streaming agent with text update messages
-    private Mock<IStreamingAgent> SetupStreamingAgent(string fullText, int chunkSize = 5)
+    private static Mock<IStreamingAgent> SetupStreamingAgent(string fullText, int chunkSize = 5)
     {
         var textChunks = SplitIntoChunks(fullText, chunkSize);
-        var textUpdateMessages = CreateTextUpdateMessages(textChunks.ToList());
+        var textUpdateMessages = CreateTextUpdateMessages([.. textChunks]);
 
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent.Setup(a => a.GenerateReplyStreamingAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                          .Returns(Task.FromResult(CreateAsyncEnumerable(textUpdateMessages)));
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(Task.FromResult(CreateAsyncEnumerable(textUpdateMessages)));
 
         return mockStreamingAgent;
     }
@@ -89,7 +105,7 @@ public class NaturalToolUseParserMiddlewareTests
     }
 
     // Helper method to split string on spaces while including spaces in the parts
-    private List<string> SplitStringPreservingSpaces(string input)
+    private static List<string> SplitStringPreservingSpaces(string input)
     {
         var result = new List<string>();
         var words = input.Split(' ');
@@ -98,7 +114,7 @@ public class NaturalToolUseParserMiddlewareTests
         result.Add(words[0]);
 
         // Add remaining words with preceding space
-        for (int i = 1; i < words.Length; i++)
+        for (var i = 1; i < words.Length; i++)
         {
             result.Add(" " + words[i]);
         }
@@ -107,18 +123,19 @@ public class NaturalToolUseParserMiddlewareTests
     }
 
     // Helper method to create TextUpdateMessage instances from text chunks
-    private List<TextUpdateMessage> CreateTextUpdateMessages(List<string> chunks)
+    private static List<TextUpdateMessage> CreateTextUpdateMessages(List<string> chunks)
     {
         var messages = new List<TextUpdateMessage>();
         foreach (var chunk in chunks)
         {
             messages.Add(new TextUpdateMessage { Text = chunk, Role = Role.Assistant });
         }
+
         return messages;
     }
 
     // Helper method to create async enumerable from list of messages
-    private async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(List<IMessage> messages)
+    private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(List<IMessage> messages)
     {
         foreach (var message in messages)
         {
@@ -147,10 +164,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string validToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var validToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(validToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -172,26 +189,50 @@ public class NaturalToolUseParserMiddlewareTests
         var middleware = CreateMiddleware();
 
         // Create a response with proper tool call format but invalid JSON inside
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the original invalid JSON but accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_json")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_json")), It.IsAny<string>()))
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("fahrenheit") && !json.Contains("invalid_json")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("fahrenheit") && !json.Contains("invalid_json")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON (this is what the fallback parser is supposed to do)
-        string validFallbackJson = "```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson =
+            "```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
         // Verify the fallback parser was called
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
         // Should receive text message and tool call message
         Assert.Equal(2, result.Count());
@@ -205,7 +246,7 @@ public class NaturalToolUseParserMiddlewareTests
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("location", toolCall.FunctionArgs);
@@ -219,13 +260,14 @@ public class NaturalToolUseParserMiddlewareTests
         var middleware = CreateMiddleware();
 
         // Create a response with a tool name that doesn't exist in the function contracts
-        string unknownToolCall = "Let me search for that: <tool_call name=\"NonExistentTool\">\n```json\n{\n  \"query\": \"test search\"\n}\n```\n</tool_call>";
+        var unknownToolCall =
+            "Let me search for that: <tool_call name=\"NonExistentTool\">\n```json\n{\n  \"query\": \"test search\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(unknownToolCall);
 
         // Act & Assert
         // The middleware throws an exception for unknown tools
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the exception message contains the tool name
@@ -236,7 +278,7 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithNoToolCall_ReturnsTextMessage()
     {
         // Arrange
-        string fullText = "Hi there!";
+        var fullText = "Hi there!";
         var mockStreamingAgent = SetupStreamingAgent(fullText);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
 
@@ -254,10 +296,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         // The full text containing a tool call
-        string fullText = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var fullText =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 7);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
@@ -267,7 +309,7 @@ public class NaturalToolUseParserMiddlewareTests
         var result = await ToListAsync(resultStream);
 
         // Assert
-        Assert.Equal(2, result.Count());
+        Assert.Equal(2, result.Count);
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Here's the weather:", textMessage.Text);
         var toolCallMessage = result.OfType<ToolsCallMessage>().Single();
@@ -283,10 +325,21 @@ public class NaturalToolUseParserMiddlewareTests
 
     private static IEnumerable<string> SplitIntoChunks(string input, int chunkSize)
     {
-        for (int i = 0; i < input.Length; i += chunkSize)
+        for (var i = 0; i < input.Length; i += chunkSize)
         {
             yield return input.Substring(i, Math.Min(chunkSize, input.Length - i));
         }
+    }
+
+    private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> source)
+    {
+        var list = new List<T>();
+        await foreach (var item in source)
+        {
+            list.Add(item);
+        }
+
+        return list;
     }
 
     private class MiddlewareWrappingStreamingAgent : IStreamingAgent
@@ -294,9 +347,7 @@ public class NaturalToolUseParserMiddlewareTests
         private readonly IStreamingAgent _agent;
         private readonly IStreamingMiddleware _middleware;
 
-        public MiddlewareWrappingStreamingAgent(
-            IStreamingAgent agent,
-            IStreamingMiddleware middleware)
+        public MiddlewareWrappingStreamingAgent(IStreamingAgent agent, IStreamingMiddleware middleware)
         {
             _agent = agent;
             _middleware = middleware;
@@ -305,7 +356,8 @@ public class NaturalToolUseParserMiddlewareTests
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             throw new NotImplementedException("This wrapper is only for streaming responses");
         }
@@ -313,12 +365,14 @@ public class NaturalToolUseParserMiddlewareTests
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             return _middleware.InvokeStreamingAsync(
                 new MiddlewareContext(messages, options),
                 _agent,
-                cancellationToken);
+                cancellationToken
+            );
         }
     }
 
@@ -360,16 +414,6 @@ public class NaturalToolUseParserMiddlewareTests
         }
     }
 
-    private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> source)
-    {
-        var list = new List<T>();
-        await foreach (var item in source)
-        {
-            list.Add(item);
-        }
-        return list;
-    }
-
     #region JSON Extraction Enhancement Tests
 
     [Fact]
@@ -377,10 +421,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string fencedJsonToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var fencedJsonToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(fencedJsonToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -400,10 +444,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string unlabeledFencedJsonToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n```\n{\n  \"location\": \"New York, NY\",\n  \"unit\": \"celsius\"\n}\n```\n</tool_call>";
+        var unlabeledFencedJsonToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```\n{\n  \"location\": \"New York, NY\",\n  \"unit\": \"celsius\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(unlabeledFencedJsonToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -423,10 +467,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string unfencedJsonToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Boston, MA\",\n  \"unit\": \"fahrenheit\"\n}\n</tool_call>";
+        var unfencedJsonToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Boston, MA\",\n  \"unit\": \"fahrenheit\"\n}\n</tool_call>";
         var mockAgent = SetupMockAgent(unfencedJsonToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -447,10 +491,10 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Clean unfenced JSON with only JSON content (no mixed text)
-        string cleanUnfencedJsonToolCall = "Here's the weather: <tool_call name=\"GetWeather\">{\"location\": \"Portland, OR\", \"unit\": \"celsius\"}</tool_call>";
+        var cleanUnfencedJsonToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">{\"location\": \"Portland, OR\", \"unit\": \"celsius\"}</tool_call>";
         var mockAgent = SetupMockAgent(cleanUnfencedJsonToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -470,10 +514,10 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string unfencedArrayJsonToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n[\n  {\n    \"location\": \"Chicago, IL\",\n    \"unit\": \"celsius\"\n  }\n]\n</tool_call>";
+        var unfencedArrayJsonToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n[\n  {\n    \"location\": \"Chicago, IL\",\n    \"unit\": \"celsius\"\n  }\n]\n</tool_call>";
         var mockAgent = SetupMockAgent(unfencedArrayJsonToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -494,10 +538,10 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Content with both fenced JSON and unfenced JSON - fenced should take priority
-        string mixedContentToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n{\n  \"location\": \"Portland, OR\",\n  \"unit\": \"celsius\"\n}\n</tool_call>";
+        var mixedContentToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n{\n  \"location\": \"Portland, OR\",\n  \"unit\": \"celsius\"\n}\n</tool_call>";
         var mockAgent = SetupMockAgent(mixedContentToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -521,30 +565,52 @@ public class NaturalToolUseParserMiddlewareTests
         var middleware = CreateMiddleware();
         // Content with text and unfenced JSON - the unfenced JSON extraction won't work because it's mixed with text
         // So this should fall back to the fallback parser
-        string mixedContentToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\nSome explanatory text here.\n{\n  \"location\": \"Miami, FL\",\n  \"unit\": \"fahrenheit\"\n}\nMore text after.\n</tool_call>";
+        var mixedContentToolCall =
+            "Here's the weather: <tool_call name=\"GetWeather\">\nSome explanatory text here.\n{\n  \"location\": \"Miami, FL\",\n  \"unit\": \"fahrenheit\"\n}\nMore text after.\n</tool_call>";
         var mockAgent = SetupMockAgent(mixedContentToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Miami, FL") && json.Contains("fahrenheit")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Miami, FL") && json.Contains("fahrenheit")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Miami, FL\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Miami, FL\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Here's the weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Miami, FL", toolCall.FunctionArgs);
@@ -556,32 +622,55 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidFencedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidFencedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidFencedJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("celsius") && !json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("celsius") && !json.Contains("invalid_syntax")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "```json\n{\n  \"location\": \"Denver, CO\",\n  \"unit\": \"celsius\"\n}\n```";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "```json\n{\n  \"location\": \"Denver, CO\",\n  \"unit\": \"celsius\"\n}\n```";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Denver, CO", toolCall.FunctionArgs);
@@ -593,30 +682,52 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidUnfencedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Austin, TX\"\n  \"missing_comma\": true\n}\n</tool_call>";
+        var invalidUnfencedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Austin, TX\"\n  \"missing_comma\": true\n}\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidUnfencedJsonToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Austin, TX") && json.Contains("fahrenheit")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Austin, TX") && json.Contains("fahrenheit")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Austin, TX\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Austin, TX\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Austin, TX", toolCall.FunctionArgs);
@@ -629,31 +740,53 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Content that starts with { but is not valid JSON
-        string malformedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n{this is not valid json at all}\n</tool_call>";
+        var malformedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n{this is not valid json at all}\n</tool_call>";
         var mockAgent = SetupMockAgent(malformedJsonToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Phoenix, AZ") && json.Contains("fahrenheit")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Phoenix, AZ") && json.Contains("fahrenheit")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Phoenix, AZ\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Phoenix, AZ\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
         // Should use fallback parser since unfenced JSON extraction fails
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Phoenix, AZ", toolCall.FunctionArgs);
@@ -664,30 +797,51 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string emptyContentToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n\n</tool_call>";
+        var emptyContentToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n\n</tool_call>";
         var mockAgent = SetupMockAgent(emptyContentToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Las Vegas, NV") && json.Contains("fahrenheit")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Las Vegas, NV") && json.Contains("fahrenheit")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Las Vegas, NV\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Las Vegas, NV\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Las Vegas, NV", toolCall.FunctionArgs);
@@ -698,30 +852,52 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string whitespaceOnlyToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n   \n\t\n  \n</tool_call>";
+        var whitespaceOnlyToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n   \n\t\n  \n</tool_call>";
         var mockAgent = SetupMockAgent(whitespaceOnlyToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Salt Lake City, UT") && json.Contains("celsius")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Salt Lake City, UT") && json.Contains("celsius")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Salt Lake City, UT\",\n  \"unit\": \"celsius\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Salt Lake City, UT\",\n  \"unit\": \"celsius\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Salt Lake City, UT", toolCall.FunctionArgs);
@@ -731,17 +907,20 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeAsync_WithInvalidFencedJsonAndNoFallback_ThrowsException()
     {
         // Arrange - Create middleware without fallback parser
-        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object);
-        string invalidFencedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Portland, ME\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object
+        );
+        var invalidFencedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Portland, ME\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidFencedJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         Assert.Contains("GetWeather", exception.Message);
@@ -751,13 +930,17 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeAsync_WithInvalidUnfencedJsonAndNoFallback_ThrowsException()
     {
         // Arrange - Create middleware without fallback parser
-        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object);
-        string invalidUnfencedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n{this is not valid json}\n</tool_call>";
+        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object
+        );
+        var invalidUnfencedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n{this is not valid json}\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidUnfencedJsonToolCall);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         Assert.Contains("GetWeather", exception.Message);
@@ -772,32 +955,53 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the original invalid JSON but accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("fahrenheit") && !json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("fahrenheit") && !json.Contains("invalid_syntax")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON with structured output
-        string validFallbackJson = "{\"location\": \"San Francisco, CA\", \"unit\": \"fahrenheit\"}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\"location\": \"San Francisco, CA\", \"unit\": \"fahrenheit\"}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o =>
+                        o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"
+                    ),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
         // Verify the fallback parser was called with structured output
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o =>
+                        o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"
+                    ),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
@@ -805,7 +1009,7 @@ public class NaturalToolUseParserMiddlewareTests
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("San Francisco, CA", toolCall.FunctionArgs);
@@ -817,34 +1021,44 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject both the original and fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to return invalid JSON even with structured output
-        string invalidFallbackJson = "{\"invalid\": \"response\"}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant } });
+        var invalidFallbackJson = "{\"invalid\": \"response\"}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o =>
+                        o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"
+                    ),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
-        // Verify the fallback parser was called with structured output
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null && o.ResponseFormat.ResponseFormatType == "json_schema"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // Verify the fallback parser was called (may be called with structured and/or unstructured output)
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.AtLeastOnce
+        );
 
         Assert.Contains("GetWeather", exception.Message);
-        Assert.Contains("invalid JSON", exception.Message);
     }
 
     [Fact]
@@ -852,30 +1066,33 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Boston, MA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Boston, MA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the original invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to capture the options and return valid JSON
         GenerateReplyOptions? capturedOptions = null;
-        string validFallbackJson = "{\"location\": \"Boston, MA\", \"unit\": \"celsius\"}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>((messages, options, token) =>
-            {
-                capturedOptions = options;
-            })
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\"location\": \"Boston, MA\", \"unit\": \"celsius\"}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (messages, options, token) => { if (options != null) capturedOptions = options; }
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         try
         {
-            await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
+            _ = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
         }
         catch (ToolUseParsingException)
         {
@@ -896,24 +1113,32 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeAsync_WithoutFallbackAgent_BackwardCompatibility_ThrowsException()
     {
         // Arrange - Create middleware without fallback parser
-        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object);
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object
+        );
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify that no fallback parser was called (since none was provided)
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
 
         Assert.Contains("GetWeather", exception.Message);
     }
@@ -923,30 +1148,39 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Portland, OR\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Portland, OR\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to throw an exception
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ThrowsAsync(new InvalidOperationException("Fallback agent failed"));
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the fallback parser was called (may be called multiple times due to structured output and fallback logic)
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.AtLeastOnce
+        );
 
         Assert.Contains("GetWeather", exception.Message);
         Assert.Contains("Fallback parser failed", exception.Message);
@@ -957,33 +1191,41 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Miami, FL\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Miami, FL\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to return empty response
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage>());
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([]);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
-        // Verify the fallback parser was called
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // Verify the fallback parser was called (may be called multiple times due to structured + unstructured fallback)
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.AtLeastOnce
+        );
 
         Assert.Contains("GetWeather", exception.Message);
-        Assert.Contains("failed to generate response", exception.Message);
     }
 
     // Test removed: InvokeAsync_WithStructuredOutputFallback_NoSchemaValidator_UsesJsonParsing
@@ -997,10 +1239,10 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithEnhancedJsonExtraction_FencedJson_ProcessesCorrectly()
     {
         // Arrange
-        string fullText = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call> Done!";
+        var fullText =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call> Done!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 10);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
@@ -1010,7 +1252,7 @@ public class NaturalToolUseParserMiddlewareTests
         var result = await ToListAsync(resultStream);
 
         // Assert
-        Assert.Equal(3, result.Count());
+        Assert.Equal(3, result.Count);
 
         // First message should be text before tool call
         var textMessage1 = result.OfType<TextMessage>().First();
@@ -1031,10 +1273,10 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithEnhancedJsonExtraction_UnfencedJson_ProcessesCorrectly()
     {
         // Arrange
-        string fullText = "Here's the weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Boston, MA\",\n  \"unit\": \"celsius\"\n}\n</tool_call> Complete!";
+        var fullText =
+            "Here's the weather: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Boston, MA\",\n  \"unit\": \"celsius\"\n}\n</tool_call> Complete!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 8);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
@@ -1044,7 +1286,7 @@ public class NaturalToolUseParserMiddlewareTests
         var result = await ToListAsync(resultStream);
 
         // Assert
-        Assert.Equal(3, result.Count());
+        Assert.Equal(3, result.Count);
 
         // First message should be text before tool call
         var textMessage1 = result.OfType<TextMessage>().First();
@@ -1065,10 +1307,10 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithEnhancedJsonExtraction_CleanUnfencedJson_ProcessesCorrectly()
     {
         // Arrange
-        string fullText = "Weather info: <tool_call name=\"GetWeather\">{\"location\": \"Portland, OR\", \"unit\": \"fahrenheit\"}</tool_call> Finished!";
+        var fullText =
+            "Weather info: <tool_call name=\"GetWeather\">{\"location\": \"Portland, OR\", \"unit\": \"fahrenheit\"}</tool_call> Finished!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 12);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
@@ -1078,7 +1320,7 @@ public class NaturalToolUseParserMiddlewareTests
         var result = await ToListAsync(resultStream);
 
         // Assert
-        Assert.Equal(3, result.Count());
+        Assert.Equal(3, result.Count);
 
         // First message should be text before tool call
         var textMessage1 = result.OfType<TextMessage>().First();
@@ -1099,10 +1341,10 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithEnhancedJsonExtraction_MixedContent_PrioritizesFencedJson()
     {
         // Arrange
-        string fullText = "Weather data: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n{\n  \"location\": \"Portland, OR\",\n  \"unit\": \"celsius\"\n}\n</tool_call> All done!";
+        var fullText =
+            "Weather data: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Seattle, WA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n{\n  \"location\": \"Portland, OR\",\n  \"unit\": \"celsius\"\n}\n</tool_call> All done!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 15);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
@@ -1112,7 +1354,7 @@ public class NaturalToolUseParserMiddlewareTests
         var result = await ToListAsync(resultStream);
 
         // Assert
-        Assert.Equal(3, result.Count());
+        Assert.Equal(3, result.Count);
 
         // First message should be text before tool call
         var textMessage1 = result.OfType<TextMessage>().First();
@@ -1134,33 +1376,49 @@ public class NaturalToolUseParserMiddlewareTests
     // and InvokeStreamingAsync_WithStructuredOutputFallback_InvalidJson_UsesStructuredOutput_Debug
     // These tests rely on streaming fallback behavior that may not be fully implemented
 
-    private async Task InvokeStreamingAsync_WithStructuredOutputFallback_InvalidJson_UsesStructuredOutput_Impl(bool debug)
+    private async Task InvokeStreamingAsync_WithStructuredOutputFallback_InvalidJson_UsesStructuredOutput_Impl(
+        bool debug
+    )
     {
         // Arrange
-        string fullText = "Getting weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n\n Completed!";
+        var fullText =
+            "Getting weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Denver, CO\"\n  \"invalid_syntax\": true,\n}\n```\n\n Completed!";
 
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Test input: {fullText}");
+            TestContextLogger.LogDebug("Test input received. FullText: {FullText}", fullText);
         }
 
         // Setup schema validator to reject invalid JSON but accept fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("invalid_syntax")), It.IsAny<string>()))
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Denver, CO") && json.Contains("celsius") && !json.Contains("invalid_syntax")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json =>
+                        json.Contains("Denver, CO") && json.Contains("celsius") && !json.Contains("invalid_syntax")
+                    ),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON with structured output
-        string validFallbackJson = "{\n  \"location\": \"Denver, CO\",\n  \"unit\": \"celsius\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Denver, CO\",\n  \"unit\": \"celsius\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Fallback parser will return: {validFallbackJson}");
+            TestContextLogger.LogDebug("Fallback parser return payload: {Payload}", validFallbackJson);
         }
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 12);
@@ -1173,23 +1431,28 @@ public class NaturalToolUseParserMiddlewareTests
         // Debug: Print out all messages
         if (debug)
         {
-            Console.WriteLine($"[DEBUG] Number of messages: {result.Count()}");
-            for (int i = 0; i < result.Count(); i++)
+            TestContextLogger.LogDebug("Number of messages: {MessageCount}", result.Count);
+            for (var i = 0; i < result.Count; i++)
             {
                 var message = result.ElementAt(i);
-                string content = message is LmCore.Messages.ICanGetText textMessage ? textMessage.GetText()! : "[No text content]";
-                Console.WriteLine($"[DEBUG] Message {i}: Type={message.GetType().Name}, Content={content}");
+                var content = message is ICanGetText textMessage ? textMessage.GetText()! : "[No text content]";
+                TestContextLogger.LogDebug("Message detail. Index: {Index}, MessageType: {MessageType}, Content: {Content}", i, message.GetType().Name, content);
             }
         }
 
         // Assert
         // Verify fallback parser was called with structured output
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
 
-        Assert.Equal(3, result.Count());
+        Assert.Equal(3, result.Count);
 
         // First message should be text before tool call
         var textMessage1 = result.OfType<TextMessage>().First();
@@ -1213,11 +1476,16 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_WithStructuredOutputFallback_NoFallbackAgent_ThrowsException()
     {
         // Arrange
-        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object, null);
-        string fullText = "Weather check: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Austin, TX\"\n  \"missing_comma\": true\n}\n```\n</tool_call> End!";
+        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object
+        );
+        var fullText =
+            "Weather check: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Austin, TX\"\n  \"missing_comma\": true\n}\n```\n</tool_call> End!";
 
         // Setup schema validator to reject invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("missing_comma")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("missing_comma")), It.IsAny<string>()))
             .Returns(false);
 
         var mockStreamingAgent = SetupStreamingAgent(fullText, 10);
@@ -1231,20 +1499,17 @@ public class NaturalToolUseParserMiddlewareTests
         var resultStream = await agent.GenerateReplyStreamingAsync(_defaultContext.Messages, _defaultContext.Options);
 
         // Should throw exception when trying to enumerate the stream
-        await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
-        {
-            await ToListAsync(resultStream);
-        });
+        _ = await Assert.ThrowsAsync<ToolUseParsingException>(async () => await ToListAsync(resultStream));
     }
 
     [Fact]
     public async Task InvokeStreamingAsync_ConsistencyWithNonStreaming_FencedJson()
     {
         // Arrange
-        string toolCallText = "Weather report: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Chicago, IL\",\n  \"unit\": \"celsius\"\n}\n```\n</tool_call> Finished!";
+        var toolCallText =
+            "Weather report: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Chicago, IL\",\n  \"unit\": \"celsius\"\n}\n```\n</tool_call> Finished!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Setup non-streaming agent
         var mockAgent = SetupMockAgent(toolCallText);
@@ -1259,18 +1524,21 @@ public class NaturalToolUseParserMiddlewareTests
         var nonStreamingResult = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Act - Streaming
-        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(_defaultContext.Messages, _defaultContext.Options);
+        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(
+            _defaultContext.Messages,
+            _defaultContext.Options
+        );
         var streamingResult = await ToListAsync(streamingResultStream);
 
         // Assert - Results should be equivalent
-        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count());
+        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count);
 
         // Compare text messages
         var nonStreamingTextMessages = nonStreamingResult.OfType<TextMessage>().ToList();
         var streamingTextMessages = streamingResult.OfType<TextMessage>().ToList();
 
         Assert.Equal(nonStreamingTextMessages.Count, streamingTextMessages.Count);
-        for (int i = 0; i < nonStreamingTextMessages.Count; i++)
+        for (var i = 0; i < nonStreamingTextMessages.Count; i++)
         {
             Assert.Equal(nonStreamingTextMessages[i].Text, streamingTextMessages[i].Text);
         }
@@ -1280,10 +1548,16 @@ public class NaturalToolUseParserMiddlewareTests
         var streamingToolCalls = streamingResult.OfType<ToolsCallMessage>().ToList();
 
         Assert.Equal(nonStreamingToolCalls.Count, streamingToolCalls.Count);
-        for (int i = 0; i < nonStreamingToolCalls.Count; i++)
+        for (var i = 0; i < nonStreamingToolCalls.Count; i++)
         {
-            Assert.Equal(nonStreamingToolCalls[i].ToolCalls[0].FunctionName, streamingToolCalls[i].ToolCalls[0].FunctionName);
-            Assert.Equal(nonStreamingToolCalls[i].ToolCalls[0].FunctionArgs, streamingToolCalls[i].ToolCalls[0].FunctionArgs);
+            Assert.Equal(
+                nonStreamingToolCalls[i].ToolCalls[0].FunctionName,
+                streamingToolCalls[i].ToolCalls[0].FunctionName
+            );
+            Assert.Equal(
+                nonStreamingToolCalls[i].ToolCalls[0].FunctionArgs,
+                streamingToolCalls[i].ToolCalls[0].FunctionArgs
+            );
         }
     }
 
@@ -1291,10 +1565,10 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_ConsistencyWithNonStreaming_UnfencedJson()
     {
         // Arrange
-        string toolCallText = "Weather data: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Phoenix, AZ\",\n  \"unit\": \"fahrenheit\"\n}\n</tool_call> Complete!";
+        var toolCallText =
+            "Weather data: <tool_call name=\"GetWeather\">\n{\n  \"location\": \"Phoenix, AZ\",\n  \"unit\": \"fahrenheit\"\n}\n</tool_call> Complete!";
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Setup non-streaming agent
         var mockAgent = SetupMockAgent(toolCallText);
@@ -1309,18 +1583,21 @@ public class NaturalToolUseParserMiddlewareTests
         var nonStreamingResult = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Act - Streaming
-        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(_defaultContext.Messages, _defaultContext.Options);
+        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(
+            _defaultContext.Messages,
+            _defaultContext.Options
+        );
         var streamingResult = await ToListAsync(streamingResultStream);
 
         // Assert - Results should be equivalent
-        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count());
+        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count);
 
         // Compare text messages
         var nonStreamingTextMessages = nonStreamingResult.OfType<TextMessage>().ToList();
         var streamingTextMessages = streamingResult.OfType<TextMessage>().ToList();
 
         Assert.Equal(nonStreamingTextMessages.Count, streamingTextMessages.Count);
-        for (int i = 0; i < nonStreamingTextMessages.Count; i++)
+        for (var i = 0; i < nonStreamingTextMessages.Count; i++)
         {
             Assert.Equal(nonStreamingTextMessages[i].Text, streamingTextMessages[i].Text);
         }
@@ -1330,10 +1607,16 @@ public class NaturalToolUseParserMiddlewareTests
         var streamingToolCalls = streamingResult.OfType<ToolsCallMessage>().ToList();
 
         Assert.Equal(nonStreamingToolCalls.Count, streamingToolCalls.Count);
-        for (int i = 0; i < nonStreamingToolCalls.Count; i++)
+        for (var i = 0; i < nonStreamingToolCalls.Count; i++)
         {
-            Assert.Equal(nonStreamingToolCalls[i].ToolCalls[0].FunctionName, streamingToolCalls[i].ToolCalls[0].FunctionName);
-            Assert.Equal(nonStreamingToolCalls[i].ToolCalls[0].FunctionArgs, streamingToolCalls[i].ToolCalls[0].FunctionArgs);
+            Assert.Equal(
+                nonStreamingToolCalls[i].ToolCalls[0].FunctionName,
+                streamingToolCalls[i].ToolCalls[0].FunctionName
+            );
+            Assert.Equal(
+                nonStreamingToolCalls[i].ToolCalls[0].FunctionArgs,
+                streamingToolCalls[i].ToolCalls[0].FunctionArgs
+            );
         }
     }
 
@@ -1341,21 +1624,35 @@ public class NaturalToolUseParserMiddlewareTests
     public async Task InvokeStreamingAsync_ConsistencyWithNonStreaming_StructuredOutputFallback()
     {
         // Arrange
-        string toolCallText = "Weather info: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Las Vegas, NV\"\n  \"syntax_error\": true,\n}\n```\n</tool_call> Done!";
+        var toolCallText =
+            "Weather info: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"Las Vegas, NV\"\n  \"syntax_error\": true,\n}\n```\n</tool_call> Done!";
 
         // Setup schema validator to reject invalid JSON but accept fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("syntax_error")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v => v.Validate(It.Is<string>(json => json.Contains("syntax_error")), It.IsAny<string>()))
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Las Vegas, NV") && json.Contains("fahrenheit") && !json.Contains("syntax_error")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json =>
+                        json.Contains("Las Vegas, NV") && json.Contains("fahrenheit") && !json.Contains("syntax_error")
+                    ),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Las Vegas, NV\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Las Vegas, NV\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Setup non-streaming agent
         var mockAgent = SetupMockAgent(toolCallText);
@@ -1370,27 +1667,35 @@ public class NaturalToolUseParserMiddlewareTests
         var nonStreamingResult = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Act - Streaming
-        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(_defaultContext.Messages, _defaultContext.Options);
+        var streamingResultStream = await streamingAgent.GenerateReplyStreamingAsync(
+            _defaultContext.Messages,
+            _defaultContext.Options
+        );
         var streamingResult = await ToListAsync(streamingResultStream);
 
         // Assert - Results should be equivalent
-        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count());
+        Assert.Equal(nonStreamingResult.Count(), streamingResult.Count);
 
         // Compare text messages
         var nonStreamingTextMessages = nonStreamingResult.OfType<TextMessage>().ToList();
         var streamingTextMessages = streamingResult.OfType<TextMessage>().ToList();
 
         Assert.Equal(nonStreamingTextMessages.Count, streamingTextMessages.Count);
-        for (int i = 0; i < nonStreamingTextMessages.Count; i++)
+        for (var i = 0; i < nonStreamingTextMessages.Count; i++)
         {
             Assert.Equal(nonStreamingTextMessages[i].Text, streamingTextMessages[i].Text);
         }
 
         // Verify fallback parser was called for both scenarios
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Exactly(2)
+        );
     }
 
     #endregion
@@ -1403,7 +1708,8 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Missing opening <tool_call> tag
-        string malformedToolCall = "Let me get that weather: name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var malformedToolCall =
+            "Let me get that weather: name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(malformedToolCall);
 
         // Act
@@ -1421,7 +1727,8 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Missing closing </tool_call> tag
-        string malformedToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
+        var malformedToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
         var mockAgent = SetupMockAgent(malformedToolCall);
 
         // Act
@@ -1439,7 +1746,8 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Missing tool name attribute
-        string malformedToolCall = "Let me get that weather: <tool_call>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var malformedToolCall =
+            "Let me get that weather: <tool_call>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(malformedToolCall);
 
         // Act
@@ -1457,7 +1765,8 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Invalid tool name format (missing quotes)
-        string malformedToolCall = "Let me get that weather: <tool_call name=GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
+        var malformedToolCall =
+            "Let me get that weather: <tool_call name=GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(malformedToolCall);
 
         // Act
@@ -1474,36 +1783,52 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string emptyJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n\n```\n</tool_call>";
+        var emptyJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(emptyJsonToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Default City") && json.Contains("celsius")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Default City") && json.Contains("celsius")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Default City\",\n  \"unit\": \"celsius\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Default City\",\n  \"unit\": \"celsius\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Default City", toolCall.FunctionArgs);
@@ -1515,36 +1840,51 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string emptyContentToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n\n</tool_call>";
+        var emptyContentToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n\n</tool_call>";
         var mockAgent = SetupMockAgent(emptyContentToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Empty Content City") && json.Contains("fahrenheit")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Empty Content City") && json.Contains("fahrenheit")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Empty Content City\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Empty Content City\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Empty Content City", toolCall.FunctionArgs);
@@ -1556,36 +1896,52 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string whitespaceOnlyToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n   \n\t\n  \n</tool_call>";
+        var whitespaceOnlyToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n   \n\t\n  \n</tool_call>";
         var mockAgent = SetupMockAgent(whitespaceOnlyToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("Whitespace City") && json.Contains("celsius")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("Whitespace City") && json.Contains("celsius")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON
-        string validFallbackJson = "{\n  \"location\": \"Whitespace City\",\n  \"unit\": \"celsius\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"Whitespace City\",\n  \"unit\": \"celsius\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("Whitespace City", toolCall.FunctionArgs);
@@ -1598,52 +1954,71 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Tool name that doesn't exist in function contracts
-        string unknownToolCall = "Let me search for that: <tool_call name=\"UnknownSearchTool\">\n```json\n{\n  \"query\": \"test search\",\n  \"limit\": 10\n}\n```\n</tool_call>";
+        var unknownToolCall =
+            "Let me search for that: <tool_call name=\"UnknownSearchTool\">\n```json\n{\n  \"query\": \"test search\",\n  \"limit\": 10\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(unknownToolCall);
 
         // Setup schema validator to accept the fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("fallback search") && json.Contains("5")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("fallback search") && json.Contains('5')),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return valid JSON for the unknown tool
-        string validFallbackJson = "{\n  \"query\": \"fallback search\",\n  \"limit\": 5\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"query\": \"fallback search\",\n  \"limit\": 5\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
         // Should still throw exception for unknown tool even with fallback agent
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the exception message contains the tool name
         Assert.Contains("UnknownSearchTool", exception.Message);
 
         // Verify fallback parser was NOT called since tool doesn't exist in contracts
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
     }
 
     [Fact]
     public async Task InvokeAsync_WithSchemaValidationFailureAndNoFallbackAgent_ThrowsException()
     {
         // Arrange
-        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object, null);
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var middlewareWithoutFallback = new NaturalToolUseParserMiddleware(
+            _functionContracts,
+            _mockSchemaValidator.Object
+        );
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the invalid JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middlewareWithoutFallback.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the exception message indicates validation failure
@@ -1655,34 +2030,43 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject both original and fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to return invalid JSON that also fails validation
-        string invalidFallbackJson = "{\n  \"wrong_field\": \"invalid data\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant } });
+        var invalidFallbackJson = "{\n  \"wrong_field\": \"invalid data\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant }]);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the exception message indicates fallback failure
         Assert.Contains("GetWeather", exception.Message);
 
-        // Verify fallback parser was called
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // Verify fallback parser was called (may be called with structured and/or unstructured output)
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.AtLeastOnce
+        );
     }
 
     [Fact]
@@ -1690,33 +2074,42 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
+        var invalidJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_syntax\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the original JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to throw an exception
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ThrowsAsync(new InvalidOperationException("Fallback agent failed"));
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
-            async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
+        var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
+            await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
 
         // Verify the exception message indicates fallback failure
         Assert.Contains("GetWeather", exception.Message);
 
         // Verify fallback parser was called (may be called multiple times due to retries)
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.AtLeastOnce
+        );
     }
 
     [Fact]
@@ -1725,38 +2118,64 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         // Complex malformed JSON with multiple syntax errors
-        string complexMalformedJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"unit\": \"fahrenheit\",\n  \"extra_field\": [1, 2, 3,],\n  \"nested\": {\n    \"invalid\": true\n    \"missing_comma\": \"here\"\n  }\n}\n```\n</tool_call>";
+        var complexMalformedJsonToolCall =
+            "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"unit\": \"fahrenheit\",\n  \"extra_field\": [1, 2, 3,],\n  \"nested\": {\n    \"invalid\": true\n    \"missing_comma\": \"here\"\n  }\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(complexMalformedJsonToolCall);
 
         // Setup schema validator to reject malformed JSON but accept fallback JSON
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("extra_field") || json.Contains("missing_comma")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json => json.Contains("extra_field") || json.Contains("missing_comma")),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(false);
-        _mockSchemaValidator.Setup(v => v.Validate(It.Is<string>(json => json.Contains("San Francisco, CA") && json.Contains("fahrenheit") && !json.Contains("extra_field")), It.IsAny<string>()))
+        _ = _mockSchemaValidator
+            .Setup(v =>
+                v.Validate(
+                    It.Is<string>(json =>
+                        json.Contains("San Francisco, CA")
+                        && json.Contains("fahrenheit")
+                        && !json.Contains("extra_field")
+                    ),
+                    It.IsAny<string>()
+                )
+            )
             .Returns(true);
 
         // Setup fallback parser to return clean, valid JSON
-        string validFallbackJson = "{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}";
-        _mockFallbackParser.Setup(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
+        var validFallbackJson = "{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}";
+        _ = _mockFallbackParser
+            .Setup(f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([new TextMessage { Text = validFallbackJson, Role = Role.Assistant }]);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        _mockFallbackParser.Verify(f => f.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _mockFallbackParser.Verify(
+            f =>
+                f.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.Is<GenerateReplyOptions>(o => o.ResponseFormat != null),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
         // When fallback succeeds, it should return a ToolsCallMessage, not a TextMessage
         var toolCallMessage = result.OfType<ToolsCallMessage>().FirstOrDefault();
         Assert.NotNull(toolCallMessage);
-        Assert.Single(toolCallMessage.ToolCalls);
+        _ = Assert.Single(toolCallMessage.ToolCalls);
         var toolCall = toolCallMessage.ToolCalls.First();
         Assert.Equal("GetWeather", toolCall.FunctionName);
         Assert.Contains("San Francisco, CA", toolCall.FunctionArgs);

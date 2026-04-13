@@ -3,14 +3,14 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Default implementation of IFunctionProviderRegistry
+///     Default implementation of IFunctionProviderRegistry
 /// </summary>
 public class FunctionProviderRegistry : IFunctionProviderRegistry
 {
+    private readonly List<Func<IServiceProvider, IFunctionProvider>> _factories = [];
+    private readonly List<Type> _providerTypes = [];
+    private readonly List<IFunctionProvider> _providers = [];
     private readonly IServiceProvider _serviceProvider;
-    private readonly List<IFunctionProvider> _providers = new();
-    private readonly List<Func<IServiceProvider, IFunctionProvider>> _factories = new();
-    private readonly List<Type> _providerTypes = new();
 
     public FunctionProviderRegistry(IServiceProvider serviceProvider)
     {
@@ -22,7 +22,8 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
         _providers.Add(provider);
     }
 
-    public void RegisterProvider<TProvider>() where TProvider : class, IFunctionProvider
+    public void RegisterProvider<TProvider>()
+        where TProvider : class, IFunctionProvider
     {
         _providerTypes.Add(typeof(TProvider));
     }
@@ -51,8 +52,15 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
             }
         }
 
+        // Auto-discover all IFunctionProvider instances from DI
+        var discoveredProviders = _serviceProvider.GetService<IEnumerable<IFunctionProvider>>();
+        if (discoveredProviders != null)
+        {
+            allProviders.AddRange(discoveredProviders);
+        }
+
         // Sort by priority
-        return allProviders.OrderBy(p => p.Priority).ToList();
+        return [.. allProviders.OrderBy(p => p.Priority)];
     }
 
     public IFunctionProvider? GetProvider(string name)

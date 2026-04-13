@@ -6,37 +6,57 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Middleware that processes ToolsCallUpdateMessage to add structured JSON fragment updates
-/// based on the FunctionArgs using JsonFragmentToStructuredUpdateGenerator.
+///     Middleware that processes ToolsCallUpdateMessage to add structured JSON fragment updates
+///     based on the FunctionArgs using JsonFragmentToStructuredUpdateGenerator.
 /// </summary>
 public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
-    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = new();
+    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = [];
 
-    public string? Name => throw new NotImplementedException();
+    public string? Name => "JsonFragmentUpdateMiddleware";
+
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        return ProcessAsync(stream);
+    }
+
+    public Task<IEnumerable<IMessage>> InvokeAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+    }
 
     /// <summary>
-    /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage instances.
+    /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage and ToolCallUpdateMessage instances.
     /// </summary>
     /// <param name="messageStream">The input stream of messages</param>
     /// <returns>The processed stream of messages with JsonFragmentUpdates added</returns>
     public async IAsyncEnumerable<IMessage> ProcessAsync(IAsyncEnumerable<IMessage> messageStream)
     {
+        ArgumentNullException.ThrowIfNull(messageStream);
         await foreach (var message in messageStream)
         {
-            if (message is ToolsCallUpdateMessage toolsCallUpdateMessage)
+            yield return message switch
             {
-                yield return ProcessToolsCallUpdateMessage(toolsCallUpdateMessage);
-            }
-            else
-            {
-                yield return message;
-            }
+                ToolsCallUpdateMessage toolsCallUpdateMessage => ProcessToolsCallUpdateMessage(toolsCallUpdateMessage),
+                ToolCallUpdateMessage toolCallUpdateMessage => ProcessToolCallUpdateMessage(toolCallUpdateMessage),
+                _ => message
+            };
         }
     }
 
     /// <summary>
-    /// Processes a ToolsCallUpdateMessage and adds JsonFragmentUpdates to each ToolCallUpdate.
+    ///     Processes a ToolsCallUpdateMessage and adds JsonFragmentUpdates to each ToolCallUpdate.
     /// </summary>
     /// <param name="message">The ToolsCallUpdateMessage to process</param>
     /// <returns>A new ToolsCallUpdateMessage with JsonFragmentUpdates added</returns>
@@ -56,12 +76,45 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Role = message.Role,
             Metadata = message.Metadata,
             GenerationId = message.GenerationId,
-            ToolCallUpdates = updatedToolCallUpdates.ToImmutableList()
+            ToolCallUpdates = [.. updatedToolCallUpdates],
         };
     }
 
     /// <summary>
-    /// Processes a single ToolCallUpdate and adds JsonFragmentUpdates based on its FunctionArgs.
+    /// Processes a ToolCallUpdateMessage and adds JsonFragmentUpdates based on its FunctionArgs.
+    /// </summary>
+    /// <param name="message">The ToolCallUpdateMessage to process</param>
+    /// <returns>A new ToolCallUpdateMessage with JsonFragmentUpdates added</returns>
+    private ToolCallUpdateMessage ProcessToolCallUpdateMessage(ToolCallUpdateMessage message)
+    {
+        // If there are no function args, return the original message
+        if (string.IsNullOrEmpty(message.FunctionArgs))
+        {
+            return message;
+        }
+
+        // Generate a key for the generator based on tool call identification
+        var generatorKey = GetGeneratorKey(message);
+
+        // Get or create generator for this tool call
+        if (!_generators.TryGetValue(generatorKey, out var generator))
+        {
+            generator = new JsonFragmentToStructuredUpdateGenerator(message.FunctionName ?? "unknown");
+            _generators[generatorKey] = generator;
+        }
+
+        // Process the function args fragment and get updates
+        var jsonFragmentUpdates = generator.AddFragment(message.FunctionArgs).ToImmutableList();
+
+        // Return updated ToolCallUpdateMessage with JsonFragmentUpdates
+        return message with
+        {
+            JsonFragmentUpdates = jsonFragmentUpdates
+        };
+    }
+
+    /// <summary>
+    ///     Processes a single ToolCallUpdate and adds JsonFragmentUpdates based on its FunctionArgs.
     /// </summary>
     /// <param name="toolCallUpdate">The ToolCallUpdate to process</param>
     /// <returns>A new ToolCallUpdate with JsonFragmentUpdates added</returns>
@@ -93,50 +146,28 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Index = toolCallUpdate.Index,
             FunctionName = toolCallUpdate.FunctionName,
             FunctionArgs = toolCallUpdate.FunctionArgs,
-            JsonFragmentUpdates = jsonFragmentUpdates
+            JsonFragmentUpdates = jsonFragmentUpdates,
         };
     }
 
     /// <summary>
-    /// Generates a unique key for the generator based on tool call identification.
+    ///     Generates a unique key for the generator based on tool call identification.
     /// </summary>
     /// <param name="toolCallUpdate">The ToolCallUpdate to generate a key for</param>
     /// <returns>A unique key for the generator</returns>
     private static string GetGeneratorKey(ToolCallUpdate toolCallUpdate)
     {
         // Prefer ToolCallId if available, otherwise use Index, otherwise use FunctionName
-        if (!string.IsNullOrEmpty(toolCallUpdate.ToolCallId))
-        {
-            return $"id:{toolCallUpdate.ToolCallId}";
-        }
-
-        if (toolCallUpdate.Index.HasValue)
-        {
-            return $"index:{toolCallUpdate.Index.Value}";
-        }
-
-        return $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
+        return !string.IsNullOrEmpty(toolCallUpdate.ToolCallId) ? $"id:{toolCallUpdate.ToolCallId}"
+            : toolCallUpdate.Index.HasValue ? $"index:{toolCallUpdate.Index.Value}"
+            : $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
     }
 
     /// <summary>
-    /// Clears all generators. Useful for resetting state between different tool call sequences.
+    ///     Clears all generators. Useful for resetting state between different tool call sequences.
     /// </summary>
     public void ClearGenerators()
     {
         _generators.Clear();
-    }
-
-    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(MiddlewareContext context, IStreamingAgent agent, CancellationToken cancellationToken = default)
-    {
-        var stream = await agent.GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken);
-        return ProcessAsync(stream);
-    }
-
-    public Task<IEnumerable<IMessage>> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
-    {
-        return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 }

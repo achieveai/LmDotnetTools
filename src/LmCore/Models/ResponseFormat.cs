@@ -1,32 +1,33 @@
-using AchieveAi.LmDotnetTools.LmCore.Utils;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 public sealed record ResponseFormat
 {
     /// <summary>
-    /// Predefined instance for JSON object response format
+    ///     Predefined instance for JSON object response format
     /// </summary>
-    public static readonly ResponseFormat JSON = new ResponseFormat();
+    public static readonly ResponseFormat JSON = new();
 
     /// <summary>
-    /// The type of response format. 
-    /// - "json_object" (default): Request JSON output without schema validation
-    /// - "json_schema": Request JSON output with schema validation
+    ///     The type of response format.
+    ///     - "json_object" (default): Request JSON output without schema validation
+    ///     - "json_schema": Request JSON output with schema validation
     /// </summary>
     [JsonPropertyName("type")]
     public string ResponseFormatType { get; init; } = "json_object";
 
     /// <summary>
-    /// Schema validation definition for structured outputs (only used when type is "json_schema")
+    ///     Schema validation definition for structured outputs (only used when type is "json_schema")
     /// </summary>
     [JsonPropertyName("json_schema")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonSchemaDefinition? JsonSchema { get; init; }
 
     /// <summary>
-    /// Creates a response format with JSON schema validation
+    ///     Creates a response format with JSON schema validation
     /// </summary>
     /// <param name="schemaName">Name identifier for the schema</param>
     /// <param name="schemaObject">JSON Schema object definition</param>
@@ -35,7 +36,8 @@ public sealed record ResponseFormat
     public static ResponseFormat CreateWithSchema(
         string schemaName,
         JsonSchemaObject schemaObject,
-        bool strictValidation = true)
+        bool strictValidation = true
+    )
     {
         return new ResponseFormat
         {
@@ -44,171 +46,165 @@ public sealed record ResponseFormat
             {
                 Name = schemaName,
                 Strict = strictValidation,
-                Schema = schemaObject
-            }
+                Schema = schemaObject,
+            },
         };
     }
 }
 
 /// <summary>
-/// Defines the JSON schema validation requirements
+///     Defines the JSON schema validation requirements
 /// </summary>
 public sealed record JsonSchemaDefinition
 {
     /// <summary>
-    /// Name identifier for the schema
+    ///     Name identifier for the schema
     /// </summary>
     [JsonPropertyName("name")]
     public string Name { get; init; } = string.Empty;
 
     /// <summary>
-    /// Whether to enforce strict schema validation
+    ///     Whether to enforce strict schema validation
     /// </summary>
     [JsonPropertyName("strict")]
     public bool Strict { get; init; } = true;
 
     /// <summary>
-    /// The JSON Schema object definition
+    ///     The JSON Schema object definition
     /// </summary>
     [JsonPropertyName("schema")]
     public JsonSchemaObject Schema { get; init; } = new();
 }
 
 /// <summary>
-/// Represents a JSON Schema object definition with strongly-typed properties
+///     Represents a JSON Schema object definition with strongly-typed properties
 /// </summary>
 public sealed record JsonSchemaObject
 {
     /// <summary>
-    /// The type of the schema object (e.g., "object", "array", "string", etc.)
+    ///     The type of the schema object (e.g., "object", "array", "string", etc.)
     /// </summary>
     [JsonPropertyName("type")]
-    public Union<string, IReadOnlyList<string>> Type { get; init; } = new Union<string, IReadOnlyList<string>>(["object", "null"]);
+    public Union<string, IReadOnlyList<string>> Type { get; init; } = new(["object", "null"]);
 
     /// <summary>
-    /// Property definitions for object type schemas
+    ///     Property definitions for object type schemas
     /// </summary>
     [JsonPropertyName("properties")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, JsonSchemaObject>? Properties { get; init; }
 
     /// <summary>
-    /// List of required property names
+    ///     List of required property names
     /// </summary>
     [JsonPropertyName("required")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Required { get; init; }
 
     /// <summary>
-    /// Whether additional properties are allowed in the object
+    ///     Whether additional properties are allowed in the object
     /// </summary>
     [JsonPropertyName("additionalProperties")]
     public bool AdditionalProperties { get; init; }
 
     /// <summary>
-    /// Description of the schema object
+    ///     Description of the schema object
     /// </summary>
     [JsonPropertyName("description")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Description { get; init; }
 
     /// <summary>
-    /// Schema for the array items
+    ///     Schema for the array items
     /// </summary>
     [JsonPropertyName("items")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonSchemaObject? Items { get; init; }
 
     /// <summary>
-    /// Enum values for string type schemas
+    ///     Enum values for string type schemas
     /// </summary>
     [JsonPropertyName("enum")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Enum { get; init; }
 
     /// <summary>
-    /// Minimum value for number/integer type schemas
+    ///     Minimum value for number/integer type schemas
     /// </summary>
     [JsonPropertyName("minimum")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Minimum { get; init; }
 
     /// <summary>
-    /// Maximum value for number/integer type schemas
+    ///     Maximum value for number/integer type schemas
     /// </summary>
     [JsonPropertyName("maximum")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Maximum { get; init; }
 
     /// <summary>
-    /// Minimum number of items for array type schemas
+    ///     Minimum number of items for array type schemas
     /// </summary>
     [JsonPropertyName("minItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MinItems { get; init; }
 
     /// <summary>
-    /// Maximum number of items for array type schemas
+    ///     Maximum number of items for array type schemas
     /// </summary>
     [JsonPropertyName("maxItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MaxItems { get; init; }
 
     /// <summary>
-    /// Whether items in array must be unique
+    ///     Whether items in array must be unique
     /// </summary>
     [JsonPropertyName("uniqueItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool UniqueItems { get; init; }
 
     /// <summary>
-    /// Creates a builder for constructing a JSON Schema object more fluently
+    ///     Creates a builder for constructing a JSON Schema object more fluently
     /// </summary>
-    public static JsonSchemaObjectBuilder Create(string type = "object") =>
-        new JsonSchemaObjectBuilder(type);
+    public static JsonSchemaObjectBuilder Create(string type = "object")
+    {
+        return new JsonSchemaObjectBuilder(type);
+    }
 
     /// <summary>
-    /// Creates a new string schema with the given description
+    ///     Creates a new string schema with the given description
     /// </summary>
-    public static JsonSchemaObject String(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("string"),
-            Description = description,
-        };
+    public static JsonSchemaObject String(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string"), Description = description };
+    }
 
     /// <summary>
-    /// Creates a new number schema with the given description
+    ///     Creates a new number schema with the given description
     /// </summary>
-    public static JsonSchemaObject Number(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("number"),
-            Description = description,
-        };
+    public static JsonSchemaObject Number(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number"), Description = description };
+    }
 
     /// <summary>
-    /// Creates a new integer schema with the given description
+    ///     Creates a new integer schema with the given description
     /// </summary>
-    public static JsonSchemaObject Integer(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("integer"),
-            Description = description,
-        };
+    public static JsonSchemaObject Integer(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("integer"), Description = description };
+    }
 
     /// <summary>
-    /// Creates a new boolean schema with the given description
+    ///     Creates a new boolean schema with the given description
     /// </summary>
-    public static JsonSchemaObject Boolean(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("boolean"),
-            Description = description,
-        };
+    public static JsonSchemaObject Boolean(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("boolean"), Description = description };
+    }
 
     /// <summary>
-    /// Creates a JSON Schema object for an array type
+    ///     Creates a JSON Schema object for an array type
     /// </summary>
     /// <param name="items">Schema for the array items</param>
     /// <param name="description">Optional description of the array</param>
@@ -219,12 +215,12 @@ public sealed record JsonSchemaObject
         {
             Type = JsonSchemaTypeHelper.ToType(["array", "null"]),
             Description = description,
-            Items = items
+            Items = items,
         };
     }
 
     /// <summary>
-    /// Creates a new array schema with string items
+    ///     Creates a new array schema with string items
     /// </summary>
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
@@ -234,32 +230,31 @@ public sealed record JsonSchemaObject
         var items = new JsonSchemaObject
         {
             Type = JsonSchemaTypeHelper.ToType(["string", "null"]),
-            Description = itemDescription
+            Description = itemDescription,
         };
 
         return Array(items, description);
     }
 
     /// <summary>
-    /// Creates a new array schema with number items
+    ///     Creates a new array schema with number items
     /// </summary>
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
     /// <returns>A schema object of type array with number items</returns>
     public static JsonSchemaObject NumberArray(string? description = null, string? itemDescription = null)
     {
-        var items = new JsonSchemaObject
-        {
-            Type = "number",
-            Description = itemDescription
-        };
+        var items = new JsonSchemaObject { Type = "number", Description = itemDescription };
 
         return Array(items, description);
     }
 
     public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
     {
-        if (schemaObject == null) return "string";
+        if (schemaObject == null)
+        {
+            return "string";
+        }
 
         // Handle both single string and list of strings
         if (schemaObject.Type.Is<string>())
@@ -278,21 +273,19 @@ public sealed record JsonSchemaObject
     }
 }
 
-
-
 /// <summary>
-/// Builder class for constructing JSON Schema objects in a fluent manner
+///     Builder class for constructing JSON Schema objects in a fluent manner
 /// </summary>
 public class JsonSchemaObjectBuilder
 {
+    private readonly Dictionary<string, JsonSchemaObject> _properties = [];
+    private readonly List<string> _required = [];
     private readonly string _type;
-    private readonly Dictionary<string, JsonSchemaObject> _properties = new();
-    private readonly List<string> _required = new();
     private bool _additionalProperties;
     private string? _description;
 
     /// <summary>
-    /// Creates a new JSON Schema object builder with the specified type
+    ///     Creates a new JSON Schema object builder with the specified type
     /// </summary>
     public JsonSchemaObjectBuilder(string type)
     {
@@ -300,7 +293,7 @@ public class JsonSchemaObjectBuilder
     }
 
     /// <summary>
-    /// Adds a property to the schema
+    ///     Adds a property to the schema
     /// </summary>
     public JsonSchemaObjectBuilder WithProperty(string name, JsonSchemaObject property, bool required = false)
     {
@@ -309,11 +302,12 @@ public class JsonSchemaObjectBuilder
         {
             _required.Add(name);
         }
+
         return this;
     }
 
     /// <summary>
-    /// Sets whether additional properties are allowed
+    ///     Sets whether additional properties are allowed
     /// </summary>
     public JsonSchemaObjectBuilder AllowAdditionalProperties(bool allow)
     {
@@ -322,7 +316,7 @@ public class JsonSchemaObjectBuilder
     }
 
     /// <summary>
-    /// Sets the description of the schema
+    ///     Sets the description of the schema
     /// </summary>
     public JsonSchemaObjectBuilder WithDescription(string description)
     {
@@ -331,7 +325,7 @@ public class JsonSchemaObjectBuilder
     }
 
     /// <summary>
-    /// Builds the JSON Schema object
+    ///     Builds the JSON Schema object
     /// </summary>
     public JsonSchemaObject Build()
     {
@@ -341,7 +335,7 @@ public class JsonSchemaObjectBuilder
             Properties = _properties,
             Required = _required.Count > 0 ? _required : null,
             AdditionalProperties = _additionalProperties,
-            Description = _description
+            Description = _description,
         };
     }
 }
@@ -350,34 +344,70 @@ public static class JsonSchemaTypeHelper
 {
     public static bool IsNullable(JsonSchemaObject schemaObject)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains("null");
     }
 
     public static bool IsStringType(JsonSchemaObject schemaObject)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains("string");
     }
 
     public static bool IsTypeString(this JsonSchemaObject schemaObject, string type)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains(type);
     }
 
+    [SuppressMessage(
+        "Design",
+        "CA1062:Validate arguments of public methods",
+        Justification = "Parameter 'type' is a struct (Union<T1, T2>) and cannot be null"
+    )]
     public static bool Contains(this Union<string, IReadOnlyList<string>> type, string value)
     {
-        return type.Is<string>()
-            ? type.Get<string>() == value
-            : type.Get<IReadOnlyList<string>>().Contains(value);
+        ArgumentNullException.ThrowIfNull(value);
+
+        // Check if it's a string type first
+        if (type.Is<string>())
+        {
+            return type.Get<string>() == value;
+        }
+
+        // Otherwise it should be a list
+        var list = type.Get<IReadOnlyList<string>>();
+        if (list == null)
+        {
+            // Fallback if neither type is set
+            return false;
+        }
+
+        return list.Contains(value);
     }
 
+    [SuppressMessage(
+        "Design",
+        "CA1062:Validate arguments of public methods",
+        Justification = "Parameter 'type' is a struct (Union<T1, T2>) and cannot be null"
+    )]
     public static string GetTypeString(this Union<string, IReadOnlyList<string>> type)
     {
-        return type.Is<string>()
-            ? type.Get<string>()
-            : type.Get<IReadOnlyList<string>>()
-                .Where(x => x != "null")
-                .FirstOrDefault()
-                ?? "object";
+        // Check if it's a string type first
+        if (type.Is<string>())
+        {
+            return type.Get<string>();
+        }
+
+        // Otherwise it should be a list
+        var list = type.Get<IReadOnlyList<string>>();
+        if (list == null)
+        {
+            // Fallback if neither type is set (shouldn't happen with properly initialized Union)
+            return "object";
+        }
+
+        return list.FirstOrDefault(x => x != "null") ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

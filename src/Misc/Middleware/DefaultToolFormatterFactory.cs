@@ -3,26 +3,26 @@ using AchieveAi.LmDotnetTools.Misc.Utils;
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
 /// <summary>
-/// Factory for creating tool formatters
+///     Factory for creating tool formatters
 /// </summary>
 public interface IToolFormatterFactory
 {
     /// <summary>
-    /// Gets a formatter for the specified tool
+    ///     Gets a formatter for the specified tool
     /// </summary>
     ToolFormatter GetFormatter(string toolName);
 }
 
 /// <summary>
-/// Default implementation of tool formatter factory that formats tool parameters as indented JSON
+///     Default implementation of tool formatter factory that formats tool parameters as indented JSON
 /// </summary>
 public class DefaultToolFormatterFactory : IToolFormatterFactory
 {
+    private readonly Dictionary<string, JsonToolFormatter> _formatters = [];
     private readonly ConsoleColorPair _functionNameColor;
-    private readonly Dictionary<string, JsonToolFormatter> _formatters = new();
 
     /// <summary>
-    /// Creates a new instance of DefaultToolFormatterFactory
+    ///     Creates a new instance of DefaultToolFormatterFactory
     /// </summary>
     /// <param name="functionNameColor">Color for function names</param>
     public DefaultToolFormatterFactory(ConsoleColorPair functionNameColor)
@@ -31,7 +31,7 @@ public class DefaultToolFormatterFactory : IToolFormatterFactory
     }
 
     /// <summary>
-    /// Gets a formatter for the specified tool
+    ///     Gets a formatter for the specified tool
     /// </summary>
     /// <param name="toolCallName">The name of the tool to get a formatter for</param>
     /// <returns>A formatter for the tool</returns>
@@ -50,7 +50,7 @@ public class DefaultToolFormatterFactory : IToolFormatterFactory
 
             // Check if we have any fragment updates
             var updates = fragmentUpdates.ToList();
-            if (!updates.Any())
+            if (updates.Count == 0)
             {
                 // For empty updates, just show the function name
                 results.Add((_functionNameColor, name + " "));

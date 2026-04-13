@@ -82,13 +82,15 @@ function Ensure-LocalFeedDirectory {
 
 $projects = @(
     "src/LmCore/AchieveAi.LmDotnetTools.LmCore.csproj",
-    "src/LmConfig/AchieveAi.LmDotnetTools.LmConfig.csproj", 
+    "src/LmConfig/AchieveAi.LmDotnetTools.LmConfig.csproj",
     "src/LmEmbeddings/AchieveAi.LmDotnetTools.LmEmbeddings.csproj",
     "src/AnthropicProvider/AchieveAi.LmDotnetTools.AnthropicProvider.csproj",
     "src/OpenAIProvider/AchieveAi.LmDotnetTools.OpenAIProvider.csproj",
     "src/McpMiddleware/AchieveAi.LmDotnetTools.McpMiddleware.csproj",
     "src/McpSampleServer/AchieveAi.LmDotnetTools.McpSampleServer.csproj",
-    "src/Misc/AchieveAi.LmDotnetTools.Misc.csproj"
+    "src/Misc/AchieveAi.LmDotnetTools.Misc.csproj",
+    "src/ClaudeAgentSdkProvider/AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj",
+    "src/LmMultiTurn/AchieveAi.LmDotnetTools.LmMultiTurn.csproj"
 )
 
 # Get current version from Directory.Build.props

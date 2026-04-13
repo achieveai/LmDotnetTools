@@ -4,12 +4,10 @@ using AchieveAi.LmDotnetTools.Misc.Utils;
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
 /// <summary>
-/// Formats tool output as colorized JSON using structured fragment updates
+///     Formats tool output as colorized JSON using structured fragment updates
 /// </summary>
 public class JsonToolFormatter
 {
-    private readonly Dictionary<string, int> _indentLevels = new();
-    private readonly Dictionary<string, HashSet<string>> _processedStringsByTool = new(); // Track processed strings per tool
     private static readonly ConsoleColorPair NumberColor = new() { Foreground = ConsoleColor.Cyan };
     private static readonly ConsoleColorPair BooleanColor = new() { Foreground = ConsoleColor.Yellow };
     private static readonly ConsoleColorPair NullColor = new() { Foreground = ConsoleColor.DarkGray };
@@ -18,38 +16,43 @@ public class JsonToolFormatter
     private static readonly ConsoleColorPair OperatorColor = new() { Foreground = ConsoleColor.White };
     private static readonly ConsoleColorPair ColonColor = new() { Foreground = ConsoleColor.DarkYellow };
     private static readonly ConsoleColorPair CommaColor = new() { Foreground = ConsoleColor.DarkCyan };
+    private readonly Dictionary<string, int> _indentLevels = [];
+
+    private readonly Dictionary<string, HashSet<string>> _processedStringsByTool = []; // Track processed strings per tool
 
     /// <summary>
-    /// Formats structured JSON fragment updates as colorized text segments
+    ///     Formats structured JSON fragment updates as colorized text segments
     /// </summary>
     /// <param name="toolCallName">Name of the tool being called</param>
     /// <param name="fragmentUpdates">Structured JSON fragment updates to format</param>
     /// <returns>Sequence of colored text segments</returns>
-    public IEnumerable<(ConsoleColorPair Color, string Text)> Format(string toolCallName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
+    public IEnumerable<(ConsoleColorPair Color, string Text)> Format(
+        string toolCallName,
+        IEnumerable<JsonFragmentUpdate> fragmentUpdates
+    )
     {
         // Initialize tracking for this tool if needed
-        if (!_indentLevels.ContainsKey(toolCallName))
+        if (!_indentLevels.TryGetValue(toolCallName, out var indentLevel))
         {
-            _indentLevels[toolCallName] = 0;
-        }
-        if (!_processedStringsByTool.ContainsKey(toolCallName))
-        {
-            _processedStringsByTool[toolCallName] = new HashSet<string>();
+            indentLevel = 0;
+            _indentLevels[toolCallName] = indentLevel;
         }
 
-        var processedStrings = _processedStringsByTool[toolCallName];
+        if (!_processedStringsByTool.TryGetValue(toolCallName, out var processedStrings))
+        {
+            processedStrings = [];
+            _processedStringsByTool[toolCallName] = processedStrings;
+        }
 
         foreach (var update in fragmentUpdates)
         {
-            var indentLevel = _indentLevels[toolCallName];
-
             // Handle indentation before tokens
             if (ShouldIndent(update.Kind))
             {
                 // Special case for EndObject and EndArray - they need one less indent level
-                int indentAmount = update.Kind == JsonFragmentKind.EndObject ||
-                                  update.Kind == JsonFragmentKind.EndArray ?
-                                  Math.Max(0, (indentLevel - 1) * 2) : (indentLevel * 2);
+                var indentAmount = update.Kind is JsonFragmentKind.EndObject or JsonFragmentKind.EndArray
+                    ? Math.Max(0, (indentLevel - 1) * 2)
+                    : indentLevel * 2;
 
                 yield return (OperatorColor, "\n" + new string(' ', indentAmount));
             }
@@ -58,21 +61,21 @@ public class JsonToolFormatter
             {
                 case JsonFragmentKind.StartObject:
                     yield return (OperatorColor, "{");
-                    _indentLevels[toolCallName]++;
+                    _indentLevels[toolCallName] = ++indentLevel;
                     break;
 
                 case JsonFragmentKind.EndObject:
-                    _indentLevels[toolCallName]--;
+                    _indentLevels[toolCallName] = --indentLevel;
                     yield return (OperatorColor, "}");
                     break;
 
                 case JsonFragmentKind.StartArray:
                     yield return (OperatorColor, "[");
-                    _indentLevels[toolCallName]++;
+                    _indentLevels[toolCallName] = ++indentLevel;
                     break;
 
                 case JsonFragmentKind.EndArray:
-                    _indentLevels[toolCallName]--;
+                    _indentLevels[toolCallName] = --indentLevel;
                     yield return (OperatorColor, "]");
                     break;
 
@@ -92,7 +95,7 @@ public class JsonToolFormatter
                     }
 
                     yield return (StringColor, update.TextValue ?? string.Empty);
-                    processedStrings.Add(update.Path);
+                    _ = processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.PartialString:
@@ -101,9 +104,10 @@ public class JsonToolFormatter
                     {
                         value = "\"" + value;
                     }
+
                     // Ensure we have quotes around the string
                     yield return (StringColor, value);
-                    processedStrings.Add(update.Path);
+                    _ = processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.CompleteNumber:
@@ -123,6 +127,13 @@ public class JsonToolFormatter
                     _indentLevels[toolCallName] = 0;
                     processedStrings.Clear();
                     break;
+
+                case JsonFragmentKind.StartString:
+                    // No output needed for StartString - actual content comes via PartialString updates
+                    break;
+
+                default:
+                    throw new NotSupportedException($"Unexpected JSON fragment kind: {update.Kind}");
             }
 
             // Add comma after values in arrays/objects
@@ -133,24 +144,30 @@ public class JsonToolFormatter
         }
     }
 
-    private static bool ShouldIndent(JsonFragmentKind kind) => kind switch
+    private static bool ShouldIndent(JsonFragmentKind kind)
     {
-        JsonFragmentKind.StartObject => false,
-        JsonFragmentKind.EndObject => true,
-        JsonFragmentKind.StartArray => false,
-        JsonFragmentKind.EndArray => true,
-        JsonFragmentKind.Key => true,
-        _ => false
-    };
+        return kind switch
+        {
+            JsonFragmentKind.StartObject => false,
+            JsonFragmentKind.EndObject => true,
+            JsonFragmentKind.StartArray => false,
+            JsonFragmentKind.EndArray => true,
+            JsonFragmentKind.Key => true,
+            _ => false,
+        };
+    }
 
-    private static bool NeedsComma(JsonFragmentKind kind) => kind switch
+    private static bool NeedsComma(JsonFragmentKind kind)
     {
-        JsonFragmentKind.CompleteString => true,
-        JsonFragmentKind.CompleteNumber => true,
-        JsonFragmentKind.CompleteBoolean => true,
-        JsonFragmentKind.CompleteNull => true,
-        JsonFragmentKind.EndObject => true,
-        JsonFragmentKind.EndArray => true,
-        _ => false
-    };
+        return kind switch
+        {
+            JsonFragmentKind.CompleteString => true,
+            JsonFragmentKind.CompleteNumber => true,
+            JsonFragmentKind.CompleteBoolean => true,
+            JsonFragmentKind.CompleteNull => true,
+            JsonFragmentKind.EndObject => true,
+            JsonFragmentKind.EndArray => true,
+            _ => false,
+        };
+    }
 }

@@ -1,12 +1,11 @@
 using System.Collections.Immutable;
-using System.Text.Json;
 using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 
+using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 /// <summary>
-/// Provider-specific usage model that supports both OpenAI and OpenRouter formats
+///     Provider-specific usage model that supports both OpenAI and OpenRouter formats
 /// </summary>
 public record OpenAIProviderUsage
 {
@@ -52,19 +51,21 @@ public record OpenAIProviderUsage
     [JsonIgnore]
     public int TotalReasoningTokens =>
         // OpenRouter direct field takes precedence
-        ReasoningTokens != 0 ? ReasoningTokens :
-        // Fallback to OpenAI nested structure
-        OutputTokenDetails?.ReasoningTokens ?? 0;
+        ReasoningTokens != 0
+            ? ReasoningTokens
+            // Fallback to OpenAI nested structure
+            : OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
     public int TotalCachedTokens =>
         // OpenRouter direct field takes precedence
-        CachedTokens != 0 ? CachedTokens :
-        // Fallback to OpenAI nested structure
-        InputTokenDetails?.CachedTokens ?? 0;
+        CachedTokens != 0
+            ? CachedTokens
+            // Fallback to OpenAI nested structure
+            : InputTokenDetails?.CachedTokens ?? 0;
 
     /// <summary>
-    /// Convert to core Usage model
+    ///     Convert to core Usage model
     /// </summary>
     public Usage ToCoreUsage()
     {
@@ -74,7 +75,7 @@ public record OpenAIProviderUsage
             CompletionTokens = CompletionTokens,
             TotalTokens = TotalTokens,
             TotalCost = TotalCost,
-            ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
+            ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value),
         };
 
         // Convert nested token details if present
@@ -82,10 +83,7 @@ public record OpenAIProviderUsage
         {
             usage = usage with
             {
-                InputTokenDetails = new InputTokenDetails
-                {
-                    CachedTokens = InputTokenDetails.CachedTokens
-                }
+                InputTokenDetails = new InputTokenDetails { CachedTokens = InputTokenDetails.CachedTokens },
             };
         }
 
@@ -93,10 +91,7 @@ public record OpenAIProviderUsage
         {
             usage = usage with
             {
-                OutputTokenDetails = new OutputTokenDetails
-                {
-                    ReasoningTokens = OutputTokenDetails.ReasoningTokens
-                }
+                OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = OutputTokenDetails.ReasoningTokens },
             };
         }
 
@@ -104,26 +99,32 @@ public record OpenAIProviderUsage
     }
 
     /// <summary>
-    /// Create from core Usage model
+    ///     Create from core Usage model
     /// </summary>
     public static OpenAIProviderUsage FromCoreUsage(Usage coreUsage)
     {
+        ArgumentNullException.ThrowIfNull(coreUsage);
+
         return new OpenAIProviderUsage
         {
             PromptTokens = coreUsage.PromptTokens,
             CompletionTokens = coreUsage.CompletionTokens,
             TotalTokens = coreUsage.TotalTokens,
             TotalCost = coreUsage.TotalCost,
-            InputTokenDetails = coreUsage.InputTokenDetails != null ?
-                new OpenAIInputTokenDetails { CachedTokens = coreUsage.InputTokenDetails.CachedTokens } : null,
-            OutputTokenDetails = coreUsage.OutputTokenDetails != null ?
-                new OpenAIOutputTokenDetails { ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens } : null,
+            InputTokenDetails =
+                coreUsage.InputTokenDetails != null
+                    ? new OpenAIInputTokenDetails { CachedTokens = coreUsage.InputTokenDetails.CachedTokens }
+                    : null,
+            OutputTokenDetails =
+                coreUsage.OutputTokenDetails != null
+                    ? new OpenAIOutputTokenDetails { ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens }
+                    : null,
         };
     }
 }
 
 /// <summary>
-/// OpenAI-style input token details for provider-specific model
+///     OpenAI-style input token details for provider-specific model
 /// </summary>
 public record OpenAIInputTokenDetails
 {
@@ -133,7 +134,7 @@ public record OpenAIInputTokenDetails
 }
 
 /// <summary>
-/// OpenAI-style output token details for provider-specific model
+///     OpenAI-style output token details for provider-specific model
 /// </summary>
 public record OpenAIOutputTokenDetails
 {

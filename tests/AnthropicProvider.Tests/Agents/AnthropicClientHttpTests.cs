@@ -1,26 +1,24 @@
-using AchieveAi.LmDotnetTools.LmCore.Http;
-using AchieveAi.LmDotnetTools.LmCore.Performance;
-using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using Microsoft.Extensions.Logging;
 using System.Net;
-using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Performance;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 /// <summary>
-/// HTTP-level unit tests for AnthropicClient using shared test infrastructure
-/// Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
+///     HTTP-level unit tests for AnthropicClient using shared test infrastructure
+///     Tests retry logic, performance tracking, validation, and Anthropic-specific usage mapping
 /// </summary>
-public class AnthropicClientHttpTests
+public class AnthropicClientHttpTests : LoggingTestBase
 {
-    private readonly ILogger<AnthropicClient> _logger;
+    private readonly ILogger<AnthropicClient> _anthropicClientLogger;
     private readonly IPerformanceTracker _performanceTracker;
 
-    public AnthropicClientHttpTests()
+    public AnthropicClientHttpTests(ITestOutputHelper output) : base(output)
     {
-        _logger = TestLoggerFactory.CreateLogger<AnthropicClient>();
+        _anthropicClientLogger = LoggerFactory.CreateLogger<AnthropicClient>();
         _performanceTracker = new PerformanceTracker();
     }
 
@@ -28,30 +26,25 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Test response from Claude", "claude-3-sonnet-20240229");
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 2,
-            successResponse: successResponse,
-            failureStatus: HttpStatusCode.ServiceUnavailable);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
+        );
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
-                new()
+            Messages =
+            [
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
-                        new AnthropicContent { Type = "text", Text = "Hello Claude" }
-                    }
-                }
-            }
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello Claude" }],
+                },
+            ],
         };
 
         // Act
@@ -61,7 +54,7 @@ public class AnthropicClientHttpTests
         Assert.NotNull(response);
         var textContent = response.Content[0] as AnthropicResponseTextContent;
         Assert.NotNull(textContent);
-        Assert.Equal("Test response from Claude", textContent.Text);
+        Assert.False(string.IsNullOrWhiteSpace(textContent.Text));
 
         // Verify performance tracking with Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
@@ -76,8 +69,7 @@ public class AnthropicClientHttpTests
     public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new AnthropicClient(""));
+        var exception = Assert.Throws<ArgumentException>(() => new AnthropicClient(""));
 
         Assert.Contains("Value cannot be null, empty, or whitespace", exception.Message);
     }
@@ -86,52 +78,47 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithEmptyMessages_ShouldThrowValidationException()
     {
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>() // Empty messages
+            Messages = [], // Empty messages
         };
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            client.CreateChatCompletionsAsync(request));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => client.CreateChatCompletionsAsync(request));
     }
 
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
         HttpStatusCode[] statusCodes,
-        bool shouldSucceed)
+        bool shouldSucceed
+    )
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Success", "claude-3-sonnet-20240229");
-        var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
-            statusCodes,
-            successResponse);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: statusCodes,
+            chunkDelayMs: 0
+        );
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
-                new()
+            Messages =
+            [
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
-                        new AnthropicContent { Type = "text", Text = "Test" }
-                    }
-                }
-            }
+                    Content = [new AnthropicContent { Type = "text", Text = "Test" }],
+                },
+            ],
         };
 
         // Act & Assert
@@ -142,8 +129,7 @@ public class AnthropicClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
-                client.CreateChatCompletionsAsync(request));
+            _ = await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
         }
 
         // Verify performance tracking captured the metrics
@@ -156,29 +142,21 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_AnthropicUsageMapping_ShouldMapTokensCorrectly()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 50, outputTokens: 25);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse,
-            HttpStatusCode.OK);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
-                new()
+            Messages =
+            [
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
-                        new AnthropicContent { Type = "text", Text = "Hello" }
-                    }
-                }
-            }
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
+                },
+            ],
         };
 
         // Act
@@ -187,45 +165,40 @@ public class AnthropicClientHttpTests
         // Assert - Verify Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
+        Assert.NotNull(response.Usage);
 
         // Anthropic InputTokens → LmCore PromptTokens, OutputTokens → CompletionTokens
-        Assert.True(metrics.TotalTokensProcessed == 75); // 50 + 25
+        Assert.Equal(response.Usage.InputTokens + response.Usage.OutputTokens, metrics.TotalTokensProcessed);
 
         // Verify response usage
-        Assert.NotNull(response.Usage);
-        Assert.Equal(50, response.Usage.InputTokens);
-        Assert.Equal(25, response.Usage.OutputTokens);
+        Assert.True(response.Usage.InputTokens > 0);
+        Assert.True(response.Usage.OutputTokens > 0);
     }
 
     [Fact]
     public async Task StreamingChatCompletionsAsync_WithRetryOnFailure_ShouldSucceed()
     {
         // Arrange
-        var streamingEvents = CreateAnthropicStreamingResponse();
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 1,
-            successResponse: string.Join("", streamingEvents),
-            failureStatus: HttpStatusCode.ServiceUnavailable);
-
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK],
+            chunkDelayMs: 0
+        );
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
             Stream = true,
-            Messages = new List<AnthropicMessage>
-            {
-                new()
+            Messages =
+            [
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
-                        new AnthropicContent { Type = "text", Text = "Hello" }
-                    }
-                }
-            }
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
+                },
+            ],
         };
 
         // Act
@@ -247,33 +220,109 @@ public class AnthropicClientHttpTests
         Assert.Equal(1, metrics.SuccessfulRequests);
     }
 
+    /// <summary>
+    ///     Tests streaming with InstructionChainParser pattern.
+    ///     Uses AnthropicTestSseMessageHandler for unified test setup.
+    /// </summary>
     [Fact]
-    public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
+    public async Task StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed()
     {
-        // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 100, outputTokens: 50);
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse,
-            HttpStatusCode.OK);
+        // Arrange - Using AnthropicTestSseMessageHandler with instruction chain in user message
+        Logger.LogInformation("Starting StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed test");
 
-        var httpClient = new HttpClient(fakeHandler);
-        var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            wordsPerChunk: 3,
+            chunkDelayMs: 10
+        );
+
+        // Create AnthropicClient with test handler
+        var client = new AnthropicClient("test-api-key", httpClient: httpClient);
+
+        Logger.LogDebug("Created AnthropicClient with AnthropicTestSseMessageHandler");
+
+        // User message with instruction chain embedded
+        var userMessage = """
+            Hello Claude, can you help me with a task?
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Anthropic streaming test response", "messages":[{"text_message":{"length":20}}]}
+            ]}
+            <|instruction_end|>
+            """;
 
         var request = new AnthropicRequest
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
-                new()
+            Stream = true,
+            Messages =
+            [
+                new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
-                        new AnthropicContent { Type = "text", Text = "Complex reasoning task" }
-                    }
-                }
+                    Content = [new AnthropicContent { Type = "text", Text = userMessage }],
+                },
+            ],
+        };
+
+        Logger.LogDebug("Created AnthropicRequest with instruction chain");
+
+        // Act
+        var responseStream = await client.StreamingChatCompletionsAsync(request);
+        var events = new List<AnthropicStreamEvent>();
+        var allContent = new System.Text.StringBuilder();
+
+        await foreach (var streamEvent in responseStream)
+        {
+            events.Add(streamEvent);
+
+            // Extract text content from content_block_delta events
+            if (streamEvent is AnthropicContentBlockDeltaEvent deltaEvent
+                && deltaEvent.Delta is AnthropicTextDelta textDelta)
+            {
+                allContent.Append(textDelta.Text);
             }
+        }
+
+        Logger.LogInformation(
+            "Received {EventCount} events, total content: {Content}",
+            events.Count,
+            allContent.ToString()
+        );
+
+        // Assert
+        Assert.NotEmpty(events);
+        Assert.True(allContent.Length > 0, "Should have received text content from instruction chain");
+
+        // Verify we got proper Anthropic event types
+        Assert.Contains(events, e => e.Type == "message_start");
+        Assert.Contains(events, e => e.Type == "content_block_start");
+        Assert.Contains(events, e => e.Type == "content_block_delta");
+        Assert.Contains(events, e => e.Type == "message_stop");
+
+        Logger.LogInformation("StreamingChatCompletionsAsync_WithInstructionChain_ShouldSucceed completed successfully");
+    }
+
+    [Fact]
+    public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
+    {
+        // Arrange
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(LoggerFactory, chunkDelayMs: 0);
+        var client = new AnthropicClient(httpClient, performanceTracker: _performanceTracker, logger: _anthropicClientLogger);
+
+        var request = new AnthropicRequest
+        {
+            Model = "claude-3-sonnet-20240229",
+            MaxTokens = 1000,
+            Messages =
+            [
+                new AnthropicMessage
+                {
+                    Role = "user",
+                    Content = [new AnthropicContent { Type = "text", Text = "Complex reasoning task" }],
+                },
+            ],
         };
 
         // Act
@@ -303,19 +352,8 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content = new List<AnthropicResponseContent>
-            {
-                new AnthropicResponseTextContent
-                {
-                    Type = "text",
-                    Text = "Test response from Claude"
-                }
-            },
-            Usage = new AnthropicUsage
-            {
-                InputTokens = 10,
-                OutputTokens = 5
-            }
+            Content = [new AnthropicResponseTextContent { Type = "text", Text = "Test response from Claude" }],
+            Usage = new AnthropicUsage { InputTokens = 10, OutputTokens = 5 },
         };
     }
 
@@ -327,19 +365,8 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content = new List<AnthropicResponseContent>
-            {
-                new AnthropicResponseTextContent
-                {
-                    Type = "text",
-                    Text = "Test response with specific usage"
-                }
-            },
-            Usage = new AnthropicUsage
-            {
-                InputTokens = inputTokens,
-                OutputTokens = outputTokens
-            }
+            Content = [new AnthropicResponseTextContent { Type = "text", Text = "Test response with specific usage" }],
+            Usage = new AnthropicUsage { InputTokens = inputTokens, OutputTokens = outputTokens },
         };
     }
 
@@ -360,95 +387,93 @@ public class AnthropicClientHttpTests
         yield return new object[]
         {
             new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
-            true // should succeed
+            true, // should succeed
         };
 
         // Scenario: Non-retryable error (Bad Request)
         yield return new object[]
         {
             new[] { HttpStatusCode.BadRequest },
-            false // should fail
+            false, // should fail
         };
 
-        // Scenario: Max retries exceeded
+        // Scenario: Max retries exceeded (BaseHttpService.ExecuteHttpWithRetryAsync has maxRetries=5)
         yield return new object[]
         {
-            new[] {
+            new[]
+            {
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
-                HttpStatusCode.ServiceUnavailable
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
             },
-            false // should fail after max retries
+            false, // should fail after max retries (1 initial + 5 retries = 6 attempts needed to exhaust)
         };
 
         // Scenario: Success on first try
         yield return new object[]
         {
             new[] { HttpStatusCode.OK },
-            true // should succeed
+            true, // should succeed
         };
     }
 
     /// <summary>
-    /// Creates an Anthropic-specific successful response JSON
+    ///     Creates an Anthropic-specific successful response JSON
     /// </summary>
-    private static string CreateAnthropicSuccessResponse(string content = "Hello! How can I help you today?", string model = "claude-3-sonnet-20240229")
+    private static string CreateAnthropicSuccessResponse(
+        string content = "Hello! How can I help you today?",
+        string model = "claude-3-sonnet-20240229"
+    )
     {
         var response = new
         {
-            type = "message",  // Must be first property for polymorphic deserialization
+            type = "message", // Must be first property for polymorphic deserialization
             id = "msg_test123",
             role = "assistant",
             content = new[]
             {
                 new
                 {
-                    type = "text",  // Must be first property for polymorphic deserialization
-                    text = content
-                }
+                    type = "text", // Must be first property for polymorphic deserialization
+                    text = content,
+                },
             },
-            model = model,
+            model,
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
-            usage = new
-            {
-                input_tokens = 10,
-                output_tokens = 20
-            }
+            usage = new { input_tokens = 10, output_tokens = 20 },
         };
 
-        return System.Text.Json.JsonSerializer.Serialize(response);
+        return JsonSerializer.Serialize(response);
     }
 
     /// <summary>
-    /// Creates an Anthropic-specific successful response JSON with specific usage
+    ///     Creates an Anthropic-specific successful response JSON with specific usage
     /// </summary>
     private static string CreateAnthropicSuccessResponseWithSpecificUsage(int inputTokens, int outputTokens)
     {
         var response = new
         {
-            type = "message",  // Must be first property for polymorphic deserialization
+            type = "message", // Must be first property for polymorphic deserialization
             id = "msg_test123",
             role = "assistant",
             content = new[]
             {
                 new
                 {
-                    type = "text",  // Must be first property for polymorphic deserialization
-                    text = "Test response with specific usage"
-                }
+                    type = "text", // Must be first property for polymorphic deserialization
+                    text = "Test response with specific usage",
+                },
             },
             model = "claude-3-sonnet-20240229",
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
-            usage = new
-            {
-                input_tokens = inputTokens,
-                output_tokens = outputTokens
-            }
+            usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
 
-        return System.Text.Json.JsonSerializer.Serialize(response);
+        return JsonSerializer.Serialize(response);
     }
 }

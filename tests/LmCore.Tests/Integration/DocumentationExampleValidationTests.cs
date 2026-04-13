@@ -1,12 +1,9 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
 /// <summary>
-/// Validation tests that ensure all documentation examples work as specified
+///     Validation tests that ensure all documentation examples work as specified
 /// </summary>
 public class DocumentationExampleValidationTests
 {
@@ -16,20 +13,21 @@ public class DocumentationExampleValidationTests
         // This test validates the exact example from NaturalToolUse.md Example 1
 
         // Create a sample aggregate message (from documentation)
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"Paris\",\"unit\":\"celsius\"}",
+        };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C with clear skies");
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(toolCall),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
-            GenerationId = "gen-123"
+            GenerationId = "gen-123",
         };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult)
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "weather-agent");
 
@@ -37,7 +35,7 @@ public class DocumentationExampleValidationTests
         var naturalFormat = aggregateMessage.ToNaturalToolUse();
 
         // Validate the expected output format from documentation
-        Assert.IsType<TextMessage>(naturalFormat);
+        _ = Assert.IsType<TextMessage>(naturalFormat);
         var textMessage = (TextMessage)naturalFormat;
 
         // The expected format from documentation:
@@ -68,26 +66,26 @@ public class DocumentationExampleValidationTests
         // This test validates Example 2 from NaturalToolUse.md
 
         // Create the example from documentation
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"Paris\",\"unit\":\"celsius\"}",
+        };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C with clear skies");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Create a conversation sequence (from documentation)
         var messages = new IMessage[]
         {
-            new TextMessage
-            {
-                Text = "I'll check the weather for you.",
-                Role = Role.Assistant
-            },
+            new TextMessage { Text = "I'll check the weather for you.", Role = Role.Assistant },
             aggregateMessage, // Tool call/response
             new TextMessage
             {
                 Text = "Based on this forecast, it's a great day for outdoor activities!",
-                Role = Role.Assistant
-            }
+                Role = Role.Assistant,
+            },
         };
 
         // Combine into single natural format message (from documentation)
@@ -123,17 +121,17 @@ public class DocumentationExampleValidationTests
     {
         // This test validates Example 3 from NaturalToolUse.md
 
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messageCollection = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
             aggregateMessage,
-            new TextMessage { Text = "Goodbye", Role = Role.Assistant }
+            new TextMessage { Text = "Goodbye", Role = Role.Assistant },
         };
 
         // Transform only the aggregate messages, leave others unchanged (from documentation)
@@ -146,7 +144,7 @@ public class DocumentationExampleValidationTests
         Assert.Same(messageCollection[0], transformed[0]);
 
         // Second message should be transformed
-        Assert.IsType<TextMessage>(transformed[1]);
+        _ = Assert.IsType<TextMessage>(transformed[1]);
         Assert.NotSame(messageCollection[1], transformed[1]); // Different instance
         Assert.Contains("<tool_call name=\"GetWeather\">", ((TextMessage)transformed[1]).Text);
 
@@ -159,10 +157,10 @@ public class DocumentationExampleValidationTests
     {
         // This test validates Example 4 from NaturalToolUse.md
 
-        var toolCall = new ToolCall("TestFunction", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var regularMessage = new TextMessage { Text = "Hello", Role = Role.User };
@@ -178,7 +176,7 @@ public class DocumentationExampleValidationTests
         var textOnlyMessages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new TextMessage { Text = "Hi there", Role = Role.Assistant }
+            new TextMessage { Text = "Hi there", Role = Role.Assistant },
         };
         Assert.False(textOnlyMessages.ContainsTransformableToolCalls());
 
@@ -186,7 +184,7 @@ public class DocumentationExampleValidationTests
         if (aggregateMessage.IsTransformableToolCall())
         {
             var natural = aggregateMessage.ToNaturalToolUse();
-            Assert.IsType<TextMessage>(natural);
+            _ = Assert.IsType<TextMessage>(natural);
             Assert.Contains("<tool_call", ((TextMessage)natural).Text);
         }
 
@@ -202,11 +200,18 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the exact XML format from the documentation
 
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}");
-        var toolResult = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies and light winds from the west.");
+        var toolCall = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}",
+        };
+        var toolResult = new ToolCallResult(
+            null,
+            "Temperature is 22°C with partly cloudy skies and light winds from the west."
+        );
 
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var result = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -251,14 +256,28 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the multiple tool calls format with separator from documentation
 
-        var toolCall1 = new ToolCall("GetWeather", "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}");
-        var toolCall2 = new ToolCall("GetTime", "{\"timezone\":\"America/Los_Angeles\"}");
+        var toolCall1 = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}",
+        };
+        var toolCall2 = new ToolCall
+        {
+            FunctionName = "GetTime",
+            FunctionArgs = "{\"timezone\":\"America/Los_Angeles\"}",
+        };
 
         var toolResult1 = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies.");
-        var toolResult2 = new ToolCallResult(null, "{\"current_time\":\"2024-07-24T15:30:00-07:00\",\"timezone\":\"PDT\",\"formatted\":\"3:30 PM PDT\"}");
+        var toolResult2 = new ToolCallResult(
+            null,
+            "{\"current_time\":\"2024-07-24T15:30:00-07:00\",\"timezone\":\"PDT\",\"formatted\":\"3:30 PM PDT\"}"
+        );
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall1, toolCall2) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult1, toolResult2) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult1, toolResult2),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var result = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -291,38 +310,38 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the Quick Start basic usage examples from documentation
 
-        var toolCall = new ToolCall("TestFunction", "{\"param\":\"value\"}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"param\":\"value\"}" };
         var toolResult = new ToolCallResult(null, "test result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messageCollection = new IMessage[] { aggregateMessage };
         var messageSequence = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.Assistant },
-            aggregateMessage
+            aggregateMessage,
         };
 
         // Transform a single aggregate message (from documentation Quick Start)
         var naturalFormat = aggregateMessage.ToNaturalToolUse();
-        Assert.IsType<TextMessage>(naturalFormat);
+        _ = Assert.IsType<TextMessage>(naturalFormat);
 
-        // Transform a collection of messages (from documentation Quick Start) 
+        // Transform a collection of messages (from documentation Quick Start)
         var transformedMessages = messageCollection.ToNaturalToolUse();
         Assert.NotNull(transformedMessages);
 
         // Combine a message sequence with natural formatting (from documentation Quick Start)
         var combined = messageSequence.CombineAsNaturalToolUse();
-        Assert.IsType<TextMessage>(combined);
+        _ = Assert.IsType<TextMessage>(combined);
         Assert.Contains("Hello", combined.Text);
         Assert.Contains("<tool_call name=\"TestFunction\">", combined.Text);
 
         // Using the Core Transformer Directly (from documentation Quick Start)
         var naturalMessage = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
-        Assert.IsType<TextMessage>(naturalMessage);
+        _ = Assert.IsType<TextMessage>(naturalMessage);
 
         var combinedMessage = ToolsCallAggregateTransformer.CombineMessageSequence(messageSequence);
-        Assert.IsType<TextMessage>(combinedMessage);
+        _ = Assert.IsType<TextMessage>(combinedMessage);
     }
 }

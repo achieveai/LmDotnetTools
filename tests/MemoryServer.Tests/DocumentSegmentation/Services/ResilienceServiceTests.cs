@@ -2,22 +2,20 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using System.Collections.Immutable;
-using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
 /// <summary>
-/// Tests for ResilienceService implementation.
-/// Validates comprehensive error handling, circuit breaker integration, and graceful degradation.
-/// Covers AC-4.1, AC-4.2, AC-4.3, AC-4.4, and AC-5.1 to AC-5.4 from ErrorHandling-TestAcceptanceCriteria.
+///     Tests for ResilienceService implementation.
+///     Validates comprehensive error handling, circuit breaker integration, and graceful degradation.
+///     Covers AC-4.1, AC-4.2, AC-4.3, AC-4.4, and AC-5.1 to AC-5.4 from ErrorHandling-TestAcceptanceCriteria.
 /// </summary>
 public class ResilienceServiceTests
 {
-    private readonly Mock<ICircuitBreakerService> _mockCircuitBreaker;
-    private readonly Mock<IRetryPolicyService> _mockRetryPolicy;
-    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
     private readonly GracefulDegradationConfiguration _degradationConfig;
+    private readonly Mock<ICircuitBreakerService> _mockCircuitBreaker;
+    private readonly Mock<ILogger<ResilienceService>> _mockLogger;
+    private readonly Mock<IRetryPolicyService> _mockRetryPolicy;
     private readonly ResilienceService _service;
 
     public ResilienceServiceTests()
@@ -31,15 +29,29 @@ public class ResilienceServiceTests
             FallbackTimeoutMs = 5000,
             RuleBasedQualityScore = 0.7,
             RuleBasedMaxProcessingMs = 10000,
-            MaxPerformanceDegradationPercent = 0.2
+            MaxPerformanceDegradationPercent = 0.2,
         };
 
         _service = new ResilienceService(
-          _mockCircuitBreaker.Object,
-          _mockRetryPolicy.Object,
-          _degradationConfig,
-          _mockLogger.Object);
+            _mockCircuitBreaker.Object,
+            _mockRetryPolicy.Object,
+            _degradationConfig,
+            _mockLogger.Object
+        );
     }
+
+    /// <summary>
+    ///     Test data for various error scenarios to validate resilience behavior.
+    ///     Tests different combinations of errors and recovery patterns.
+    /// </summary>
+    public static IEnumerable<object[]> ErrorScenarioTestCases =>
+        [
+            [new HttpRequestException("timeout"), true, "Network timeouts should use fallback"],
+            [new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should use fallback"],
+            [new HttpRequestException("401 Unauthorized"), true, "Auth errors should use fallback"],
+            [new ArgumentException("Invalid response"), true, "Malformed responses should use fallback"],
+            [new InvalidOperationException("Generic error"), true, "Generic errors should use fallback"],
+        ];
 
     [Fact]
     public async Task ExecuteWithResilienceAsync_WithSuccessfulOperation_ShouldReturnSuccessResult()
@@ -48,19 +60,20 @@ public class ResilienceServiceTests
         var expectedData = "success-data";
         var operationName = "successful-operation";
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ReturnsAsync(expectedData);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expectedData);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ReturnsAsync(expectedData);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(expectedData);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult(expectedData),
-          null,
-          operationName);
+            () => Task.FromResult(expectedData),
+            null,
+            operationName
+        );
 
         // Assert
         Assert.True(result.Success);
@@ -80,19 +93,20 @@ public class ResilienceServiceTests
         var operationName = "failing-operation";
         var exception = new HttpRequestException("503 Service Unavailable");
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          () => Task.FromResult(fallbackData),
-          operationName);
+            () => Task.FromResult("main-data"),
+            () => Task.FromResult(fallbackData),
+            operationName
+        );
 
         // Assert - Implements AC-4.1 and AC-4.2
         Assert.True(result.Success);
@@ -112,19 +126,20 @@ public class ResilienceServiceTests
         var operationName = "failing-operation-no-fallback";
         var exception = new HttpRequestException("503 Service Unavailable");
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          null, // No fallback
-          operationName);
+            () => Task.FromResult("main-data"),
+            null, // No fallback
+            operationName
+        );
 
         // Assert
         Assert.False(result.Success);
@@ -144,19 +159,20 @@ public class ResilienceServiceTests
         var mainException = new HttpRequestException("503 Service Unavailable");
         var fallbackException = new InvalidOperationException("Fallback also failed");
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(mainException);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(mainException);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(mainException);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(mainException);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          () => throw fallbackException,
-          operationName);
+            () => Task.FromResult("main-data"),
+            () => throw fallbackException,
+            operationName
+        );
 
         // Assert
         Assert.False(result.Success);
@@ -176,41 +192,45 @@ public class ResilienceServiceTests
         var shortTimeoutConfig = new GracefulDegradationConfiguration
         {
             FallbackTimeoutMs = 100, // Very short timeout
-            RuleBasedQualityScore = 0.7
+            RuleBasedQualityScore = 0.7,
         };
 
         var serviceWithShortTimeout = new ResilienceService(
-          _mockCircuitBreaker.Object,
-          _mockRetryPolicy.Object,
-          shortTimeoutConfig,
-          _mockLogger.Object);
+            _mockCircuitBreaker.Object,
+            _mockRetryPolicy.Object,
+            shortTimeoutConfig,
+            _mockLogger.Object
+        );
 
         var operationName = "timeout-test";
         var exception = new HttpRequestException("503 Service Unavailable");
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
         // Act
         var result = await serviceWithShortTimeout.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          async () =>
-          {
-              await Task.Delay(500); // Longer than timeout
-              return "should-not-complete";
-          },
-          operationName);
+            () => Task.FromResult("main-data"),
+            async () =>
+            {
+                await Task.Delay(500); // Longer than timeout
+                return "should-not-complete";
+            },
+            operationName
+        );
 
         // Assert - Should fail due to timeout
         Assert.False(result.Success);
-        Assert.True(result.ErrorMessage?.ToLowerInvariant()?.Contains("canceled") == true ||
-                    result.ErrorMessage?.ToLowerInvariant()?.Contains("timeout") == true,
-                    $"Expected error message to contain 'canceled' or 'timeout', but got: {result.ErrorMessage}");
+        Assert.True(
+            result.ErrorMessage?.ToLowerInvariant()?.Contains("canceled") == true
+                || result.ErrorMessage?.ToLowerInvariant()?.Contains("timeout") == true,
+            $"Expected error message to contain 'canceled' or 'timeout', but got: {result.ErrorMessage}"
+        );
     }
 
     [Fact]
@@ -233,10 +253,7 @@ public class ResilienceServiceTests
     public async Task ResetMetrics_ShouldClearAllMetrics()
     {
         // Arrange - First, execute an operation to generate some metrics
-        await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("test"),
-          null,
-          "test-operation");
+        _ = await _service.ExecuteWithResilienceAsync<string>(() => Task.FromResult("test"), null, "test-operation");
 
         // Act
         _service.ResetMetrics();
@@ -263,68 +280,32 @@ public class ResilienceServiceTests
         Assert.True(health.LastCheckAt <= DateTime.UtcNow);
     }
 
-    /// <summary>
-    /// Test data for various error scenarios to validate resilience behavior.
-    /// Tests different combinations of errors and recovery patterns.
-    /// </summary>
-    public static IEnumerable<object[]> ErrorScenarioTestCases => new List<object[]>
-  {
-    new object[]
-    {
-      new HttpRequestException("timeout"),
-      true,
-      "Network timeouts should use fallback"
-    },
-    new object[]
-    {
-      new HttpRequestException("429 Too Many Requests"),
-      true,
-      "Rate limiting should use fallback"
-    },
-    new object[]
-    {
-      new HttpRequestException("401 Unauthorized"),
-      true,
-      "Auth errors should use fallback"
-    },
-    new object[]
-    {
-      new ArgumentException("Invalid response"),
-      true,
-      "Malformed responses should use fallback"
-    },
-    new object[]
-    {
-      new InvalidOperationException("Generic error"),
-      true,
-      "Generic errors should use fallback"
-    }
-  };
-
     [Theory]
     [MemberData(nameof(ErrorScenarioTestCases))]
     public async Task ExecuteWithResilienceAsync_WithVariousErrors_ShouldHandleGracefully(
-      Exception exception,
-      bool shouldUseFallback,
-      string scenario)
+        Exception exception,
+        bool shouldUseFallback,
+        string scenario
+    )
     {
         // Arrange
         var operationName = $"error-scenario-{scenario}";
         var fallbackData = "fallback-result";
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          shouldUseFallback ? () => Task.FromResult(fallbackData) : null,
-          operationName);
+            () => Task.FromResult("main-data"),
+            shouldUseFallback ? () => Task.FromResult(fallbackData) : null,
+            operationName
+        );
 
         // Assert
         if (shouldUseFallback)
@@ -352,19 +333,20 @@ public class ResilienceServiceTests
         var fallbackData = "fallback-data";
         var exception = new HttpRequestException("503 Service Unavailable");
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
-          .ThrowsAsync(exception);
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
 
         // Act
         var result = await _service.ExecuteWithResilienceAsync<string>(
-          () => Task.FromResult("main-data"),
-          () => Task.FromResult(fallbackData),
-          operationName);
+            () => Task.FromResult("main-data"),
+            () => Task.FromResult(fallbackData),
+            operationName
+        );
 
         // Assert metrics tracking
         var metrics = _service.GetErrorMetrics();
@@ -383,21 +365,23 @@ public class ResilienceServiceTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        _mockCircuitBreaker
-          .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, cts.Token))
-          .ThrowsAsync(new OperationCanceledException(cts.Token));
+        _ = _mockCircuitBreaker
+            .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, cts.Token))
+            .ThrowsAsync(new OperationCanceledException(cts.Token));
 
-        _mockRetryPolicy
-          .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, cts.Token))
-          .ThrowsAsync(new OperationCanceledException(cts.Token));
+        _ = _mockRetryPolicy
+            .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), operationName, cts.Token))
+            .ThrowsAsync(new OperationCanceledException(cts.Token));
 
         // Act & Assert
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-          _service.ExecuteWithResilienceAsync<string>(
-            () => Task.FromResult("main-data"),
-            () => Task.FromResult("fallback-data"),
-            operationName,
-            cts.Token));
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _service.ExecuteWithResilienceAsync<string>(
+                () => Task.FromResult("main-data"),
+                () => Task.FromResult("fallback-data"),
+                operationName,
+                cts.Token
+            )
+        );
     }
 
     [Fact]
@@ -406,12 +390,12 @@ public class ResilienceServiceTests
         // Arrange - Execute multiple operations to build up health metrics
         var operations = new[]
         {
-      ("success-1", false, false), // Success
-      ("success-2", false, false), // Success  
-      ("fail-with-fallback", true, false), // Fail main, success fallback
-      ("fail-both", true, true), // Fail both main and fallback
-      ("success-3", false, false) // Success
-    };
+            ("success-1", false, false), // Success
+            ("success-2", false, false), // Success
+            ("fail-with-fallback", true, false), // Fail main, success fallback
+            ("fail-both", true, true), // Fail both main and fallback
+            ("success-3", false, false), // Success
+        };
 
         var successData = "success-data";
         var fallbackData = "fallback-data";
@@ -420,31 +404,33 @@ public class ResilienceServiceTests
         {
             if (shouldFail)
             {
-                _mockCircuitBreaker
-                  .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
-                  .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
+                _ = _mockCircuitBreaker
+                    .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
 
-                _mockRetryPolicy
-                  .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
-                  .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
+                _ = _mockRetryPolicy
+                    .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
             }
             else
             {
-                _mockCircuitBreaker
-                  .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(successData);
+                _ = _mockCircuitBreaker
+                    .Setup(cb => cb.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(successData);
 
-                _mockRetryPolicy
-                  .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(successData);
+                _ = _mockRetryPolicy
+                    .Setup(rp => rp.ExecuteAsync(It.IsAny<Func<Task<string>>>(), opName, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(successData);
             }
 
             // Act
             var result = await _service.ExecuteWithResilienceAsync<string>(
-              () => Task.FromResult(successData),
-              shouldFailFallback ? () => throw new InvalidOperationException("Fallback failed")
-                                 : () => Task.FromResult(fallbackData),
-              opName);
+                () => Task.FromResult(successData),
+                shouldFailFallback
+                    ? () => throw new InvalidOperationException("Fallback failed")
+                    : () => Task.FromResult(fallbackData),
+                opName
+            );
 
             // Brief delay to ensure different timestamps
             await Task.Delay(10);

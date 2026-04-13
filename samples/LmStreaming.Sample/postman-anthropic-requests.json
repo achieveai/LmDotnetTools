@@ -1,0 +1,154 @@
+{
+  "info": {
+    "name": "Anthropic Server Tools - SSE Capture",
+    "description": "Requests to capture real Anthropic/Kimi SSE responses for replay testing.\n\nSetup:\n1. Set `anthropic_api_key` variable to your API key\n2. For Kimi: set `base_url` to `https://api.kimi.com/coding` and `model` to `kimi-2.5`\n3. For Anthropic: set `base_url` to `https://api.anthropic.com/v1` and `model` to `claude-sonnet-4-20250514`\n\nAll requests use `stream: true` so Postman will show raw SSE events.\nSave the response body to a .txt file for replay testing.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://api.anthropic.com/v1" },
+    { "key": "model", "value": "claude-sonnet-4-20250514" },
+    { "key": "anthropic_api_key", "value": "YOUR_API_KEY_HERE" }
+  ],
+  "item": [
+    {
+      "name": "1. Turn 1 - web_search (single turn)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant with access to web search. Use your web search capability to find accurate answers. Be concise.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"What are the top AI companies in 2026?\" }\n      ]\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Save the response to a variable for Turn 2",
+              "// In Postman, copy the raw SSE body to a file: turn1-response.txt",
+              "console.log('Response received. Copy SSE body for replay testing.');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Turn 2 - web_search with history (multi-turn)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant with access to web search. Use your web search capability to find accurate answers. Be concise.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"What are the top AI companies in 2026?\" }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Let me search for that.\" },\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_REPLACE_WITH_TURN1_ID\",\n          \"name\": \"web_search\",\n          \"input\": { \"query\": \"top AI companies 2026\" }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_REPLACE_WITH_TURN1_ID\",\n          \"content\": \"[{\\\"type\\\": \\\"web_search_result\\\", \\\"url\\\": \\\"https://example.com\\\", \\\"title\\\": \\\"Top AI Companies\\\"}]\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Based on my search, the top AI companies include Anthropic, OpenAI, Google DeepMind, and Meta AI.\" }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Tell me more about Anthropic specifically\" }\n      ]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "3. Turn 2 - Kimi format (mismatched IDs test)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant with access to web search. Use web search to answer questions. Be concise.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"What is quantum computing?\" }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_REPLACE_WITH_KIMI_SERVER_TOOL_USE_ID\",\n          \"name\": \"web_search\",\n          \"input\": { \"query\": \"quantum computing\" }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_REPLACE_WITH_KIMI_SERVER_TOOL_USE_ID\",\n          \"content\": \"{}\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Quantum computing uses qubits for parallel computation.\" }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"What are its practical applications?\" }\n      ]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "4. Turn 1 - non-streaming (for comparison)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": false,\n  \"system\": \"You are a research assistant with access to web search. Use web search to answer questions. Be concise.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"What is the current price of Bitcoin?\" }\n      ]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "5. Turn 3 - full 3-turn history",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant with access to web search. Use web search to answer questions. Be concise.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"What are the top AI companies?\" }]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_turn1_id\",\n          \"name\": \"web_search\",\n          \"input\": { \"query\": \"top AI companies 2026\" }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_turn1_id\",\n          \"content\": \"{}\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"The top AI companies in 2026 include Anthropic, OpenAI, Google DeepMind, and Meta AI.\" }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"Tell me about Anthropic\" }]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_turn2_id\",\n          \"name\": \"web_search\",\n          \"input\": { \"query\": \"Anthropic AI company 2026\" }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_turn2_id\",\n          \"content\": \"{}\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Anthropic is an AI safety company founded by Dario and Daniela Amodei.\" }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"How does Claude compare to GPT?\" }]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "6. web_search + function tools combined",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant. Use web search for research and get_weather for weather queries.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather conditions for a specific location\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\",\n            \"description\": \"City name, e.g., 'New York'\"\n          }\n        },\n        \"required\": [\"location\"]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"What's the latest news about AI and what's the weather in San Francisco?\" }]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "7. Error case - invalid tool_result ID",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"Search for something\" }]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_valid_id\",\n          \"name\": \"web_search\",\n          \"input\": { \"query\": \"test\" }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_MISMATCHED_ID\",\n          \"content\": \"{}\"\n        }\n      ]\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "8. Minimal - no input on server_tool_use",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-api-key", "value": "{{anthropic_api_key}}" },
+          { "key": "anthropic-version", "value": "2023-06-01" },
+          { "key": "content-type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{base_url}}/messages" },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{model}}\",\n  \"max_tokens\": 4096,\n  \"stream\": true,\n  \"system\": \"You are a research assistant.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"Search the web for the meaning of life\" }]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"server_tool_use\",\n          \"id\": \"srvtoolu_no_input\",\n          \"name\": \"web_search\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"srvtoolu_no_input\",\n          \"content\": \"{}\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"The meaning of life is 42.\" }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"type\": \"text\", \"text\": \"Can you elaborate?\" }]\n    }\n  ]\n}"
+        }
+      }
+    }
+  ]
+}

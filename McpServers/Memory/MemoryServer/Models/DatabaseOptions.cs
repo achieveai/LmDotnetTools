@@ -1,7 +1,7 @@
 namespace MemoryServer.Models;
 
 /// <summary>
-/// Configuration options for the database.
+///     Configuration options for the database.
 /// </summary>
 public class DatabaseOptions
 {

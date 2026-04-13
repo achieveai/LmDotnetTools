@@ -45,51 +45,51 @@ public class Example
         // Example 1: Register only static methods
         var registry1 = new FunctionRegistry();
         registry1.AddFunctionsFromType(typeof(MathService));
-        
+
         // This will register:
         // - multiply (static)
         // - SquareRoot (static)
         // Will NOT register:
         // - addToMemory (instance)
         // - GetMemory (instance)
-        
+
         var middleware1 = registry1.BuildMiddleware("StaticMathTools");
 
         // Example 2: Register only instance methods
         var mathService = new MathService();
         var registry2 = new FunctionRegistry();
         registry2.AddFunctionsFromObject(mathService);
-        
+
         // This will register:
         // - addToMemory (instance)
         // - GetMemory (instance)
         // Will NOT register:
         // - multiply (static)
         // - SquareRoot (static)
-        
+
         var middleware2 = registry2.BuildMiddleware("InstanceMathTools");
 
         // Example 3: Register both static and instance methods (from different registrations)
         var registry3 = new FunctionRegistry();
-        
+
         // Add static methods from the type
         registry3.AddFunctionsFromType(typeof(MathService), "StaticMath", priority: 100);
-        
+
         // Add instance methods from an object
         registry3.AddFunctionsFromObject(mathService, "InstanceMath", priority: 200);
-        
+
         // This will register ALL methods:
         // - multiply (static)
-        // - SquareRoot (static)  
+        // - SquareRoot (static)
         // - addToMemory (instance)
         // - GetMemory (instance)
-        
+
         var middleware3 = registry3.BuildMiddleware("CompleteMathTools");
 
         // The instance methods maintain state between calls
         // Each call to addToMemory will accumulate the value
         // GetMemory will return the accumulated total
-        
+
         // Static methods are stateless
         // Each call to multiply or SquareRoot is independent
     }
