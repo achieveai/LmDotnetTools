@@ -20,13 +20,14 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         StringComparer.OrdinalIgnoreCase);
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly string _filePath;
     private readonly string _sessionId;
     private readonly ILogger? _logger;
-    private StreamWriter? _writer;
 
     public CodexRpcTraceWriter(string filePath, string? sessionId, ILogger? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        _filePath = filePath;
         _sessionId = string.IsNullOrWhiteSpace(sessionId) ? "unknown" : sessionId;
         _logger = logger;
 
@@ -36,18 +37,11 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
             _ = Directory.CreateDirectory(directory);
         }
 
-        _writer = new StreamWriter(filePath, append: true, Encoding.UTF8);
     }
 
     public async Task WriteAsync(string direction, string line, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(line))
-        {
-            return;
-        }
-
-        var writer = _writer;
-        if (writer == null)
         {
             return;
         }
@@ -126,12 +120,8 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         await _writeLock.WaitAsync(ct);
         try
         {
-            writer = _writer;
-            if (writer == null)
-            {
-                return;
-            }
-
+            await using var stream = new FileStream(_filePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            await using var writer = new StreamWriter(stream, Encoding.UTF8);
             await writer.WriteLineAsync(envelope);
             await writer.FlushAsync(ct);
         }
@@ -155,11 +145,6 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         await _writeLock.WaitAsync();
         try
         {
-            if (_writer != null)
-            {
-                await _writer.DisposeAsync();
-                _writer = null;
-            }
         }
         finally
         {
@@ -213,17 +198,15 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
                 writer.WriteEndArray();
                 return;
             case JsonValueKind.Undefined:
-                break;
+                writer.WriteNullValue();
+                return;
             case JsonValueKind.String:
-                break;
             case JsonValueKind.Number:
-                break;
             case JsonValueKind.True:
-                break;
             case JsonValueKind.False:
-                break;
             case JsonValueKind.Null:
-                break;
+                element.WriteTo(writer);
+                return;
             default:
                 element.WriteTo(writer);
                 return;
