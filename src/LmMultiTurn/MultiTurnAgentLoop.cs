@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -29,6 +30,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, Func<string, Task<string>>> _toolHandlers;
     private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _multiModalHandlers;
+    private readonly SubAgentManager? _subAgentManager;
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -44,6 +46,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
     /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
+    /// <param name="subAgentOptions">Optional sub-agent orchestration configuration</param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -54,15 +57,42 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         int inputChannelCapacity = 100,
         int outputChannelCapacity = 1000,
         IConversationStore? store = null,
-        ILogger<MultiTurnAgentLoop>? logger = null)
+        ILogger<MultiTurnAgentLoop>? logger = null,
+        SubAgentOptions? subAgentOptions = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
 
+        // When sub-agent orchestration is configured, snapshot the current tools
+        // and register Agent/CheckAgent tools before building the middleware stack.
+        if (subAgentOptions != null)
+        {
+            // IMPORTANT: Snapshot parent tools BEFORE registering sub-agent tools.
+            // This ensures sub-agents inherit the parent's domain tools but NOT the
+            // Agent/CheckAgent tools, preventing unbounded recursive delegation.
+            var (contracts, handlers, mmHandlers) =
+                functionRegistry.BuildWithMultiModal();
+
+            _subAgentManager = new SubAgentManager(
+                parentAgent: this,
+                parentContracts: contracts.ToList(),
+                parentHandlers: handlers,
+                parentMultiModalHandlers:
+                    mmHandlers.Count > 0 ? mmHandlers : null,
+                options: subAgentOptions,
+                logger: logger);
+
+            var toolProvider = new SubAgentToolProvider(
+                _subAgentManager,
+                subAgentOptions.Templates.Keys.ToList());
+
+            functionRegistry.AddProvider(toolProvider);
+        }
+
         // Build tool call components from registry
-        var (toolCallMiddleware, handlers, multiModalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
-        _toolHandlers = handlers;
+        var (toolCallMiddleware, finalHandlers, multiModalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
+        _toolHandlers = finalHandlers;
         _multiModalHandlers = multiModalHandlers.Count > 0 ? multiModalHandlers : null;
 
         // Create publishing middleware that publishes to subscribers
@@ -77,6 +107,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             .WithMiddleware(publishingMiddleware)
             .WithMiddleware(new MessageUpdateJoinerMiddleware(name: "MessageJoiner"))
             .WithMiddleware(toolCallMiddleware);
+    }
+
+    /// <inheritdoc />
+    protected override async Task OnDisposeAsync()
+    {
+        if (_subAgentManager != null)
+        {
+            await _subAgentManager.DisposeAsync();
+        }
     }
 
     /// <inheritdoc />

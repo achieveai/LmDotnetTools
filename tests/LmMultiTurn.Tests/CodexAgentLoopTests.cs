@@ -568,6 +568,9 @@ public class CodexAgentLoopTests : LoggingTestBase
             messages.Add(msg);
         }
 
+        // Wait for async metadata persistence that runs after RunCompletedMessage is published
+        await Task.Delay(500);
+
         var runCompleted = messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
         var metadata = await store.LoadMetadataAsync("thread-persist-1", CancellationToken.None);
         metadata.Should().NotBeNull();
