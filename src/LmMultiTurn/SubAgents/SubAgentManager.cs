@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -169,6 +170,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 await agentBase.RecoverAsync();
             }
 
+            // Cancel and dispose the old CTS to prevent double-monitor bugs:
+            // the old monitor's closure captured the old CTS, and both monitors
+            // would receive RunCompletedMessage causing double Release/Decrement.
+            await state.Cts.CancelAsync();
+            state.Cts.Dispose();
+
             // Create new CTS and start the loop again
             state.Cts = new CancellationTokenSource();
             var cts = state.Cts;
@@ -236,6 +243,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             task = state.Task,
             recent_turns = recentTurns,
             last_result = state.LastResult,
+            send_to_parent_failed = state.SendToParentFailed,
+            send_to_parent_error = state.SendToParentError,
         });
     }
 
@@ -255,6 +264,8 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 await state.Agent.StopAsync(TimeSpan.FromSeconds(5));
                 await state.Agent.DisposeAsync();
+
+                state.Cts.Dispose();
             }
             catch (Exception ex)
             {
@@ -278,8 +289,6 @@ public sealed class SubAgentManager : IAsyncDisposable
                         state.AgentId);
                 }
             }
-
-            state.Cts.Dispose();
         }
 
         _agents.Clear();
@@ -342,7 +351,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Builds the effective set of enabled tool names from template filter + overrides.
     /// Returns null when all tools should be available (no filtering).
     /// </summary>
-    private static HashSet<string>? BuildEnabledToolSet(
+    internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
         string[]? removeTools)
@@ -390,6 +399,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct)
     {
         string? lastTextContent = null;
+        var completionHandled = false;
 
         try
         {
@@ -417,6 +427,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     state.LastResult = lastTextContent;
                     await HandleRunCompletionAsync(state, rcm, lastTextContent);
+                    completionHandled = true;
                     lastTextContent = null;
                 }
             }
@@ -425,12 +436,27 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             // Expected during shutdown
         }
+        catch (ChannelClosedException)
+        {
+            // Subscription channel closed - expected during disposal
+        }
         catch (Exception ex)
         {
             _logger.LogError(
                 ex,
                 "Error monitoring sub-agent {AgentId}",
                 state.AgentId);
+        }
+        finally
+        {
+            // Guard against semaphore slot leaks: if HandleRunCompletionAsync
+            // was never called (stream ended without RunCompletedMessage,
+            // cancellation, or exception), release the semaphore here.
+            if (!completionHandled)
+            {
+                _concurrencyGate.Release();
+                Interlocked.Decrement(ref _runningCount);
+            }
         }
     }
 
@@ -442,38 +468,43 @@ public sealed class SubAgentManager : IAsyncDisposable
         RunCompletedMessage rcm,
         string? lastTextContent)
     {
-        if (rcm.IsError)
+        try
         {
-            state.Status = SubAgentStatus.Error;
+            if (rcm.IsError)
+            {
+                state.Status = SubAgentStatus.Error;
 
-            var errorText =
-                $"<sub-agent name=\"{state.TemplateName}\" " +
-                $"id=\"{state.AgentId}\">\n" +
-                $"[Error] Task: {state.Task}\n" +
-                $"Error: {rcm.ErrorMessage}\n" +
-                $"</sub-agent>";
+                var errorText =
+                    $"<sub-agent name=\"{state.TemplateName}\" " +
+                    $"id=\"{state.AgentId}\">\n" +
+                    $"[Error] Task: {state.Task}\n" +
+                    $"Error: {rcm.ErrorMessage}\n" +
+                    $"</sub-agent>";
 
-            await SendToParentAsync(errorText);
+                await SendToParentAsync(state, errorText);
+            }
+            else
+            {
+                state.Status = SubAgentStatus.Completed;
+
+                var resultText =
+                    $"<sub-agent name=\"{state.TemplateName}\" " +
+                    $"id=\"{state.AgentId}\">\n" +
+                    $"[Completed] Task: {state.Task}\n" +
+                    $"Result: {lastTextContent ?? "(no text response)"}\n" +
+                    $"</sub-agent>";
+
+                await SendToParentAsync(state, resultText);
+            }
         }
-        else
+        finally
         {
-            state.Status = SubAgentStatus.Completed;
-
-            var resultText =
-                $"<sub-agent name=\"{state.TemplateName}\" " +
-                $"id=\"{state.AgentId}\">\n" +
-                $"[Completed] Task: {state.Task}\n" +
-                $"Result: {lastTextContent ?? "(no text response)"}\n" +
-                $"</sub-agent>";
-
-            await SendToParentAsync(resultText);
+            _concurrencyGate.Release();
+            Interlocked.Decrement(ref _runningCount);
         }
-
-        _concurrencyGate.Release();
-        Interlocked.Decrement(ref _runningCount);
     }
 
-    private async Task SendToParentAsync(string text)
+    private async Task SendToParentAsync(SubAgentState state, string text)
     {
         try
         {
@@ -482,6 +513,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            state.SendToParentFailed = true;
+            state.SendToParentError = ex.Message;
             _logger.LogError(
                 ex, "Failed to send sub-agent result to parent");
         }

@@ -41,8 +41,21 @@ internal class SubAgentState
     public Task? RunTask { get; set; }
     public CancellationTokenSource Cts { get; set; } = new();
     public ConcurrentQueue<SubAgentTurnSummary> TurnBuffer { get; } = new();
-    public SubAgentStatus Status { get; set; } = SubAgentStatus.Running;
+
+    private volatile SubAgentStatus _status = SubAgentStatus.Running;
+    public SubAgentStatus Status { get => _status; set => _status = value; }
+
     public IConversationStore? Store { get; init; }
+
+    /// <summary>
+    /// Set to true when SendToParentAsync fails, so CheckAgent/Peek can surface the error.
+    /// </summary>
+    public bool SendToParentFailed { get; set; }
+
+    /// <summary>
+    /// Error message from the most recent failed SendToParentAsync call.
+    /// </summary>
+    public string? SendToParentError { get; set; }
 
     /// <summary>
     /// Stores the final text result after the sub-agent completes.

@@ -30,7 +30,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, Func<string, Task<string>>> _toolHandlers;
     private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _multiModalHandlers;
-    private SubAgentManager? _subAgentManager;
+    private readonly SubAgentManager? _subAgentManager;
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -68,6 +68,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         // and register Agent/CheckAgent tools before building the middleware stack.
         if (subAgentOptions != null)
         {
+            // IMPORTANT: Snapshot parent tools BEFORE registering sub-agent tools.
+            // This ensures sub-agents inherit the parent's domain tools but NOT the
+            // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers, mmHandlers) =
                 functionRegistry.BuildWithMultiModal();
 

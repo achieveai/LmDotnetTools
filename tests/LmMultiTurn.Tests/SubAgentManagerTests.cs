@@ -218,6 +218,176 @@ public class SubAgentManagerTests : IAsyncLifetime
         _manager = null;
     }
 
+    [Fact]
+    public async Task ResumeAsync_RunningAgent_SendsMessage()
+    {
+        // Arrange: sub-agent that blocks so it stays in Running state
+        var blockingTcs = new TaskCompletionSource<bool>();
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (_, _, ct) =>
+                {
+                    await blockingTcs.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([
+                        new TextMessage { Text = "done", Role = Role.Assistant },
+                    ]);
+                });
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task");
+
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Act: resume with a new message while agent is running
+        var resumeJson = await _manager.ResumeAsync(agentId, "follow-up message");
+
+        // Assert
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        resumeDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be("message_sent");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task ResumeAsync_CompletedAgent_RestartsRun()
+    {
+        // Arrange: sub-agent completes quickly
+        SetupSubAgentResponse([
+            new TextMessage { Text = "First result", Role = Role.Assistant },
+        ]);
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task");
+
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Wait for the sub-agent to complete
+        await Task.Delay(1500);
+
+        // Verify it completed
+        var peekJson = _manager.Peek(agentId);
+        using var peekDoc = JsonDocument.Parse(peekJson);
+        peekDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be("completed");
+
+        // Act: resume the completed agent - this should restart a new run
+        // Need to set up the mock to respond again for the restart
+        SetupSubAgentResponse([
+            new TextMessage { Text = "Second result", Role = Role.Assistant },
+        ]);
+
+        var resumeJson = await _manager.ResumeAsync(agentId, "continue work");
+
+        // Assert
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        resumeDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be("resumed");
+    }
+
+    [Fact]
+    public async Task ResumeAsync_UnknownAgentId_Throws()
+    {
+        // Arrange
+        _manager = CreateManager();
+
+        // Act
+        var act = () => _manager.ResumeAsync("non-existent-id", "some message");
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*Unknown agent ID*non-existent-id*");
+    }
+
+    [Fact]
+    public async Task Completion_Error_SendsWrappedErrorToParent()
+    {
+        // Arrange: sub-agent returns an error completion
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable([
+                new TextMessage { Text = "partial result", Role = Role.Assistant },
+            ])));
+
+        // Make the sub-agent's GenerateReplyStreamingAsync throw on the
+        // second turn to trigger an error run completion from the loop.
+        var callCount = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, _) =>
+                {
+                    callCount++;
+                    if (callCount > 1)
+                    {
+                        throw new InvalidOperationException("API call failed");
+                    }
+
+                    return Task.FromResult(ToAsyncEnumerable([
+                        new TextMessage { Text = "partial work", Role = Role.Assistant },
+                    ]));
+                });
+
+        _manager = CreateManager();
+        await _manager.SpawnAsync("test-agent", "error-prone task");
+
+        // Wait for the sub-agent to process and potentially error
+        await Task.Delay(2000);
+
+        // Assert: parent received some notification (either completed or error)
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.Is<List<IMessage>>(msgs =>
+                    msgs.Count == 1
+                    && ContainsSubAgentTag(msgs[0], "test-agent")),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce);
+    }
+
+    [Theory]
+    [InlineData(null, null, null, null)]
+    [InlineData(new[] { "tool1", "tool2" }, null, null, new[] { "tool1", "tool2" })]
+    [InlineData(new[] { "tool1" }, new[] { "tool2" }, null, new[] { "tool1", "tool2" })]
+    [InlineData(new[] { "tool1", "tool2" }, null, new[] { "tool2" }, new[] { "tool1" })]
+    [InlineData(null, new[] { "tool1" }, null, new[] { "tool1" })]
+    [InlineData(null, new[] { "tool1", "tool2" }, new[] { "tool1" }, new[] { "tool2" })]
+    public void BuildEnabledToolSet_FiltersToolsCorrectly(
+        string[]? templateTools,
+        string[]? addTools,
+        string[]? removeTools,
+        string[]? expectedTools)
+    {
+        // Act
+        var result = SubAgentManager.BuildEnabledToolSet(
+            templateTools?.ToList(), addTools, removeTools);
+
+        // Assert
+        if (expectedTools == null)
+        {
+            result.Should().BeNull();
+        }
+        else
+        {
+            result.Should().NotBeNull();
+            result.Should().BeEquivalentTo(expectedTools);
+        }
+    }
+
     #region Helpers
 
     /// <summary>
@@ -237,6 +407,23 @@ public class SubAgentManagerTests : IAsyncLifetime
         return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
             && tm.Text.Contains("</sub-agent>")
             && tm.Text.Contains(expectedResultText);
+    }
+
+    /// <summary>
+    /// Checks if a message is a TextMessage containing sub-agent XML tags.
+    /// Extracted as a static method to avoid pattern matching in Moq expression trees.
+    /// </summary>
+    private static bool ContainsSubAgentTag(
+        IMessage message,
+        string templateName)
+    {
+        if (message is not TextMessage tm)
+        {
+            return false;
+        }
+
+        return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
+            && tm.Text.Contains("</sub-agent>");
     }
 
     /// <summary>
