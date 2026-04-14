@@ -360,42 +360,20 @@ public class SubAgentManagerTests : IAsyncLifetime
     [Fact]
     public async Task Completion_Error_SendsWrappedErrorToParent()
     {
-        // Arrange: sub-agent returns an error completion
+        // Arrange: sub-agent throws on first call to trigger error run completion.
+        // MultiTurnAgentLoop catches this and calls CompleteRunAsync(isError: true),
+        // which produces RunCompletedMessage with IsError=true.
         _subAgentMock
             .Setup(a => a.GenerateReplyStreamingAsync(
                 It.IsAny<IEnumerable<IMessage>>(),
                 It.IsAny<GenerateReplyOptions>(),
                 It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable([
-                new TextMessage { Text = "partial result", Role = Role.Assistant },
-            ])));
-
-        // Make the sub-agent's GenerateReplyStreamingAsync throw on the
-        // second turn to trigger an error run completion from the loop.
-        var callCount = 0;
-        _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (_, _, _) =>
-                {
-                    callCount++;
-                    if (callCount > 1)
-                    {
-                        throw new InvalidOperationException("API call failed");
-                    }
-
-                    return Task.FromResult(ToAsyncEnumerable([
-                        new TextMessage { Text = "partial work", Role = Role.Assistant },
-                    ]));
-                });
+            .ThrowsAsync(new InvalidOperationException("API call failed"));
 
         _manager = CreateManager();
         await _manager.SpawnAsync("test-agent", "error-prone task");
 
-        // Poll until parent receives notification (either completed or error)
+        // Poll until parent receives error notification
         await WaitForConditionAsync(
             () =>
             {
@@ -405,7 +383,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                         p => p.SendAsync(
                             It.Is<List<IMessage>>(msgs =>
                                 msgs.Count == 1
-                                && ContainsSubAgentTag(msgs[0], "test-agent")),
+                                && ContainsSubAgentError(msgs[0], "test-agent")),
                             It.IsAny<string?>(),
                             It.IsAny<string?>(),
                             It.IsAny<CancellationToken>()),
@@ -419,12 +397,12 @@ public class SubAgentManagerTests : IAsyncLifetime
             },
             TimeSpan.FromSeconds(10));
 
-        // Assert: parent received some notification (either completed or error)
+        // Assert: parent received error notification specifically (not [Completed])
         _parentMock.Verify(
             p => p.SendAsync(
                 It.Is<List<IMessage>>(msgs =>
                     msgs.Count == 1
-                    && ContainsSubAgentTag(msgs[0], "test-agent")),
+                    && ContainsSubAgentError(msgs[0], "test-agent")),
                 It.IsAny<string?>(),
                 It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()),
@@ -521,6 +499,24 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
             && tm.Text.Contains("</sub-agent>");
+    }
+
+    /// <summary>
+    /// Checks if a message is a TextMessage containing sub-agent error markers.
+    /// Verifies the [Error] tag specifically to distinguish from [Completed].
+    /// </summary>
+    private static bool ContainsSubAgentError(
+        IMessage message,
+        string templateName)
+    {
+        if (message is not TextMessage tm)
+        {
+            return false;
+        }
+
+        return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
+            && tm.Text.Contains("</sub-agent>")
+            && tm.Text.Contains("[Error]");
     }
 
     /// <summary>

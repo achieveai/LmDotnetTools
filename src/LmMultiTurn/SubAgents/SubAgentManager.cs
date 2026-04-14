@@ -97,12 +97,14 @@ public sealed class SubAgentManager : IAsyncDisposable
             var cts = state.Cts;
             state.RunTask = agent.RunAsync(cts.Token);
 
-            // Send the task as user input
+            // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
+            // if SendAsync triggers a fast completion before the monitor subscribes,
+            // the RunCompletedMessage would fire with no subscriber listening.
+            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
+
+            // Send the task as user input (triggers first turn)
             await agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = task }], ct: ct);
-
-            // Start monitoring in the background
-            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             _logger.LogInformation(
                 "Spawned sub-agent {AgentId} from template {Template} with task: {Task}",
@@ -202,11 +204,11 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
+            // Re-subscribe BEFORE sending to avoid subscribe-after-send race
+            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
+
             await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
-
-            // Re-subscribe for monitoring
-            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             state.Status = SubAgentStatus.Running;
 
@@ -275,55 +277,59 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         foreach (var (_, state) in _agents)
         {
-            try
-            {
-                await state.Cts.CancelAsync();
-                await state.Agent.StopAsync(TimeSpan.FromSeconds(5));
-
-                // Await background tasks to ensure clean shutdown
-                if (state.RunTask != null)
-                {
-                    try { await state.RunTask; }
-                    catch (OperationCanceledException) { }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "RunTask faulted for sub-agent {AgentId}", state.AgentId);
-                    }
-                }
-
-                if (state.MonitorTask != null)
-                {
-                    try { await state.MonitorTask; }
-                    catch (OperationCanceledException) { }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
-                    }
-                }
-
-                await state.Agent.DisposeAsync();
-                state.Cts.Dispose();
-            }
+            // Each step is isolated to prevent cascading failures:
+            // if StopAsync throws, we still await tasks, dispose the agent, etc.
+            try { await state.Cts.CancelAsync(); }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Error disposing sub-agent {AgentId}",
-                    state.AgentId);
+                _logger.LogWarning(ex, "CancelAsync failed for sub-agent {AgentId}", state.AgentId);
+            }
+
+            try { await state.Agent.StopAsync(TimeSpan.FromSeconds(5)); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "StopAsync failed for sub-agent {AgentId}", state.AgentId);
+            }
+
+            // Await background tasks to ensure clean shutdown
+            if (state.RunTask != null)
+            {
+                try { await state.RunTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "RunTask faulted for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
+            if (state.MonitorTask != null)
+            {
+                try { await state.MonitorTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
+            try { await state.Agent.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
+            }
+
+            try { state.Cts.Dispose(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "CTS dispose failed for sub-agent {AgentId}", state.AgentId);
             }
 
             if (state.Store is IAsyncDisposable disposableStore)
             {
-                try
-                {
-                    await disposableStore.DisposeAsync();
-                }
+                try { await disposableStore.DisposeAsync(); }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Error disposing store for sub-agent {AgentId}",
-                        state.AgentId);
+                    _logger.LogWarning(ex, "Store dispose failed for sub-agent {AgentId}", state.AgentId);
                 }
             }
         }
