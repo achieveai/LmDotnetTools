@@ -26,7 +26,6 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly SemaphoreSlim _concurrencyGate;
-    private int _runningCount;
 
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
@@ -34,7 +33,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         IDictionary<string, Func<string, Task<string>>> parentHandlers,
         IDictionary<string, Func<string, Task<ToolCallResult>>>? parentMultiModalHandlers,
         SubAgentOptions options,
-        ILogger<SubAgentManager>? logger = null)
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -46,7 +45,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentHandlers = parentHandlers;
         _parentMultiModalHandlers = parentMultiModalHandlers;
         _options = options;
-        _logger = logger ?? NullLogger<SubAgentManager>.Instance;
+        _logger = logger ?? NullLogger.Instance;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -59,7 +58,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string templateName,
         string task,
         string[]? addTools = null,
-        string[]? removeTools = null)
+        string[]? removeTools = null,
+        CancellationToken ct = default)
     {
         if (!_options.Templates.TryGetValue(templateName, out var template))
         {
@@ -69,14 +69,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                 nameof(templateName));
         }
 
-        if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5)))
+        if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
             throw new InvalidOperationException(
                 $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) " +
                 $"reached. Wait for a sub-agent to complete or increase the limit.");
         }
 
-        Interlocked.Increment(ref _runningCount);
         var agentId = Guid.NewGuid().ToString("N")[..12];
 
         try
@@ -96,16 +95,14 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Start the agent loop in the background
             var cts = state.Cts;
-            state.RunTask = Task.Run(
-                async () => await agent.RunAsync(cts.Token),
-                cts.Token);
+            state.RunTask = agent.RunAsync(cts.Token);
 
             // Send the task as user input
             await agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = task }]);
+                [new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             // Start monitoring in the background
-            _ = Task.Run(() => MonitorSubAgentAsync(state, cts.Token));
+            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             _logger.LogInformation(
                 "Spawned sub-agent {AgentId} from template {Template} with task: {Task}",
@@ -122,7 +119,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             // Release the gate on failure
             _concurrencyGate.Release();
-            Interlocked.Decrement(ref _runningCount);
             throw;
         }
     }
@@ -130,7 +126,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Resume or send a new message to an existing sub-agent.
     /// </summary>
-    public async Task<string> ResumeAsync(string agentId, string newMessage)
+    public async Task<string> ResumeAsync(
+        string agentId,
+        string newMessage,
+        CancellationToken ct = default)
     {
         if (!_agents.TryGetValue(agentId, out var state))
         {
@@ -142,7 +141,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             // Inject message into the currently running agent
             await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = newMessage }]);
+                [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
 
             return JsonSerializer.Serialize(new
             {
@@ -152,14 +151,12 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         // Agent is completed/error/stopped - need to resume
-        if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5)))
+        if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
             throw new InvalidOperationException(
                 $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) " +
                 $"reached. Cannot resume agent '{agentId}'.");
         }
-
-        Interlocked.Increment(ref _runningCount);
 
         try
         {
@@ -174,21 +171,42 @@ public sealed class SubAgentManager : IAsyncDisposable
             // the old monitor's closure captured the old CTS, and both monitors
             // would receive RunCompletedMessage causing double Release/Decrement.
             await state.Cts.CancelAsync();
+
+            // Observe the old RunTask to avoid unobserved exceptions
+            // (must cancel first so the task receives the cancellation signal)
+            if (state.RunTask != null)
+            {
+                try { await state.RunTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Old RunTask faulted for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
+            if (state.MonitorTask != null)
+            {
+                try { await state.MonitorTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Old MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
             state.Cts.Dispose();
 
             // Create new CTS and start the loop again
             state.Cts = new CancellationTokenSource();
             var cts = state.Cts;
 
-            state.RunTask = Task.Run(
-                async () => await state.Agent.RunAsync(cts.Token),
-                cts.Token);
+            state.RunTask = state.Agent.RunAsync(cts.Token);
 
             await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = newMessage }]);
+                [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
 
             // Re-subscribe for monitoring
-            _ = Task.Run(() => MonitorSubAgentAsync(state, cts.Token));
+            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             state.Status = SubAgentStatus.Running;
 
@@ -205,7 +223,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         catch
         {
             _concurrencyGate.Release();
-            Interlocked.Decrement(ref _runningCount);
             throw;
         }
     }
@@ -261,10 +278,30 @@ public sealed class SubAgentManager : IAsyncDisposable
             try
             {
                 await state.Cts.CancelAsync();
-
                 await state.Agent.StopAsync(TimeSpan.FromSeconds(5));
-                await state.Agent.DisposeAsync();
 
+                // Await background tasks to ensure clean shutdown
+                if (state.RunTask != null)
+                {
+                    try { await state.RunTask; }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "RunTask faulted for sub-agent {AgentId}", state.AgentId);
+                    }
+                }
+
+                if (state.MonitorTask != null)
+                {
+                    try { await state.MonitorTask; }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
+                    }
+                }
+
+                await state.Agent.DisposeAsync();
                 state.Cts.Dispose();
             }
             catch (Exception ex)
@@ -344,7 +381,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             defaultOptions: template.DefaultOptions,
             maxTurnsPerRun: template.MaxTurnsPerRun,
             store: store,
-            logger: _logger as ILogger<MultiTurnAgentLoop>);
+            logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger));
     }
 
     /// <summary>
@@ -379,8 +416,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
-        if (removeTools != null && result != null)
+        if (removeTools != null)
         {
+            if (result == null)
+            {
+                // removeTools without a base set: cannot remove from "all tools"
+                // since we don't know the full tool list here. Treat as error.
+                throw new InvalidOperationException(
+                    "Cannot specify removeTools without enabledTools or addTools. " +
+                    "Use template EnabledTools to define the base set, then remove from it.");
+            }
+
             foreach (var tool in removeTools)
             {
                 result.Remove(tool);
@@ -442,6 +488,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            state.Status = SubAgentStatus.Error;
+            state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(
                 ex,
                 "Error monitoring sub-agent {AgentId}",
@@ -455,7 +503,6 @@ public sealed class SubAgentManager : IAsyncDisposable
             if (!completionHandled)
             {
                 _concurrencyGate.Release();
-                Interlocked.Decrement(ref _runningCount);
             }
         }
     }
@@ -500,7 +547,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         finally
         {
             _concurrencyGate.Release();
-            Interlocked.Decrement(ref _runningCount);
         }
     }
 
@@ -566,5 +612,27 @@ public sealed class SubAgentManager : IAsyncDisposable
         return text.Length <= maxLength
             ? text
             : text[..maxLength] + "...";
+    }
+
+    /// <summary>
+    /// Adapts non-generic ILogger to ILogger&lt;MultiTurnAgentLoop&gt;
+    /// so the sub-agent loop receives a properly typed logger.
+    /// </summary>
+    private sealed class SubAgentLoopLoggerAdapter(ILogger inner) : ILogger<MultiTurnAgentLoop>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) =>
+            inner.IsEnabled(logLevel);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            inner.Log(logLevel, eventId, state, exception, formatter);
     }
 }

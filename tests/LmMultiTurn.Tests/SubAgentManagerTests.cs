@@ -145,8 +145,21 @@ public class SubAgentManagerTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(resultJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // Give time for the monitoring task to process messages
-        await Task.Delay(500);
+        // Poll until monitoring task has processed messages
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    var json = _manager!.Peek(agentId);
+                    return json.Contains("\"status\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
 
         // Act
         var peekJson = _manager.Peek(agentId);
@@ -172,8 +185,33 @@ public class SubAgentManagerTests : IAsyncLifetime
         _manager = CreateManager();
         await _manager.SpawnAsync("test-agent", "Analyze the codebase");
 
-        // Wait for the sub-agent to complete and relay result to parent
-        await Task.Delay(1500);
+        // Poll until the sub-agent completion is relayed to parent
+        var parentCalled = false;
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsSubAgentResult(msgs[0], "test-agent", "Analysis complete: found 3 issues")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    parentCalled = true;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        parentCalled.Should().BeTrue("parent should have received the sub-agent result");
 
         // Assert: parent's SendAsync was called with the wrapped sub-agent result
         _parentMock.Verify(
@@ -269,8 +307,21 @@ public class SubAgentManagerTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // Wait for the sub-agent to complete
-        await Task.Delay(1500);
+        // Poll until the sub-agent completes
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    var json = _manager!.Peek(agentId);
+                    return json.Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
 
         // Verify it completed
         var peekJson = _manager.Peek(agentId);
@@ -344,8 +395,29 @@ public class SubAgentManagerTests : IAsyncLifetime
         _manager = CreateManager();
         await _manager.SpawnAsync("test-agent", "error-prone task");
 
-        // Wait for the sub-agent to process and potentially error
-        await Task.Delay(2000);
+        // Poll until parent receives notification (either completed or error)
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsSubAgentTag(msgs[0], "test-agent")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
 
         // Assert: parent received some notification (either completed or error)
         _parentMock.Verify(
@@ -388,7 +460,32 @@ public class SubAgentManagerTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public void BuildEnabledToolSet_RemoveWithoutBaseSet_Throws()
+    {
+        // Act
+        var act = () => SubAgentManager.BuildEnabledToolSet(
+            templateEnabledTools: null,
+            addTools: null,
+            removeTools: ["tool1"]);
+
+        // Assert
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Cannot specify removeTools without enabledTools or addTools*");
+    }
+
     #region Helpers
+
+    private static async Task WaitForConditionAsync(
+        Func<bool> condition,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(50);
+        }
+    }
 
     /// <summary>
     /// Checks if a message is a TextMessage containing sub-agent completion markers.
@@ -448,7 +545,6 @@ public class SubAgentManagerTests : IAsyncLifetime
     {
         var template = new SubAgentTemplate
         {
-            Name = "test-agent",
             SystemPrompt = "You are a test agent.",
             AgentFactory = () => _subAgentMock.Object,
         };

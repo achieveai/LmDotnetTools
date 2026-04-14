@@ -11,9 +11,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 public record SubAgentTemplate
 {
     /// <summary>
-    /// Template identifier used to reference this template when spawning sub-agents.
+    /// Optional display name for the template.
+    /// The template is identified by its key in the Templates dictionary, not this field.
     /// </summary>
-    public required string Name { get; init; }
+    public string? Name { get; init; }
 
     /// <summary>
     /// Independent system prompt for the sub-agent.

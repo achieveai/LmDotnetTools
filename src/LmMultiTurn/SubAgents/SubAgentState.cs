@@ -39,6 +39,7 @@ internal class SubAgentState
     public required IMultiTurnAgent Agent { get; init; }
 
     public Task? RunTask { get; set; }
+    public Task? MonitorTask { get; set; }
     public CancellationTokenSource Cts { get; set; } = new();
     public ConcurrentQueue<SubAgentTurnSummary> TurnBuffer { get; } = new();
 

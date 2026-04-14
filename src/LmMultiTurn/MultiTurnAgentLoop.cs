@@ -81,9 +81,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 parentMultiModalHandlers:
                     mmHandlers.Count > 0 ? mmHandlers : null,
                 options: subAgentOptions,
-                logger: logger != null
-                    ? new SubAgentManagerLoggerAdapter(logger)
-                    : null);
+                logger: logger);
 
             var toolProvider = new SubAgentToolProvider(
                 _subAgentManager,
@@ -109,29 +107,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             .WithMiddleware(publishingMiddleware)
             .WithMiddleware(new MessageUpdateJoinerMiddleware(name: "MessageJoiner"))
             .WithMiddleware(toolCallMiddleware);
-    }
-
-    /// <summary>
-    /// Adapts ILogger&lt;MultiTurnAgentLoop&gt; to ILogger&lt;SubAgentManager&gt;
-    /// so the parent's logger can be reused for sub-agent manager logging.
-    /// </summary>
-    private sealed class SubAgentManagerLoggerAdapter(
-        ILogger inner) : ILogger<SubAgentManager>
-    {
-        public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull =>
-            inner.BeginScope(state);
-
-        public bool IsEnabled(LogLevel logLevel) =>
-            inner.IsEnabled(logLevel);
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter) =>
-            inner.Log(logLevel, eventId, state, exception, formatter);
     }
 
     /// <inheritdoc />
