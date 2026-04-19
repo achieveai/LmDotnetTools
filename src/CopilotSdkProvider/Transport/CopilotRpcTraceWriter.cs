@@ -3,19 +3,26 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Transport;
+namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Transport;
 
-internal sealed class CodexRpcTraceWriter : IAsyncDisposable
+/// <summary>
+/// Writes a JSONL trace of JSON-RPC 2.0 messages exchanged with the Copilot ACP
+/// server, redacting sensitive keys (apiKey/authorization/tokens) before flushing.
+/// </summary>
+internal sealed class CopilotRpcTraceWriter : IAsyncDisposable
 {
     private static readonly HashSet<string> RedactedKeys = new(
     [
         "apiKey",
         "api_key",
         "authorization",
-        "openai_api_key",
         "token",
         "access_token",
         "refresh_token",
+        "github_token",
+        "githubToken",
+        "copilot_api_key",
+        "copilotApiKey",
     ],
         StringComparer.OrdinalIgnoreCase);
 
@@ -23,8 +30,9 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
     private readonly string _sessionId;
     private readonly ILogger? _logger;
     private StreamWriter? _writer;
+    private int _disposed;
 
-    public CodexRpcTraceWriter(string filePath, string? sessionId, ILogger? logger = null)
+    public CopilotRpcTraceWriter(string filePath, string? sessionId, ILogger? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         _sessionId = string.IsNullOrWhiteSpace(sessionId) ? "unknown" : sessionId;
@@ -46,6 +54,11 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
             return;
         }
 
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
         var writer = _writer;
         if (writer == null)
         {
@@ -57,8 +70,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         string? messageKind = null;
         string? method = null;
         string? rpcId = null;
-        string? threadId = null;
-        string? turnId = null;
+        string? sessionId = null;
         try
         {
             using var doc = JsonDocument.Parse(line);
@@ -97,8 +109,8 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
                 if (payloadElement.TryGetProperty("params", out var paramsProp)
                     && paramsProp.ValueKind == JsonValueKind.Object)
                 {
-                    threadId = TryGetString(paramsProp, "threadId") ?? TryGetString(paramsProp, "thread_id");
-                    turnId = TryGetString(paramsProp, "turnId") ?? TryGetString(paramsProp, "turn_id");
+                    sessionId = TryGetString(paramsProp, "sessionId")
+                        ?? TryGetString(paramsProp, "session_id");
                 }
             }
         }
@@ -112,13 +124,12 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
         var envelope = JsonSerializer.Serialize(new
         {
             timestamp_utc = DateTimeOffset.UtcNow.ToString("O"),
-            codex_session_id = _sessionId,
+            copilot_session_id = _sessionId,
             direction,
             message_kind = messageKind ?? "unknown",
             rpc_id = rpcId,
             method,
-            thread_id = threadId,
-            turn_id = turnId,
+            session_id = sessionId,
             payload_sha256 = payloadHash,
             payload = payloadJson,
         });
@@ -140,7 +151,7 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
             _logger?.LogWarning(
                 ex,
                 "{event_type} {event_status} {error_code}",
-                "codex.rpc_trace.write",
+                "copilot.rpc_trace.write",
                 "failed",
                 "trace_write_failed");
         }
@@ -152,6 +163,11 @@ internal sealed class CodexRpcTraceWriter : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await _writeLock.WaitAsync();
         try
         {

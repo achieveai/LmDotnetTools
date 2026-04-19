@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
     <ProjectReference Include="..\..\src\CodexSdkProvider\AchieveAi.LmDotnetTools.CodexSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
+    <ProjectReference Include="..\..\src\CopilotSdkProvider\AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
     <ProjectReference Include="..\..\src\McpServer.AspNetCore\AchieveAi.LmDotnetTools.McpServer.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />

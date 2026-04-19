@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
+using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -202,6 +203,18 @@ try
                             loggerFactory,
                             mcpBaseUrl,
                             llmQueryMcpExamType));
+                }
+
+                if (string.Equals(providerMode, "copilot", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateCopilotAgentLoop(
+                            threadId,
+                            mode,
+                            functionRegistry,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory));
                 }
 
                 var providerAgent = agentFactory();
@@ -716,6 +729,7 @@ public partial class Program
             "test-anthropic" => "claude-sonnet-4-5-20250929",
             "claude" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
             "codex" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
+            "copilot" => Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5",
             _ => "test-model",
         };
     }
@@ -842,6 +856,81 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
+            loggerFactory: loggerFactory);
+    }
+
+    private static CopilotAgentLoop CreateCopilotAgentLoop(
+        string threadId,
+        ChatMode mode,
+        FunctionRegistry functionRegistry,
+        string? requestResponseDumpFileName,
+        IConversationStore conversationStore,
+        ILoggerFactory loggerFactory)
+    {
+        var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
+        var copilotCliMinVersion = Environment.GetEnvironmentVariable("COPILOT_CLI_MIN_VERSION") ?? "0.0.410";
+        var model = Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5";
+        var apiKey = Environment.GetEnvironmentVariable("COPILOT_API_KEY");
+        var baseUrl = Environment.GetEnvironmentVariable("COPILOT_BASE_URL");
+        var workingDirectory = Environment.GetEnvironmentVariable("COPILOT_WORKING_DIRECTORY");
+        var rpcTraceFileFromEnv = Environment.GetEnvironmentVariable("COPILOT_RPC_TRACE_FILE");
+        var rpcTraceEnabledFromEnv = bool.TryParse(
+            Environment.GetEnvironmentVariable("COPILOT_RPC_TRACE_ENABLED"),
+            out var parsedRpcTraceEnabled)
+            && parsedRpcTraceEnabled;
+        var modelAllowlistProbeEnabled = !bool.TryParse(
+            Environment.GetEnvironmentVariable("COPILOT_MODEL_ALLOWLIST_PROBE_ENABLED"),
+            out var parsedModelProbe) || parsedModelProbe;
+        var defaultPermissionDecision = Environment.GetEnvironmentVariable("COPILOT_DEFAULT_PERMISSION_DECISION") ?? "allow";
+
+        var sessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            ? Path.GetFileName(requestResponseDumpFileName)
+            : $"{threadId}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}";
+        var traceFilePath = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            ? $"{requestResponseDumpFileName}.copilot.rpc.jsonl"
+            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv)
+                ? null
+                : rpcTraceFileFromEnv;
+        var enableRpcTrace = rpcTraceEnabledFromEnv || !string.IsNullOrWhiteSpace(requestResponseDumpFileName);
+        if (enableRpcTrace && string.IsNullOrWhiteSpace(traceFilePath))
+        {
+            var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            _ = Directory.CreateDirectory(logsDir);
+            traceFilePath = Path.Combine(logsDir, $"copilot-rpc-{sessionId}.jsonl");
+        }
+
+        var copilotOptions = new CopilotSdkOptions
+        {
+            CopilotCliPath = copilotCliPath,
+            CopilotCliMinVersion = copilotCliMinVersion,
+            Model = model,
+            ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? null : baseUrl,
+            WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? null : workingDirectory,
+            EnableRpcTrace = enableRpcTrace,
+            RpcTraceFilePath = traceFilePath,
+            CopilotSessionId = sessionId,
+            ModelAllowlistProbeEnabled = modelAllowlistProbeEnabled,
+            DefaultPermissionDecision = defaultPermissionDecision,
+            ToolBridgeMode = CopilotToolBridgeMode.Dynamic,
+            Provider = "copilot",
+            ProviderMode = "copilot",
+        };
+
+        return new CopilotAgentLoop(
+            copilotOptions,
+            functionRegistry,
+            mode.EnabledTools,
+            threadId,
+            systemPrompt: mode.SystemPrompt,
+            defaultOptions: new GenerateReplyOptions
+            {
+                ModelId = GetModelIdForProvider("copilot"),
+                RequestResponseDumpFileName = requestResponseDumpFileName,
+                PromptCaching = PromptCachingMode.Auto,
+            },
+            store: conversationStore,
+            logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
             loggerFactory: loggerFactory);
     }
 
