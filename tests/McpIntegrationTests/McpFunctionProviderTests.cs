@@ -73,7 +73,7 @@ public class McpFunctionProviderTests
 
         // Verify calculator functions are included
         Assert.Contains(contracts, c => c.Name == "Add");
-        Assert.Contains(handlers.Keys, k => k == "CalculatorTool-Add");
+        Assert.Contains(handlers.Keys, k => k == "Add");
     }
 
     [Fact]

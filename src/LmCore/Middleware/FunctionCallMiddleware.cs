@@ -44,8 +44,14 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             if (functionMap != null)
             {
                 var missingFunctions = functions
-                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name : $"{f.ClassName}-{f.Name}")
-                    .Where(f => !functionMap.ContainsKey(f))
+                    .Where(f =>
+                    {
+                        var hasRegisteredName = functionMap.ContainsKey(f.Name);
+                        var hasQualifiedName = !string.IsNullOrWhiteSpace(f.ClassName)
+                                               && functionMap.ContainsKey($"{f.ClassName}-{f.Name}");
+                        return !hasRegisteredName && !hasQualifiedName;
+                    })
+                    .Select(f => f.Name)
                     .ToList();
 
                 // Removing following check ` || functionMap.Count != functions.Count()`
