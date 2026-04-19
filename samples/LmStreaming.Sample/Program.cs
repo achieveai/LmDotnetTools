@@ -925,7 +925,7 @@ public partial class Program
             systemPrompt: mode.SystemPrompt,
             defaultOptions: new GenerateReplyOptions
             {
-                ModelId = model,
+                ModelId = GetModelIdForProvider("copilot"),
                 RequestResponseDumpFileName = requestResponseDumpFileName,
                 PromptCaching = PromptCachingMode.Auto,
             },

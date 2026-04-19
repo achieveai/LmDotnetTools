@@ -36,6 +36,9 @@ LLM_CACHE/
 
 nul
 .playwright-mcp/
+
+# Dev bot working notes (conversation memory / per-task drafts)
+scratchPad/conversation_memories/
 .next/
 node_modules/
 
