@@ -16,9 +16,11 @@ internal static class CopilotVersionChecker
         TimeSpan timeout,
         CancellationToken ct)
     {
+        var resolvedCliPath = CopilotCliPathResolver.Resolve(cliPath);
+
         var psi = new ProcessStartInfo
         {
-            FileName = cliPath,
+            FileName = resolvedCliPath,
             Arguments = "--version",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -28,7 +30,7 @@ internal static class CopilotVersionChecker
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException(
-                $"Failed to start Copilot CLI '{cliPath}'. Ensure it is installed and on PATH.");
+                $"Failed to start Copilot CLI '{resolvedCliPath}'. Ensure it is installed and on PATH.");
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);

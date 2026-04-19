@@ -86,9 +86,11 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                     _options.RpcTraceFilePath);
             }
 
+            var resolvedCliPath = Agents.CopilotCliPathResolver.Resolve(_options.CopilotCliPath);
+
             var psi = new ProcessStartInfo
             {
-                FileName = _options.CopilotCliPath,
+                FileName = resolvedCliPath,
                 Arguments = "--acp --stdio",
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -119,7 +121,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             catch (Exception ex)
             {
                 throw new InvalidOperationException(
-                    $"Failed to start Copilot CLI '{_options.CopilotCliPath}'. Ensure Copilot CLI is installed and accessible.",
+                    $"Failed to start Copilot CLI '{resolvedCliPath}' (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
                     ex);
             }
 
