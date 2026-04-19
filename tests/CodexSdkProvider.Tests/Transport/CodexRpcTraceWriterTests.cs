@@ -9,12 +9,13 @@ public class CodexRpcTraceWriterTests
     public async Task WriteAsync_RedactsSensitiveFields_AndIncludesCorrelationFields()
     {
         var path = Path.Combine(Path.GetTempPath(), $"codex-rpc-trace-{Guid.NewGuid():N}.jsonl");
-        await using var writer = new CodexRpcTraceWriter(path, "session-1");
-
-        await writer.WriteAsync(
-            "outbound",
-            """{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{"apiKey":"secret","threadId":"t1","turnId":"u1"}}""",
-            CancellationToken.None);
+        await using (var writer = new CodexRpcTraceWriter(path, "session-1"))
+        {
+            await writer.WriteAsync(
+                "outbound",
+                """{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{"apiKey":"secret","threadId":"t1","turnId":"u1"}}""",
+                CancellationToken.None);
+        }
 
         var lines = await File.ReadAllLinesAsync(path);
         lines.Should().ContainSingle();
@@ -38,12 +39,13 @@ public class CodexRpcTraceWriterTests
     public async Task WriteAsync_ParsesInboundNotificationShape()
     {
         var path = Path.Combine(Path.GetTempPath(), $"codex-rpc-trace-{Guid.NewGuid():N}.jsonl");
-        await using var writer = new CodexRpcTraceWriter(path, "session-2");
-
-        await writer.WriteAsync(
-            "inbound",
-            """{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}""",
-            CancellationToken.None);
+        await using (var writer = new CodexRpcTraceWriter(path, "session-2"))
+        {
+            await writer.WriteAsync(
+                "inbound",
+                """{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}""",
+                CancellationToken.None);
+        }
 
         var lines = await File.ReadAllLinesAsync(path);
         lines.Should().ContainSingle();

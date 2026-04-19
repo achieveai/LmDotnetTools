@@ -26,6 +26,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "OpenAI", "OpenAI" },
         { "Anthropic", "Anthropic" },
         { "ClaudeAgentSDK", "ClaudeAgentSDK" },
+        { "CopilotSDK", "CopilotSDK" },
         { "OpenRouter", "OpenAI" },
         { "DeepInfra", "OpenAI" },
         { "Groq", "OpenAI" },
@@ -78,6 +79,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
             "Anthropic" => CreateAnthropicAgent(resolution),
             "OpenAI" => CreateOpenAIAgent(resolution),
             "ClaudeAgentSDK" => CreateClaudeAgentSdkAgent(resolution),
+            "CopilotSDK" => CreateCopilotSdkAgent(resolution),
             "Replicate" => throw new NotSupportedException("Replicate provider is not yet supported"),
             _ => throw new NotSupportedException($"Provider compatibility type '{compatibilityType}' is not supported"),
         };
@@ -266,6 +268,17 @@ public class ProviderAgentFactory : IProviderAgentFactory
             $"ClaudeAgentSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. " +
             "ClaudeAgentSDK is designed for multi-turn agentic workflows and requires using ClaudeAgentLoop directly. " +
             "See LmMultiTurn.ClaudeAgentLoop for the correct usage pattern."
+        );
+    }
+
+    private IAgent CreateCopilotSdkAgent(ProviderResolution resolution)
+    {
+        // CopilotSDK is not compatible with the IAgent interface.
+        // It requires using CopilotAgentLoop (MultiTurnAgentBase) directly for multi-turn agentic workflows.
+        throw new NotSupportedException(
+            $"CopilotSDK provider '{resolution.EffectiveProviderName}' cannot be used via ProviderAgentFactory. " +
+            "CopilotSDK is designed for multi-turn agentic workflows and requires using CopilotAgentLoop directly. " +
+            "See LmMultiTurn.CopilotAgentLoop for the correct usage pattern."
         );
     }
 

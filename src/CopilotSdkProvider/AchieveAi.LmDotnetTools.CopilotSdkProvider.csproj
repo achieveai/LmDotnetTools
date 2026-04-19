@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CopilotSdkProvider.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
+    <PackageReference Include="System.Text.Json" Version="9.0.5" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>AchieveAi.LmDotnetTools.CopilotSdkProvider</PackageId>
+    <Description>GitHub Copilot CLI ACP provider for LmDotnetTools using direct C# JSON-RPC 2.0 transport.</Description>
+    <PackageTags>$(PackageTags);copilot;agent-sdk;provider;acp</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>
