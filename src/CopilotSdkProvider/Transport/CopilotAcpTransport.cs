@@ -36,7 +36,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
     private CopilotRpcTraceWriter? _rpcTraceWriter;
     private long _nextRpcId;
     private int _closeSignalSent;
-    private bool _disposed;
+    private int _disposed;
 
     public CopilotAcpTransport(CopilotSdkOptions options, ILogger? logger = null)
     {
@@ -59,7 +59,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
         ArgumentNullException.ThrowIfNull(requestHandler);
         ArgumentNullException.ThrowIfNull(notificationHandler);
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         await _lifecycleLock.WaitAsync(ct);
         try
@@ -147,7 +147,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         TimeSpan? timeout = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         if (!IsRunning)
         {
@@ -205,7 +205,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
     public Task SendNotificationAsync(string method, object? parameters, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         return WriteJsonLineAsync(writer =>
         {
@@ -314,12 +314,11 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _disposed = true;
         await StopAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
         _writeLock.Dispose();
         _lifecycleLock.Dispose();
@@ -519,6 +518,14 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            _logger?.LogWarning(
+                ex,
+                "{event_type} {event_status} {provider} {provider_mode} {method}",
+                "copilot.acp_server.request",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode,
+                method);
             await SendErrorAsync(requestId, -32000, ex.Message, ct);
         }
     }
@@ -635,12 +642,20 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
     private void FailPendingRequests(Exception ex)
     {
-        foreach (var (_, pending) in _pendingRequests.ToArray())
+        while (true)
         {
-            pending.TrySetException(ex);
-        }
+            var keys = _pendingRequests.Keys;
+            if (keys.Count == 0)
+            {
+                return;
+            }
 
-        _pendingRequests.Clear();
+            var key = keys.First();
+            if (_pendingRequests.TryRemove(key, out var pending))
+            {
+                pending.TrySetException(ex);
+            }
+        }
     }
 
     private static void WriteArbitraryValue(Utf8JsonWriter writer, object value, JsonSerializerOptions jsonOptions)

@@ -30,7 +30,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     private int _isShuttingDown;
     private int _disposed;
 
-    public bool IsRunning => _transport is { IsRunning: true };
+    public bool IsRunning => Volatile.Read(ref _transport) is { IsRunning: true };
 
     public string? CurrentCopilotSessionId { get; private set; }
 
@@ -94,7 +94,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 HandleServerNotification,
                 ct);
 
-            _transport = transport;
+            Volatile.Write(ref _transport, transport);
             _startupOptions = effectiveOptions;
 
             var startupTimeout = TimeSpan.FromMilliseconds(_options.AcpStartupTimeoutMs);
@@ -140,9 +140,10 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 copilotCliVersion,
                 CurrentCopilotSessionId);
         }
-        catch
+        catch (Exception ex)
         {
             DependencyState = "failed";
+            _logger?.LogError(ex, "Failed to start or resume Copilot ACP session");
             await ShutdownInternalAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             throw;
         }
@@ -158,7 +159,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
-        var transport = _transport;
+        var transport = Volatile.Read(ref _transport);
         if (transport is null || !transport.IsRunning)
         {
             throw new InvalidOperationException("Copilot ACP process is not running. Call StartOrResumeSessionAsync first.");
@@ -269,7 +270,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
     public async Task InterruptTurnAsync(CancellationToken ct = default)
     {
-        var transport = _transport;
+        var transport = Volatile.Read(ref _transport);
         if (transport is null || !transport.IsRunning)
         {
             return;
@@ -334,14 +335,14 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         // 3. Capture + null the field so concurrent notification handlers skip cleanly.
         _ = Interlocked.Exchange(ref _isShuttingDown, 1);
 
-        var transport = _transport;
+        var transport = Volatile.Read(ref _transport);
         if (transport == null)
         {
             return;
         }
 
         transport.Closed -= OnTransportClosed;
-        _transport = null;
+        Volatile.Write(ref _transport, null);
 
         try
         {
@@ -390,7 +391,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         var isShuttingDown = Interlocked.CompareExchange(ref _isShuttingDown, 0, 0) == 1;
         if (!isShuttingDown)
         {
-            _transport = null;
+            Volatile.Write(ref _transport, null);
         }
 
         if (exception != null)
@@ -506,6 +507,10 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
             try
             {
                 response = await _dynamicToolExecutor(request, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

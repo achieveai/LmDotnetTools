@@ -294,12 +294,28 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     "turn_failed",
                     ex.GetType().Name);
 
-                await CompleteRunAsync(
-                    assignment.RunId,
-                    assignment.GenerationId,
-                    isError: true,
-                    errorMessage: ex.Message,
-                    ct: ct);
+                try
+                {
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        isError: true,
+                        errorMessage: ex.Message,
+                        ct: CancellationToken.None);
+                }
+                catch (Exception completeEx)
+                {
+                    Logger.LogWarning(
+                        completeEx,
+                        "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id}",
+                        "copilot.turn.complete_on_error",
+                        "failed",
+                        _options.Provider,
+                        _options.ProviderMode,
+                        ThreadId,
+                        assignment.RunId,
+                        assignment.GenerationId);
+                }
             }
         }
     }

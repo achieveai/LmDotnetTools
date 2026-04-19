@@ -42,6 +42,16 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "Replicate", "Replicate" },
     };
 
+    // Providers whose CreateAgent intentionally throws NotSupportedException because
+    // they are designed for multi-turn agentic workflows only (used via *AgentLoop
+    // in LmMultiTurn) and cannot be composed as an IAgent. CanCreateAgent must return
+    // false for these to keep the contract consistent.
+    private static readonly HashSet<string> MultiTurnOnlyProviders = new(StringComparer.Ordinal)
+    {
+        "ClaudeAgentSDK",
+        "CopilotSDK",
+    };
+
     private readonly IHttpHandlerBuilder _handlerBuilder;
     private readonly ILogger<ProviderAgentFactory> _logger;
     private readonly ILoggerFactory? _loggerFactory;
@@ -100,6 +110,12 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         if (string.IsNullOrWhiteSpace(providerName))
         {
+            return false;
+        }
+
+        if (MultiTurnOnlyProviders.Contains(providerName))
+        {
+            // CreateAgent throws NotSupportedException for these providers; keep the contract consistent.
             return false;
         }
 
