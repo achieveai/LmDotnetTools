@@ -103,6 +103,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 "initialize",
                 new
                 {
+                    protocolVersion = _options.AcpProtocolVersion,
                     clientInfo = new
                     {
                         name = "lm-dotnet-tools-copilot-client",
@@ -664,10 +665,19 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
     private object BuildSessionNewParams(CopilotBridgeInitOptions options)
     {
+        // Copilot CLI 1.0.x validates session/new params with Zod: `cwd` must be a non-null string
+        // and `mcpServers` must be an array (even when empty). Default cwd to the current process
+        // directory when the caller did not specify one, and always include an empty mcpServers
+        // array since the dynamic tool bridge owns tool dispatch (no external MCP servers).
+        var cwd = !string.IsNullOrWhiteSpace(options.WorkingDirectory)
+            ? options.WorkingDirectory
+            : Environment.CurrentDirectory;
+
         var parameters = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
-            ["cwd"] = options.WorkingDirectory,
+            ["cwd"] = cwd,
+            ["mcpServers"] = Array.Empty<object>(),
         };
 
         if (!string.IsNullOrWhiteSpace(options.SessionId))

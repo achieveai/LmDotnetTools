@@ -52,6 +52,13 @@ public record CopilotSdkOptions
     public string ProviderMode { get; init; } = "copilot";
 
     /// <summary>
+    /// ACP protocol version advertised in the <c>initialize</c> handshake. Copilot CLI &gt;= 1.0.x
+    /// validates this field as a number and rejects requests that omit it. The ACP spec currently
+    /// defines version 1; override only if the CLI negotiates a different major.
+    /// </summary>
+    public int AcpProtocolVersion { get; init; } = 1;
+
+    /// <summary>
     /// When true, after <c>initialize</c>+<c>session/new</c> the provider fails fast if the configured
     /// <see cref="Model"/> is not present in the model list returned by the Copilot CLI.
     /// </summary>
