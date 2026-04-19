@@ -390,6 +390,16 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         {
             // Normal shutdown path.
         }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "{event_type} {event_status} {provider} {provider_mode}",
+                "copilot.acp_server.stderr_loop",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode);
+        }
     }
 
     private async Task HandleStdoutLineAsync(string line, CancellationToken ct)

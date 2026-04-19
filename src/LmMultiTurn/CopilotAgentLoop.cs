@@ -454,6 +454,10 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 ThreadId,
                 _copilotSessionId);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             Logger.LogWarning(
