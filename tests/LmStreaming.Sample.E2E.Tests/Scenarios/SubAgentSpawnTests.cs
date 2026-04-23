@@ -48,7 +48,7 @@ public sealed class SubAgentSpawnTests
         await using var client = new WebSocketTestClient(socket);
 
         await client.SendUserMessageAsync("research AI papers for me");
-        var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
 
         var toolCalls = frames.ToolCallNames();
         toolCalls.Should().Contain("Agent");

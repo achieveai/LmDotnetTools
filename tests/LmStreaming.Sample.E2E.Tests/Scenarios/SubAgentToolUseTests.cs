@@ -66,7 +66,7 @@ public sealed class SubAgentToolUseTests
         await using var client = new WebSocketTestClient(socket);
 
         await client.SendUserMessageAsync("use a weather sub-agent for Seattle");
-        var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
 
         var toolCalls = frames.ToolCallNames();
         toolCalls.Should().Contain("Agent");

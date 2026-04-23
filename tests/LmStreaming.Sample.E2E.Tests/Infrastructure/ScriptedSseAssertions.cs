@@ -13,8 +13,23 @@ public static class ScriptedSseAssertions
     /// <summary>Filter frames by their <c>$type</c> discriminator (case-sensitive).</summary>
     public static IEnumerable<JsonElement> OfMessageType(
         this IEnumerable<JsonDocument> frames,
-        string typeName)
+        string typeName) =>
+            OfMessageType(frames, [typeName]);
+
+    /// <summary>
+    /// Filter frames matching any of <paramref name="typeNames"/> in a single pass over
+    /// <paramref name="frames"/>. Prefer this over chaining <c>OfMessageType(a).Concat(OfMessageType(b))</c>,
+    /// which iterates <paramref name="frames"/> twice.
+    /// </summary>
+    public static IEnumerable<JsonElement> OfMessageType(
+        this IEnumerable<JsonDocument> frames,
+        params string[] typeNames)
     {
+        if (typeNames == null || typeNames.Length == 0)
+        {
+            yield break;
+        }
+
         foreach (var frame in frames)
         {
             if (frame.RootElement.ValueKind != JsonValueKind.Object)
@@ -22,11 +37,20 @@ public static class ScriptedSseAssertions
                 continue;
             }
 
-            if (frame.RootElement.TryGetProperty("$type", out var typeProp)
-                && typeProp.ValueKind == JsonValueKind.String
-                && string.Equals(typeProp.GetString(), typeName, StringComparison.Ordinal))
+            if (!frame.RootElement.TryGetProperty("$type", out var typeProp)
+                || typeProp.ValueKind != JsonValueKind.String)
             {
-                yield return frame.RootElement;
+                continue;
+            }
+
+            var actual = typeProp.GetString();
+            for (var i = 0; i < typeNames.Length; i++)
+            {
+                if (string.Equals(actual, typeNames[i], StringComparison.Ordinal))
+                {
+                    yield return frame.RootElement;
+                    break;
+                }
             }
         }
     }
@@ -38,8 +62,7 @@ public static class ScriptedSseAssertions
     public static string ConcatText(this IEnumerable<JsonDocument> frames)
     {
         var assistantTexts = frames
-            .OfMessageType("text")
-            .Concat(frames.OfMessageType("text_update"))
+            .OfMessageType("text", "text_update")
             .Where(IsAssistant)
             .Select(f => f.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
                 ? t.GetString() ?? string.Empty

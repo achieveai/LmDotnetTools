@@ -60,6 +60,27 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     }
 
     /// <summary>
+    /// Clears the process-global <c>LM_PROVIDER_MODE</c> env var set by the constructor so a
+    /// subsequent test (or non-test code running in the same process) does not inherit a
+    /// stale provider mode. Tests run serialized (see <c>AssemblyInfo.cs</c>), so this is
+    /// safe to do here.
+    /// </summary>
+    protected override void Dispose(bool disposing)
+    {
+        try
+        {
+            base.Dispose(disposing);
+        }
+        finally
+        {
+            if (disposing)
+            {
+                Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", null);
+            }
+        }
+    }
+
+    /// <summary>
     /// Creates a WebSocket client bound to the in-memory test server and returns a connected
     /// <see cref="System.Net.WebSockets.WebSocket"/> attached to <c>/ws</c>.
     /// </summary>

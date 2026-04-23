@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -36,9 +37,14 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
     /// <summary>
     /// Collect streamed frames until the <c>done</c> sentinel is received or
-    /// <paramref name="overallTimeout"/> elapses. Returns raw JSON documents.
+    /// <paramref name="overallTimeout"/> elapses. Returns a <see cref="FrameCollection"/>
+    /// which owns all parsed <see cref="JsonDocument"/> instances — callers MUST dispose
+    /// (e.g. <c>using var frames = await client.CollectUntilDoneAsync(...)</c>) so the
+    /// pooled buffers each <see cref="JsonDocument"/> rents are returned promptly. The
+    /// implementation also disposes collected documents if an unexpected exception escapes
+    /// the collection loop (timeout, malformed JSON, transport fault, ...).
     /// </summary>
-    public async Task<IReadOnlyList<JsonDocument>> CollectUntilDoneAsync(
+    public async Task<FrameCollection> CollectUntilDoneAsync(
         TimeSpan overallTimeout,
         CancellationToken ct = default)
     {
@@ -63,7 +69,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        return frames;
+                        return new FrameCollection(frames);
                     }
 
                     if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
@@ -82,17 +88,41 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
                 if (IsDoneFrame(doc))
                 {
-                    return frames;
+                    return new FrameCollection(frames);
                 }
             }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
+            DisposeAll(frames);
             throw new TimeoutException(
                 $"Did not observe 'done' frame within {overallTimeout}. Collected {frames.Count} frame(s).");
         }
+        catch
+        {
+            // Any other unexpected failure (JsonException from malformed payloads, socket
+            // faults, etc.): dispose whatever we've already parsed before propagating so the
+            // pooled buffers behind each JsonDocument are returned.
+            DisposeAll(frames);
+            throw;
+        }
 
-        return frames;
+        return new FrameCollection(frames);
+    }
+
+    private static void DisposeAll(List<JsonDocument> frames)
+    {
+        foreach (var d in frames)
+        {
+            try
+            {
+                d.Dispose();
+            }
+            catch
+            {
+                // best-effort dispose
+            }
+        }
     }
 
     private static bool IsDoneFrame(JsonDocument doc)
@@ -128,5 +158,51 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         }
 
         _socket.Dispose();
+    }
+}
+
+/// <summary>
+/// Owning collection of parsed WebSocket frames. <see cref="JsonDocument"/> is
+/// <see cref="IDisposable"/> (it rents pooled <c>byte[]</c> under the hood), so tests must
+/// dispose the collection to release those buffers promptly. Use with <c>using var</c>.
+/// </summary>
+public sealed class FrameCollection : IReadOnlyList<JsonDocument>, IDisposable
+{
+    private readonly List<JsonDocument> _frames;
+    private bool _disposed;
+
+    internal FrameCollection(List<JsonDocument> frames)
+    {
+        _frames = frames ?? throw new ArgumentNullException(nameof(frames));
+    }
+
+    public JsonDocument this[int index] => _frames[index];
+
+    public int Count => _frames.Count;
+
+    public IEnumerator<JsonDocument> GetEnumerator() => _frames.GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        foreach (var d in _frames)
+        {
+            try
+            {
+                d.Dispose();
+            }
+            catch
+            {
+                // best-effort dispose of pooled buffers
+            }
+        }
     }
 }

@@ -33,7 +33,7 @@ public sealed class BasicStreamingTests
         await using var client = new WebSocketTestClient(socket);
 
         await client.SendUserMessageAsync("say hello");
-        var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
 
         var streamedText = frames.ConcatText();
         streamedText.Should().Contain("scripted parent");

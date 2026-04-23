@@ -358,6 +358,11 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         }
         catch (JsonException ex)
         {
+            _logger.LogWarning(
+                ex,
+                "Failed to parse scripted SSE request body as JSON (wire={Wire}): {ErrorMessage}",
+                _wire,
+                ex.Message);
             return new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
                 Content = new StringContent($"Invalid JSON: {ex.Message}"),

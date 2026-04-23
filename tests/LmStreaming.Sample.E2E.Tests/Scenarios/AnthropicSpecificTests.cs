@@ -31,11 +31,10 @@ public sealed class AnthropicSpecificTests
         await using var client = new WebSocketTestClient(socket);
 
         await client.SendUserMessageAsync("think then answer");
-        var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
 
         var reasoningFrames = frames
-            .OfMessageType("reasoning_update")
-            .Concat(frames.OfMessageType("reasoning"))
+            .OfMessageType("reasoning_update", "reasoning")
             .ToList();
         reasoningFrames.Should().NotBeEmpty("Anthropic thinking should produce reasoning frames");
 
@@ -61,7 +60,7 @@ public sealed class AnthropicSpecificTests
         await using var client = new WebSocketTestClient(socket);
 
         await client.SendUserMessageAsync("hit the cache");
-        var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(20));
 
         var usageFrame = frames
             .OfMessageType("usage")
