@@ -16,7 +16,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -27,6 +26,7 @@ using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Serilog;
 using Serilog.Enrichers.CallerInfo;
 using Serilog.Events;
@@ -146,6 +146,11 @@ try
     // Register the provider agent factory (multi-provider support via LM_PROVIDER_MODE env var)
     Log.Information("LM Provider Mode: {ProviderMode}", providerMode);
 
+    // Test-mode DI seam: default implementation is behavior-preserving. E2E tests can
+    // replace this via ConfigureTestServices to inject scripted SSE responders and
+    // sub-agent templates without touching any real-provider code path.
+    builder.Services.TryAddSingleton<ITestAgentBuilder, DefaultTestAgentBuilder>();
+
     _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp => () =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -154,8 +159,12 @@ try
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
-                "test-anthropic" => CreateAnthropicTestAgent(loggerFactory),
-                _ => CreateTestAgent(loggerFactory),
+                "test-anthropic" => CreateAnthropicTestAgent(
+                    loggerFactory,
+                    sp.GetRequiredService<ITestAgentBuilder>()),
+                _ => CreateTestAgent(
+                    loggerFactory,
+                    sp.GetRequiredService<ITestAgentBuilder>()),
             };
         });
 
@@ -266,6 +275,15 @@ try
                             "Thinking", new AnthropicThinking(budgetTokens));
                     }
 
+                    // Test-mode DI seam: opt-in sub-agent orchestration. Real-provider modes
+                    // never resolve this service, so production wiring is unchanged.
+                    var isTestMode = string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase);
+                    var subAgentOptions = isTestMode
+                        ? sp.GetRequiredService<ITestAgentBuilder>()
+                            .CreateSubAgentOptions(loggerFactory, agentFactory)
+                        : null;
+
                     var agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
@@ -280,7 +298,8 @@ try
                             ExtraProperties = extraProperties,
                         },
                         store: conversationStore,
-                        logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>());
+                        logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
+                        subAgentOptions: subAgentOptions);
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
                 }
@@ -452,16 +471,13 @@ finally
 public partial class Program
 {
     /// <summary>
-    ///     Creates a test-mode agent using TestSseMessageHandler for mock responses.
+    ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     /// </summary>
-    private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateTestAgent(
+        ILoggerFactory loggerFactory,
+        ITestAgentBuilder testAgentBuilder)
     {
-        var handlerLogger = loggerFactory.CreateLogger<TestSseMessageHandler>();
-        var testHandler = new TestSseMessageHandler(handlerLogger)
-        {
-            WordsPerChunk = 3,
-            ChunkDelayMs = 300,
-        };
+        var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
 
         var httpClient = new HttpClient(testHandler)
         {
@@ -522,17 +538,14 @@ public partial class Program
     ///     Gets the model ID based on the provider mode and env vars.
     /// </summary>
     /// <summary>
-    ///     Creates an Anthropic-format test agent using AnthropicTestSseMessageHandler for mock responses.
+    ///     Creates an Anthropic-format test agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     ///     This supports server-side tools (web_search, web_fetch, code_execution) and citations.
     /// </summary>
-    private static IStreamingAgent CreateAnthropicTestAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateAnthropicTestAgent(
+        ILoggerFactory loggerFactory,
+        ITestAgentBuilder testAgentBuilder)
     {
-        var handlerLogger = loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>();
-        var testHandler = new AnthropicTestSseMessageHandler(handlerLogger)
-        {
-            WordsPerChunk = 3,
-            ChunkDelayMs = 300,
-        };
+        var testHandler = testAgentBuilder.CreateHandler("test-anthropic", loggerFactory);
 
         var httpClient = new HttpClient(testHandler)
         {
