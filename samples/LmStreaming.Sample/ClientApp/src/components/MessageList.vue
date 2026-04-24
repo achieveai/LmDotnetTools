@@ -239,9 +239,10 @@ watch(
       :style="{ minHeight: `${activeConversationMinHeight}px` }"
     >
       <template v-for="group in splitGroups.current" :key="group.id">
-        <div 
+        <div
           :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
           :data-message-id="group.role === 'user' ? group.id : undefined"
+          :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
         >
           <div 
             :class="group.role === 'user' ? 'user-message-container' : 'assistant-message-container'"

@@ -326,11 +326,13 @@ export function useChat(options: UseChatOptions = {}) {
     log.info('RunAssignment raw message', { msg });
     
     const assignment = msg.Assignment;
-    // Backend sends PascalCase, so we need to access properties accordingly
-    const runId = (assignment as any).RunId || assignment.runId;
-    const generationId = (assignment as any).GenerationId || assignment.generationId;
-    const inputIds = (assignment as any).InputIds || assignment.inputIds || [];
-    const parentRunId = (assignment as any).ParentRunId || assignment.parentRunId;
+    // Backend sends PascalCase, so we need to access properties accordingly.
+    // Use ?? (not ||) so a falsy-but-present value isn't silently replaced by
+    // the camelCase shape — parity with handleRunCompleted below.
+    const runId = (assignment as any).RunId ?? assignment.runId;
+    const generationId = (assignment as any).GenerationId ?? assignment.generationId;
+    const inputIds = (assignment as any).InputIds ?? assignment.inputIds ?? [];
+    const parentRunId = (assignment as any).ParentRunId ?? assignment.parentRunId;
     
     currentRunId.value = runId;
     log.info('Run assignment received', { 

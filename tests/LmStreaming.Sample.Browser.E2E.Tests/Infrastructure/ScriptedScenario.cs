@@ -80,7 +80,16 @@ public sealed class ScenarioSession : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await Context.CloseAsync();
-        await Factory.DisposeAsync();
+        // If Context.CloseAsync throws (e.g., browser crashed mid-test) we must
+        // still tear down the factory — otherwise the Kestrel port and the
+        // LM_PROVIDER_MODE env var leak for the rest of the test run.
+        try
+        {
+            await Context.CloseAsync();
+        }
+        finally
+        {
+            await Factory.DisposeAsync();
+        }
     }
 }

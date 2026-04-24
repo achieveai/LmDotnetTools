@@ -243,7 +243,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="chat-layout" data-testid="chat-view">
+  <div class="chat-layout" data-testid="chat-layout">
     <ConversationSidebar
       :conversations="conversations"
       :current-thread-id="currentThreadId"
