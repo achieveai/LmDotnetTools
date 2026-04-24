@@ -86,10 +86,25 @@ public sealed class ScenarioSession : IAsyncDisposable
     /// </summary>
     public async Task SaveSuccessScreenshotAsync(string name)
     {
-        var dir = ScreenshotDirectory();
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, $"{name}.png");
-        await Page.ScreenshotAsync(new() { Path = path, FullPage = true });
+        // Screenshot capture is a diagnostic convenience, not a test assertion.
+        // If disk/permissions/browser-state fails (notably after a cancellation
+        // test where the page is mid-teardown), fail soft and log — don't mark
+        // an otherwise-passing test as failed. Mirrors the
+        // "don't block tests" pattern in TestLoggingConfiguration.
+        try
+        {
+            var dir = ScreenshotDirectory();
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"{name}.png");
+            await Page.ScreenshotAsync(new() { Path = path, FullPage = true });
+        }
+#pragma warning disable CA1031 // Do not catch general exception types — screenshot must never fail a passing test.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            await Console.Error.WriteLineAsync(
+                $"[Screenshot] Warning: failed to save '{name}': {ex.Message}");
+        }
     }
 
     private static string ScreenshotDirectory()
