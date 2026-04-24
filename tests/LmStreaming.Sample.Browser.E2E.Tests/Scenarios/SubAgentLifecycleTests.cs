@@ -74,5 +74,6 @@ public sealed class SubAgentLifecycleTests
         string.Join(" ", assistantTexts).Should().Contain("researcher surfaced three AI papers");
 
         responder.RemainingTurns["parent"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync($"SubAgent.Parent_spawns_sub_agent_and_renders_result_{providerMode}");
     }
 }

@@ -78,6 +78,39 @@ public sealed class ScenarioSession : IAsyncDisposable
         Page = page;
     }
 
+    /// <summary>
+    /// Saves a full-page PNG of the current chat surface under
+    /// <c>&lt;repoRoot&gt;/.logs/e2e-screenshots/&lt;name&gt;.png</c>. Used by tests at the
+    /// end of a successful run so reviewers can scan a per-test-case visual proof
+    /// without re-running the suite.
+    /// </summary>
+    public async Task SaveSuccessScreenshotAsync(string name)
+    {
+        var dir = ScreenshotDirectory();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"{name}.png");
+        await Page.ScreenshotAsync(new() { Path = path, FullPage = true });
+    }
+
+    private static string ScreenshotDirectory()
+    {
+        // Walk up from the test bin dir to the repo root (.git marker — directory in
+        // a normal clone, file in a git worktree), then drop the PNGs in
+        // .logs/e2e-screenshots/ so they live alongside the existing test logs.
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null)
+        {
+            var marker = Path.Combine(dir, ".git");
+            if (Directory.Exists(marker) || File.Exists(marker))
+            {
+                break;
+            }
+            dir = Path.GetDirectoryName(dir);
+        }
+        var root = dir ?? AppContext.BaseDirectory;
+        return Path.Combine(root, ".logs", "e2e-screenshots");
+    }
+
     public async ValueTask DisposeAsync()
     {
         // If Context.CloseAsync throws (e.g., browser crashed mid-test) we must

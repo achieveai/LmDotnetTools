@@ -58,5 +58,6 @@ public sealed class CancellationTests
         await page.Textarea().FillAsync("follow up");
         var sendDisabledWithText = await page.SendButton().IsDisabledAsync();
         sendDisabledWithText.Should().BeFalse("send button should enable after cancel when input has text");
+        await session.SaveSuccessScreenshotAsync($"Cancellation.Stop_button_terminates_stream_and_restores_idle_{providerMode}");
     }
 }

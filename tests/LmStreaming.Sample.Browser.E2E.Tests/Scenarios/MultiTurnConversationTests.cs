@@ -53,5 +53,6 @@ public sealed class MultiTurnConversationTests
         thinkingCount.Should().BeGreaterThan(0, "both scripted turns emitted a thinking block");
 
         responder.RemainingTurns["parent"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync($"MultiTurn.Two_user_turns_render_text_and_thinking_{providerMode}");
     }
 }

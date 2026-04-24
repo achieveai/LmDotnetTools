@@ -39,6 +39,7 @@ public sealed class ErrorHandlingTests
 
         var bannerText = await page.ErrorBanner().InnerTextAsync();
         bannerText.Should().NotBeNullOrWhiteSpace("error banner must surface a human-readable message");
+        await session.SaveSuccessScreenshotAsync($"ErrorHandling.Provider_5xx_renders_error_banner_{providerMode}");
     }
 
     private sealed class AlwaysErrorHandler : HttpMessageHandler

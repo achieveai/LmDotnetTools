@@ -92,5 +92,6 @@ public sealed class RecursiveInstructionChainTests
             .BeLessThan(3, "sub-agent should have consumed at least its tool-call turn");
 
         responder.RemainingTurns["parent"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync($"RecursiveChain.Parent_and_sub_agent_instruction_chains_render_end_to_end_{providerMode}");
     }
 }

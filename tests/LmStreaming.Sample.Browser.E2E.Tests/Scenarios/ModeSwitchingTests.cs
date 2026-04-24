@@ -55,6 +55,7 @@ public sealed class ModeSwitchingTests
         string.Join(" ", texts).Should().Contain($"Served via {providerMode}");
 
         responder.RemainingTurns["parent"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync($"ModeSwitch.Scripted_provider_serves_response_for_{providerMode}");
     }
 
     /// <summary>
@@ -91,5 +92,6 @@ public sealed class ModeSwitchingTests
         string.Join(" ", texts).Should().Contain("Math mode ack");
 
         responder.RemainingTurns["math"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync("ModeSwitch.ModeDropdown_switches_server_side_mode");
     }
 }
