@@ -48,11 +48,16 @@ const {
   pendingMessages,
   sendMessage,
   clearMessages,
+  cancelStream,
   disconnectWebSocket,
   setThreadId,
   loadMessagesFromBackend,
   getResultForToolCall,
 } = useChat({ getModeId: () => currentModeId.value });
+
+async function handleCancel(): Promise<void> {
+  await cancelStream();
+}
 
 // Provide getResultForToolCall to child components
 provide('getResultForToolCall', getResultForToolCall);
@@ -238,7 +243,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="chat-layout">
+  <div class="chat-layout" data-testid="chat-view">
     <ConversationSidebar
       :conversations="conversations"
       :current-thread-id="currentThreadId"
@@ -277,6 +282,7 @@ onMounted(() => {
             />
             <button
               class="clear-btn"
+              data-testid="clear-button"
               @click="clearMessages"
               :disabled="chatLoading"
             >
@@ -287,7 +293,7 @@ onMounted(() => {
 
         <MessageList :display-items="displayItems" :is-loading="chatLoading" />
 
-        <div v-if="error" class="error-banner">
+        <div v-if="error" class="error-banner" data-testid="error-banner">
           {{ error }}
         </div>
 
@@ -305,7 +311,12 @@ onMounted(() => {
 
         <PendingMessageQueue :pending-messages="pendingMessages" />
 
-        <ChatInput :disabled="isSending" @send="handleSend" />
+        <ChatInput
+          :disabled="isSending && !chatLoading"
+          :streaming="chatLoading"
+          @send="handleSend"
+          @cancel="handleCancel"
+        />
       </div>
     </main>
   </div>

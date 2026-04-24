@@ -113,10 +113,11 @@ watch(
 </script>
 
 <template>
-  <div class="mode-selector" ref="dropdownRef">
+  <div class="mode-selector" ref="dropdownRef" data-testid="mode-selector">
     <button
       class="selector-btn"
       :class="{ open: dropdownOpen }"
+      data-testid="mode-selector-button"
       @click="toggleDropdown"
       :disabled="isLoading || disabled"
     >
@@ -134,6 +135,7 @@ watch(
           :key="mode.id"
           class="menu-item"
           :class="{ active: mode.id === currentModeId }"
+          :data-testid="`mode-option-${mode.id}`"
           @click="handleSelectMode(mode.id)"
           :disabled="disabled"
         >
@@ -150,6 +152,7 @@ watch(
           :key="mode.id"
           class="menu-item"
           :class="{ active: mode.id === currentModeId }"
+          :data-testid="`mode-option-${mode.id}`"
           @click="handleSelectMode(mode.id)"
           :disabled="disabled"
         >

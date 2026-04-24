@@ -17,6 +17,41 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
   </ItemGroup>
+  <PropertyGroup>
+    <!-- Opt-in build of the Vue SPA during `dotnet build`. Disabled by default so everyday
+         backend builds stay fast; CI and Browser E2E tests set this to true. -->
+    <BuildClientApp Condition="'$(BuildClientApp)' == ''">false</BuildClientApp>
+    <ClientAppDir>$(MSBuildThisFileDirectory)ClientApp</ClientAppDir>
+    <ClientAppOutput>$(MSBuildThisFileDirectory)wwwroot\dist\index.html</ClientAppOutput>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(BuildClientApp)' == 'true'">
+    <ClientAppSource Include="$(ClientAppDir)\package.json" />
+    <ClientAppSource Include="$(ClientAppDir)\package-lock.json" />
+    <ClientAppSource Include="$(ClientAppDir)\vite.config.ts" />
+    <ClientAppSource Include="$(ClientAppDir)\tsconfig.json" />
+    <ClientAppSource Include="$(ClientAppDir)\index.html" />
+    <ClientAppSource Include="$(ClientAppDir)\src\**\*.*" />
+  </ItemGroup>
+
+  <!--
+    BuildClientApp target: runs `npm ci` (once, when node_modules is missing) and
+    `npm run build` before the C# compile step so the `wwwroot/dist/` output is in place.
+    Only runs when BuildClientApp=true. Inputs/Outputs enable incremental builds: if all
+    ClientApp sources are older than wwwroot/dist/index.html the target is skipped.
+  -->
+  <Target Name="BuildClientApp"
+          Condition="'$(BuildClientApp)' == 'true'"
+          BeforeTargets="BeforeBuild"
+          Inputs="@(ClientAppSource)"
+          Outputs="$(ClientAppOutput)">
+    <Message Importance="high" Text="BuildClientApp: building Vue SPA in $(ClientAppDir)" />
+    <Exec Command="npm ci"
+          WorkingDirectory="$(ClientAppDir)"
+          Condition="!Exists('$(ClientAppDir)\node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="$(ClientAppDir)" />
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmStreaming.AspNetCore\AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />

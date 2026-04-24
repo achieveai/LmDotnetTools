@@ -389,15 +389,28 @@ export function useChat(options: UseChatOptions = {}) {
   function handleRunCompleted(msg: Message) {
     if (!isRunCompletedMessage(msg)) return;
 
+    // Wire format is PascalCase (IMessageJsonConverter uses default PropertyNamingPolicy);
+    // TS types were declared camelCase. Read both shapes so the handler works regardless
+    // of which casing the server emits — rather than silently dropping error frames.
+    const anyMsg = msg as unknown as Record<string, unknown>;
+    const completedRunId = (msg.completedRunId ?? anyMsg.CompletedRunId) as string | undefined;
+    const hasPendingMessages = (msg.hasPendingMessages ?? anyMsg.HasPendingMessages) as boolean | undefined;
+    const isError = (msg.isError ?? anyMsg.IsError) as boolean | undefined;
+    const errorMessage = (msg.errorMessage ?? anyMsg.ErrorMessage) as string | undefined;
+    const generationId = (msg.generationId ?? anyMsg.GenerationId) as string | undefined;
+
     log.debug('Run completed', {
-      runId: msg.completedRunId,
-      hasPending: msg.hasPendingMessages,
-      isError: msg.isError,
+      runId: completedRunId,
+      hasPending: hasPendingMessages,
+      isError,
     });
 
-    // If the run ended with an error, add an error message to the chat
-    if (msg.isError && msg.errorMessage) {
-      const errorId = `error-${msg.completedRunId}`;
+    // If the run ended with an error, add an error message to the chat and
+    // surface it on the banner so users see a clear failure state. On a clean
+    // completion, clear any stale banner left over from a prior failed run so
+    // it doesn't persist across turns.
+    if (isError && errorMessage) {
+      const errorId = `error-${completedRunId}`;
       const errorMsg: InternalChatMessage = {
         id: errorId,
         role: 'assistant',
@@ -405,20 +418,23 @@ export function useChat(options: UseChatOptions = {}) {
         content: {
           $type: MessageType.Text,
           role: 'assistant',
-          text: `Error: ${msg.errorMessage}`,
+          text: `Error: ${errorMessage}`,
         },
         isStreaming: false,
-        runId: msg.completedRunId,
-        generationId: msg.generationId,
+        runId: completedRunId,
+        generationId,
         timestamp: Date.now(),
       };
       messageIndex.value.set(errorId, errorMsg);
       messageOrder.value.push(errorId);
+      error.value = errorMessage;
+    } else {
+      error.value = null;
     }
 
     // Mark all messages in this run as completed
     for (const message of messageIndex.value.values()) {
-      if (message.runId === msg.completedRunId && message.status === 'active') {
+      if (message.runId === completedRunId && message.status === 'active') {
         message.status = 'completed';
         message.isStreaming = false;
       }
@@ -891,6 +907,31 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
+   * Cancel the active stream (if any) without clearing message history.
+   * Closes the active WebSocket so the server stops streaming, and marks
+   * any in-flight streaming messages as completed so the UI returns to idle.
+   */
+  async function cancelStream(): Promise<void> {
+    if (!isLoading.value && !isSending.value && !wsConnection) return;
+    log.info('Cancelling active stream');
+
+    await disconnectWebSocket();
+
+    for (const message of messageIndex.value.values()) {
+      if (message.isStreaming) {
+        message.isStreaming = false;
+        if (message.status === 'active') {
+          message.status = 'completed';
+        }
+      }
+    }
+
+    finalize();
+    isLoading.value = false;
+    isSending.value = false;
+  }
+
+  /**
    * Set thread ID externally (for conversation switching)
    */
   function setThreadId(newThreadId: string | null): void {
@@ -1021,6 +1062,7 @@ export function useChat(options: UseChatOptions = {}) {
     pendingMessages: pendingMessagesForQueue,
     sendMessage,
     clearMessages,
+    cancelStream,
     setTransport,
     disconnectWebSocket,
     getResultForToolCall,

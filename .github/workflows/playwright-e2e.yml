@@ -1,0 +1,82 @@
+name: playwright-e2e
+
+# Browser-driven end-to-end tests for the LmStreaming.Sample chat client.
+# Runs the Vue SPA build + xUnit Playwright harness on a Linux runner.
+# Transport-level E2E tests (no browser) run in the main `test` workflow and
+# remain the fast default; this workflow is scoped to the browser project.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'samples/LmStreaming.Sample/**'
+      - 'src/LmStreaming.AspNetCore/**'
+      - 'src/LmMultiTurn/**'
+      - 'src/LmTestUtils/**'
+      - 'tests/LmStreaming.Sample.Browser.E2E.Tests/**'
+      - '.github/workflows/playwright-e2e.yml'
+  pull_request:
+    paths:
+      - 'samples/LmStreaming.Sample/**'
+      - 'src/LmStreaming.AspNetCore/**'
+      - 'src/LmMultiTurn/**'
+      - 'src/LmTestUtils/**'
+      - 'tests/LmStreaming.Sample.Browser.E2E.Tests/**'
+      - '.github/workflows/playwright-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      # Pin the Playwright browsers path so the cache step can hit/miss deterministically.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: samples/LmStreaming.Sample/ClientApp/package-lock.json
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          # Version bump of Microsoft.Playwright forces a fresh download; otherwise hit.
+          key: playwright-${{ runner.os }}-${{ hashFiles('tests/LmStreaming.Sample.Browser.E2E.Tests/LmStreaming.Sample.Browser.E2E.Tests.csproj') }}
+
+      - name: Restore
+        run: dotnet restore tests/LmStreaming.Sample.Browser.E2E.Tests/LmStreaming.Sample.Browser.E2E.Tests.csproj
+
+      - name: Build (with client SPA)
+        run: dotnet build tests/LmStreaming.Sample.Browser.E2E.Tests/LmStreaming.Sample.Browser.E2E.Tests.csproj --configuration Release --no-restore -p:BuildClientApp=true
+
+      - name: Install Playwright browsers
+        # playwright.ps1 is emitted to the test project's output by Microsoft.Playwright.
+        # --with-deps pulls system libs on the cold-cache path; skipped when the cache hits.
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pwsh tests/LmStreaming.Sample.Browser.E2E.Tests/bin/Release/net9.0/playwright.ps1 install --with-deps chromium
+
+      - name: Run Browser E2E tests
+        run: dotnet test tests/LmStreaming.Sample.Browser.E2E.Tests/LmStreaming.Sample.Browser.E2E.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=browser-e2e.trx" --results-directory .logs/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-results
+          path: .logs/test-results/**/*.trx
+          if-no-files-found: warn
