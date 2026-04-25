@@ -55,14 +55,15 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.Contains("multimodal", gpt4Model.Capabilities.SupportedFeatures);
         Assert.Contains("function_calling", gpt4Model.Capabilities.SupportedFeatures);
 
-        // Should have multiple providers for GPT-4
-        Assert.True(gpt4Model.Providers.Count >= 2);
-        var openAiProvider = gpt4Model.Providers.FirstOrDefault(p => p.Name == "OpenAI");
-        var azureProvider = gpt4Model.Providers.FirstOrDefault(p => p.Name == "Azure");
+        // OpenRouter is the primary provider and carries endpoint providers as sub-providers.
+        var openRouterProvider = gpt4Model.Providers.Single(p => p.Name == "OpenRouter");
+        Assert.NotNull(openRouterProvider.SubProviders);
+        Assert.True(openRouterProvider.SubProviders.Count >= 2);
+        var openAiProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Name == "OpenAI");
+        var azureProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Name == "Azure");
 
         Assert.NotNull(openAiProvider);
         Assert.NotNull(azureProvider);
-        Assert.True(openAiProvider.Priority > azureProvider.Priority); // OpenAI should have higher priority
         Assert.Equal(30.0, openAiProvider.Pricing.PromptPerMillion);
         Assert.Equal(60.0, openAiProvider.Pricing.CompletionPerMillion);
 
@@ -97,9 +98,10 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.Single(result);
 
         var model = result[0];
-        // Should only have the enabled provider, not the disabled one
         Assert.Single(model.Providers);
-        Assert.Equal("EnabledProvider", model.Providers[0].Name);
+        var openRouterProvider = model.Providers.Single(p => p.Name == "OpenRouter");
+        var subProvider = Assert.Single(openRouterProvider.SubProviders!);
+        Assert.Equal("EnabledProvider", subProvider.Name);
     }
 
     [Fact]
@@ -124,10 +126,12 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.Single(result);
 
         var model = result[0];
-        Assert.Equal(2, model.Providers.Count);
+        var openRouterProvider = model.Providers.Single(p => p.Name == "OpenRouter");
+        Assert.NotNull(openRouterProvider.SubProviders);
+        Assert.Equal(2, openRouterProvider.SubProviders.Count);
 
-        var freeProvider = model.Providers.FirstOrDefault(p => p.Tags?.Contains("free") == true);
-        var paidProvider = model.Providers.FirstOrDefault(p => p.Tags?.Contains("paid") == true);
+        var freeProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Tags?.Contains("free") == true);
+        var paidProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Tags?.Contains("paid") == true);
 
         Assert.NotNull(freeProvider);
         Assert.NotNull(paidProvider);

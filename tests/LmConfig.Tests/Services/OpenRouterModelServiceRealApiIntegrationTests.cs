@@ -36,7 +36,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         _tempCacheFile = Path.Combine(_tempCacheDir, "openrouter-cache.json");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_GetModelConfigsAsync_ShouldFetchAndCacheModels()
     {
         // Arrange
@@ -87,7 +87,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"Fetched {result.Count} models in {stopwatch.ElapsedMilliseconds}ms");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_CachedAccess_ShouldMeetPerformanceRequirement()
     {
         // Arrange
@@ -114,7 +114,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"Cached access returned {result.Count} models in {stopwatch.ElapsedMilliseconds}ms");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_RefreshCacheAsync_ShouldUpdateCache()
     {
         // Arrange
@@ -143,7 +143,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"Cache refreshed: {updatedCacheInfo.SizeFormatted} at {updatedCacheInfo.LastModified}");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_BackgroundRefresh_ShouldNotBlockForegroundRequests()
     {
         // Arrange
@@ -189,7 +189,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"5 concurrent requests completed in {stopwatch.ElapsedMilliseconds}ms");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_CacheInfo_ShouldProvideAccurateInformation()
     {
         // Arrange
@@ -214,7 +214,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"Cache info: {cacheInfo.SizeFormatted} at {cacheInfo.FilePath}");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_ClearCache_ShouldRemoveCacheFile()
     {
         // Arrange
@@ -235,7 +235,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine("Cache cleared successfully");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_ModelMapping_ShouldCreateValidModelConfigs()
     {
         // Arrange
@@ -285,7 +285,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Console.WriteLine($"Validated mapping for {result.Count} models");
     }
 
-    [Fact]
+    [Fact(Skip = "Requires live OpenRouter API access; exclude from CI.")]
     public async Task RealApi_ErrorHandling_ShouldHandleNetworkIssues()
     {
         // Arrange - Use a very short timeout to simulate network issues

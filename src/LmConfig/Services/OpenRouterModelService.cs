@@ -1284,6 +1284,7 @@ public class OpenRouterModelService
 
             // Get pricing information
             var pricing = CreatePricingConfig(endpoint);
+            var tags = CreateProviderTags(endpoint, isFree, quantization, variant);
 
             return new SubProviderConfig
             {
@@ -1291,6 +1292,8 @@ public class OpenRouterModelService
                 ModelName = providerModelId ?? modelVariantSlug ?? modelSlug,
                 Priority = 1, // Default priority for sub-providers
                 Pricing = pricing,
+                EndpointId = endpointId,
+                Tags = tags,
             };
         }
         catch (Exception ex)

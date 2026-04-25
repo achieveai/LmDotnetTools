@@ -44,6 +44,7 @@ public class TaskManager
     }
 
     private readonly ManagerState _state;
+    private readonly object _sync = new();
 
     // Thread-safe collections
     public TaskManager()
@@ -88,44 +89,52 @@ Examples:
             return "Error: Title cannot be empty.";
         }
 
-        PrivateTaskItem task;
-
-        // Adding a root task
-        if (string.IsNullOrWhiteSpace(parentId))
+        lock (_sync)
         {
-            var taskId = _state.NextId++;
+            PrivateTaskItem task;
+
+            // Adding a root task
+            if (string.IsNullOrWhiteSpace(parentId))
+            {
+                var taskId = _state.NextId++;
+                task = new PrivateTaskItem
+                {
+                    Id = taskId,
+                    DisplayId = taskId.ToString(),
+                    Title = title.Trim(),
+                    Status = TaskStatus.NotStarted,
+                };
+
+                _state.RootTasks.Add(task);
+                return $"Added task {task.DisplayId}: {task.Title}";
+            }
+
+            // Parse parent ID and find parent task
+            var (parentTask, error) = FindTaskByStringId(parentId);
+            if (parentTask == null)
+            {
+                return error ?? $"Error: Parent task '{parentId}' not found.";
+            }
+
+            // Create subtask with hierarchical ID
+            var subtaskId = parentTask.NextSubTaskId++;
             task = new PrivateTaskItem
             {
-                Id = taskId,
-                DisplayId = taskId.ToString(),
+                Id = subtaskId,
+                DisplayId = $"{parentTask.DisplayId}.{subtaskId}",
                 Title = title.Trim(),
                 Status = TaskStatus.NotStarted,
+                ParentId = parentTask.Id,
             };
 
-            _state.RootTasks.Add(task);
+            parentTask.SubTasks.Add(task);
             return $"Added task {task.DisplayId}: {task.Title}";
         }
+    }
 
-        // Parse parent ID and find parent task
-        var (parentTask, error) = FindTaskByStringId(parentId);
-        if (parentTask == null)
-        {
-            return error ?? $"Error: Parent task '{parentId}' not found.";
-        }
-
-        // Create subtask with hierarchical ID
-        var subtaskId = parentTask.NextSubTaskId++;
-        task = new PrivateTaskItem
-        {
-            Id = subtaskId,
-            DisplayId = $"{parentTask.DisplayId}.{subtaskId}",
-            Title = title.Trim(),
-            Status = TaskStatus.NotStarted,
-            ParentId = parentTask.Id,
-        };
-
-        parentTask.SubTasks.Add(task);
-        return $"Added task {task.DisplayId}: {task.Title}";
+    public string AddTask(string title, int parentId)
+    {
+        return AddTask(title, parentId.ToString());
     }
 
     [Function(
@@ -164,101 +173,104 @@ Examples:
             return "Error: No tasks provided for initialization.";
         }
 
-        // Clear existing tasks if requested
-        if (clearExisting)
+        lock (_sync)
         {
-            _state.RootTasks.Clear();
-            _state.NextId = 1;
-        }
-
-        var addedTasks = new List<string>();
-        var errors = new List<string>();
-
-        foreach (var bulkItem in tasks)
-        {
-            if (string.IsNullOrWhiteSpace(bulkItem.Task))
+            // Clear existing tasks if requested
+            if (clearExisting)
             {
-                // Silent skip for empty tasks (as per requirements for LLM inputs)
-                continue;
+                _state.RootTasks.Clear();
+                _state.NextId = 1;
             }
 
-            // Add main task
-            var mainTaskId = _state.NextId++;
-            var mainTask = new PrivateTaskItem
-            {
-                Id = mainTaskId,
-                DisplayId = mainTaskId.ToString(),
-                Title = bulkItem.Task.Trim(),
-                Status = TaskStatus.NotStarted,
-            };
+            var addedTasks = new List<string>();
+            var errors = new List<string>();
 
-            _state.RootTasks.Add(mainTask);
-            addedTasks.Add($"Task {mainTask.DisplayId}: {mainTask.Title}");
-
-            // Add notes to main task
-            if (bulkItem.Notes != null)
+            foreach (var bulkItem in tasks)
             {
-                foreach (var note in bulkItem.Notes)
+                if (string.IsNullOrWhiteSpace(bulkItem.Task))
                 {
-                    if (!string.IsNullOrWhiteSpace(note))
+                    // Silent skip for empty tasks (as per requirements for LLM inputs)
+                    continue;
+                }
+
+                // Add main task
+                var mainTaskId = _state.NextId++;
+                var mainTask = new PrivateTaskItem
+                {
+                    Id = mainTaskId,
+                    DisplayId = mainTaskId.ToString(),
+                    Title = bulkItem.Task.Trim(),
+                    Status = TaskStatus.NotStarted,
+                };
+
+                _state.RootTasks.Add(mainTask);
+                addedTasks.Add($"Task {mainTask.DisplayId}: {mainTask.Title}");
+
+                // Add notes to main task
+                if (bulkItem.Notes != null)
+                {
+                    foreach (var note in bulkItem.Notes)
                     {
-                        mainTask.Notes.Add(note.Trim());
+                        if (!string.IsNullOrWhiteSpace(note))
+                        {
+                            mainTask.Notes.Add(note.Trim());
+                        }
+                    }
+                }
+
+                // Add subtasks
+                if (bulkItem.SubTasks != null)
+                {
+                    foreach (var subTaskTitle in bulkItem.SubTasks)
+                    {
+                        if (string.IsNullOrWhiteSpace(subTaskTitle))
+                        {
+                            // Silent skip for empty subtasks (as per requirements)
+                            continue;
+                        }
+
+                        var subTaskId = mainTask.NextSubTaskId++;
+                        var subTask = new PrivateTaskItem
+                        {
+                            Id = subTaskId,
+                            DisplayId = $"{mainTask.DisplayId}.{subTaskId}",
+                            Title = subTaskTitle.Trim(),
+                            Status = TaskStatus.NotStarted,
+                            ParentId = mainTask.Id,
+                        };
+
+                        mainTask.SubTasks.Add(subTask);
                     }
                 }
             }
 
-            // Add subtasks
-            if (bulkItem.SubTasks != null)
+            var result = new StringBuilder();
+
+            if (clearExisting)
             {
-                foreach (var subTaskTitle in bulkItem.SubTasks)
+                _ = result.AppendLine("Cleared existing tasks.");
+            }
+
+            if (addedTasks.Count > 0)
+            {
+                _ = result.AppendLine($"Added {addedTasks.Count} task(s):");
+                foreach (var task in addedTasks)
                 {
-                    if (string.IsNullOrWhiteSpace(subTaskTitle))
-                    {
-                        // Silent skip for empty subtasks (as per requirements)
-                        continue;
-                    }
-
-                    var subTaskId = mainTask.NextSubTaskId++;
-                    var subTask = new PrivateTaskItem
-                    {
-                        Id = subTaskId,
-                        DisplayId = $"{mainTask.DisplayId}.{subTaskId}",
-                        Title = subTaskTitle.Trim(),
-                        Status = TaskStatus.NotStarted,
-                        ParentId = mainTask.Id,
-                    };
-
-                    mainTask.SubTasks.Add(subTask);
+                    _ = result.AppendLine($"  - {task}");
                 }
             }
-        }
 
-        var result = new StringBuilder();
-
-        if (clearExisting)
-        {
-            _ = result.AppendLine("Cleared existing tasks.");
-        }
-
-        if (addedTasks.Count > 0)
-        {
-            _ = result.AppendLine($"Added {addedTasks.Count} task(s):");
-            foreach (var task in addedTasks)
+            if (errors.Count > 0)
             {
-                _ = result.AppendLine($"  - {task}");
+                _ = result.AppendLine("Errors:");
+                foreach (var error in errors)
+                {
+                    _ = result.AppendLine($"  - {error}");
+                }
             }
-        }
 
-        if (errors.Count > 0)
-        {
-            _ = result.AppendLine("Errors:");
-            foreach (var error in errors)
-            {
-                _ = result.AppendLine($"  - {error}");
-            }
+            return result.ToString().TrimEnd();
         }
-
-        return result.ToString().TrimEnd();
     }
 
     [Function(
@@ -312,6 +324,16 @@ Examples:
         targetTask.Status = newStatus;
 
         return $"Updated task {targetTask.DisplayId} status to '{NormalizeStatusText(newStatus)}'.";
+    }
+
+    public string UpdateTask(int taskId, string status = "not started")
+    {
+        return UpdateTask(taskId.ToString(), status);
+    }
+
+    public string UpdateTask(int taskId, int subtaskId, string status = "not started")
+    {
+        return UpdateTask($"{taskId}.{subtaskId}", status);
     }
 
     [Function(
@@ -520,6 +542,25 @@ Examples:
         }
     }
 
+    public string ManageNotes(
+        int taskId,
+        int? subtaskId = null,
+        string noteText = "",
+        int noteIndex = 1,
+        string action = "add"
+    )
+    {
+        return action.Trim().ToLowerInvariant() switch
+        {
+            "add" => AddNote(taskId, subtaskId, noteText),
+            "edit" => EditNote(taskId, subtaskId, noteIndex, noteText)
+                .Replace($"Updated note #{noteIndex} on", $"Edited note {noteIndex} on", StringComparison.Ordinal),
+            "delete" => DeleteNote(taskId, subtaskId, noteIndex)
+                .Replace($"Deleted note #{noteIndex} from", $"Deleted note {noteIndex} from", StringComparison.Ordinal),
+            _ => "Error: Invalid action. Use: add, edit, delete.",
+        };
+    }
+
     [Function(
         "list-notes",
         @"List all notes to recall context for the next step.
@@ -595,12 +636,15 @@ Examples:
     )
     {
         List<PrivateTaskItem> rootTasksCopy;
-        if (_state.RootTasks.Count == 0)
+        lock (_sync)
         {
-            return "No tasks found.";
-        }
+            if (_state.RootTasks.Count == 0)
+            {
+                return "No tasks found.";
+            }
 
-        rootTasksCopy = [.. _state.RootTasks];
+            rootTasksCopy = [.. _state.RootTasks];
+        }
 
         TaskStatus? filterStatus = null;
         if (!string.IsNullOrEmpty(status))
@@ -646,7 +690,10 @@ Examples:
 
     public IList<TaskItem> GetTasks()
     {
-        return [.. _state.RootTasks.Select(t => t.ToPublic())];
+        lock (_sync)
+        {
+            return [.. _state.RootTasks.Select(t => t.ToPublic())];
+        }
     }
 
     [Function(
@@ -676,7 +723,10 @@ Examples:
         var matches = new List<(PrivateTaskItem task, string path)>();
 
         List<PrivateTaskItem> rootTasksCopy;
-        rootTasksCopy = [.. _state.RootTasks];
+        lock (_sync)
+        {
+            rootTasksCopy = [.. _state.RootTasks];
+        }
 
         foreach (var task in rootTasksCopy)
         {
@@ -949,7 +999,13 @@ Examples:
 
     private string GetTaskCounts(string countType)
     {
-        var allTasks = _state.RootTasks.SelectMany(t => t.SubTasks).ToList();
+        List<PrivateTaskItem> rootTasksCopy;
+        lock (_sync)
+        {
+            rootTasksCopy = [.. _state.RootTasks];
+        }
+
+        var allTasks = GetAllTasksFlat(rootTasksCopy);
         var total = allTasks.Count;
         var completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
         var pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);

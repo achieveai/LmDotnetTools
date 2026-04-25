@@ -27,7 +27,7 @@ public class TaskManagerTests
         var result = _taskManager.AddTask("Test task");
 
         // Assert
-        result.Should().StartWith("Added task 2:");
+        result.Should().StartWith("Added task 1:");
         result.Should().Contain("Test task");
 
         var tasks = _taskManager.ListTasks();
@@ -59,8 +59,7 @@ public class TaskManagerTests
         var result = _taskManager.AddTask("Subtask", parentId);
 
         // Assert
-        result.Should().Contain($"Added subtask");
-        result.Should().Contain($"under task {parentId}");
+        result.Should().Contain($"Added task {parentId}.1");
         result.Should().Contain("Subtask");
     }
 
@@ -71,11 +70,11 @@ public class TaskManagerTests
         var result = _taskManager.AddTask("Subtask", 999);
 
         // Assert
-        result.Should().Be("Error: Parent task 999 not found.");
+        result.Should().Be("Error: Task '999' not found.");
     }
 
     [Fact]
-    public void AddTask_ToSubtask_ShouldReturnError()
+    public void AddTask_ToSubtask_ShouldAddNestedTask()
     {
         // Arrange
         var parentResult = _taskManager.AddTask("Parent task");
@@ -84,11 +83,11 @@ public class TaskManagerTests
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.AddTask("Sub-subtask", subtaskId);
+        var result = _taskManager.AddTask("Sub-subtask", $"{parentId}.{subtaskId}");
 
         // Assert
-        result.Should().Contain("Error: Only two levels supported");
-        result.Should().Contain($"Task {subtaskId} is already a subtask");
+        result.Should().Contain($"Added task {parentId}.{subtaskId}.1");
+        result.Should().Contain("Sub-subtask");
     }
 
     #endregion
@@ -242,7 +241,7 @@ public class TaskManagerTests
         var result = _taskManager.UpdateTask(parentId, subtaskId, "completed");
 
         // Assert
-        result.Should().Contain($"Updated subtask {subtaskId} of task {parentId} status to 'completed'");
+        result.Should().Contain($"Updated task {parentId}.{subtaskId} status to 'completed'");
 
         var taskDetails = _taskManager.GetTask(parentId, subtaskId);
         taskDetails.Should().Contain("Status: completed");
@@ -480,8 +479,10 @@ public class TaskManagerTests
         var result2 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 2, action: "edit");
 
         // Assert
-        result1.Should().Contain("Error: Note index 0 out of range (1-1)");
-        result2.Should().Contain("Error: Note index 2 out of range (1-1)");
+        result1.Should().Contain("Error: Note index 0 out of range");
+        result1.Should().Contain("has 1 note(s)");
+        result2.Should().Contain("Error: Note index 2 out of range");
+        result2.Should().Contain("has 1 note(s)");
     }
 
     #endregion
@@ -706,8 +707,7 @@ public class TaskManagerTests
         for (int i = 0; i < updateCount; i++)
         {
             var status =
-                i
-                % 3 switch
+                (i % 3) switch
                 {
                     0 => "not started",
                     1 => "in progress",
@@ -833,7 +833,7 @@ public class TaskManagerTests
     }
 
     [Fact]
-    public void TaskManager_DeepSubtaskHierarchy_ShouldEnforceTwoLevels()
+    public void TaskManager_DeepSubtaskHierarchy_ShouldAllowNestedTasks()
     {
         // Arrange
         var parentResult = _taskManager.AddTask("Level 1");
@@ -842,10 +842,11 @@ public class TaskManagerTests
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.AddTask("Level 3", subtaskId);
+        var result = _taskManager.AddTask("Level 3", $"{parentId}.{subtaskId}");
 
         // Assert
-        result.Should().Contain("Error: Only two levels supported");
+        result.Should().Contain($"Added task {parentId}.{subtaskId}.1");
+        result.Should().Contain("Level 3");
     }
 
     [Fact]

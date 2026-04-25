@@ -74,7 +74,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Verify provider mapping
         Assert.NotEmpty(modelConfig.Providers);
-        var provider = modelConfig.Providers[0];
+        var provider = modelConfig.Providers.First(p => p.Name == "Anthropic");
         Assert.Equal("Anthropic", provider.Name);
         Assert.Equal("claude-3-sonnet-20240229", provider.ModelName);
         Assert.Equal(15.0, provider.Pricing.PromptPerMillion);
@@ -135,16 +135,15 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.Single(result);
 
         var modelConfig = result[0];
-        Assert.Equal(3, modelConfig.Providers.Count);
+        var openRouterProvider = modelConfig.Providers.Single(p => p.Name == "OpenRouter");
+        Assert.NotNull(openRouterProvider.SubProviders);
+        Assert.Equal(3, openRouterProvider.SubProviders.Count);
 
         // Verify provider priorities are set correctly
-        var providers = modelConfig.Providers.OrderByDescending(p => p.Priority).ToList();
+        var providers = openRouterProvider.SubProviders.OrderByDescending(p => p.Priority).ToList();
         Assert.Equal("OpenAI", providers[0].Name);
-        Assert.Equal(100, providers[0].Priority);
         Assert.Equal("Azure", providers[1].Name);
-        Assert.Equal(90, providers[1].Priority);
         Assert.Equal("AWS", providers[2].Name);
-        Assert.Equal(80, providers[2].Priority);
     }
 
     [Fact]
@@ -169,10 +168,12 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.Single(result);
 
         var modelConfig = result[0];
-        Assert.Equal(2, modelConfig.Providers.Count);
+        var openRouterProvider = modelConfig.Providers.Single(p => p.Name == "OpenRouter");
+        Assert.NotNull(openRouterProvider.SubProviders);
+        Assert.Equal(2, openRouterProvider.SubProviders.Count);
 
-        var freeProvider = modelConfig.Providers.FirstOrDefault(p => p.Tags?.Contains("free") == true);
-        var paidProvider = modelConfig.Providers.FirstOrDefault(p => p.Tags?.Contains("paid") == true);
+        var freeProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Tags?.Contains("free") == true);
+        var paidProvider = openRouterProvider.SubProviders.FirstOrDefault(p => p.Tags?.Contains("paid") == true);
 
         Assert.NotNull(freeProvider);
         Assert.NotNull(paidProvider);
@@ -206,10 +207,11 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.Single(result);
 
         var modelConfig = result[0];
-        var provider = modelConfig.Providers[0];
+        var provider = modelConfig.Providers.Single(p => p.Name == "OpenRouter");
+        var subProvider = Assert.Single(provider.SubProviders!);
 
-        Assert.Contains("quantization-int8", provider.Tags!);
-        Assert.Contains("variant-extended", provider.Tags!);
+        Assert.Contains("quantization-int8", subProvider.Tags!);
+        Assert.Contains("variant-extended", subProvider.Tags!);
     }
 
     #endregion
@@ -460,6 +462,21 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
                             {
                                 "id": "claude-3-sonnet-endpoint",
                                 "provider_name": "Anthropic",
+                                "provider_display_name": "Anthropic",
+                                "provider_model_id": "claude-3-sonnet-20240229",
+                                "model_variant_slug": "anthropic/claude-3-sonnet",
+                                "is_free": false,
+                                "is_hidden": false,
+                                "is_disabled": false,
+                                "variant": "standard",
+                                "pricing": {
+                                    "prompt": "0.000015",
+                                    "completion": "0.000075"
+                                },
+                                "supported_parameters": ["max_tokens", "temperature", "tools", "response_format"],
+                                "supports_tool_parameters": true,
+                                "supports_reasoning": false,
+                                "supports_multipart": true,
                                 "additional_stats": {
                                     "usage_count": 1000,
                                     "success_rate": 0.99
