@@ -1,7 +1,13 @@
 # Playwright Testing Guide for LmStreaming.Sample
 
-This guide provides ready-to-use Playwright scripts for testing the LmStreaming Chat Client.
-All scripts use the MCP Playwright tools available in Claude Code.
+This guide provides ready-to-use Playwright scripts for **manual exploratory testing** of the
+LmStreaming Chat Client via the MCP Playwright tools in Claude Code.
+
+> **Automated browser E2E tests** live in
+> [`tests/LmStreaming.Sample.Browser.E2E.Tests/`](../../tests/LmStreaming.Sample.Browser.E2E.Tests/)
+> and run the same chat client under headless Chromium + a scripted SSE backend (no real
+> LLM calls). Those tests cover AC1-AC6 of issue #8 and are the authoritative regression
+> suite; this guide remains useful for ad-hoc checks and when adding new scenarios.
 
 ## Prerequisites
 

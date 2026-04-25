@@ -5,7 +5,7 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 
-const { displayItems, isLoading, isSending, error, cumulativeUsage, pendingMessages, sendMessage, clearMessages, getResultForToolCall } = useChat();
+const { displayItems, isLoading, isSending, error, cumulativeUsage, pendingMessages, sendMessage, clearMessages, cancelStream, getResultForToolCall } = useChat();
 
 // Provide getResultForToolCall to child components (MessageList -> MetadataPill)
 provide('getResultForToolCall', getResultForToolCall);
@@ -13,20 +13,24 @@ provide('getResultForToolCall', getResultForToolCall);
 function handleSend(message: string) {
   sendMessage(message);
 }
+
+function handleCancel() {
+  cancelStream();
+}
 </script>
 
 <template>
-  <div class="chat-view">
+  <div class="chat-view" data-testid="chat-view">
     <header class="chat-header">
       <h1>LmStreaming Chat</h1>
-      <button class="clear-btn" @click="clearMessages" :disabled="isLoading">
+      <button class="clear-btn" data-testid="clear-button" @click="clearMessages" :disabled="isLoading">
         Clear
       </button>
     </header>
 
     <MessageList :display-items="displayItems" :is-loading="isLoading" />
 
-    <div v-if="error" class="error-banner">
+    <div v-if="error" class="error-banner" data-testid="error-banner">
       {{ error }}
     </div>
 
@@ -44,7 +48,12 @@ function handleSend(message: string) {
 
     <PendingMessageQueue :pending-messages="pendingMessages" />
 
-    <ChatInput :disabled="isSending" @send="handleSend" />
+    <ChatInput
+      :disabled="isSending && !isLoading"
+      :streaming="isLoading"
+      @send="handleSend"
+      @cancel="handleCancel"
+    />
   </div>
 </template>
 

@@ -25,7 +25,7 @@ public sealed class BasicStreamingTests
             ? responder.AsAnthropicHandler()
             : responder.AsOpenAiHandler();
 
-        var builder = new E2EWebAppFactory.ScriptedBuilder(handler);
+        var builder = new ScriptedBuilder(handler);
         using var factory = new E2EWebAppFactory(providerMode, builder);
 
         var threadId = $"basic-{providerMode}-{Guid.NewGuid():N}";

@@ -34,6 +34,40 @@ export interface WebSocketConnection {
 }
 
 /**
+ * Server emits PascalCase JSON (System.Text.Json default policy) but TS Message types
+ * are camelCase. Normalize at the deserialize boundary so downstream handlers don't
+ * need per-field dual-casing reads. Recurses into nested objects/arrays. Preserves the
+ * original PascalCase keys alongside the camelCase aliases (write-once, never overwrite)
+ * so any handler that already reads PascalCase still works during migration.
+ */
+function normalizeKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeKeys);
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = normalizeKeys(v);
+    // Preserve original key (handlers may still read PascalCase during migration).
+    out[k] = normalized;
+    // Add camelCase alias if the key starts with an uppercase ASCII letter and the
+    // alias slot is free. Skip JSON discriminator '$type'.
+    if (k.length > 0 && k !== '$type') {
+      const first = k.charCodeAt(0);
+      if (first >= 65 && first <= 90) {
+        const camel = k.charAt(0).toLowerCase() + k.slice(1);
+        if (!(camel in out)) {
+          out[camel] = normalized;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Create a WebSocket connection for chat streaming.
  * The WebSocket sends raw JSON messages (not SSE format).
  */
@@ -88,14 +122,22 @@ export function createWebSocketConnection(
           return;
         }
 
-        // Parse as message
-        const message = JSON.parse(data) as Message;
+        // Parse as message and normalize PascalCase keys to camelCase aliases at the
+        // deserialize boundary so handlers can read camelCase directly (see F7).
+        const raw = JSON.parse(data) as unknown;
+        const message = normalizeKeys(raw) as Message;
         if (message.$type) {
           log.trace('Received message', { type: message.$type });
           onMessage(message);
         }
       } catch (err) {
+        // Surface parse/normalize failures via onError so the UI shows a banner
+        // instead of silently hanging — same pattern as the other error paths in
+        // this connection (error signal, socket error). Without this, a bug in
+        // normalizeKeys or malformed server JSON would drop the message invisibly.
+        const msg = err instanceof Error ? err.message : 'Failed to parse server message';
         log.error('Failed to parse WebSocket message', { error: err, data: event.data });
+        onError(msg);
       }
     };
 

@@ -23,7 +23,7 @@ public sealed class AnthropicSpecificTests
                     .Text("Final answer after reasoning."))
             .Build();
 
-        var builder = new E2EWebAppFactory.ScriptedBuilder(responder.AsAnthropicHandler());
+        var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
         using var factory = new E2EWebAppFactory("test-anthropic", builder);
 
         var threadId = $"anthropic-thinking-{Guid.NewGuid():N}";
@@ -52,7 +52,7 @@ public sealed class AnthropicSpecificTests
                     .Text("cached reply"))
             .Build();
 
-        var builder = new E2EWebAppFactory.ScriptedBuilder(responder.AsAnthropicHandler());
+        var builder = new ScriptedBuilder(responder.AsAnthropicHandler());
         using var factory = new E2EWebAppFactory("test-anthropic", builder);
 
         var threadId = $"anthropic-cache-{Guid.NewGuid():N}";
