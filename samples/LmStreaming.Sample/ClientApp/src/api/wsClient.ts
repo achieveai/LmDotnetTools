@@ -131,7 +131,13 @@ export function createWebSocketConnection(
           onMessage(message);
         }
       } catch (err) {
+        // Surface parse/normalize failures via onError so the UI shows a banner
+        // instead of silently hanging — same pattern as the other error paths in
+        // this connection (error signal, socket error). Without this, a bug in
+        // normalizeKeys or malformed server JSON would drop the message invisibly.
+        const msg = err instanceof Error ? err.message : 'Failed to parse server message';
         log.error('Failed to parse WebSocket message', { error: err, data: event.data });
+        onError(msg);
       }
     };
 
