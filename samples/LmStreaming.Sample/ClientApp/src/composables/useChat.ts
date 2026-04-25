@@ -326,13 +326,12 @@ export function useChat(options: UseChatOptions = {}) {
     log.info('RunAssignment raw message', { msg });
     
     const assignment = msg.Assignment;
-    // Backend sends PascalCase, so we need to access properties accordingly.
-    // Use ?? (not ||) so a falsy-but-present value isn't silently replaced by
-    // the camelCase shape — parity with handleRunCompleted below.
-    const runId = (assignment as any).RunId ?? assignment.runId;
-    const generationId = (assignment as any).GenerationId ?? assignment.generationId;
-    const inputIds = (assignment as any).InputIds ?? assignment.inputIds ?? [];
-    const parentRunId = (assignment as any).ParentRunId ?? assignment.parentRunId;
+    // Wire format normalized in wsClient.ts (PascalCase -> camelCase aliases at the
+    // deserialize boundary), so we read camelCase directly here.
+    const runId = assignment.runId;
+    const generationId = assignment.generationId;
+    const inputIds = assignment.inputIds ?? [];
+    const parentRunId = assignment.parentRunId;
     
     currentRunId.value = runId;
     log.info('Run assignment received', { 
@@ -391,15 +390,14 @@ export function useChat(options: UseChatOptions = {}) {
   function handleRunCompleted(msg: Message) {
     if (!isRunCompletedMessage(msg)) return;
 
-    // Wire format is PascalCase (IMessageJsonConverter uses default PropertyNamingPolicy);
-    // TS types were declared camelCase. Read both shapes so the handler works regardless
-    // of which casing the server emits — rather than silently dropping error frames.
-    const anyMsg = msg as unknown as Record<string, unknown>;
-    const completedRunId = (msg.completedRunId ?? anyMsg.CompletedRunId) as string | undefined;
-    const hasPendingMessages = (msg.hasPendingMessages ?? anyMsg.HasPendingMessages) as boolean | undefined;
-    const isError = (msg.isError ?? anyMsg.IsError) as boolean | undefined;
-    const errorMessage = (msg.errorMessage ?? anyMsg.ErrorMessage) as string | undefined;
-    const generationId = (msg.generationId ?? anyMsg.GenerationId) as string | undefined;
+    // Wire format normalized in wsClient.ts (PascalCase -> camelCase aliases at the
+    // deserialize boundary). Read camelCase directly — handlers no longer carry the
+    // dual-casing burden.
+    const completedRunId = msg.completedRunId;
+    const hasPendingMessages = msg.hasPendingMessages;
+    const isError = msg.isError;
+    const errorMessage = msg.errorMessage;
+    const generationId = msg.generationId;
 
     log.debug('Run completed', {
       runId: completedRunId,

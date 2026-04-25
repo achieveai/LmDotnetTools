@@ -1,5 +1,3 @@
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -107,29 +105,4 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Adapter that plugs a scripted <see cref="HttpMessageHandler"/> into the sample's
-    /// test-mode agent path, together with a caller-supplied <see cref="SubAgentOptions"/>
-    /// factory.
-    /// </summary>
-    public sealed class ScriptedBuilder : ITestAgentBuilder
-    {
-        private readonly HttpMessageHandler _handler;
-        private readonly Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? _subAgentFactory;
-
-        public ScriptedBuilder(
-            HttpMessageHandler handler,
-            Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null)
-        {
-            _handler = handler ?? throw new ArgumentNullException(nameof(handler));
-            _subAgentFactory = subAgentFactory;
-        }
-
-        public HttpMessageHandler CreateHandler(string providerMode, ILoggerFactory loggerFactory) => _handler;
-
-        public SubAgentOptions? CreateSubAgentOptions(
-            ILoggerFactory loggerFactory,
-            Func<IStreamingAgent> providerAgentFactory) =>
-                _subAgentFactory?.Invoke(loggerFactory, providerAgentFactory);
-    }
 }

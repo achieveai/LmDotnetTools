@@ -1,14 +1,16 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using LmStreaming.Sample.E2E.Tests.Infrastructure;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 
 /// <summary>
 /// Encapsulates the boilerplate that every scenario test repeats: pick the right
-/// provider-mode HTTP handler, build a <see cref="BrowserWebAppFactory.ScriptedBuilder"/>,
-/// boot the Kestrel factory, open a fresh Playwright context + page, navigate to the SPA,
-/// and wait for the chat textarea. Tests can then focus on the behaviour under test.
+/// provider-mode HTTP handler, build a <see cref="ScriptedBuilder"/>, boot the Kestrel
+/// factory, open a fresh Playwright context + page, navigate to the SPA, and wait for
+/// the chat textarea. Tests can then focus on the behaviour under test.
 /// </summary>
 public static class ScriptedScenario
 {
@@ -34,7 +36,7 @@ public static class ScriptedScenario
         Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null
     )
     {
-        var builder = new BrowserWebAppFactory.ScriptedBuilder(handler, subAgentFactory);
+        var builder = new ScriptedBuilder(handler, subAgentFactory);
         var factory = new BrowserWebAppFactory(providerMode, builder);
         IBrowserContext? context = null;
         try
@@ -109,20 +111,11 @@ public sealed class ScenarioSession : IAsyncDisposable
 
     private static string ScreenshotDirectory()
     {
-        // Walk up from the test bin dir to the repo root (.git marker — directory in
-        // a normal clone, file in a git worktree), then drop the PNGs in
-        // .logs/e2e-screenshots/ so they live alongside the existing test logs.
-        var dir = AppContext.BaseDirectory;
-        while (dir is not null)
-        {
-            var marker = Path.Combine(dir, ".git");
-            if (Directory.Exists(marker) || File.Exists(marker))
-            {
-                break;
-            }
-            dir = Path.GetDirectoryName(dir);
-        }
-        var root = dir ?? AppContext.BaseDirectory;
+        // Walk up from the test bin dir to the repo root (.sln / .git / .env.test markers —
+        // EnvironmentHelper.FindWorkspaceRoot is worktree-aware, handling ".git" as either
+        // directory or file). Drop the PNGs in .logs/e2e-screenshots/ so they live
+        // alongside the existing test logs.
+        var root = EnvironmentHelper.FindWorkspaceRoot(AppContext.BaseDirectory);
         return Path.Combine(root, ".logs", "e2e-screenshots");
     }
 
