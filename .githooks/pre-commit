@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ "${SKIP_CI_HOOK:-}" = "1" ]; then
+    echo "SKIP_CI_HOOK=1 set; skipping pre-commit validation."
+    exit 0
+fi
+
+exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$repo_root/scripts/ci-test.ps1"
