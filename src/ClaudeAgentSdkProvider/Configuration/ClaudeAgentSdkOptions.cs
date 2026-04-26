@@ -96,4 +96,24 @@ public record ClaudeAgentSdkOptions
     ///     Passed as --reasoning-effort CLI flag.
     /// </summary>
     public string? ReasoningEffort { get; init; }
+
+    /// <summary>
+    ///     Override the Anthropic API base URL the spawned Claude Agent SDK CLI talks to.
+    ///     Mapped to the <c>ANTHROPIC_BASE_URL</c> environment variable on the child process.
+    ///     Used by E2E tests that point the CLI at a local mock provider host.
+    /// </summary>
+    public string? BaseUrl { get; init; }
+
+    /// <summary>
+    ///     Override the bearer token the spawned Claude Agent SDK CLI sends to Anthropic.
+    ///     Mapped to the <c>ANTHROPIC_AUTH_TOKEN</c> environment variable on the child process.
+    /// </summary>
+    public string? AuthToken { get; init; }
+
+    /// <summary>
+    ///     When <c>true</c>, sets <c>CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1</c> on the spawned
+    ///     CLI. Tests against a mock provider use this so the CLI does not request beta-only
+    ///     features (e.g., experimental model headers) the mock host does not implement.
+    /// </summary>
+    public bool DisableExperimentalBetas { get; init; }
 }
