@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
-using AchieveAi.LmDotnetTools.MockProviderHost.Tests.Infrastructure;
 using FluentAssertions;
 
 namespace AchieveAi.LmDotnetTools.MockProviderHost.Tests;

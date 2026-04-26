@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
-using AchieveAi.LmDotnetTools.MockProviderHost.Tests.Infrastructure;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using FluentAssertions;
