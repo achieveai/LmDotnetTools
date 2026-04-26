@@ -21,7 +21,7 @@ public sealed class OpenAiProviderConsumptionTests
                 .Turn(t => t.Text("hello from the mock host"))
             .Build();
 
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var httpClient = new HttpClient();
         var openClient = new OpenClient(httpClient, fixture.BaseUrl + "/v1");
 

@@ -107,56 +107,73 @@ public static class MockProviderHostBuilder
         string upstreamPath,
         bool openAiHeaders)
     {
-        // Buffer the body up-front so the inner ScriptedHandler can read it via
-        // ReadAsStringAsync without racing the original request stream's cancellation.
-        ctx.Request.EnableBuffering();
-        using var bodyStream = new MemoryStream();
-        await ctx.Request.Body.CopyToAsync(bodyStream, ctx.RequestAborted).ConfigureAwait(false);
-        var bodyBytes = bodyStream.ToArray();
-
-        using var upstreamRequest = new HttpRequestMessage(HttpMethod.Post, upstreamPath)
+        try
         {
-            Content = new ByteArrayContent(bodyBytes),
-        };
-        var contentType = ctx.Request.ContentType ?? "application/json";
-        upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+            // Buffer the body up-front so the inner ScriptedHandler can read it via
+            // ReadAsStringAsync without racing the original request stream's cancellation.
+            ctx.Request.EnableBuffering();
+            using var bodyStream = new MemoryStream();
+            await ctx.Request.Body.CopyToAsync(bodyStream, ctx.RequestAborted).ConfigureAwait(false);
+            var bodyBytes = bodyStream.ToArray();
 
-        // ScriptedHandler streams back token-by-token, so read response headers first and copy
-        // the body as it arrives.
-        using var upstreamResponse = await client.SendAsync(
-            upstreamRequest,
-            HttpCompletionOption.ResponseHeadersRead,
-            ctx.RequestAborted).ConfigureAwait(false);
+            using var upstreamRequest = new HttpRequestMessage(HttpMethod.Post, upstreamPath)
+            {
+                Content = new ByteArrayContent(bodyBytes),
+            };
+            var contentType = ctx.Request.ContentType ?? "application/json";
+            upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
-        ctx.Response.StatusCode = (int)upstreamResponse.StatusCode;
+            // ScriptedHandler streams back token-by-token, so read response headers first and copy
+            // the body as it arrives.
+            using var upstreamResponse = await client.SendAsync(
+                upstreamRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                ctx.RequestAborted).ConfigureAwait(false);
 
-        // Echo the upstream's content type (text/event-stream for streaming, application/json
-        // for non-streaming errors). Skip Content-Length when chunking SSE; Kestrel computes it.
-        if (upstreamResponse.Content.Headers.ContentType is { } responseContentType)
-        {
-            ctx.Response.ContentType = responseContentType.ToString();
+            ctx.Response.StatusCode = (int)upstreamResponse.StatusCode;
+
+            // Echo the upstream's content type (text/event-stream for streaming, application/json
+            // for non-streaming errors). Skip Content-Length when chunking SSE; Kestrel computes it.
+            if (upstreamResponse.Content.Headers.ContentType is { } responseContentType)
+            {
+                ctx.Response.ContentType = responseContentType.ToString();
+            }
+
+            // Convention headers some SDKs assert on. These aren't load-bearing for the
+            // ScriptedSseResponder but match real-provider responses closely enough that strict
+            // SDKs don't reject the response.
+            var requestId = $"mock-{Guid.NewGuid():N}";
+            if (openAiHeaders)
+            {
+                ctx.Response.Headers["openai-version"] = "2020-10-01";
+                ctx.Response.Headers["x-request-id"] = requestId;
+            }
+            else
+            {
+                ctx.Response.Headers["anthropic-version"] = "2023-06-01";
+                ctx.Response.Headers["anthropic-request-id"] = requestId;
+                ctx.Response.Headers["request-id"] = requestId;
+            }
+
+            // Copy the (possibly streaming) response body straight through. CopyToAsync flushes
+            // periodically, which is sufficient for SSE since each `data:` frame from the inner
+            // SseStreamHttpContent crosses a write boundary.
+            await using var upstreamStream = await upstreamResponse.Content.ReadAsStreamAsync(ctx.RequestAborted).ConfigureAwait(false);
+            await upstreamStream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted).ConfigureAwait(false);
         }
-
-        // Convention headers some SDKs assert on. These aren't load-bearing for the
-        // ScriptedSseResponder but match real-provider responses closely enough that strict
-        // SDKs don't reject the response.
-        var requestId = $"mock-{Guid.NewGuid():N}";
-        if (openAiHeaders)
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
         {
-            ctx.Response.Headers["openai-version"] = "2020-10-01";
-            ctx.Response.Headers["x-request-id"] = requestId;
+            // Client disconnected mid-stream — not a host error.
+            throw;
         }
-        else
+        catch (Exception ex)
         {
-            ctx.Response.Headers["anthropic-version"] = "2023-06-01";
-            ctx.Response.Headers["anthropic-request-id"] = requestId;
-            ctx.Response.Headers["request-id"] = requestId;
+            // Mock-host failures are otherwise invisible to the test (a generic 500 with no
+            // logged cause). Log so failing E2E tests have a diagnostic entry point.
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()
+                ?.CreateLogger("MockProviderHost.Forward");
+            logger?.LogError(ex, "ForwardAsync failed for {Path}", upstreamPath);
+            throw;
         }
-
-        // Copy the (possibly streaming) response body straight through. CopyToAsync flushes
-        // periodically, which is sufficient for SSE since each `data:` frame from the inner
-        // SseStreamHttpContent crosses a write boundary.
-        await using var upstreamStream = await upstreamResponse.Content.ReadAsStreamAsync(ctx.RequestAborted).ConfigureAwait(false);
-        await upstreamStream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted).ConfigureAwait(false);
     }
 }

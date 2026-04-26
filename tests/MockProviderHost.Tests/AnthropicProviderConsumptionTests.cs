@@ -21,7 +21,7 @@ public sealed class AnthropicProviderConsumptionTests
                 .Turn(t => t.Text("hello from the anthropic mock"))
             .Build();
 
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var httpClient = new HttpClient();
         var client = new AnthropicClient(httpClient, baseUrl: fixture.BaseUrl + "/v1");
 

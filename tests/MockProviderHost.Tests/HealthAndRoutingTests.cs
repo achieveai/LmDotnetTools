@@ -18,7 +18,7 @@ public sealed class HealthAndRoutingTests
         var responder = ScriptedSseResponder.New()
             .ForRole("any", _ => true).Turn(t => t.Text("unused"))
             .Build();
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
         var response = await client.GetAsync("/healthz");
@@ -33,7 +33,7 @@ public sealed class HealthAndRoutingTests
         var responder = ScriptedSseResponder.New()
             .ForRole("any", _ => true).Turn(t => t.Text("unused"))
             .Build();
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
         var response = await client.GetAsync("/v1/embeddings");
@@ -47,7 +47,7 @@ public sealed class HealthAndRoutingTests
         var responder = ScriptedSseResponder.New()
             .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
             .Build();
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
         var body = """{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}""";
@@ -65,7 +65,7 @@ public sealed class HealthAndRoutingTests
         var responder = ScriptedSseResponder.New()
             .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
             .Build();
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
         var body = """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";
@@ -85,7 +85,7 @@ public sealed class HealthAndRoutingTests
         var responder = ScriptedSseResponder.New()
             .ForRole("parent", _ => true).Turn(t => t.Text("hi"))
             .Build();
-        await using var fixture = await MockProviderHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var client = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };
 
         var body = """{"model":"claude-test","stream":true,"max_tokens":256,"messages":[{"role":"user","content":"hi"}]}""";

@@ -78,8 +78,16 @@ internal static class ClaudeCliPrerequisites
             output = p.StandardOutput.ReadToEnd();
             return p.ExitCode == 0;
         }
-        catch
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                       or InvalidOperationException
+                                       or PlatformNotSupportedException
+                                       or System.IO.IOException)
         {
+            // Probe is best-effort (file not on PATH, permission denied, platform mismatch).
+            // Surface a Debug trace so a missing-tool diagnosis isn't silent on machines where
+            // the CLI is supposedly installed.
+            System.Diagnostics.Debug.WriteLine(
+                $"ClaudeCliPrerequisites probe failed for '{fileName}': {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }

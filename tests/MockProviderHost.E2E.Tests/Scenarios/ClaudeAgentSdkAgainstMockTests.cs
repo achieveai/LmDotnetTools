@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using AchieveAi.LmDotnetTools.MockProviderHost;
 using AchieveAi.LmDotnetTools.MockProviderHost.E2E.Tests.Infrastructure;
 using FluentAssertions;
 
@@ -37,7 +38,7 @@ public sealed class ClaudeAgentSdkAgainstMockTests
             .ForRole("parent", _ => true)
                 .Turn(t => t.Text("hello from the scripted parent"))
             .Build();
-        await using var fixture = await RealPortHostFixture.StartAsync(responder);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
 
         var options = new ClaudeAgentSdkOptions
         {
@@ -74,9 +75,11 @@ public sealed class ClaudeAgentSdkAgainstMockTests
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
         {
-            // Acceptable: we only need the CLI to reach the host once.
+            // 20-second timeout expired — acceptable if the CLI reached the host at least once.
+            // Internal cancellations from StartAsync/SendMessagesAsync (CLI failure) propagate
+            // as proper test failures with stack traces.
         }
 
         responder.RemainingTurns["parent"].Should().Be(0,
