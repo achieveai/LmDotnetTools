@@ -1,2 +1,26 @@
+# Keep text files on LF line endings in every working tree.
+# This avoids Windows/Linux/Docker churn and keeps scripts portable.
+* text=auto eol=lf
+
+# Scripts and hooks must remain LF for container and Unix execution.
 *.ps1 text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.cmd text eol=lf
+*.bat text eol=lf
 .githooks/* text eol=lf
+
+# Binary files should never be line-ending normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.dll binary
+*.exe binary
+*.pdb binary
