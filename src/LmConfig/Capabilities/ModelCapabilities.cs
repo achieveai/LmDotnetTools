@@ -111,7 +111,7 @@ public record ModelCapabilities
     {
         return capability.ToLowerInvariant() switch
         {
-            "thinking" => Thinking?.Type != ThinkingType.None,
+            "thinking" => Thinking is { Type: not ThinkingType.None },
             "multimodal" => Multimodal?.SupportsImages == true
                 || Multimodal?.SupportsAudio == true
                 || Multimodal?.SupportsVideo == true,

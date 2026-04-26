@@ -20,6 +20,9 @@ public class UnifiedAgentTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Options.Create(config));
+        services.AddSingleton<
+            AchieveAi.LmDotnetTools.LmConfig.Http.IHttpHandlerBuilder,
+            AchieveAi.LmDotnetTools.LmConfig.Http.HandlerBuilder>();
         return services;
     }
 

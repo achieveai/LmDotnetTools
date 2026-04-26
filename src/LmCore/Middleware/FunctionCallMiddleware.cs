@@ -44,8 +44,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             if (functionMap != null)
             {
                 var missingFunctions = functions
-                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name : $"{f.ClassName}-{f.Name}")
-                    .Where(f => !functionMap.ContainsKey(f))
+                    .Where(f => !HasFunctionHandler(functionMap, f))
+                    .Select(GetFunctionMapKey)
                     .ToList();
 
                 // Removing following check ` || functionMap.Count != functions.Count()`
@@ -92,6 +92,21 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
             _mergedMultiModalMap = merged;
         }
+    }
+
+    private static bool HasFunctionHandler(
+        IDictionary<string, Func<string, Task<string>>> functionMap,
+        FunctionContract function
+    )
+    {
+        return functionMap.ContainsKey(function.Name)
+            || (!string.IsNullOrEmpty(function.ClassName)
+                && functionMap.ContainsKey(GetFunctionMapKey(function)));
+    }
+
+    private static string GetFunctionMapKey(FunctionContract function)
+    {
+        return string.IsNullOrEmpty(function.ClassName) ? function.Name : $"{function.ClassName}-{function.Name}";
     }
 
     public string? Name { get; }

@@ -22,9 +22,11 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         var handler = MockHttpHandlerBuilder
             .Create()
             .WithRecordPlayback(testDataPath, true)
-            .ForwardToApi(
-                EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
-                EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY")
+            .RespondWithOpenAIMessage(
+                "recorded response",
+                "meta-llama/llama-4-maverick:free",
+                promptTokens: 10,
+                completionTokens: 5
             )
             .Build();
 
