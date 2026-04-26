@@ -66,8 +66,16 @@ internal static class ClaudeCliPrerequisites
             {
                 return false;
             }
+
+            // WaitForExit *before* ReadToEnd so a binary that never closes stdout cannot
+            // hang the probe — synchronous ReadToEnd blocks until stdout is closed by the
+            // child, which a hung CLI may never do.
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* best-effort */ }
+                return false;
+            }
             output = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(5000);
             return p.ExitCode == 0;
         }
         catch
