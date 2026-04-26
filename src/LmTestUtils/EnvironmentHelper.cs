@@ -152,10 +152,14 @@ public static class EnvironmentHelper
 
         while (currentDir != null)
         {
-            // Look for solution files or other workspace indicators
+            // Look for solution files or other workspace indicators. ".git" is a directory
+            // in a normal clone but a FILE in a git worktree (containing a "gitdir:" pointer),
+            // so accept either form.
+            var dotGitPath = Path.Combine(currentDir.FullName, ".git");
+            bool hasDotGit = Directory.Exists(dotGitPath) || File.Exists(dotGitPath);
             if (
                 currentDir.GetFiles("*.sln").Length > 0
-                || currentDir.GetDirectories(".git").Length > 0
+                || hasDotGit
                 || currentDir.GetFiles(".env.test").Length > 0
             )
             {

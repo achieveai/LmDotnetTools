@@ -187,7 +187,7 @@ watch(
 </script>
 
 <template>
-  <div class="message-list" ref="messageListRef">
+  <div class="message-list" ref="messageListRef" data-testid="message-list">
     <div v-if="displayItems.length === 0" class="empty-state">
       <p>No messages yet. Send a message to start the conversation.</p>
     </div>
@@ -197,6 +197,7 @@ watch(
       <div 
         :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
         :data-message-id="group.role === 'user' ? group.id : undefined"
+        :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
       >
         <div 
           :class="group.role === 'user' ? 'user-message-container' : 'assistant-message-container'"
@@ -220,9 +221,9 @@ watch(
               
               <!-- Assistant message with pill -->
               <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
-              
+
               <!-- Assistant text message -->
-              <div v-else-if="item.type === 'assistant-message'" class="text-bubble">
+              <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
                 <TextMessage :message="item.content" :is-streaming="false" />
               </div>
             </template>
@@ -238,9 +239,10 @@ watch(
       :style="{ minHeight: `${activeConversationMinHeight}px` }"
     >
       <template v-for="group in splitGroups.current" :key="group.id">
-        <div 
+        <div
           :class="group.role === 'user' ? 'user-message-wrapper' : 'assistant-message-wrapper'"
           :data-message-id="group.role === 'user' ? group.id : undefined"
+          :data-testid="group.role === 'user' ? 'user-message-group' : 'assistant-message-group'"
         >
           <div 
             :class="group.role === 'user' ? 'user-message-container' : 'assistant-message-container'"
@@ -264,9 +266,9 @@ watch(
                 
                 <!-- Assistant message with pill -->
                 <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
-                
+
                 <!-- Assistant text message -->
-                <div v-else-if="item.type === 'assistant-message'" class="text-bubble">
+                <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
                   <TextMessage :message="item.content" :is-streaming="false" />
                 </div>
               </template>

@@ -37,7 +37,7 @@ public sealed class ConcurrentSubAgentsTests
             ? responder.AsAnthropicHandler()
             : responder.AsOpenAiHandler();
 
-        var builder = new E2EWebAppFactory.ScriptedBuilder(
+        var builder = new ScriptedBuilder(
             handler,
             subAgentFactory: (_, providerAgentFactory) => new SubAgentOptions
             {

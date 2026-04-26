@@ -238,7 +238,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
 </script>
 
 <template>
-  <div class="metadata-pill">
+  <div class="metadata-pill" data-testid="metadata-pill">
     <!-- Pill header with expand/collapse button -->
     <div v-if="props.items.length > 3" class="pill-header" @click="togglePillExpansion">
       <span class="pill-expand-icon">{{ isPillExpanded ? '▼' : '▶' }}</span>
@@ -253,9 +253,11 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
       ref="pillItemsContainer"
     >
       <template v-for="(item, index) in props.items" :key="index">
-        <div 
-          class="pill-item" 
+        <div
+          class="pill-item"
           :class="{ expanded: expandedItems.has(index) }"
+          :data-testid="isReasoningMessage(item) ? 'thinking-pill' : 'tool-call-pill'"
+          :data-tool-name="isToolsCallMessage(item) && item.tool_calls.length === 1 ? (item.tool_calls[0].function_name || undefined) : undefined"
           @click="toggleExpand(index)"
         >
           <div class="item-header">

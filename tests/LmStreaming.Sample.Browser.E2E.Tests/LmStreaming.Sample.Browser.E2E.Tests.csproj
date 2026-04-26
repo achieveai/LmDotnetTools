@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="7.1.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\samples\LmStreaming.Sample\LmStreaming.Sample.csproj" />
+    <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+    <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Share ScriptedBuilder with the WebSocket E2E suite via Compile Link rather than
+         extracting a separate library. Lowest-ceremony pattern (per architecture KB note
+         from WI-12 / WI-37, 2026-04-24) when two test projects need the same single
+         small type. -->
+    <Compile Include="..\LmStreaming.Sample.E2E.Tests\Infrastructure\ScriptedBuilder.cs" Link="Infrastructure\ScriptedBuilder.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>
