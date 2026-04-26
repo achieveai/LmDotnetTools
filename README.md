@@ -196,6 +196,7 @@ var metrics = await PerformanceTestHelper.MeasureLatency(agent, messages);
 
 - **[OpenRouter Usage Tracking](src/OpenAIProvider/Configuration/README.md)** - Complete usage tracking guide
 - **[Testing Utilities](src/LmTestUtils/README-SSE.md)** - SSE testing documentation  
+- **[Docker Workbench](docs/docker-workbench.md)** - Interactive container workflow for repo builds, tests, and agent CLIs
 - **[Architecture](docs/)** - System architecture and design decisions
 
 ## License

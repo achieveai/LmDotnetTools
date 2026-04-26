@@ -1,0 +1,17 @@
+.git
+.github
+.logs
+.next
+.vs
+coverage
+kv_store
+scratchPad
+worktrees
+**/bin
+**/obj
+**/TestResults
+**/node_modules
+**/wwwroot/dist
+**/recordings
+**/.env
+**/.env.test
