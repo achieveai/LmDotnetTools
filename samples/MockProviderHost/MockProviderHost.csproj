@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>AchieveAi.LmDotnetTools.MockProviderHost</RootNamespace>
+    <AssemblyName>AchieveAi.LmDotnetTools.MockProviderHost</AssemblyName>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.Tests" />
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.E2E.Tests" />
+  </ItemGroup>
+</Project>

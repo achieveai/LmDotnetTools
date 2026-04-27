@@ -177,6 +177,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     request.ReasoningEffort, thinkingTokens);
             }
 
+            // Optional overrides for E2E tests against a mock provider host. Setting any of
+            // these on the child process redirects the CLI away from the real Anthropic API.
+            ApplyMockHostOverrides(startInfo.Environment, _options);
+
             // 6. Start process
             _process = Process.Start(startInfo);
             if (_process == null)
@@ -1257,6 +1261,32 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Transition to Stopped state (allows restart)
         _ = Interlocked.Exchange(ref _state, 4);
         _logger?.LogInformation("OneShot mode: Process terminated, state: Stopped");
+    }
+
+    /// <summary>
+    ///     Apply optional E2E-test overrides (mock provider host) to a process environment dictionary.
+    ///     Maps <see cref="ClaudeAgentSdkOptions.BaseUrl"/>, <see cref="ClaudeAgentSdkOptions.AuthToken"/>,
+    ///     and <see cref="ClaudeAgentSdkOptions.DisableExperimentalBetas"/> onto the well-known env vars
+    ///     the CLI honours: <c>ANTHROPIC_BASE_URL</c>, <c>ANTHROPIC_AUTH_TOKEN</c>,
+    ///     <c>CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS</c>.
+    /// </summary>
+    internal static void ApplyMockHostOverrides(IDictionary<string, string?> environment, ClaudeAgentSdkOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (!string.IsNullOrEmpty(options.BaseUrl))
+        {
+            environment["ANTHROPIC_BASE_URL"] = options.BaseUrl;
+        }
+        if (!string.IsNullOrEmpty(options.AuthToken))
+        {
+            environment["ANTHROPIC_AUTH_TOKEN"] = options.AuthToken;
+        }
+        if (options.DisableExperimentalBetas)
+        {
+            environment["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1";
+        }
     }
 
     /// <summary>
