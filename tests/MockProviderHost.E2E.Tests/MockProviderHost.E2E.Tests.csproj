@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\samples\MockProviderHost\MockProviderHost.csproj" />
     <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
+    <ProjectReference Include="..\..\src\CodexSdkProvider\AchieveAi.LmDotnetTools.CodexSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
   <ItemGroup>
