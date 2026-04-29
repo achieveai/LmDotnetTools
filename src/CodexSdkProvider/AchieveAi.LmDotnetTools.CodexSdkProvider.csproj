@@ -4,6 +4,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="CodexSdkProvider.Tests" />
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.E2E.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />

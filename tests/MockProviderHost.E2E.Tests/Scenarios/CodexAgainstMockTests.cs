@@ -104,13 +104,15 @@ public sealed class CodexAgainstMockTests
         {
             // 30-second timeout expired — acceptable if the CLI reached the host at least once.
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex) when (ex.Message.Contains("turn failed", StringComparison.Ordinal))
         {
-            // The Codex turn-completion path may surface "Codex turn failed" when our scripted
+            // The Codex turn-completion path surfaces "Codex turn failed" when our scripted
             // single-turn response shape doesn't match what the CLI's app-server expects.
             // That's an envelope-shape concern tracked by the JSON scenario-loader follow-up;
             // for Phase-1 scaffolding we treat the responder turn-queue as the ground-truth
-            // signal that the CLI reached the host.
+            // signal that the CLI reached the host. Other InvalidOperationException causes
+            // (CLI-spawn failure, version-check rejection, app-server startup timeout, missing
+            // auth.json, etc.) must surface so the test reports the real root cause.
         }
 
         responder
