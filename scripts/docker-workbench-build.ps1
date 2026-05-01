@@ -28,6 +28,11 @@ $requiredTemplates = @("git-credential-revobot", "revobot-entrypoint")
 if (-not (Test-Path $RevobotTemplatesPath)) {
     throw "RevobotTemplatesPath '$RevobotTemplatesPath' does not exist. Pass -RevobotTemplatesPath to point at the revobot/templates directory."
 }
+# Clean any previous stage so renamed/removed upstream templates don't
+# linger in the build context and silently get baked into the image.
+if (Test-Path $stagingDir) {
+    Remove-Item -Recurse -Force $stagingDir -ErrorAction SilentlyContinue
+}
 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 foreach ($name in $requiredTemplates) {
     $src = Join-Path $RevobotTemplatesPath $name

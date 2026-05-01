@@ -128,8 +128,11 @@ COPY scripts/docker-workbench-entrypoint.ps1 /usr/local/bin/docker-workbench-ent
 # credential.helper from the daemon's loopback proxy. Templates are staged
 # from b:/sources/revobot/templates by docker-workbench-build.ps1 into
 # .credhelper-staging/ before the build runs.
-COPY .credhelper-staging/git-credential-revobot /usr/local/bin/git-credential-revobot
-COPY .credhelper-staging/revobot-entrypoint /usr/local/bin/revobot-entrypoint
+#
+# IMPORTANT: This image is NOT buildable via plain `docker build .`. The
+# `.credhelper-staging/` directory is git-ignored and must be populated by
+# scripts/docker-workbench-build.ps1, which is the supported entry point.
+COPY .credhelper-staging/git-credential-revobot .credhelper-staging/revobot-entrypoint /usr/local/bin/
 RUN chmod +x /usr/local/bin/git-credential-revobot /usr/local/bin/revobot-entrypoint \
  && git config --system credential.helper revobot
 
@@ -140,8 +143,13 @@ RUN chmod +x /usr/local/bin/git-credential-revobot /usr/local/bin/revobot-entryp
 # entrypoint and Claude CLI runs as root, which causes
 # `--dangerously-skip-permissions` to exit 1 ("cannot be used with root/sudo
 # privileges for security reasons"). See revobot/docs/bug-tracker.md B-009.
+#
+# NOTE: The command below MUST stay in lockstep with the ENTRYPOINT
+# instruction further down — if one is changed, update the other or the
+# revobot-entrypoint chain silently breaks.
 ENV REVOBOT_INNER_ENTRYPOINT="pwsh -NoLogo -File /usr/local/bin/docker-workbench-entrypoint.ps1"
 
 WORKDIR /workspace
+# Must match $REVOBOT_INNER_ENTRYPOINT above.
 ENTRYPOINT ["pwsh", "-NoLogo", "-File", "/usr/local/bin/docker-workbench-entrypoint.ps1"]
 CMD ["pwsh", "-NoLogo"]
