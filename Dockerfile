@@ -123,6 +123,16 @@ RUN dotnet --list-sdks \
 
 COPY scripts/docker-workbench-entrypoint.ps1 /usr/local/bin/docker-workbench-entrypoint.ps1
 
+# RevoBot credential helper — installs the in-container shim and entrypoint
+# wedge that fetch GH_TOKEN / AZURE_DEVOPS_EXT_PAT and back git's
+# credential.helper from the daemon's loopback proxy. Templates are staged
+# from b:/sources/revobot/templates by docker-workbench-build.ps1 into
+# .credhelper-staging/ before the build runs.
+COPY .credhelper-staging/git-credential-revobot /usr/local/bin/git-credential-revobot
+COPY .credhelper-staging/revobot-entrypoint /usr/local/bin/revobot-entrypoint
+RUN chmod +x /usr/local/bin/git-credential-revobot /usr/local/bin/revobot-entrypoint \
+ && git config --system credential.helper revobot
+
 WORKDIR /workspace
 ENTRYPOINT ["pwsh", "-NoLogo", "-File", "/usr/local/bin/docker-workbench-entrypoint.ps1"]
 CMD ["pwsh", "-NoLogo"]

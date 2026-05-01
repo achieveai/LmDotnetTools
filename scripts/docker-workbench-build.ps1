@@ -6,7 +6,11 @@ param(
     [int]$UserGid = 1001,
     [switch]$InstallOptionalCopilotSdk,
     [switch]$Pull,
-    [switch]$NoCache
+    [switch]$NoCache,
+    # RevoBot cred-helper templates source. The Dockerfile COPYs from
+    # .credhelper-staging/ (git-ignored), so we sync the canonical templates
+    # from revobot into that directory before each build.
+    [string]$RevobotTemplatesPath = "b:/sources/revobot/templates"
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +21,22 @@ $dockerfile = Join-Path $repoRoot $DockerfilePath
 if (-not (Test-Path $dockerfile)) {
     throw "Dockerfile '$dockerfile' was not found."
 }
+
+# Stage RevoBot cred-helper templates into the build context.
+$stagingDir = Join-Path $repoRoot ".credhelper-staging"
+$requiredTemplates = @("git-credential-revobot", "revobot-entrypoint")
+if (-not (Test-Path $RevobotTemplatesPath)) {
+    throw "RevobotTemplatesPath '$RevobotTemplatesPath' does not exist. Pass -RevobotTemplatesPath to point at the revobot/templates directory."
+}
+New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+foreach ($name in $requiredTemplates) {
+    $src = Join-Path $RevobotTemplatesPath $name
+    if (-not (Test-Path $src)) {
+        throw "Required cred-helper template '$src' is missing."
+    }
+    Copy-Item -Force $src (Join-Path $stagingDir $name)
+}
+Write-Host "Staged cred-helper templates from $RevobotTemplatesPath -> $stagingDir"
 
 $dockerArgs = @(
     "build",

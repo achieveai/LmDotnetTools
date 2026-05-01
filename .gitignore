@@ -48,3 +48,7 @@ node_modules/
 # WebSocket recordings
 **/recordings/
 .logs/
+
+# RevoBot cred-helper templates staged from b:/sources/revobot/templates
+# by docker-workbench-build.ps1 — never committed.
+.credhelper-staging/
