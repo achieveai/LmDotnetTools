@@ -89,27 +89,14 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
-    ///     Build the final function collections for FunctionCallMiddleware
+    ///     Build the final function collections for <see cref="FunctionCallMiddleware"/>.
+    ///     Multi-modal payloads are carried by individual <see cref="ToolCallResult"/>s
+    ///     wrapped in <see cref="ToolHandlerResult.Resolved"/> — there's no separate handler track.
     /// </summary>
-    public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build()
-    {
-        var (contracts, textHandlers, _) = BuildWithMultiModal();
-        return (contracts, textHandlers);
-    }
-
-    /// <summary>
-    ///     Build the final function collections including multimodal handlers.
-    ///     Returns both text-only and multimodal function maps.
-    ///     The multimodal map is a subset — only functions with MultiModalHandler set appear in it.
-    /// </summary>
-    public (
-        IEnumerable<FunctionContract> Contracts,
-        IDictionary<string, Func<string, Task<string>>> TextHandlers,
-        IDictionary<string, Func<string, Task<ToolCallResult>>> MultiModalHandlers
-    ) BuildWithMultiModal()
+    public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<ToolHandlerResult>>>) Build()
     {
         var logger = _logger ?? NullLogger.Instance;
-        logger.LogDebug("Building function registry (with multimodal) with {ProviderCount} providers", _providers.Count);
+        logger.LogDebug("Building function registry with {ProviderCount} providers", _providers.Count);
 
         // Step 1: Collect all functions from providers
         var allDescriptors = new List<FunctionDescriptor>();
@@ -161,10 +148,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         var collisionDetector = new FunctionCollisionDetector(logger);
         var namingMap = collisionDetector.DetectAndResolveCollisions(resolvedFunctions, _filterConfig);
 
-        // Step 6: Build final collections (both text-only and multimodal)
+        // Step 6: Build final collections (single unified handler per name)
         var finalContracts = new List<FunctionContract>();
-        var finalTextHandlers = new Dictionary<string, Func<string, Task<string>>>();
-        var finalMultiModalHandlers = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+        var finalHandlers = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
 
         foreach (var resolved in resolvedFunctions)
         {
@@ -189,22 +175,15 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                 finalContracts.Add(resolved.Contract);
             }
 
-            finalTextHandlers[registeredName] = resolved.Handler;
-
-            if (resolved.MultiModalHandler != null)
-            {
-                finalMultiModalHandlers[registeredName] = resolved.MultiModalHandler;
-            }
+            finalHandlers[registeredName] = resolved.Handler;
         }
 
-        var multiModalCount = finalMultiModalHandlers.Count;
         logger.LogInformation(
-            "Function registry built (with multimodal): {ContractCount} functions registered, {MultiModalCount} with multimodal handlers",
-            finalContracts.Count,
-            multiModalCount
+            "Function registry built: {ContractCount} functions registered",
+            finalContracts.Count
         );
 
-        return (finalContracts, finalTextHandlers, finalMultiModalHandlers);
+        return (finalContracts, finalHandlers);
     }
 
     /// <summary>
@@ -216,35 +195,34 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         IToolResultCallback? resultCallback = null
     )
     {
-        var (contracts, textHandlers, multiModalHandlers) = BuildWithMultiModal();
+        var (contracts, handlers) = Build();
         return new FunctionCallMiddleware(
             contracts,
-            textHandlers,
-            multiModalHandlers.Count > 0 ? multiModalHandlers : null,
+            handlers,
             name,
             logger: logger,
             resultCallback: resultCallback);
     }
 
     /// <summary>
-    /// Build ToolCallInjectionMiddleware and handler dictionaries for explicit tool execution.
-    /// Use this pattern when you want manual control over tool execution via ToolCallExecutor.
+    /// Build <see cref="ToolCallInjectionMiddleware"/> and the handler dictionary for explicit
+    /// tool execution. Use this pattern when you want manual control over tool execution via
+    /// <see cref="ToolCallExecutor"/>.
     /// </summary>
     /// <param name="name">Optional name for the middleware instance</param>
     /// <param name="logger">Optional logger for the middleware</param>
-    /// <returns>A tuple containing the middleware, the text handler dictionary, and the multimodal handler dictionary</returns>
+    /// <returns>A tuple containing the middleware and the handler dictionary</returns>
     public (
         ToolCallInjectionMiddleware Middleware,
-        IDictionary<string, Func<string, Task<string>>> Handlers,
-        IDictionary<string, Func<string, Task<ToolCallResult>>> MultiModalHandlers
+        IDictionary<string, Func<string, Task<ToolHandlerResult>>> Handlers
     ) BuildToolCallComponents(
         string? name = null,
         ILogger<ToolCallInjectionMiddleware>? logger = null
     )
     {
-        var (contracts, textHandlers, multiModalHandlers) = BuildWithMultiModal();
+        var (contracts, handlers) = Build();
         var middleware = new ToolCallInjectionMiddleware(contracts, name, logger);
-        return (middleware, textHandlers, multiModalHandlers);
+        return (middleware, handlers);
     }
 
     /// <summary>
@@ -315,7 +293,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// </summary>
     IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(
         FunctionContract contract,
-        Func<string, Task<string>> handler,
+        Func<string, Task<ToolHandlerResult>> handler,
         string? providerName
     )
     {
@@ -374,11 +352,13 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     }
 
     /// <summary>
-    ///     Add a single function explicitly
+    ///     Add a single function explicitly. The handler returns a unified
+    ///     <see cref="ToolHandlerResult"/>; multi-modal payloads are carried by the wrapped
+    ///     <see cref="ToolCallResult.ContentBlocks"/>.
     /// </summary>
     public FunctionRegistry AddFunction(
         FunctionContract contract,
-        Func<string, Task<string>> handler,
+        Func<string, Task<ToolHandlerResult>> handler,
         string? providerName = null
     )
     {
@@ -386,27 +366,6 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         {
             Contract = contract,
             Handler = handler,
-            ProviderName = providerName ?? "Explicit",
-        };
-        _explicitFunctions[descriptor.Key] = descriptor;
-        return this;
-    }
-
-    /// <summary>
-    ///     Add a single function explicitly with an optional multimodal handler.
-    /// </summary>
-    public FunctionRegistry AddFunction(
-        FunctionContract contract,
-        Func<string, Task<string>> handler,
-        Func<string, Task<ToolCallResult>>? multiModalHandler,
-        string? providerName = null
-    )
-    {
-        var descriptor = new FunctionDescriptor
-        {
-            Contract = contract,
-            Handler = handler,
-            MultiModalHandler = multiModalHandler,
             ProviderName = providerName ?? "Explicit",
         };
         _explicitFunctions[descriptor.Key] = descriptor;

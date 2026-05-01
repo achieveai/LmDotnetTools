@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -27,7 +28,7 @@ public class FunctionFilterTests
                 Name = functionName,
                 Description = $"Test function {functionName} from {providerName}",
             },
-            Handler = _ => Task.FromResult($"Result from {functionName}"),
+            Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {functionName}"))),
             ProviderName = providerName,
         };
     }
@@ -490,7 +491,7 @@ public class FunctionFilterTests
         var descriptor = new FunctionDescriptor
         {
             Contract = new FunctionContract { Name = "blocked" },
-            Handler = _ => Task.FromResult("result"),
+            Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result"))),
             ProviderName = string.Empty,
         };
 

@@ -91,7 +91,10 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         {
             var (contracts, handlers) = functionRegistry.Build();
             dynamicContracts = [.. contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name))];
-            dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(handlers, StringComparer.OrdinalIgnoreCase);
+            // Copilot SDK consumes legacy string-returning handlers. Deferred tool execution
+            // is a MultiTurnAgentLoop-only feature; unwrap Resolved here and surface
+            // NotSupportedException if a handler ever returns Deferred.
+            dynamicHandlers = LegacyHandlerAdapter.WrapToLegacyHandlers(handlers, StringComparer.OrdinalIgnoreCase);
         }
 
         _toolPolicy = new CopilotToolPolicyEngine(

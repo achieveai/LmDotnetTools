@@ -14,20 +14,16 @@ public record FunctionDescriptor
     public required FunctionContract Contract { get; init; }
 
     /// <summary>
-    ///     The function handler that executes the actual function logic
+    ///     The function handler that executes the actual function logic.
+    ///     Returns a <see cref="ToolHandlerResult"/> — either <see cref="ToolHandlerResult.Resolved"/>
+    ///     wrapping a <see cref="ToolCallResult"/> (which may carry text and/or multi-modal
+    ///     <see cref="ToolResultContentBlock"/>s), or <see cref="ToolHandlerResult.Deferred"/> to
+    ///     signal that the result will be supplied later via
+    ///     <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    ///     Strings and <see cref="ToolCallResult"/>s can be returned directly via implicit
+    ///     conversion to <see cref="ToolHandlerResult.Resolved"/>.
     /// </summary>
-    public required Func<string, Task<string>> Handler { get; init; }
-
-    /// <summary>
-    ///     Optional multimodal handler returning ToolCallResult with ContentBlocks.
-    ///     When set, FunctionCallMiddleware prefers this over the text-only Handler.
-    /// </summary>
-    public Func<string, Task<ToolCallResult>>? MultiModalHandler { get; init; }
-
-    /// <summary>
-    ///     Whether this descriptor has a multimodal handler available.
-    /// </summary>
-    public bool HasMultiModalHandler => MultiModalHandler != null;
+    public required Func<string, Task<ToolHandlerResult>> Handler { get; init; }
 
     /// <summary>
     ///     Unique key for this function (handles class name prefixing for MCP functions)

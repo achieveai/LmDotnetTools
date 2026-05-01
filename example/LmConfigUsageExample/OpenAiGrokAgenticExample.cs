@@ -192,7 +192,7 @@ public class OpenAiGrokAgenticExample
         );
 
         // Build middleware and handlers from registry
-        var (toolCallMiddleware, functionHandlers, _) = registry.BuildToolCallComponents(name: "ToolCallInjection");
+        var (toolCallMiddleware, functionHandlers) = registry.BuildToolCallComponents(name: "ToolCallInjection");
 
         // ===== Step 4: Create Provider Agent =====
         var providerAgent = _agentFactory.CreateStreamingAgent(resolution)
@@ -352,7 +352,7 @@ public class OpenAiGrokAgenticExample
     /// </summary>
     private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
         ToolCallMessage toolCall,
-        IDictionary<string, Func<string, Task<string>>> handlers
+        IDictionary<string, Func<string, Task<ToolHandlerResult>>> handlers
     )
     {
         var toolCallId = toolCall.ToolCallId ?? $"call_{toolCall.Index}";
@@ -367,7 +367,7 @@ public class OpenAiGrokAgenticExample
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCallId,
-                    Result = result,
+                    Result = result.ResultText,
                     Role = Role.User,
                     FromAgent = toolCall.FromAgent,
                     GenerationId = toolCall.GenerationId,

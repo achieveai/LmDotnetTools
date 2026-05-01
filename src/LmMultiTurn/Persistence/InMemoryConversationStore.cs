@@ -36,6 +36,37 @@ public sealed class InMemoryConversationStore : IConversationStore
     }
 
     /// <inheritdoc />
+    public Task ReplaceMessageAsync(
+        string threadId,
+        PersistedMessage replacement,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        lock (_messagesLock)
+        {
+            if (!_messages.TryGetValue(threadId, out var threadMessages))
+            {
+                throw new InvalidOperationException(
+                    $"Thread '{threadId}' not found; cannot replace message '{replacement.Id}'.");
+            }
+
+            var idx = threadMessages.FindIndex(m => m.Id == replacement.Id);
+            if (idx < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+            }
+
+            // Preserve the original timestamp so load ordering remains stable across replacement.
+            threadMessages[idx] = replacement with { Timestamp = threadMessages[idx].Timestamp };
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
         string threadId,
         CancellationToken ct = default)

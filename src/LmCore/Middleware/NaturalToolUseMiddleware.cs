@@ -18,13 +18,15 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     ///     Creates a new instance of NaturalToolUseMiddleware.
     /// </summary>
     /// <param name="functions">The function contracts to be used for tool calls.</param>
-    /// <param name="functionMap">A dictionary mapping function names to their implementations.</param>
+    /// <param name="functionMap">A dictionary mapping function names to their implementations.
+    /// Handlers return <see cref="ToolHandlerResult"/>; deferred results are not supported in
+    /// this middleware path and will throw at invocation time.</param>
     /// <param name="fallbackParser">Optional agent to use for parsing invalid tool calls.</param>
     /// <param name="name">Optional name for the middleware.</param>
     /// <param name="schemaValidator">Optional schema validator for validating tool call arguments.</param>
     public NaturalToolUseMiddleware(
         IEnumerable<FunctionContract> functions,
-        IDictionary<string, Func<string, Task<string>>> functionMap,
+        IDictionary<string, Func<string, Task<ToolHandlerResult>>> functionMap,
         IAgent? fallbackParser = null,
         string? name = null,
         IJsonSchemaValidator? schemaValidator = null
@@ -48,7 +50,6 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
         _functionCallMiddleware = new FunctionCallMiddleware(
             functions,
             functionMap,
-            multiModalFunctionMap: null,
             name: $"{Name}.FunctionCall");
     }
 

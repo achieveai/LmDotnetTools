@@ -223,6 +223,9 @@ public static class McpFunctionCallExtensions
     )
     {
         var (functions, functionMap) = CreateFunctionCallComponentsFromAssembly(toolAssembly);
-        return new FunctionCallMiddleware(functions, functionMap, multiModalFunctionMap: null, name: name);
+        return new FunctionCallMiddleware(
+            functions,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
+            name: name);
     }
 }

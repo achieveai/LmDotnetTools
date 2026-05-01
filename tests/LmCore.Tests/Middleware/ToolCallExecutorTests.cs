@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class ToolCallExecutorTests
@@ -22,9 +24,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
         {
-            ["getWeather"] = _ => Task.FromResult("Sunny, 72F"),
+            ["getWeather"] = _ => Task.FromResult(new ToolCallResult(null, "Sunny, 72F")),
         };
 
         // Act
@@ -60,7 +62,7 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
         {
             ["failingFunction"] = _ => throw new InvalidOperationException("Something went wrong"),
         };
@@ -98,9 +100,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
         {
-            ["existingFunction"] = _ => Task.FromResult("ok"),
+            ["existingFunction"] = _ => Task.FromResult(new ToolCallResult(null, "ok")),
         };
 
         // Act
@@ -150,9 +152,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
         {
-            ["successFunc"] = _ => Task.FromResult("ok"),
+            ["successFunc"] = _ => Task.FromResult(new ToolCallResult(null, "ok")),
             ["failFunc"] = _ => throw new Exception("boom"),
         };
 

@@ -106,6 +106,55 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
     }
 
     /// <inheritdoc />
+    public async Task ReplaceMessageAsync(
+        string threadId,
+        PersistedMessage replacement,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        // Preserve the existing timestamp (don't update it on replace) so load ordering stays
+        // stable when a deferred placeholder is later resolved.
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE messages SET
+                run_id = $run_id,
+                parent_run_id = $parent_run_id,
+                generation_id = $generation_id,
+                message_order_idx = $message_order_idx,
+                message_type = $message_type,
+                role = $role,
+                from_agent = $from_agent,
+                message_json = $message_json
+            WHERE id = $id AND thread_id = $thread_id;
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", replacement.Id);
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$run_id", replacement.RunId);
+        _ = command.Parameters.AddWithValue("$parent_run_id", (object?)replacement.ParentRunId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$generation_id", (object?)replacement.GenerationId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$message_order_idx", (object?)replacement.MessageOrderIdx ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$message_type", replacement.MessageType);
+        _ = command.Parameters.AddWithValue("$role", replacement.Role);
+        _ = command.Parameters.AddWithValue("$from_agent", (object?)replacement.FromAgent ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$message_json", replacement.MessageJson);
+
+        var rows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (rows == 0)
+        {
+            throw new InvalidOperationException(
+                $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
         string threadId,
         CancellationToken ct = default)

@@ -1,6 +1,7 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -348,9 +349,9 @@ public class FunctionRegistryBuilderTests
         };
     }
 
-    private static Func<string, Task<string>> CreateTestHandler(string result)
+    private static Func<string, Task<ToolHandlerResult>> CreateTestHandler(string result)
     {
-        return _ => Task.FromResult(result);
+        return _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
     }
 
     private class TestFunctionProvider : IFunctionProvider
@@ -376,7 +377,7 @@ public class FunctionRegistryBuilderTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                 ProviderName = ProviderName,
             });
         }

@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -415,9 +416,9 @@ public class FunctionRegistryTests
         };
     }
 
-    internal static Func<string, Task<string>> CreateTestHandler(string result)
+    internal static Func<string, Task<ToolHandlerResult>> CreateTestHandler(string result)
     {
-        return _ => Task.FromResult(result);
+        return _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
     }
 
     private static FunctionContract CreateTestContractWithParameters(string name)
@@ -486,7 +487,7 @@ public class FunctionRegistryTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                 ProviderName = ProviderName,
             });
         }
@@ -520,7 +521,7 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                    Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                     ProviderName = ProviderName,
                 },
             ];
@@ -555,7 +556,7 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                    Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                     ProviderName = ProviderName,
                 },
             ];

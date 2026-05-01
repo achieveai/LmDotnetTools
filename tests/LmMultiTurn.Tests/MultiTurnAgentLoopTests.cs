@@ -149,7 +149,8 @@ public class MultiTurnAgentLoopTests
             ],
         };
         registry.AddFunction(weatherContract, _ =>
-            Task.FromResult("{\"temperature\": \"72F\", \"condition\": \"sunny\"}"));
+            Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Resolved(new ToolCallResult(null, "{\"temperature\": \"72F\", \"condition\": \"sunny\"}"))));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,

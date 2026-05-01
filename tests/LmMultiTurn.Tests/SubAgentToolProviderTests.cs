@@ -51,8 +51,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         _manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
-            parentHandlers: new Dictionary<string, Func<string, Task<string>>>(),
-            parentMultiModalHandlers: null,
+            parentHandlers: new Dictionary<string, Func<string, Task<ToolHandlerResult>>>(),
             options: options);
 
         _provider = new SubAgentToolProvider(

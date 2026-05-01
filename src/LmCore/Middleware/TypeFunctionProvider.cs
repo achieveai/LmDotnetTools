@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -207,7 +208,7 @@ public class TypeFunctionProvider : IFunctionProvider
         return false;
     }
 
-    private Func<string, Task<string>> CreateHandler(MethodInfo method)
+    private Func<string, Task<ToolHandlerResult>> CreateHandler(MethodInfo method)
     {
         return async argsJson =>
         {
@@ -290,8 +291,9 @@ public class TypeFunctionProvider : IFunctionProvider
                     result = method.Invoke(target, paramValues);
                 }
 
-                // Serialize the result
-                return result != null && method.ReturnType != typeof(void)
+                // Reflective handlers always resolve synchronously — they don't have access to a
+                // ToolCallId or DeferralContext. Wrap the serialized result as Resolved.
+                var serialized = result != null && method.ReturnType != typeof(void)
                     ? JsonSerializer.Serialize(
                         result,
                         new JsonSerializerOptions
@@ -301,18 +303,21 @@ public class TypeFunctionProvider : IFunctionProvider
                         }
                     )
                     : "{}";
+                return new ToolHandlerResult.Resolved(new ToolCallResult(null, serialized));
             }
             catch (TargetInvocationException tie)
             {
                 // Unwrap the real exception
                 var innerException = tie.InnerException ?? tie;
-                return JsonSerializer.Serialize(
+                var errorJson = JsonSerializer.Serialize(
                     new { error = innerException.Message, type = innerException.GetType().Name }
                 );
+                return new ToolHandlerResult.Resolved(new ToolCallResult(null, errorJson) { IsError = true });
             }
             catch (Exception ex)
             {
-                return JsonSerializer.Serialize(new { error = ex.Message, type = ex.GetType().Name });
+                var errorJson = JsonSerializer.Serialize(new { error = ex.Message, type = ex.GetType().Name });
+                return new ToolHandlerResult.Resolved(new ToolCallResult(null, errorJson) { IsError = true });
             }
         };
     }

@@ -16,7 +16,7 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
     {
         // Arrange
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentNullException>(() => new FunctionCallMiddleware(null!, functionMap));
@@ -47,9 +47,9 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
         {
-            ["add"] = args => Task.FromResult("10"),
+            ["add"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "10"))),
         };
 
         // Act & Assert
@@ -69,7 +69,9 @@ public class FunctionCallMiddlewareTests
         };
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(functions, null!));
+        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(
+            functions,
+            (IDictionary<string, Func<string, Task<ToolHandlerResult>>>)null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -80,7 +82,7 @@ public class FunctionCallMiddlewareTests
     {
         // Arrange
         var functions = new List<FunctionContract>();
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
 
         // Act & Assert - no exception should be thrown
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -97,10 +99,10 @@ public class FunctionCallMiddlewareTests
             new() { Name = "function2", Description = "Test function 2" },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
         {
-            ["function1"] = args => Task.FromResult("result1"),
-            ["function2"] = args => Task.FromResult("result2"),
+            ["function1"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result1"))),
+            ["function2"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result2"))),
         };
 
         // Act & Assert - no exception should be thrown
@@ -428,39 +430,42 @@ public class FunctionCallMiddlewareTests
         Assert.NotEmpty(toolCallResult.Result);
     }
 
-    private static Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
+    private static Dictionary<string, Func<string, Task<ToolHandlerResult>>> CreateMockFunctionMap()
     {
-        return new Dictionary<string, Func<string, Task<string>>>
+        static Task<ToolHandlerResult> Wrap(string text)
+            => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, text)));
+
+        return new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
         {
             ["getWeather"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(GetWeatherAsync(argsJson));
+                return Wrap(GetWeatherAsync(argsJson));
             },
             ["getWeatherHistory"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(GetWeatherHistoryAsync(argsJson));
+                return Wrap(GetWeatherHistoryAsync(argsJson));
             },
             ["add"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(AddAsync(argsJson));
+                return Wrap(AddAsync(argsJson));
             },
             ["subtract"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(SubtractAsync(argsJson));
+                return Wrap(SubtractAsync(argsJson));
             },
             ["multiply"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(MultiplyAsync(argsJson));
+                return Wrap(MultiplyAsync(argsJson));
             },
             ["divide"] = argsJson =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(DivideAsync(argsJson));
+                return Wrap(DivideAsync(argsJson));
             },
         };
     }
@@ -860,7 +865,7 @@ public class FunctionCallMiddlewareTests
 
         TestContextLogger.LogDebugMessage("Function map created");
 
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         TestContextLogger.LogDebugMessage("Middleware created");
 
@@ -1101,7 +1106,7 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         var messages = new List<IMessage>
         {
@@ -1179,7 +1184,7 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the middleware with the MCP tools
-        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "McpCalculatorTest");
+        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "McpCalculatorTest");
 
         // Create large numbers to test with
         var firstNumber = 9876543210.123;

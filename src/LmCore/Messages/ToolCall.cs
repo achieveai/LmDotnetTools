@@ -193,6 +193,42 @@ public record ToolCallResultMessage : IMessage
     public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
 
     /// <summary>
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> holds an
+    /// interim placeholder text and a final result will be supplied later via
+    /// <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>. The loop ends the current run
+    /// once the deferred placeholder is recorded.
+    /// </summary>
+    [JsonPropertyName("is_deferred")]
+    public bool IsDeferred { get; init; }
+
+    /// <summary>
+    /// Opaque host-supplied metadata captured when the tool handler signaled deferral.
+    /// Surfaced via <c>MultiTurnAgentLoop.GetDeferredToolCallsAsync</c> so external
+    /// integrators (UIs, webhook services) can correlate the placeholder with their
+    /// own state.
+    /// </summary>
+    [JsonPropertyName("deferral_metadata")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public System.Collections.Immutable.ImmutableDictionary<string, string>? DeferralMetadata { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the tool handler signaled deferral. Null on
+    /// non-deferred results.
+    /// </summary>
+    [JsonPropertyName("deferred_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DeferredAt { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the deferred placeholder was replaced with a
+    /// real result via <c>ResolveToolCallAsync</c>. Null while still deferred or for
+    /// results that were never deferred.
+    /// </summary>
+    [JsonPropertyName("resolved_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResolvedAt { get; init; }
+
+    /// <summary>
     /// Converts this message to a ToolCallResult struct.
     /// </summary>
     public ToolCallResult ToToolCallResult()

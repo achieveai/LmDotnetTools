@@ -247,6 +247,142 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         }
     }
 
+    /// <summary>
+    /// Adds a message that represents a deferred tool-call placeholder, waiting on persistence
+    /// to complete before returning. Used by <c>MultiTurnAgentLoop</c> when a tool handler
+    /// returns <see cref="LmCore.Messages.ToolHandlerResult.Deferred"/>: the placeholder must
+    /// be durable in the store before any subscriber sees it, so a webhook-triggered
+    /// <c>ResolveToolCallAsync</c> can safely call <see cref="IConversationStore.ReplaceMessageAsync"/>
+    /// without racing the placeholder's persistence.
+    /// </summary>
+    /// <remarks>
+    /// In-memory append happens first, then persistence is awaited inline. The non-deferred
+    /// <see cref="AddToHistory"/> path remains fire-and-forget — synchronous persistence is
+    /// only required where in-place replacement is on the table.
+    /// </remarks>
+    protected async Task AddDeferredToHistoryAsync(IMessage message, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        lock (_historyLock)
+        {
+            ConversationHistory.Add(message);
+        }
+
+        if (Store == null)
+        {
+            return;
+        }
+
+        string? runId;
+        lock (_stateLock)
+        {
+            runId = _currentRunId;
+        }
+
+        if (runId == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+            await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist deferred-tool placeholder");
+        }
+    }
+
+    /// <summary>
+    /// Replaces the most recent <see cref="ToolCallResultMessage"/> in history that has the
+    /// given <c>ToolCallId</c>, applying <paramref name="updater"/> to compute the new value.
+    /// Returns the (old, new) pair so the caller can publish the updated message and persist
+    /// the change via <see cref="ReplacePersistedAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Idempotency is the updater's responsibility — typically the updater short-circuits and
+    /// returns <c>existing</c> unchanged when the resolution has already been applied with the
+    /// same content. The base method only enforces "must exist".
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when no <see cref="ToolCallResultMessage"/> with the given ToolCallId is in history.
+    /// </exception>
+    protected (ToolCallResultMessage Old, ToolCallResultMessage New) UpdateToolResultByCallId(
+        string toolCallId,
+        Func<ToolCallResultMessage, ToolCallResultMessage> updater)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+        ArgumentNullException.ThrowIfNull(updater);
+
+        lock (_historyLock)
+        {
+            var index = ConversationHistory.FindLastIndex(m =>
+                m is ToolCallResultMessage tcr && tcr.ToolCallId == toolCallId);
+            if (index < 0)
+            {
+                throw new InvalidOperationException(
+                    $"No ToolCallResultMessage with ToolCallId '{toolCallId}' found in history.");
+            }
+
+            var old = (ToolCallResultMessage)ConversationHistory[index];
+            var updated = updater(old);
+            ConversationHistory[index] = updated;
+            return (old, updated);
+        }
+    }
+
+    /// <summary>
+    /// Persists the replacement of a previously-appended <see cref="ToolCallResultMessage"/>
+    /// in the store, addressing it by its deterministic Id (<c>tcr:{threadId}:{toolCallId}</c>).
+    /// Failures are logged and swallowed — in-memory mutation is the source of truth for the
+    /// running loop; persistence becomes eventually consistent.
+    /// </summary>
+    protected async Task ReplacePersistedAsync(
+        ToolCallResultMessage old,
+        ToolCallResultMessage updated,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(updated);
+
+        if (Store == null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrEmpty(updated.ToolCallId))
+        {
+            // Without a ToolCallId we can't construct the deterministic Id. Should not happen
+            // for valid tool-call results.
+            Logger.LogWarning("Cannot persist replacement: ToolCallId is null/empty");
+            return;
+        }
+
+        string? runId;
+        lock (_stateLock)
+        {
+            runId = _currentRunId ?? _latestRunId;
+        }
+
+        runId ??= old.RunId ?? updated.RunId ?? string.Empty;
+
+        try
+        {
+            var persisted = MessagePersistenceConverter.ToPersistedMessage(updated, ThreadId, runId);
+            await Store.ReplaceMessageAsync(ThreadId, persisted, ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(
+                ex,
+                "Failed to persist deferred-tool resolution for ToolCallId={ToolCallId}",
+                updated.ToolCallId);
+        }
+    }
+
     #endregion
 
     #region Persistence
@@ -358,6 +494,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _latestRunId = metadata.LatestRunId;
         }
 
+        // Give implementations a chance to seed in-memory state from the restored history
+        // (e.g., MultiTurnAgentLoop rebuilds its deferred-tool registry here).
+        await OnHistoryRestoredAsync(messages, ct);
+
         Logger.LogInformation(
             "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
             messages.Count,
@@ -365,6 +505,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             metadata.LatestRunId);
 
         return true;
+    }
+
+    /// <summary>
+    /// Called from <see cref="RecoverAsync"/> after history has been restored from the store.
+    /// Override to rebuild any in-memory state derived from history (e.g., a deferred-tool
+    /// registry on the loop).
+    /// </summary>
+    /// <param name="messages">The full restored conversation history, in load order.</param>
+    /// <param name="ct">Cancellation token.</param>
+    protected virtual Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
+    {
+        return Task.CompletedTask;
     }
 
     #endregion
@@ -375,6 +527,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// Direct access to the input channel reader for implementations that need push-based notification.
     /// </summary>
     protected ChannelReader<QueuedInput> InputReader => _inputChannel.Reader;
+
+    /// <summary>
+    /// Posts a pre-built <see cref="QueuedInput"/> directly to the input channel, preserving
+    /// any non-default fields (including <see cref="QueuedInput.Resume"/>). Used by
+    /// <c>MultiTurnAgentLoop</c> to enqueue internal resume sentinels for deferred-tool
+    /// auto-resume; not for general user input — use <see cref="SendAsync"/> for that.
+    /// </summary>
+    protected ValueTask EnqueueRawAsync(QueuedInput queuedInput, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(queuedInput);
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        if (_inputChannel.Writer.TryWrite(queuedInput))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return _inputChannel.Writer.WriteAsync(queuedInput, ct);
+    }
 
     /// <summary>
     /// Convenience method to drain all currently available inputs from the queue.
