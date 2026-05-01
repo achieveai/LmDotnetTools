@@ -133,6 +133,15 @@ COPY .credhelper-staging/revobot-entrypoint /usr/local/bin/revobot-entrypoint
 RUN chmod +x /usr/local/bin/git-credential-revobot /usr/local/bin/revobot-entrypoint \
  && git config --system credential.helper revobot
 
+# Chain `revobot-entrypoint` to the workbench's original entrypoint so the
+# `sudo -E -H -u $WORKBENCH_USER --` privilege drop in
+# docker-workbench-entrypoint.ps1 still runs after credentials are seeded.
+# Without this, the docker `--entrypoint` override replaces the original
+# entrypoint and Claude CLI runs as root, which causes
+# `--dangerously-skip-permissions` to exit 1 ("cannot be used with root/sudo
+# privileges for security reasons"). See revobot/docs/bug-tracker.md B-009.
+ENV REVOBOT_INNER_ENTRYPOINT="pwsh -NoLogo -File /usr/local/bin/docker-workbench-entrypoint.ps1"
+
 WORKDIR /workspace
 ENTRYPOINT ["pwsh", "-NoLogo", "-File", "/usr/local/bin/docker-workbench-entrypoint.ps1"]
 CMD ["pwsh", "-NoLogo"]
