@@ -1,0 +1,45 @@
+# RevoBot per-PR preview manifest.
+#
+# When this PR enters babysit, RevoBot will:
+#   1. Run the build steps below in an ephemeral container that mounts the worktree.
+#   2. Start a long-lived service container that runs the .NET app in Production mode.
+#   3. Post a clickable URL into the PR (default: http://pr-<id>.lmdotnettools.localhost/).
+#   4. Tear everything down on merge / abandon.
+#
+# The streaming sample app is a hybrid ASP.NET Core + Vue/Vite SPA. We build the
+# SPA into wwwroot/dist, then run the .NET app in Production mode so it serves
+# both the API/WebSocket and the bundled SPA from a single port (5000).
+# Development mode would also work, but it requires running `vite dev` as a
+# second process, which doesn't fit the single-service preview model.
+
+version: 1
+
+build:
+  # Build the Vue/Vite SPA into samples/LmStreaming.Sample/wwwroot/dist.
+  # `npm ci` reads ClientApp/package-lock.json deterministically.
+  - ["bash", "-lc", "cd samples/LmStreaming.Sample/ClientApp && npm ci && npm run build"]
+
+# Single-service shorthand: one URL is enough — the .NET app serves API,
+# WebSocket (`/ws`), and the bundled SPA from the same origin.
+port: 5000
+command:
+  - "dotnet"
+  - "run"
+  - "--project"
+  - "samples/LmStreaming.Sample/LmStreaming.Sample.csproj"
+  - "--configuration"
+  - "Release"
+
+env:
+  # Bind to 0.0.0.0 so Traefik (in a sibling container) can reach the listener.
+  ASPNETCORE_URLS: "http://0.0.0.0:5000"
+  # Production mode skips the Vite dev-server middleware and serves the
+  # pre-built SPA from wwwroot/dist via UseStaticFiles + MapFallbackToFile.
+  ASPNETCORE_ENVIRONMENT: "Production"
+  # Don't waste reviewer time inside ANSI escape sequences in the container log.
+  DOTNET_NOLOGO: "1"
+
+health:
+  path: "/"
+  # First `dotnet run` cold-build can be slow on a fresh worktree.
+  timeoutSeconds: 180
