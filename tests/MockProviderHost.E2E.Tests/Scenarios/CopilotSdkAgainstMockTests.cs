@@ -73,8 +73,11 @@ public sealed class CopilotSdkAgainstMockTests
         {
             FileName = "copilot",
             Arguments = "--print \"say hello\"", // PROBE TODO: confirm the CLI's non-interactive arg shape against `copilot help`.
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            // stdout/stderr are intentionally NOT redirected: this scaffold polls
+            // responder.RemainingTurns rather than CLI output, and an unread redirected
+            // pipe would block the child once the OS buffer fills (~4KB on Windows),
+            // hanging the test until the 30s CTS expires. If a follow-up needs CLI
+            // diagnostics, switch to BeginOutputReadLine/BeginErrorReadLine.
             UseShellExecute = false,
             CreateNoWindow = true,
         };
