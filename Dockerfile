@@ -11,8 +11,9 @@ ARG PLAYWRIGHT_VERSION=1.49.0
 ARG CLAUDE_CODE_PACKAGE=@anthropic-ai/claude-code@2.1.114
 ARG CLAUDE_AGENT_SDK_PACKAGE=@anthropic-ai/claude-agent-sdk@0.1.55
 ARG COPILOT_CLI_PACKAGE=@github/copilot
+ARG COPILOT_SDK_PACKAGE=@github/copilot-sdk@0.3.0
 ARG CODEX_CLI_PACKAGE=@openai/codex
-ARG INSTALL_OPTIONAL_COPILOT_SDK=false
+ARG CODEX_SDK_PACKAGE=@openai/codex-sdk@0.128.0
 
 ENV DOTNET_NOLOGO=1 \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
@@ -97,8 +98,9 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages uv \
         "${CLAUDE_CODE_PACKAGE}" \
         "${CLAUDE_AGENT_SDK_PACKAGE}" \
         "${COPILOT_CLI_PACKAGE}" \
+        "${COPILOT_SDK_PACKAGE}" \
         "${CODEX_CLI_PACKAGE}" \
-    && if [[ "${INSTALL_OPTIONAL_COPILOT_SDK}" == "true" ]]; then npm install -g @github/copilot-sdk; fi \
+        "${CODEX_SDK_PACKAGE}" \
     && mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}" \
     && npx -y "playwright@${PLAYWRIGHT_VERSION}" install chromium
 
@@ -119,7 +121,9 @@ RUN dotnet --list-sdks \
     && claude --version \
     && copilot --version \
     && codex --version \
-    && test -f /usr/local/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js
+    && test -f /usr/local/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js \
+    && test -d /usr/local/lib/node_modules/@github/copilot-sdk \
+    && test -d /usr/local/lib/node_modules/@openai/codex-sdk
 
 COPY scripts/docker-workbench-entrypoint.ps1 /usr/local/bin/docker-workbench-entrypoint.ps1
 

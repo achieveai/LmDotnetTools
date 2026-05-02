@@ -4,7 +4,6 @@ param(
     [string]$DockerfilePath = "Dockerfile",
     [int]$UserUid = 1001,
     [int]$UserGid = 1001,
-    [switch]$InstallOptionalCopilotSdk,
     [switch]$Pull,
     [switch]$NoCache
 )
@@ -29,10 +28,6 @@ $dockerArgs = @(
     "--build-arg",
     "USER_GID=$UserGid"
 )
-
-if ($InstallOptionalCopilotSdk) {
-    $dockerArgs += @("--build-arg", "INSTALL_OPTIONAL_COPILOT_SDK=true")
-}
 
 if ($Pull) {
     $dockerArgs += "--pull"
