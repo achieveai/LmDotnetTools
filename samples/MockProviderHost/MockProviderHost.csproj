@@ -15,4 +15,15 @@
     <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.Tests" />
     <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.E2E.Tests" />
   </ItemGroup>
+  <!--
+    Built-in scenarios are shipped two ways:
+      1. EmbeddedResource so consuming applications (e.g. LmStreaming.Sample) can resolve a
+         built-in scenario name from this assembly without copying the JSON to their own bin/.
+      2. Content (CopyToOutputDirectory) so the standalone host CLI sees the file beside its
+         binary and so authors can edit demo.json on disk without rebuilding.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="scenarios\*.json" LogicalName="AchieveAi.LmDotnetTools.MockProviderHost.scenarios.%(Filename)%(Extension)" />
+    <None Include="scenarios\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

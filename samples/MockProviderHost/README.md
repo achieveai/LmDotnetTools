@@ -25,13 +25,38 @@ don't reject responses.
 ## Running standalone
 
 ```bash
+# Default: load the embedded "demo" scenario.
 dotnet run --project samples/MockProviderHost -- --port 5099
+
+# Pick a different built-in scenario or a path on disk.
+dotnet run --project samples/MockProviderHost -- --port 5099 --scenario demo
+dotnet run --project samples/MockProviderHost -- --port 5099 --scenario /path/to/my.json
+
+# LM_MOCK_SCENARIO env var is the same hook (used by LmStreaming.Sample).
+LM_MOCK_SCENARIO=demo dotnet run --project samples/MockProviderHost
 ```
 
-The standalone entry point ships with a trivial demo scenario. Real test
-scenarios are built via `ScriptedSseResponder.New()` and passed to
-`MockProviderHostBuilder.Build(...)` — see `tests/MockProviderHost.Tests` and
-`tests/MockProviderHost.E2E.Tests` for examples.
+Scenario JSON schema (see `samples/MockProviderHost/scenarios/demo.json` for a full
+example). For programmatic scenarios in tests, build a `ScriptedSseResponder` directly via
+`ScriptedSseResponder.New()` and pass it to `MockProviderHostBuilder.Build(...)`.
+
+```json
+{
+  "roles": [
+    {
+      "key": "demo",
+      "match": { "type": "always" },
+      "turns": [
+        { "messages": [{ "kind": "text", "text": "Hi!" }] }
+      ]
+    }
+  ]
+}
+```
+
+Match types: `always`, `system_contains` (with `value`), `user_contains` (with `value`),
+`tool` (with `name`). Message kinds: `text`, `text_len` (with `wordCount`), `tool_call`
+(with `name` and optional `args`).
 
 ## Embedded use (the common case)
 

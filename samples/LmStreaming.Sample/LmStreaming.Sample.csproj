@@ -63,5 +63,6 @@
     <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
     <ProjectReference Include="..\..\src\McpServer.AspNetCore\AchieveAi.LmDotnetTools.McpServer.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="..\MockProviderHost\MockProviderHost.csproj" />
   </ItemGroup>
 </Project>

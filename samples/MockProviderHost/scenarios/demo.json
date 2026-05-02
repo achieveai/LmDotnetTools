@@ -1,0 +1,40 @@
+{
+  "roles": [
+    {
+      "key": "demo",
+      "match": { "type": "always" },
+      "turns": [
+        {
+          "messages": [
+            {
+              "kind": "text",
+              "text": "Welcome to the LmDotnetTools mock provider host. This demo scenario streams a few canned turns so you can exercise the chat client end-to-end without an API key."
+            }
+          ]
+        },
+        {
+          "thinking": 64,
+          "messages": [
+            {
+              "kind": "text",
+              "text": "Here's a turn that includes a thinking block followed by a tool call so you can see how mixed content renders in the chat UI."
+            },
+            {
+              "kind": "tool_call",
+              "name": "echo",
+              "args": { "message": "hello from the mock host" }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "kind": "text",
+              "text": "Edit samples/MockProviderHost/scenarios/demo.json (or supply LM_MOCK_SCENARIO=<path>) to script your own turns. After this turn the queue is exhausted and subsequent requests fall back to a single-line 'ok' reply."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

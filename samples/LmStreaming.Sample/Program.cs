@@ -109,6 +109,13 @@ try
     // Provider registry — single source of truth for which providers the client can pick
     // and what the per-process default is. Read once at startup; shared via DI singleton.
     _ = builder.Services.AddSingleton<IFileSystemProbe, FileSystemProbe>();
+
+    // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
+    // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
+    // dependency below reads its IsRunning flag for availability gating.
+    _ = builder.Services.AddSingleton<MockProviderHostLifetime>();
+    _ = builder.Services.AddHostedService(sp => sp.GetRequiredService<MockProviderHostLifetime>());
+
     _ = builder.Services.AddSingleton<ProviderRegistry>();
 
     // Register the FunctionRegistry with sample tools
@@ -193,6 +200,7 @@ try
         var conversationStore = sp.GetRequiredService<IConversationStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
+        var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
 
         return new MultiTurnAgentPool(
             (threadId, mode, providerId, requestResponseDumpFileName) =>
@@ -200,6 +208,88 @@ try
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
                 var normalizedProviderId = providerId.ToLowerInvariant();
+
+                // *-mock providers reuse the same agent-loop helpers as their real counterparts;
+                // the mock-host base URL is threaded into the SDK options as a per-spawn override
+                // applied to the child CLI process's environment block.
+                var mockBaseUrl = mockHostLifetime.BaseUrl;
+
+                if (string.Equals(normalizedProviderId, "codex-mock", StringComparison.Ordinal))
+                {
+                    if (string.IsNullOrWhiteSpace(mockBaseUrl))
+                    {
+                        throw new ProviderUnavailableException(
+                            "codex-mock", "the in-process mock provider host is not running");
+                    }
+
+                    string codexEndpoint;
+                    try
+                    {
+                        codexEndpoint = codexLifetime.EnsureStartedAsync().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new ProviderUnavailableException(
+                            "codex-mock",
+                            $"MCP server failed to start: {ex.Message}",
+                            ex);
+                    }
+
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateCodexAgentLoop(
+                            threadId,
+                            mode,
+                            functionRegistry,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory,
+                            codexEndpoint,
+                            mcpBaseUrl,
+                            llmQueryMcpExamType,
+                            mockBaseUrlOverride: $"{mockBaseUrl}/v1",
+                            mockApiKeyOverride: "mock-token"));
+                }
+
+                if (string.Equals(normalizedProviderId, "claude-mock", StringComparison.Ordinal))
+                {
+                    if (string.IsNullOrWhiteSpace(mockBaseUrl))
+                    {
+                        throw new ProviderUnavailableException(
+                            "claude-mock", "the in-process mock provider host is not running");
+                    }
+
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateClaudeAgentLoop(
+                            threadId,
+                            mode,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory,
+                            mcpBaseUrl,
+                            llmQueryMcpExamType,
+                            mockBaseUrlOverride: mockBaseUrl,
+                            mockAuthTokenOverride: "mock-token"));
+                }
+
+                if (string.Equals(normalizedProviderId, "copilot-mock", StringComparison.Ordinal))
+                {
+                    if (string.IsNullOrWhiteSpace(mockBaseUrl))
+                    {
+                        throw new ProviderUnavailableException(
+                            "copilot-mock", "the in-process mock provider host is not running");
+                    }
+
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        CreateCopilotAgentLoop(
+                            threadId,
+                            mode,
+                            functionRegistry,
+                            requestResponseDumpFileName,
+                            conversationStore,
+                            loggerFactory,
+                            mockBaseUrlOverride: $"{mockBaseUrl}/v1",
+                            mockApiKeyOverride: "mock-token"));
+                }
 
                 if (string.Equals(normalizedProviderId, "codex", StringComparison.Ordinal))
                 {
@@ -611,10 +701,20 @@ public partial class Program
         ILoggerFactory loggerFactory,
         string mcpEndpointUrl,
         string? llmQueryMcpBaseUrl,
-        string? llmQueryMcpExamType)
+        string? llmQueryMcpExamType,
+        string? mockBaseUrlOverride = null,
+        string? mockApiKeyOverride = null)
     {
         var enabledTools = mode.EnabledTools;
         var codexOptions = CreateCodexOptions(requestResponseDumpFileName, threadId);
+        if (!string.IsNullOrWhiteSpace(mockBaseUrlOverride))
+        {
+            codexOptions = codexOptions with
+            {
+                BaseUrl = mockBaseUrlOverride,
+                ApiKey = mockApiKeyOverride ?? codexOptions.ApiKey,
+            };
+        }
         if (enabledTools is { Count: > 0 } && !enabledTools.Contains("web_search", StringComparer.OrdinalIgnoreCase))
         {
             codexOptions = codexOptions with { WebSearchMode = "disabled" };
@@ -779,9 +879,9 @@ public partial class Program
             "openai" => Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o",
             "anthropic" => Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-sonnet-4-20250514",
             "test-anthropic" => "claude-sonnet-4-5-20250929",
-            "claude" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
-            "codex" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
-            "copilot" => Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5",
+            "claude" or "claude-mock" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
+            "codex" or "codex-mock" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
+            "copilot" or "copilot-mock" => Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5",
             _ => "test-model",
         };
     }
@@ -873,7 +973,9 @@ public partial class Program
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
         string? llmQueryMcpBaseUrl,
-        string? llmQueryMcpExamType)
+        string? llmQueryMcpExamType,
+        string? mockBaseUrlOverride = null,
+        string? mockAuthTokenOverride = null)
     {
         // Build AllowedTools from mode's enabled tools:
         // null = use defaults, empty = no built-in tools (MCP only), non-empty = specific tools
@@ -889,6 +991,9 @@ public partial class Program
             DisableCheckpoints = true,
             DisableSessionPersistence = true,
             AllowedTools = allowedTools,
+            BaseUrl = string.IsNullOrWhiteSpace(mockBaseUrlOverride) ? null : mockBaseUrlOverride,
+            AuthToken = string.IsNullOrWhiteSpace(mockAuthTokenOverride) ? null : mockAuthTokenOverride,
+            DisableExperimentalBetas = !string.IsNullOrWhiteSpace(mockBaseUrlOverride),
         };
 
         var mcpServers = BuildLlmQueryMcpServers(threadId, llmQueryMcpBaseUrl, llmQueryMcpExamType);
@@ -917,7 +1022,9 @@ public partial class Program
         FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        string? mockBaseUrlOverride = null,
+        string? mockApiKeyOverride = null)
     {
         var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
         var copilotCliMinVersion = Environment.GetEnvironmentVariable("COPILOT_CLI_MIN_VERSION") ?? "0.0.410";
@@ -951,18 +1058,28 @@ public partial class Program
             traceFilePath = Path.Combine(logsDir, $"copilot-rpc-{sessionId}.jsonl");
         }
 
+        // Per-spawn mock overrides take precedence over the host-process env vars so the
+        // copilot-mock provider can target the in-process MockProviderHost without polluting
+        // the parent process's COPILOT_BASE_URL.
+        var effectiveBaseUrl = string.IsNullOrWhiteSpace(mockBaseUrlOverride) ? baseUrl : mockBaseUrlOverride;
+        var effectiveApiKey = string.IsNullOrWhiteSpace(mockApiKeyOverride) ? apiKey : mockApiKeyOverride;
+        // The Copilot CLI's model allowlist probe phones home to GitHub before the first turn —
+        // the mock host doesn't implement it, so disable the probe whenever a mock URL is set.
+        var effectiveModelAllowlistProbeEnabled = string.IsNullOrWhiteSpace(mockBaseUrlOverride)
+            && modelAllowlistProbeEnabled;
+
         var copilotOptions = new CopilotSdkOptions
         {
             CopilotCliPath = copilotCliPath,
             CopilotCliMinVersion = copilotCliMinVersion,
             Model = model,
-            ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
-            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? null : baseUrl,
+            ApiKey = string.IsNullOrWhiteSpace(effectiveApiKey) ? null : effectiveApiKey,
+            BaseUrl = string.IsNullOrWhiteSpace(effectiveBaseUrl) ? null : effectiveBaseUrl,
             WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? null : workingDirectory,
             EnableRpcTrace = enableRpcTrace,
             RpcTraceFilePath = traceFilePath,
             CopilotSessionId = sessionId,
-            ModelAllowlistProbeEnabled = modelAllowlistProbeEnabled,
+            ModelAllowlistProbeEnabled = effectiveModelAllowlistProbeEnabled,
             DefaultPermissionDecision = defaultPermissionDecision,
             ToolBridgeMode = CopilotToolBridgeMode.Dynamic,
             Provider = "copilot",

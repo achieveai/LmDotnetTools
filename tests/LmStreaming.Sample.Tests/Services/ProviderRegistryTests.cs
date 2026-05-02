@@ -181,8 +181,106 @@ public class ProviderRegistryTests
         var catalog = registry.ListAll();
 
         catalog.Select(p => p.Id).Should().BeEquivalentTo(
-            ["anthropic", "claude", "codex", "copilot", "openai", "test", "test-anthropic"],
+            [
+                "anthropic", "claude", "claude-mock", "codex", "codex-mock",
+                "copilot", "copilot-mock", "openai", "test", "test-anthropic",
+            ],
             options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void IsAvailable_ClaudeMock_RequiresCliAndRunningHost()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        using var __ = EnvScope.Set("CLAUDE_CLI_PATH", null);
+        var probe = new FakeFileSystemProbe(executablesOnPath: ["claude"]);
+
+        var withHost = new ProviderRegistry(probe, mockHostIsRunning: () => true);
+        var withoutHost = new ProviderRegistry(probe, mockHostIsRunning: () => false);
+
+        withHost.IsAvailable("claude-mock").Should().BeTrue();
+        withoutHost.IsAvailable("claude-mock").Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_ClaudeMock_FalseWhenCliMissing()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        using var __ = EnvScope.Set("CLAUDE_CLI_PATH", null);
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), mockHostIsRunning: () => true);
+
+        registry.IsAvailable("claude-mock").Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_CopilotMock_RequiresCliAndRunningHost()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        using var __ = EnvScope.Set("COPILOT_CLI_PATH", null);
+        var probe = new FakeFileSystemProbe(executablesOnPath: ["copilot"]);
+
+        var withHost = new ProviderRegistry(probe, mockHostIsRunning: () => true);
+        var withoutHost = new ProviderRegistry(probe, mockHostIsRunning: () => false);
+
+        withHost.IsAvailable("copilot-mock").Should().BeTrue();
+        withoutHost.IsAvailable("copilot-mock").Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_CopilotMock_FalseWhenCliMissing()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        using var __ = EnvScope.Set("COPILOT_CLI_PATH", null);
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), mockHostIsRunning: () => true);
+
+        registry.IsAvailable("copilot-mock").Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_CodexMock_TracksHostState()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+
+        var withHost = new ProviderRegistry(new FakeFileSystemProbe(), mockHostIsRunning: () => true);
+        var withoutHost = new ProviderRegistry(new FakeFileSystemProbe(), mockHostIsRunning: () => false);
+
+        withHost.IsAvailable("codex-mock").Should().BeTrue();
+        withoutHost.IsAvailable("codex-mock").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Get_MockProvider_ReflectsLiveHostState()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var hostRunning = false;
+
+        // Constructed once with a delegate that closes over the local. Flipping the local
+        // after construction must propagate to subsequent Get() calls — that's what proves the
+        // mock-host signal is re-evaluated rather than frozen at startup.
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), mockHostIsRunning: () => hostRunning);
+        registry.Get("codex-mock")!.Available.Should().BeFalse();
+
+        hostRunning = true;
+
+        registry.Get("codex-mock")!.Available.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ListAll_FlagsMockProvidersUnavailable_WhenHostNotRunning()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        using var __ = EnvScope.Set("CLAUDE_CLI_PATH", null);
+        using var ___ = EnvScope.Set("COPILOT_CLI_PATH", null);
+        var probe = new FakeFileSystemProbe(executablesOnPath: ["claude", "copilot"]);
+
+        var registry = new ProviderRegistry(probe, mockHostIsRunning: () => false);
+        var catalog = registry.ListAll().ToDictionary(p => p.Id, p => p.Available);
+
+        catalog["claude-mock"].Should().BeFalse();
+        catalog["codex-mock"].Should().BeFalse();
+        catalog["copilot-mock"].Should().BeFalse();
     }
 
     [Fact]
