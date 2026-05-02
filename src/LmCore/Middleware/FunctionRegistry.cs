@@ -93,7 +93,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     ///     Multi-modal payloads are carried by individual <see cref="ToolCallResult"/>s
     ///     wrapped in <see cref="ToolHandlerResult.Resolved"/> — there's no separate handler track.
     /// </summary>
-    public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<ToolHandlerResult>>>) Build()
+    public (IEnumerable<FunctionContract>, IDictionary<string, ToolHandler>) Build()
     {
         var logger = _logger ?? NullLogger.Instance;
         logger.LogDebug("Building function registry with {ProviderCount} providers", _providers.Count);
@@ -150,7 +150,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
 
         // Step 6: Build final collections (single unified handler per name)
         var finalContracts = new List<FunctionContract>();
-        var finalHandlers = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
+        var finalHandlers = new Dictionary<string, ToolHandler>();
 
         foreach (var resolved in resolvedFunctions)
         {
@@ -214,7 +214,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <returns>A tuple containing the middleware and the handler dictionary</returns>
     public (
         ToolCallInjectionMiddleware Middleware,
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> Handlers
+        IDictionary<string, ToolHandler> Handlers
     ) BuildToolCallComponents(
         string? name = null,
         ILogger<ToolCallInjectionMiddleware>? logger = null
@@ -293,7 +293,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// </summary>
     IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(
         FunctionContract contract,
-        Func<string, Task<ToolHandlerResult>> handler,
+        ToolHandler handler,
         string? providerName
     )
     {
@@ -358,7 +358,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// </summary>
     public FunctionRegistry AddFunction(
         FunctionContract contract,
-        Func<string, Task<ToolHandlerResult>> handler,
+        ToolHandler handler,
         string? providerName = null
     )
     {

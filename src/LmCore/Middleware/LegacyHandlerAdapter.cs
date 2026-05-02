@@ -18,19 +18,20 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public static class LegacyHandlerAdapter
 {
     /// <summary>
-    /// Wraps a single new-shape <see cref="ToolHandlerResult"/> handler into the legacy
-    /// <c>Func&lt;string, Task&lt;string&gt;&gt;</c> shape. Throws
-    /// <see cref="NotSupportedException"/> at invocation time on
-    /// <see cref="ToolHandlerResult.Deferred"/>.
+    /// Wraps a single new-shape <see cref="ToolHandler"/> into the legacy
+    /// <c>Func&lt;string, Task&lt;string&gt;&gt;</c> shape used by external SDKs that
+    /// can't supply a <see cref="ToolCallContext"/>. The wrapper invokes the handler with
+    /// a default <see cref="ToolCallContext"/>. Throws <see cref="NotSupportedException"/>
+    /// at invocation time on <see cref="ToolHandlerResult.Deferred"/>.
     /// </summary>
     public static Func<string, Task<string>> ToLegacyHandler(
-        Func<string, Task<ToolHandlerResult>> handler,
+        ToolHandler handler,
         string toolKey = "<unknown>")
     {
         ArgumentNullException.ThrowIfNull(handler);
         return async args =>
         {
-            var result = await handler(args);
+            var result = await handler(args, new ToolCallContext());
             return result switch
             {
                 ToolHandlerResult.Resolved r => r.Result.Result,
@@ -52,7 +53,7 @@ public static class LegacyHandlerAdapter
     /// on <see cref="ToolHandlerResult.Deferred"/>.
     /// </summary>
     public static IDictionary<string, Func<string, Task<string>>> WrapToLegacyHandlers(
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> source,
+        IDictionary<string, ToolHandler> source,
         IEqualityComparer<string>? keyComparer = null)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -74,11 +75,11 @@ public static class LegacyHandlerAdapter
     /// <see cref="ToolHandlerResult.Resolved"/> with a text-only <see cref="ToolCallResult"/>;
     /// legacy handlers cannot signal deferral.
     /// </summary>
-    public static Func<string, Task<ToolHandlerResult>> ToNewHandler(
+    public static ToolHandler ToNewHandler(
         Func<string, Task<string>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async args => new ToolHandlerResult.Resolved(new ToolCallResult(null, await legacy(args)));
+        return async (args, _) => new ToolHandlerResult.Resolved(new ToolCallResult(null, await legacy(args)));
     }
 
     /// <summary>
@@ -87,11 +88,11 @@ public static class LegacyHandlerAdapter
     /// legacy callsite produces a <see cref="ToolCallResult"/> with content blocks; the wrapped
     /// handler forwards the entire <see cref="ToolCallResult"/> verbatim.
     /// </summary>
-    public static Func<string, Task<ToolHandlerResult>> ToNewHandler(
+    public static ToolHandler ToNewHandler(
         Func<string, Task<ToolCallResult>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async args => new ToolHandlerResult.Resolved(await legacy(args));
+        return async (args, _) => new ToolHandlerResult.Resolved(await legacy(args));
     }
 
     /// <summary>
@@ -99,12 +100,12 @@ public static class LegacyHandlerAdapter
     /// shape into the new <see cref="ToolHandlerResult"/> shape. Each wrapped handler always
     /// resolves synchronously with a text-only <see cref="ToolCallResult"/>.
     /// </summary>
-    public static IDictionary<string, Func<string, Task<ToolHandlerResult>>> WrapToNewHandlers(
+    public static IDictionary<string, ToolHandler> WrapToNewHandlers(
         IDictionary<string, Func<string, Task<string>>> source,
         IEqualityComparer<string>? keyComparer = null)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var wrapped = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>(
+        var wrapped = new Dictionary<string, ToolHandler>(
             source.Count,
             keyComparer ?? StringComparer.Ordinal);
 

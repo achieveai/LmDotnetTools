@@ -15,7 +15,7 @@ public class MultiModalHandlerIntegrationTests
     [Fact]
     public void FunctionRegistry_Build_RetainsHandlerThatReturnsContentBlocks()
     {
-        var multiModalHandler = new Func<string, Task<ToolHandlerResult>>(_ =>
+        var multiModalHandler = new ToolHandler((_, _) =>
             Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(
                 new ToolCallResult(null, "multimodal", new List<ToolResultContentBlock>
                 {
@@ -43,9 +43,9 @@ public class MultiModalHandlerIntegrationTests
             new() { Name = "image_tool", Description = "Returns images" },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["image_tool"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["image_tool"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(
                     new ToolCallResult(null, "multimodal text", new List<ToolResultContentBlock>
                     {
@@ -86,7 +86,7 @@ public class MultiModalHandlerIntegrationTests
     [Fact]
     public void FunctionRegistry_BuildMiddleware_AcceptsContentBlockHandlers()
     {
-        var multiModalHandler = new Func<string, Task<ToolHandlerResult>>(_ =>
+        var multiModalHandler = new ToolHandler((_, _) =>
             Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(null, "mm result")))
         );

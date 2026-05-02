@@ -102,7 +102,7 @@ public class FunctionCollisionDetectorTests
                 ClassName = providerName,
                 Description = $"Test function {functionName}",
             },
-            Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {functionName}"))),
+            Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {functionName}"))),
             ProviderName = providerName,
         };
     }
@@ -403,7 +403,7 @@ public class FunctionCollisionDetectorTests
             new()
             {
                 Contract = new FunctionContract { Name = "func1" },
-                Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result"))),
+                Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result"))),
                 ProviderName = string.Empty,
             },
         };

@@ -324,10 +324,10 @@ public class FunctionRegistryBuilderTests
         Assert.DoesNotContain(contracts, c => c.Name == "getForecast");
 
         // Test handlers work
-        var searchResult = await handlers["search"]("{}");
+        var searchResult = await handlers["search"]("{}", new ToolCallContext());
         Assert.Equal("MCP-result", searchResult);
 
-        var weatherResult = await handlers["getCurrentWeather"]("{}");
+        var weatherResult = await handlers["getCurrentWeather"]("{}", new ToolCallContext());
         Assert.Equal("Weather-result", weatherResult);
     }
 
@@ -349,9 +349,9 @@ public class FunctionRegistryBuilderTests
         };
     }
 
-    private static Func<string, Task<ToolHandlerResult>> CreateTestHandler(string result)
+    private static ToolHandler CreateTestHandler(string result)
     {
-        return _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
+        return (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
     }
 
     private class TestFunctionProvider : IFunctionProvider
@@ -377,7 +377,7 @@ public class FunctionRegistryBuilderTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
+                Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                 ProviderName = ProviderName,
             });
         }

@@ -8,7 +8,7 @@ public class NaturalToolUseMiddlewareTests
     // Common test context
     private readonly MiddlewareContext _defaultContext;
     private readonly List<FunctionContract> _functionContracts;
-    private readonly Dictionary<string, Func<string, Task<ToolHandlerResult>>> _functionMap;
+    private readonly Dictionary<string, ToolHandler> _functionMap;
     private readonly Mock<IAgent> _mockFallbackParser;
     private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
 
@@ -42,9 +42,9 @@ public class NaturalToolUseMiddlewareTests
             },
         ];
 
-        _functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        _functionMap = new Dictionary<string, ToolHandler>
         {
-            { "GetWeather", _ => Task.FromResult<ToolHandlerResult>(
+            { "GetWeather", (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(null, "{\"temperature\": 72, \"conditions\": \"sunny\"}"))) },
         };
 

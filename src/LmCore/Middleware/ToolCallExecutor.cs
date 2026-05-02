@@ -12,10 +12,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 ///     stamps each result with its originating <see cref="ToolCall.ToolCallId"/>.
 /// </summary>
 /// <remarks>
-///     Deferred tool execution is not supported here — this executor has no resolution
-///     channel. <see cref="FunctionCallMiddleware"/> adapts unified <see cref="ToolHandlerResult"/>
-///     handlers down to <see cref="ToolCallResult"/>-returning handlers (throwing on
-///     <see cref="ToolHandlerResult.Deferred"/>) before invoking this executor.
+///     Deferred tool execution is surfaced — handlers signaling
+///     <see cref="ToolHandlerResult.Deferred"/> are adapted by
+///     <see cref="FunctionCallMiddleware"/> into <see cref="ToolCallResult"/>s with
+///     <see cref="ToolCallResult.IsDeferred"/> = true; the executor passes them through
+///     unchanged. Resolution is the caller's responsibility.
 /// </remarks>
 public class ToolCallExecutor
 {
@@ -24,7 +25,7 @@ public class ToolCallExecutor
     /// </summary>
     public static async Task<ToolsCallResultMessage> ExecuteAsync(
         ToolsCallMessage toolCallMessage,
-        IDictionary<string, Func<string, Task<ToolCallResult>>> functionMap,
+        IDictionary<string, ToolCallResultHandler> functionMap,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
         CancellationToken cancellationToken = default
@@ -97,7 +98,7 @@ public class ToolCallExecutor
 
     private static async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
-        IDictionary<string, Func<string, Task<ToolCallResult>>> functionMap,
+        IDictionary<string, ToolCallResultHandler> functionMap,
         IToolResultCallback? resultCallback,
         ILogger logger,
         CancellationToken cancellationToken
@@ -127,7 +128,12 @@ public class ToolCallExecutor
         {
             try
             {
-                var result = await func(functionArgs ?? "{}");
+                var ctx = new ToolCallContext
+                {
+                    ToolCallId = toolCall.ToolCallId,
+                    CancellationToken = cancellationToken,
+                };
+                var result = await func(functionArgs ?? "{}", ctx);
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
                 var imageBlockCount = result.ContentBlocks?.OfType<ImageToolResultBlock>().Count() ?? 0;

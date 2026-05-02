@@ -208,9 +208,9 @@ public class TypeFunctionProvider : IFunctionProvider
         return false;
     }
 
-    private Func<string, Task<ToolHandlerResult>> CreateHandler(MethodInfo method)
+    private ToolHandler CreateHandler(MethodInfo method)
     {
-        return async argsJson =>
+        return async (argsJson, _) =>
         {
             try
             {

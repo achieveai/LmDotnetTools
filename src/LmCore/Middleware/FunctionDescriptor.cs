@@ -15,6 +15,8 @@ public record FunctionDescriptor
 
     /// <summary>
     ///     The function handler that executes the actual function logic.
+    ///     Receives raw JSON args and a <see cref="ToolCallContext"/> carrying the call's
+    ///     <c>tool_call_id</c> and the host's <see cref="CancellationToken"/>.
     ///     Returns a <see cref="ToolHandlerResult"/> — either <see cref="ToolHandlerResult.Resolved"/>
     ///     wrapping a <see cref="ToolCallResult"/> (which may carry text and/or multi-modal
     ///     <see cref="ToolResultContentBlock"/>s), or <see cref="ToolHandlerResult.Deferred"/> to
@@ -23,7 +25,7 @@ public record FunctionDescriptor
     ///     Strings and <see cref="ToolCallResult"/>s can be returned directly via implicit
     ///     conversion to <see cref="ToolHandlerResult.Resolved"/>.
     /// </summary>
-    public required Func<string, Task<ToolHandlerResult>> Handler { get; init; }
+    public required ToolHandler Handler { get; init; }
 
     /// <summary>
     ///     Unique key for this function (handles class name prefixing for MCP functions)

@@ -50,9 +50,9 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // Unified function map: handler returns ToolHandlerResult.Resolved wrapping a
         // ToolCallResult — multi-modal payload is carried via ContentBlocks on the
         // ToolCallResult, no separate map.
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["search_tool"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["search_tool"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(
                     null,
                     "Here is a medical diagram:",

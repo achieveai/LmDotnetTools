@@ -201,7 +201,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
                     },
-                    Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
+                    Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                     ProviderName = serverId,
                 };
 
@@ -472,7 +472,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))),
+                        Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))),
                         ProviderName = serverId,
                     };
 
@@ -1050,7 +1050,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         var descriptor = new FunctionDescriptor
                         {
                             Contract = new FunctionContract { Name = tool.Name },
-                            Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
+                            Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                             ProviderName = serverId,
                         };
 
@@ -1137,7 +1137,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = _ => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
+                        Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                         ProviderName = serverId,
                     };
 

@@ -26,7 +26,7 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     /// <param name="schemaValidator">Optional schema validator for validating tool call arguments.</param>
     public NaturalToolUseMiddleware(
         IEnumerable<FunctionContract> functions,
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> functionMap,
+        IDictionary<string, ToolHandler> functionMap,
         IAgent? fallbackParser = null,
         string? name = null,
         IJsonSchemaValidator? schemaValidator = null

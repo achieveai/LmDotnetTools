@@ -19,7 +19,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
-    private readonly IDictionary<string, Func<string, Task<ToolHandlerResult>>> _parentHandlers;
+    private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
     private readonly ILogger _logger;
 
@@ -29,7 +29,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> parentHandlers,
+        IDictionary<string, ToolHandler> parentHandlers,
         SubAgentOptions options,
         ILogger? logger = null)
     {

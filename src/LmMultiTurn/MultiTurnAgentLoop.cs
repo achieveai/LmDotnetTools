@@ -35,7 +35,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 {
     private readonly IStreamingAgent _agent;
-    private readonly IDictionary<string, Func<string, Task<ToolHandlerResult>>> _toolHandlers;
+    private readonly IDictionary<string, ToolHandler> _toolHandlers;
     private readonly SubAgentManager? _subAgentManager;
 
     // Deferred tool tracking. Keyed by ToolCallId. Concurrent because resolutions arrive on
@@ -541,7 +541,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 };
             }
 
-            var result = await handler(functionArgs);
+            var ctx = new ToolCallContext
+            {
+                ToolCallId = toolCall.ToolCallId,
+                CancellationToken = ct,
+            };
+            var result = await handler(functionArgs, ctx);
             return BuildResultMessage(toolCall, result);
         }
         catch (Exception ex)

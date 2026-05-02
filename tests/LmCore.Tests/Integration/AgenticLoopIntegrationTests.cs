@@ -48,9 +48,9 @@ public class AgenticLoopIntegrationTests
         var middleware = new MessageTransformationMiddleware();
         var agent = new MiddlewareWrappingAgent(mockProvider, middleware);
         // Define tool function
-        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["get_weather"] = args => Task.FromResult(new ToolCallResult(null, "{\"temperature\": 72, \"condition\": \"sunny\"}")),
+            ["get_weather"] = (args, _) => Task.FromResult(new ToolCallResult(null, "{\"temperature\": 72, \"condition\": \"sunny\"}")),
         };
         // Act
         // Step 1: Initial call to LLM
@@ -174,9 +174,9 @@ public class AgenticLoopIntegrationTests
         );
         var middleware = new MessageTransformationMiddleware();
         var agent = new MiddlewareWrappingAgent(mockProvider, middleware);
-        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["get_weather"] = args =>
+            ["get_weather"] = (args, _) =>
             {
                 var location = args.Contains("SF") ? "SF" : "NYC";
                 var temp = location == "SF" ? "72" : "65";

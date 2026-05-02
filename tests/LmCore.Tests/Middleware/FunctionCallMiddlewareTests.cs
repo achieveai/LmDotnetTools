@@ -16,7 +16,7 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
     {
         // Arrange
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
+        var functionMap = new Dictionary<string, ToolHandler>();
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentNullException>(() => new FunctionCallMiddleware(null!, functionMap));
@@ -47,9 +47,9 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["add"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "10"))),
+            ["add"] = (args, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "10"))),
         };
 
         // Act & Assert
@@ -71,7 +71,7 @@ public class FunctionCallMiddlewareTests
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(
             functions,
-            (IDictionary<string, Func<string, Task<ToolHandlerResult>>>)null!));
+            (IDictionary<string, ToolHandler>)null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -82,7 +82,7 @@ public class FunctionCallMiddlewareTests
     {
         // Arrange
         var functions = new List<FunctionContract>();
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>();
+        var functionMap = new Dictionary<string, ToolHandler>();
 
         // Act & Assert - no exception should be thrown
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -99,10 +99,10 @@ public class FunctionCallMiddlewareTests
             new() { Name = "function2", Description = "Test function 2" },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["function1"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result1"))),
-            ["function2"] = args => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result2"))),
+            ["function1"] = (args, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result1"))),
+            ["function2"] = (args, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result2"))),
         };
 
         // Act & Assert - no exception should be thrown
@@ -442,9 +442,9 @@ public class FunctionCallMiddlewareTests
         {
             new() { Name = "approve_action", Description = "Asks human for approval" },
         };
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["approve_action"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["approve_action"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("PENDING approval", metadata)),
         };
 
@@ -481,9 +481,9 @@ public class FunctionCallMiddlewareTests
         {
             new() { Name = "approve_action", Description = "Asks human for approval" },
         };
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["approve_action"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["approve_action"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("PENDING approval")),
         };
 
@@ -522,11 +522,11 @@ public class FunctionCallMiddlewareTests
             new() { Name = "fast_lookup", Description = "Synchronous lookup" },
             new() { Name = "slow_approval", Description = "Deferred approval" },
         };
-        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["fast_lookup"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["fast_lookup"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(null, "result_42"))),
-            ["slow_approval"] = _ => Task.FromResult<ToolHandlerResult>(
+            ["slow_approval"] = (_, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("PENDING")),
         };
 
@@ -572,39 +572,118 @@ public class FunctionCallMiddlewareTests
         Assert.NotNull(slowResult.DeferredAt);
     }
 
-    private static Dictionary<string, Func<string, Task<ToolHandlerResult>>> CreateMockFunctionMap()
+    [Fact]
+    public async Task ToolHandler_ReceivesToolCallId_FromContext()
+    {
+        // Arrange — handler captures ctx.ToolCallId; middleware threads it through ToolCallExecutor.
+        ToolCallContext? capturedContext = null;
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "echo_id", Description = "Captures ctx.ToolCallId" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["echo_id"] = (args, ctx) =>
+            {
+                capturedContext = ctx;
+                return Task.FromResult<ToolHandlerResult>(
+                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
+            },
+        };
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall { FunctionName = "echo_id", FunctionArgs = "{}", ToolCallId = "call_abc123" },
+            ],
+            Role = Role.Assistant,
+        };
+        var context = new MiddlewareContext([toolCallMessage]);
+
+        // Act
+        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+
+        // Assert
+        Assert.NotNull(capturedContext);
+        Assert.Equal("call_abc123", capturedContext!.ToolCallId);
+    }
+
+    [Fact]
+    public async Task ToolHandler_ReceivesCancellationToken_FromMiddleware()
+    {
+        // Arrange — handler captures ctx.CancellationToken; we pass our own via InvokeAsync and
+        // verify the same token (or one wired to it) lands inside the handler.
+        CancellationToken capturedToken = default;
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "capture_ct", Description = "Captures ctx.CancellationToken" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["capture_ct"] = (args, ctx) =>
+            {
+                capturedToken = ctx.CancellationToken;
+                return Task.FromResult<ToolHandlerResult>(
+                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
+            },
+        };
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall { FunctionName = "capture_ct", FunctionArgs = "{}", ToolCallId = "call_ct" },
+            ],
+            Role = Role.Assistant,
+        };
+        var middlewareContext = new MiddlewareContext([toolCallMessage]);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // pre-cancel so we can assert the token's state without racing
+
+        // Act
+        _ = await middleware.InvokeAsync(middlewareContext, new Mock<IAgent>().Object, cts.Token);
+
+        // Assert — the handler observed an already-cancelled token, proving propagation.
+        Assert.True(capturedToken.IsCancellationRequested);
+    }
+
+    private static Dictionary<string, ToolHandler> CreateMockFunctionMap()
     {
         static Task<ToolHandlerResult> Wrap(string text)
             => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, text)));
 
-        return new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        return new Dictionary<string, ToolHandler>
         {
-            ["getWeather"] = argsJson =>
+            ["getWeather"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(GetWeatherAsync(argsJson));
             },
-            ["getWeatherHistory"] = argsJson =>
+            ["getWeatherHistory"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(GetWeatherHistoryAsync(argsJson));
             },
-            ["add"] = argsJson =>
+            ["add"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(AddAsync(argsJson));
             },
-            ["subtract"] = argsJson =>
+            ["subtract"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(SubtractAsync(argsJson));
             },
-            ["multiply"] = argsJson =>
+            ["multiply"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(MultiplyAsync(argsJson));
             },
-            ["divide"] = argsJson =>
+            ["divide"] = (argsJson, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
                 return Wrap(DivideAsync(argsJson));

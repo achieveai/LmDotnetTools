@@ -1424,7 +1424,7 @@ internal sealed class WeatherTool : IFunctionProvider
         yield return new FunctionDescriptor
         {
             Contract = contract,
-            Handler = async args => new ToolHandlerResult.Resolved(new ToolCallResult(null, await GetWeatherAsync(args))),
+            Handler = async (args, _) => new ToolHandlerResult.Resolved(new ToolCallResult(null, await GetWeatherAsync(args))),
             ProviderName = ProviderName,
         };
     }

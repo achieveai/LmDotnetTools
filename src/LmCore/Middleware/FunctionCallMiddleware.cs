@@ -14,7 +14,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class FunctionCallMiddleware : IStreamingMiddleware
 {
-    private readonly IDictionary<string, Func<string, Task<ToolCallResult>>> _functionMap;
+    private readonly IDictionary<string, ToolCallResultHandler> _functionMap;
     private readonly IEnumerable<FunctionContract> _functions;
 
     private readonly ILogger<FunctionCallMiddleware> _logger;
@@ -42,7 +42,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// </remarks>
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> functionMap,
+        IDictionary<string, ToolHandler> functionMap,
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
         IToolResultCallback? resultCallback = null
@@ -88,18 +88,18 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         _resultCallback = resultCallback;
     }
 
-    private static IDictionary<string, Func<string, Task<ToolCallResult>>> AdaptToToolCallResultHandlers(
-        IDictionary<string, Func<string, Task<ToolHandlerResult>>> source
+    private static IDictionary<string, ToolCallResultHandler> AdaptToToolCallResultHandlers(
+        IDictionary<string, ToolHandler> source
     )
     {
-        var wrapped = new Dictionary<string, Func<string, Task<ToolCallResult>>>(source.Count);
+        var wrapped = new Dictionary<string, ToolCallResultHandler>(source.Count);
         foreach (var kvp in source)
         {
             var key = kvp.Key;
             var handler = kvp.Value;
-            wrapped[key] = async args =>
+            wrapped[key] = async (args, ctx) =>
             {
-                var result = await handler(args);
+                var result = await handler(args, ctx);
                 return result switch
                 {
                     ToolHandlerResult.Resolved r => r.Result,

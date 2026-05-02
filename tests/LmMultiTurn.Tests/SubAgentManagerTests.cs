@@ -3,6 +3,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -528,7 +529,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         return new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
-            parentHandlers: new Dictionary<string, Func<string, Task<ToolHandlerResult>>>(),
+            parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options);
     }
 
