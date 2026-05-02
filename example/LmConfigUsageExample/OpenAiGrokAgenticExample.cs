@@ -97,7 +97,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args, _) =>
+            async (args, _, _) =>
             {
                 var weatherArgs = JsonSerializer.Deserialize<WeatherArgs>(args);
                 _logger.LogInformation("[TOOL] Getting weather for {Location}", weatherArgs?.Location);
@@ -134,7 +134,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args, _) =>
+            async (args, _, _) =>
             {
                 var timeArgs = JsonSerializer.Deserialize<TimeArgs>(args);
                 _logger.LogInformation("[TOOL] Getting time for {Timezone}", timeArgs?.Timezone);
@@ -170,7 +170,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args, _) =>
+            async (args, _, _) =>
             {
                 var calcArgs = JsonSerializer.Deserialize<CalculateArgs>(args);
                 _logger.LogInformation("[TOOL] Calculating: {Expression}", calcArgs?.Expression);
@@ -364,7 +364,7 @@ public class OpenAiGrokAgenticExample
             if (handlers.TryGetValue(functionName, out var handler))
             {
                 var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
-                var result = await handler(functionArgs, ctx);
+                var result = await handler(functionArgs, ctx, CancellationToken.None);
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCallId,

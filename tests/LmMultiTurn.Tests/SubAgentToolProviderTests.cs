@@ -90,7 +90,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { template_name = "researcher" });
 
         // Act
-        var act = () => agentHandler(args, new ToolCallContext());
+        var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
@@ -106,7 +106,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { task = "do something" });
 
         // Act
-        var act = () => agentHandler(args, new ToolCallContext());
+        var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
@@ -122,7 +122,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { });
 
         // Act
-        var act = () => checkHandler(args, new ToolCallContext());
+        var act = () => checkHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()

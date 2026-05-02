@@ -81,7 +81,7 @@ public class TypeFunctionProviderTests
 
         // Act
         var args = JsonSerializer.Serialize(new { a = 5, b = 3 });
-        var result = await addFunction.Handler(args, new ToolCallContext());
+        var result = await addFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var resultValue = JsonSerializer.Deserialize<int>(result.ResultText);
 
         // Assert
@@ -97,7 +97,7 @@ public class TypeFunctionProviderTests
 
         // Act
         var args = JsonSerializer.Serialize(new { x = 4, y = 7 });
-        var result = await multiplyFunction.Handler(args, new ToolCallContext());
+        var result = await multiplyFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var resultValue = JsonSerializer.Deserialize<int>(result.ResultText);
 
         // Assert
@@ -114,7 +114,7 @@ public class TypeFunctionProviderTests
 
         // Act
         var args = JsonSerializer.Serialize(new { input = "test" });
-        var result = await asyncFunction.Handler(args, new ToolCallContext());
+        var result = await asyncFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var resultValue = JsonSerializer.Deserialize<string>(result.ResultText);
 
         // Assert
@@ -131,7 +131,7 @@ public class TypeFunctionProviderTests
 
         // Act - Call without factor parameter (should use default)
         var args = JsonSerializer.Serialize(new { value = 10.0 });
-        var result = await calculateFunction.Handler(args, new ToolCallContext());
+        var result = await calculateFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var resultValue = JsonSerializer.Deserialize<double>(result.ResultText);
 
         // Assert
@@ -148,7 +148,7 @@ public class TypeFunctionProviderTests
 
         // Act - Call with null
         var args = "{}"; // Empty args, text will be null
-        var result = await toUpperFunction.Handler(args, new ToolCallContext());
+        var result = await toUpperFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var resultValue = JsonSerializer.Deserialize<string>(result.ResultText);
 
         // Assert
@@ -164,9 +164,9 @@ public class TypeFunctionProviderTests
         var incrementFunction = provider.GetFunctions().First(f => f.Contract.Name == "increment");
 
         // Act - Call multiple times
-        var result1 = await incrementFunction.Handler("{}", new ToolCallContext());
-        var result2 = await incrementFunction.Handler("{}", new ToolCallContext());
-        var result3 = await incrementFunction.Handler("{}", new ToolCallContext());
+        var result1 = await incrementFunction.Handler("{}", new ToolCallContext(), CancellationToken.None);
+        var result2 = await incrementFunction.Handler("{}", new ToolCallContext(), CancellationToken.None);
+        var result3 = await incrementFunction.Handler("{}", new ToolCallContext(), CancellationToken.None);
 
         // Assert
         Assert.Equal(1, JsonSerializer.Deserialize<int>(result1.ResultText));
@@ -184,7 +184,7 @@ public class TypeFunctionProviderTests
 
         // Act
         var args = JsonSerializer.Serialize(new { a = 10.0, b = 0.0 });
-        var result = await divideFunction.Handler(args, new ToolCallContext());
+        var result = await divideFunction.Handler(args, new ToolCallContext(), CancellationToken.None);
         var errorResult = JsonSerializer.Deserialize<Dictionary<string, string>>(result.ResultText);
 
         // Assert
@@ -203,7 +203,7 @@ public class TypeFunctionProviderTests
         var asyncErrorFunction = provider.GetFunctions().First(f => f.Contract.Name == "asyncError");
 
         // Act
-        var result = await asyncErrorFunction.Handler("{}", new ToolCallContext());
+        var result = await asyncErrorFunction.Handler("{}", new ToolCallContext(), CancellationToken.None);
         var errorResult = JsonSerializer.Deserialize<Dictionary<string, string>>(result.ResultText);
 
         // Assert
@@ -282,7 +282,7 @@ public class TypeFunctionProviderTests
 
         // Test execution through handler
         var calculateHandler = handlers["calculate"];
-        var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }), new ToolCallContext());
+        var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }), new ToolCallContext(), CancellationToken.None);
         Assert.Equal(15.0, JsonSerializer.Deserialize<double>(result.ResultText));
     }
 

@@ -131,9 +131,8 @@ public class ToolCallExecutor
                 var ctx = new ToolCallContext
                 {
                     ToolCallId = toolCall.ToolCallId,
-                    CancellationToken = cancellationToken,
                 };
-                var result = await func(functionArgs ?? "{}", ctx);
+                var result = await func(functionArgs ?? "{}", ctx, cancellationToken);
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
                 var imageBlockCount = result.ContentBlocks?.OfType<ImageToolResultBlock>().Count() ?? 0;

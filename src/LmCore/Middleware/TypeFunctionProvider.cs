@@ -210,7 +210,7 @@ public class TypeFunctionProvider : IFunctionProvider
 
     private ToolHandler CreateHandler(MethodInfo method)
     {
-        return async (argsJson, _) =>
+        return async (argsJson, _, _) =>
         {
             try
             {

@@ -26,7 +26,7 @@ public class ToolCallExecutorTests
 
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["getWeather"] = (_, _) => Task.FromResult(new ToolCallResult(null, "Sunny, 72F")),
+            ["getWeather"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "Sunny, 72F")),
         };
 
         // Act
@@ -64,7 +64,7 @@ public class ToolCallExecutorTests
 
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["failingFunction"] = (_, _) => throw new InvalidOperationException("Something went wrong"),
+            ["failingFunction"] = (_, _, _) => throw new InvalidOperationException("Something went wrong"),
         };
 
         // Act
@@ -102,7 +102,7 @@ public class ToolCallExecutorTests
 
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["existingFunction"] = (_, _) => Task.FromResult(new ToolCallResult(null, "ok")),
+            ["existingFunction"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "ok")),
         };
 
         // Act
@@ -154,8 +154,8 @@ public class ToolCallExecutorTests
 
         var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["successFunc"] = (_, _) => Task.FromResult(new ToolCallResult(null, "ok")),
-            ["failFunc"] = (_, _) => throw new Exception("boom"),
+            ["successFunc"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "ok")),
+            ["failFunc"] = (_, _, _) => throw new Exception("boom"),
         };
 
         // Act

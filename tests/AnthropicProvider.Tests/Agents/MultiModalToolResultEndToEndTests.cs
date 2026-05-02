@@ -52,7 +52,7 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         // ToolCallResult, no separate map.
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["search_tool"] = (_, _) => Task.FromResult<ToolHandlerResult>(
+            ["search_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(
                     null,
                     "Here is a medical diagram:",

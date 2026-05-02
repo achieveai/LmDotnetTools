@@ -42,7 +42,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("approve_directory_read"),
-            (_, _) => Task.FromResult<ToolHandlerResult>(
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("PENDING approval for /foo")));
 
         await using var loop = new MultiTurnAgentLoop(
@@ -123,7 +123,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("long_running_op"),
-            (_, _) => Task.FromResult<ToolHandlerResult>(
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("PENDING long op")));
 
         await using var loop = new MultiTurnAgentLoop(
@@ -242,7 +242,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("long_op"),
-            (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -330,7 +330,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("op"),
-            (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -384,7 +384,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("wait_for_human"),
-            (_, _) => Task.FromResult<ToolHandlerResult>(
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Deferred("WAIT", System.Collections.Immutable.ImmutableDictionary
                     .CreateRange(new Dictionary<string, string> { ["ticket"] = "T-42" }))));
 

@@ -49,7 +49,7 @@ public class McpFunctionProviderTests
 
         // Act
         Assert.NotNull(addFunction);
-        var result = await addFunction.Handler("{\"a\": 5, \"b\": 3}", new ToolCallContext());
+        var result = await addFunction.Handler("{\"a\": 5, \"b\": 3}", new ToolCallContext(), CancellationToken.None);
 
         // Assert
         Assert.Contains("8", result.ResultText); // 5 + 3 = 8

@@ -544,9 +544,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             var ctx = new ToolCallContext
             {
                 ToolCallId = toolCall.ToolCallId,
-                CancellationToken = ct,
             };
-            var result = await handler(functionArgs, ctx);
+            var result = await handler(functionArgs, ctx, ct);
             return BuildResultMessage(toolCall, result);
         }
         catch (Exception ex)

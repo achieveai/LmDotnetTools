@@ -28,7 +28,7 @@ public class FunctionFilterTests
                 Name = functionName,
                 Description = $"Test function {functionName} from {providerName}",
             },
-            Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {functionName}"))),
+            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {functionName}"))),
             ProviderName = providerName,
         };
     }
@@ -491,7 +491,7 @@ public class FunctionFilterTests
         var descriptor = new FunctionDescriptor
         {
             Contract = new FunctionContract { Name = "blocked" },
-            Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result"))),
+            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result"))),
             ProviderName = string.Empty,
         };
 

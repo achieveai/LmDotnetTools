@@ -44,7 +44,7 @@ public class NaturalToolUseMiddlewareTests
 
         _functionMap = new Dictionary<string, ToolHandler>
         {
-            { "GetWeather", (_, _) => Task.FromResult<ToolHandlerResult>(
+            { "GetWeather", (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(null, "{\"temperature\": 72, \"conditions\": \"sunny\"}"))) },
         };
 

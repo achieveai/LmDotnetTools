@@ -152,7 +152,10 @@ public class SubAgentToolProvider : IFunctionProvider
         };
     }
 
-    private async Task<ToolHandlerResult> HandleAgentToolAsync(string argsJson, ToolCallContext context)
+    private async Task<ToolHandlerResult> HandleAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
@@ -183,7 +186,10 @@ public class SubAgentToolProvider : IFunctionProvider
             new ToolCallResult(null, await _manager.SpawnAsync(templateName, task, addTools, removeTools)));
     }
 
-    private Task<ToolHandlerResult> HandleCheckAgentToolAsync(string argsJson, ToolCallContext context)
+    private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;

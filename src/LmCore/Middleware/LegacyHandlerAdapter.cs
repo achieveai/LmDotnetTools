@@ -31,7 +31,7 @@ public static class LegacyHandlerAdapter
         ArgumentNullException.ThrowIfNull(handler);
         return async args =>
         {
-            var result = await handler(args, new ToolCallContext());
+            var result = await handler(args, new ToolCallContext(), CancellationToken.None);
             return result switch
             {
                 ToolHandlerResult.Resolved r => r.Result.Result,
@@ -79,7 +79,7 @@ public static class LegacyHandlerAdapter
         Func<string, Task<string>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _) => new ToolHandlerResult.Resolved(new ToolCallResult(null, await legacy(args)));
+        return async (args, _, _) => new ToolHandlerResult.Resolved(new ToolCallResult(null, await legacy(args)));
     }
 
     /// <summary>
@@ -92,7 +92,7 @@ public static class LegacyHandlerAdapter
         Func<string, Task<ToolCallResult>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _) => new ToolHandlerResult.Resolved(await legacy(args));
+        return async (args, _, _) => new ToolHandlerResult.Resolved(await legacy(args));
     }
 
     /// <summary>

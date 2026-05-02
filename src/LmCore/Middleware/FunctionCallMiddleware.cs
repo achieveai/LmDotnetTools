@@ -97,9 +97,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             var key = kvp.Key;
             var handler = kvp.Value;
-            wrapped[key] = async (args, ctx) =>
+            wrapped[key] = async (args, ctx, ct) =>
             {
-                var result = await handler(args, ctx);
+                var result = await handler(args, ctx, ct);
                 return result switch
                 {
                     ToolHandlerResult.Resolved r => r.Result,

@@ -75,7 +75,7 @@ public class McpToolFilter
         var descriptor = new FunctionDescriptor
         {
             Contract = new FunctionContract { Name = originalToolName },
-            Handler = (_, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
+            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
             ProviderName = serverId,
         };
 

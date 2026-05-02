@@ -148,7 +148,7 @@ public class MultiTurnAgentLoopTests
                 },
             ],
         };
-        registry.AddFunction(weatherContract, (_, _) =>
+        registry.AddFunction(weatherContract, (_, _, _) =>
             Task.FromResult<ToolHandlerResult>(
                 new ToolHandlerResult.Resolved(new ToolCallResult(null, "{\"temperature\": \"72F\", \"condition\": \"sunny\"}"))));
 
