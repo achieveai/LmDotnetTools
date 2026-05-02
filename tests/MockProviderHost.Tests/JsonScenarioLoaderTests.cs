@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using FluentAssertions;
 
 namespace AchieveAi.LmDotnetTools.MockProviderHost.Tests;
@@ -128,6 +130,21 @@ public sealed class JsonScenarioLoaderTests
     }
 
     [Fact]
+    public void Parse_throws_when_user_contains_omits_value()
+    {
+        const string json = """
+            { "roles": [{ "key": "demo", "match": { "type": "user_contains" }, "turns": [
+                { "messages": [{ "kind": "text", "text": "x" }] }
+            ]}]}
+            """;
+
+        Action act = () => JsonScenarioLoader.Parse(json);
+
+        act.Should().Throw<JsonScenarioFormatException>()
+            .WithMessage("*user_contains*'value'*");
+    }
+
+    [Fact]
     public void Parse_throws_when_tool_match_omits_name()
     {
         const string json = """
@@ -247,5 +264,53 @@ public sealed class JsonScenarioLoaderTests
         Action act = () => JsonScenarioLoader.Load("   ");
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Parse_user_contains_matcher_dispatches_only_on_matching_request()
+    {
+        // Closes the JSON → matcher → dispatch gap: ensures the parsed user_contains
+        // delegate actually claims a request whose user message contains the value, and
+        // declines to claim one that does not.
+        const string json = """
+            {
+              "roles": [
+                { "key": "greeter", "match": { "type": "user_contains", "value": "hello" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "greeting reply" }] }
+                ]},
+                { "key": "fallback", "match": { "type": "always" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "fallback reply" }] },
+                    { "messages": [{ "kind": "text", "text": "fallback reply 2" }] }
+                ]}
+              ]
+            }
+            """;
+
+        var responder = JsonScenarioLoader.Parse(json);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
+        using var httpClient = new HttpClient();
+        var openClient = new OpenClient(httpClient, fixture.BaseUrl + "/v1");
+
+        await ConsumeAsync(openClient, "Hello there friend");
+        await ConsumeAsync(openClient, "totally unrelated text");
+
+        // Matching request consumed greeter's only turn; non-matching fell through to fallback.
+        responder.RemainingTurns["greeter"].Should().Be(0);
+        responder.RemainingTurns["fallback"].Should().Be(1);
+    }
+
+    private static async Task ConsumeAsync(OpenClient openClient, string userMessage)
+    {
+        var request = new ChatCompletionRequest(
+            "gpt-test",
+            [
+                new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent(userMessage) },
+            ])
+        {
+            Stream = true,
+        };
+        await foreach (var _ in openClient.StreamingChatCompletionsAsync(request))
+        {
+        }
     }
 }
