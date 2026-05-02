@@ -6,6 +6,11 @@ export interface ConversationSummary {
   title: string;
   preview?: string;
   lastUpdated: number;
+  /**
+   * Provider id this thread is locked to. Set on first agent creation; null for legacy
+   * threads predating the per-conversation provider feature.
+   */
+  provider?: string | null;
 }
 
 /**

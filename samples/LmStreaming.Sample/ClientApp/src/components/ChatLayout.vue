@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, provide } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
+import { useProviders } from '@/composables/useProviders';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import ConversationSidebar from './ConversationSidebar.vue';
@@ -10,6 +11,7 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import ModeSelector from './ModeSelector.vue';
+import ProviderSelector from './ProviderSelector.vue';
 
 const {
   conversations,
@@ -38,7 +40,16 @@ const {
   copyMode,
 } = useChatModes();
 
-// Initialize chat with a getter for the current mode ID
+// Provider catalog + per-process selection for new conversations.
+const {
+  providers,
+  selectedProviderId,
+  isLoading: providersLoading,
+  loadProviders,
+  selectProvider,
+} = useProviders();
+
+// Initialize chat with getters for the current mode and provider ids.
 const {
   displayItems,
   isLoading: chatLoading,
@@ -53,7 +64,10 @@ const {
   setThreadId,
   loadMessagesFromBackend,
   getResultForToolCall,
-} = useChat({ getModeId: () => currentModeId.value });
+} = useChat({
+  getModeId: () => currentModeId.value,
+  getProviderId: () => selectedProviderId.value,
+});
 
 async function handleCancel(): Promise<void> {
   await cancelStream();
@@ -68,13 +82,38 @@ const modeSwitchDisabled = computed(
   () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
 );
 
+/**
+ * Provider id locked to the current thread, derived from the conversation summary
+ * (populated from <c>ThreadMetadata.Properties["provider"]</c>). A thread becomes
+ * "locked" the moment it appears in the sidebar — i.e. after its first message —
+ * and stays locked for the rest of its life. New conversations have no sidebar
+ * entry yet, so this resolves to <c>null</c> and the dropdown stays editable.
+ */
+const lockedProviderId = computed<string | null>(() => {
+  if (!currentThreadId.value) return null;
+  const conversation = conversations.value.find((c) => c.threadId === currentThreadId.value);
+  return conversation?.provider ?? null;
+});
+
+const providerSelectorDisabled = computed(
+  () => providersLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+);
+
+function handleSelectProvider(providerId: string): void {
+  if (providerSelectorDisabled.value || lockedProviderId.value) {
+    return;
+  }
+  selectProvider(providerId);
+}
+
 // Load conversations and modes on mount
 onMounted(async () => {
-  // Load modes and tools in parallel with conversations
+  // Load modes, tools, and providers in parallel with conversations
   await Promise.all([
     loadConversations(),
     loadModes(),
     loadTools(),
+    loadProviders(),
   ]);
 
   // If there are existing conversations, select the most recent one
@@ -205,12 +244,14 @@ async function handleSend(text: string): Promise<void> {
     const title = displayText.substring(0, 50);
     const preview = displayText.substring(0, 100);
 
-    // Add to local sidebar immediately
+    // Add to local sidebar immediately. Reflect the provider that was used for the
+    // first connect so the dropdown locks to a badge without waiting for a refetch.
     addOrUpdateConversation({
       threadId: currentThreadId.value,
       title,
       preview,
       lastUpdated: Date.now(),
+      provider: selectedProviderId.value,
     });
 
     // Update backend metadata asynchronously
@@ -240,6 +281,10 @@ onMounted(() => {
   checkMobile();
   window.addEventListener('resize', checkMobile);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile);
+});
 </script>
 
 <template>
@@ -268,6 +313,14 @@ onMounted(() => {
           </button>
           <h1>LmStreaming Chat</h1>
           <div class="header-actions">
+            <ProviderSelector
+              :providers="providers"
+              :selected-provider-id="selectedProviderId"
+              :locked-provider-id="lockedProviderId"
+              :is-loading="providersLoading"
+              :disabled="providerSelectorDisabled"
+              @select-provider="handleSelectProvider"
+            />
             <ModeSelector
               :modes="modes"
               :current-mode-id="currentModeId"

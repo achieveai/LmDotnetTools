@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
@@ -37,6 +38,10 @@ public sealed class ChatWebSocketManager
     /// <param name="webSocket">The WebSocket connection</param>
     /// <param name="threadId">The thread ID for routing to the correct agent</param>
     /// <param name="mode">Optional chat mode for agent configuration</param>
+    /// <param name="providerId">
+    /// Optional provider id requested by the client for this connection. Honored only when
+    /// the thread has no persisted provider yet; otherwise the persisted value wins.
+    /// </param>
     /// <param name="requestResponseDumpFileName">
     /// Optional base file name for provider request/response recording.
     /// </param>
@@ -46,6 +51,7 @@ public sealed class ChatWebSocketManager
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
         ChatMode? mode,
+        string? providerId,
         string? requestResponseDumpFileName,
         StreamWriter? recordWriter,
         CancellationToken cancellationToken)
@@ -57,18 +63,39 @@ public sealed class ChatWebSocketManager
         using var logScope = LogContext.PushProperty("codex_session_id", codexSessionId);
 
         _logger.LogInformation(
-            "WebSocket connection started for thread {ThreadId} with mode {ModeId} and session {CodexSessionId}",
+            "WebSocket connection started for thread {ThreadId} with mode {ModeId} provider {ProviderId} and session {CodexSessionId}",
             threadId,
             mode?.Id ?? "default",
+            providerId ?? "(default)",
             codexSessionId);
 
-        // Get or create agent for this thread with the specified mode
-        var agent = mode != null
-            ? _agentPool.GetOrCreateAgent(threadId, mode, requestResponseDumpFileName)
-            : _agentPool.GetOrCreateAgent(
+        var resolvedMode = mode ?? SystemChatModes.All[0];
+
+        // Get or create agent for this thread with the specified mode and requested provider.
+        // ProviderUnavailableException is surfaced to the client as a structured error event
+        // before the connection is closed, so the UI can show "this provider is unavailable"
+        // rather than a generic disconnect.
+        IMultiTurnAgent agent;
+        try
+        {
+            agent = _agentPool.GetOrCreateAgent(
                 threadId,
-                SystemChatModes.All[0],
+                resolvedMode,
+                providerId,
                 requestResponseDumpFileName);
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Provider {ProviderId} unavailable for thread {ThreadId}: {Reason}",
+                ex.ProviderId,
+                threadId,
+                ex.Reason);
+
+            await SendProviderUnavailableErrorAsync(webSocket, ex, recordWriter, cancellationToken);
+            return;
+        }
 
         // Create linked cancellation for connection lifetime
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -288,6 +315,57 @@ public sealed class ChatWebSocketManager
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Invalid JSON from thread {ThreadId}: {Json}", threadId, json);
+        }
+    }
+
+    private async Task SendProviderUnavailableErrorAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        ProviderUnavailableException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        if (webSocket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "provider_unavailable",
+            ["providerId"] = ex.ProviderId,
+            ["reason"] = ex.Reason,
+            ["message"] = ex.Message,
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+        var bytes = Encoding.UTF8.GetBytes(json);
+
+        try
+        {
+            await webSocket.SendAsync(
+                new ArraySegment<byte>(bytes),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                ct);
+
+            if (recordWriter != null)
+            {
+                await recordWriter.WriteLineAsync(json);
+                await recordWriter.FlushAsync();
+            }
+
+            await webSocket.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "Provider unavailable",
+                CancellationToken.None);
+        }
+        catch (WebSocketException wsEx)
+        {
+            _logger.LogDebug(wsEx, "Failed to send provider_unavailable error frame");
+        }
+        catch (OperationCanceledException)
+        {
+            // Connection cancelled before we could write — nothing to do.
         }
     }
 }

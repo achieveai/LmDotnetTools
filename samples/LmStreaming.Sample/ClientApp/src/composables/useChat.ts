@@ -72,6 +72,12 @@ export interface ChatMessage {
 export interface UseChatOptions {
   transport?: TransportType;
   getModeId?: () => string | undefined;
+  /**
+   * Resolves the provider id to send on the WebSocket query string when the
+   * connection opens. Returning <c>null</c>/<c>undefined</c> lets the server
+   * fall back to its configured default.
+   */
+  getProviderId?: () => string | null | undefined;
 }
 
 /**
@@ -123,7 +129,7 @@ export function getDisplayText(text: string): string {
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket', getModeId } = options;
+  const { transport: initialTransport = 'websocket', getModeId, getProviderId } = options;
   const recordEnabled = isRecordingEnabledFromPageQuery();
 
   // Core state
@@ -823,9 +829,11 @@ export function useChat(options: UseChatOptions = {}) {
       sendWebSocketMessage(wsConnection, text);
     } else {
       const currentModeId = getModeId?.();
+      const currentProviderId = getProviderId?.() ?? null;
       log.info('Creating new WebSocket connection', {
         threadId: effectiveThreadId,
         modeId: currentModeId,
+        providerId: currentProviderId,
         recordEnabled,
       });
 
@@ -842,6 +850,7 @@ export function useChat(options: UseChatOptions = {}) {
       wsConnection = await createWebSocketConnection({
         threadId: effectiveThreadId,
         modeId: currentModeId,
+        providerId: currentProviderId,
         record: recordEnabled,
         ...callbacks,
         onDone: () => {

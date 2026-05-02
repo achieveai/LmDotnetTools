@@ -79,6 +79,34 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         Action<McpFunctionProviderServerOptions>? configure = null)
     {
+        AddMcpFunctionProviderServerCore(services, configure);
+
+        // Register as hosted service (reuses the singleton instance)
+        _ = services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<McpFunctionProviderServer>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="McpFunctionProviderServer"/> as a singleton WITHOUT wiring it
+    /// up as an <see cref="IHostedService"/>. The caller is responsible for invoking
+    /// <c>StartAsync</c> on the singleton on demand (typically through a lazy-lifetime
+    /// wrapper). Use this when the MCP server should only spin up when actually needed
+    /// (e.g. when the user picks a provider that depends on it from a per-conversation
+    /// dropdown), so non-MCP boots pay no startup cost.
+    /// </summary>
+    public static IServiceCollection AddMcpFunctionProviderServerLazy(
+        this IServiceCollection services,
+        Action<McpFunctionProviderServerOptions>? configure = null)
+    {
+        AddMcpFunctionProviderServerCore(services, configure);
+        return services;
+    }
+
+    private static void AddMcpFunctionProviderServerCore(
+        IServiceCollection services,
+        Action<McpFunctionProviderServerOptions>? configure)
+    {
         // Register options
         _ = services.Configure(configure ?? (_ => { }));
 
@@ -114,10 +142,5 @@ public static class ServiceCollectionExtensions
 
             return new McpFunctionProviderServer(app);
         });
-
-        // Register as hosted service (reuses the singleton instance)
-        _ = services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<McpFunctionProviderServer>());
-
-        return services;
     }
 }

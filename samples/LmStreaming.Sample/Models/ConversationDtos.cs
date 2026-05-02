@@ -9,6 +9,13 @@ public record ConversationSummary
     public required string Title { get; init; }
     public string? Preview { get; init; }
     public required long LastUpdated { get; init; }
+
+    /// <summary>
+    /// Provider id this thread is locked to. Set on first agent creation and persisted
+    /// in <c>ThreadMetadata.Properties["provider"]</c>. Null for legacy threads predating
+    /// the per-conversation provider feature.
+    /// </summary>
+    public string? Provider { get; init; }
 }
 
 /// <summary>

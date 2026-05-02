@@ -105,7 +105,11 @@ try
     var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";
     var codexMcpPort = ResolveCodexMcpPort();
     Environment.SetEnvironmentVariable("CODEX_MCP_PORT_EFFECTIVE", codexMcpPort.ToString());
-    var codexMcpEndpointUrl = $"http://localhost:{codexMcpPort}/mcp";
+
+    // Provider registry — single source of truth for which providers the client can pick
+    // and what the per-process default is. Read once at startup; shared via DI singleton.
+    _ = builder.Services.AddSingleton<IFileSystemProbe, FileSystemProbe>();
+    _ = builder.Services.AddSingleton<ProviderRegistry>();
 
     // Register the FunctionRegistry with sample tools
     _ = builder.Services.AddSingleton(sp =>
@@ -115,16 +119,17 @@ try
         return registry;
     });
 
-    if (string.Equals(providerMode, "codex", StringComparison.OrdinalIgnoreCase))
+    // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
+    // don't pay the startup cost and so the codex provider stays selectable from the
+    // dropdown regardless of LM_PROVIDER_MODE.
+    _ = builder.Services.AddSingleton<IFunctionProvider>(
+        new TypeFunctionProvider(typeof(SampleTools), providerName: "SampleTools"));
+    _ = builder.Services.AddMcpFunctionProviderServerLazy(options =>
     {
-        _ = builder.Services.AddSingleton<IFunctionProvider>(
-            new TypeFunctionProvider(typeof(SampleTools), providerName: "SampleTools"));
-        _ = builder.Services.AddMcpFunctionProviderServer(options =>
-        {
-            options.Port = codexMcpPort;
-            options.IncludeStatefulFunctions = true;
-        });
-    }
+        options.Port = codexMcpPort;
+        options.IncludeStatefulFunctions = true;
+    });
+    _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
     // Register the FileConversationStore for conversation persistence
     var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
@@ -134,7 +139,9 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
-    // Register built-in (server-side) tool definitions for the tools API
+    // Register built-in (server-side) tool definitions for the tools API. The list is
+    // computed for the boot default so the global tools API stays stable; per-conversation
+    // built-in tools are derived from the resolved provider id at agent-creation time.
     var builtInTools = GetBuiltInToolsForProvider(providerMode);
     var builtInToolDefinitions = builtInTools?
         .OfType<AnthropicBuiltInTool>()
@@ -151,20 +158,25 @@ try
     // sub-agent templates without touching any real-provider code path.
     builder.Services.TryAddSingleton<ITestAgentBuilder, DefaultTestAgentBuilder>();
 
-    _ = builder.Services.AddSingleton<Func<IStreamingAgent>>(sp => () =>
+    // Provider id → IStreamingAgent. Receives the per-conversation provider id resolved
+    // by the pool (request → persisted → default), so this factory does not know about
+    // LM_PROVIDER_MODE — it just dispatches by id.
+    _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp => providerId =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-
-            return providerMode.ToLowerInvariant() switch
+            return providerId.ToLowerInvariant() switch
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
                 "test-anthropic" => CreateAnthropicTestAgent(
                     loggerFactory,
                     sp.GetRequiredService<ITestAgentBuilder>()),
-                _ => CreateTestAgent(
+                "test" => CreateTestAgent(
                     loggerFactory,
                     sp.GetRequiredService<ITestAgentBuilder>()),
+                _ => throw new ProviderUnavailableException(
+                    providerId,
+                    "no IStreamingAgent factory is registered for this provider"),
             };
         });
 
@@ -172,22 +184,41 @@ try
     var llmQueryMcpBaseUrl = builder.Configuration["LlmQueryMcp:BaseUrl"];
     var llmQueryMcpExamType = builder.Configuration["LlmQueryMcp:ExamType"] ?? "NeetPG";
 
-    // Register the MultiTurnAgentPool with mode-aware factory
+    // Register the MultiTurnAgentPool with provider- and mode-aware factory
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
-        var agentFactory = sp.GetRequiredService<Func<IStreamingAgent>>();
+        var agentFactory = sp.GetRequiredService<Func<string, IStreamingAgent>>();
         var conversationStore = sp.GetRequiredService<IConversationStore>();
+        var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
+        var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
 
         return new MultiTurnAgentPool(
-            (threadId, mode, requestResponseDumpFileName) =>
+            (threadId, mode, providerId, requestResponseDumpFileName) =>
             {
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
+                var normalizedProviderId = providerId.ToLowerInvariant();
 
-                if (string.Equals(providerMode, "codex", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(normalizedProviderId, "codex", StringComparison.Ordinal))
                 {
+                    string codexEndpoint;
+                    try
+                    {
+                        // Lazy MCP startup — fires on first codex agent creation regardless of
+                        // boot mode. Sync-over-async is acceptable: this happens at most once
+                        // per process from the pool's per-thread creation lock.
+                        codexEndpoint = codexLifetime.EnsureStartedAsync().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new ProviderUnavailableException(
+                            "codex",
+                            $"MCP server failed to start: {ex.Message}",
+                            ex);
+                    }
+
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateCodexAgentLoop(
                             threadId,
@@ -196,12 +227,12 @@ try
                             requestResponseDumpFileName,
                             conversationStore,
                             loggerFactory,
-                            codexMcpEndpointUrl,
+                            codexEndpoint,
                             mcpBaseUrl,
                             llmQueryMcpExamType));
                 }
 
-                if (string.Equals(providerMode, "claude", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(normalizedProviderId, "claude", StringComparison.Ordinal))
                 {
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateClaudeAgentLoop(
@@ -214,7 +245,7 @@ try
                             llmQueryMcpExamType));
                 }
 
-                if (string.Equals(providerMode, "copilot", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
                 {
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateCopilotAgentLoop(
@@ -226,7 +257,7 @@ try
                             loggerFactory));
                 }
 
-                var providerAgent = agentFactory();
+                var providerAgent = agentFactory(normalizedProviderId);
 
                 // Clone the shared registry per-agent to avoid mutation, filtering by mode
                 var (allContracts, allHandlers) = functionRegistry.Build();
@@ -257,16 +288,16 @@ try
 
                 try
                 {
-                    var modelId = GetModelIdForProvider(providerMode);
+                    var modelId = GetModelIdForProvider(normalizedProviderId);
 
                     // Filter built-in (server-side) tools based on mode's enabled tools
-                    var allBuiltInTools = GetBuiltInToolsForProvider(providerMode);
+                    var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
 
                     // Enable extended thinking for Anthropic-compatible providers
                     var extraProperties = ImmutableDictionary<string, object?>.Empty;
-                    if (providerMode.Equals("anthropic", StringComparison.OrdinalIgnoreCase)
-                        || providerMode.Equals("test-anthropic", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal))
                     {
                         var budgetTokens = int.TryParse(
                             Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
@@ -277,11 +308,11 @@ try
 
                     // Test-mode DI seam: opt-in sub-agent orchestration. Real-provider modes
                     // never resolve this service, so production wiring is unchanged.
-                    var isTestMode = string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase);
+                    var isTestMode = string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
-                            .CreateSubAgentOptions(loggerFactory, agentFactory)
+                            .CreateSubAgentOptions(loggerFactory, () => agentFactory(normalizedProviderId))
                         : null;
 
                     var agent = new MultiTurnAgentLoop(
@@ -318,7 +349,9 @@ try
                     throw;
                 }
             },
-            loggerFactory.CreateLogger<MultiTurnAgentPool>());
+            providerRegistry: providerRegistry,
+            conversationStore: conversationStore,
+            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>());
     });
 
     // Register the ChatWebSocketManager
@@ -378,6 +411,11 @@ try
             ? await modeStore.GetModeAsync(modeId, cancellationToken)
             : null;
 
+        // Optional per-conversation provider override. Honored only when the thread has
+        // not yet locked in a provider (first message). Persisted threads keep their
+        // original provider regardless of what the client sends.
+        var providerId = context.Request.Query["providerId"].FirstOrDefault();
+
         var recordEnabled = app.Environment.IsDevelopment()
             && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
 
@@ -418,6 +456,7 @@ try
                 webSocket,
                 threadId,
                 mode,
+                providerId,
                 requestResponseDumpFileName,
                 recordWriter,
                 cancellationToken);

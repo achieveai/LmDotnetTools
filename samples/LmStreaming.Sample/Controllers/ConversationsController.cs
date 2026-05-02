@@ -35,6 +35,9 @@ public class ConversationsController(
                 ? previewObj?.ToString()
                 : null,
             LastUpdated = t.LastUpdated,
+            Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
+                ? providerObj?.ToString()
+                : null,
         });
         return Ok(result);
     }
