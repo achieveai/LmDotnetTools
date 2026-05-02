@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, provide } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
@@ -280,6 +280,10 @@ function checkMobile(): void {
 onMounted(() => {
   checkMobile();
   window.addEventListener('resize', checkMobile);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile);
 });
 </script>
 
