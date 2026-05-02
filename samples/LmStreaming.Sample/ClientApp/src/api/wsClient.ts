@@ -20,6 +20,11 @@ export interface WebSocketClientOptions extends WebSocketClientCallbacks {
   baseUrl?: string;
   threadId?: string;
   modeId?: string;
+  /**
+   * Provider id requested for this connection. Honored only when the thread has not
+   * yet locked in a provider; persisted threads keep their original provider regardless.
+   */
+  providerId?: string | null;
   record?: boolean;
 }
 
@@ -74,7 +79,7 @@ function normalizeKeys(value: unknown): unknown {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, record, onMessage, onDone, onError } = options;
+  const { baseUrl = '', threadId, modeId, providerId, record, onMessage, onDone, onError } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
@@ -84,6 +89,9 @@ export function createWebSocketConnection(
     let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
     if (modeId) {
       wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
+    }
+    if (providerId) {
+      wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
     }
     if (record) {
       wsUrl += '&record=1';
