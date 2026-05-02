@@ -430,6 +430,148 @@ public class FunctionCallMiddlewareTests
         Assert.NotEmpty(toolCallResult.Result);
     }
 
+    [Fact]
+    public async Task InvokeAsync_DeferredHandler_FromInputToolCall_DoesNotThrowAndFlagsResult()
+    {
+        // Arrange — handler returns Deferred. Previously this threw NotSupportedException;
+        // now it must surface as a deferred-flagged ToolCallResult.
+        var metadata = System.Collections.Immutable.ImmutableDictionary.CreateRange(
+            new Dictionary<string, string> { ["correlation_id"] = "abc-123" });
+
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "approve_action", Description = "Asks human for approval" },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        {
+            ["approve_action"] = _ => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING approval", metadata)),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        var toolCallMessage = CreateToolCallMessage("approve_action", new { action = "send_email" });
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
+        var deferredResult = Assert.Single(resultMessage.ToolCallResults);
+        Assert.True(deferredResult.IsDeferred);
+        Assert.Equal("PENDING approval", deferredResult.Result);
+        Assert.NotNull(deferredResult.DeferralMetadata);
+        Assert.Equal("abc-123", deferredResult.DeferralMetadata!["correlation_id"]);
+        Assert.NotNull(deferredResult.DeferredAt);
+        Assert.True(deferredResult.DeferredAt > 0);
+        Assert.Null(deferredResult.ResolvedAt);
+        Assert.False(deferredResult.IsError);
+        // ToolCallExecutor.cs:147 stamps ToolCallId; deferred state must survive the `with` clause.
+        Assert.NotNull(deferredResult.ToolCallId);
+        Assert.Equal("approve_action", deferredResult.ToolName);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DeferredHandler_FromAgentReply_EmitsAggregateWithIsDeferredTrue()
+    {
+        // Arrange — agent generates a tool call; middleware executes the deferred handler
+        // and wraps it into a ToolsCallAggregateMessage.
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "approve_action", Description = "Asks human for approval" },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        {
+            ["approve_action"] = _ => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING approval")),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        var userMessage = new TextMessage { Text = "Send the email", Role = Role.User };
+        var context = new MiddlewareContext([userMessage], new GenerateReplyOptions());
+
+        var mockAgent = new Mock<IAgent>();
+        var agentReply = CreateToolCallMessage("approve_action", new { action = "send_email" });
+        _ = mockAgent
+            .Setup(a => a.GenerateReplyAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync([agentReply]);
+
+        // Act
+        var result = (await middleware.InvokeAsync(context, mockAgent.Object)).ToList();
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(result));
+        var deferredResult = Assert.Single(aggregate.ToolsCallResult.ToolCallResults);
+        Assert.True(deferredResult.IsDeferred);
+        Assert.Equal("PENDING approval", deferredResult.Result);
+        Assert.NotNull(deferredResult.DeferredAt);
+        Assert.Null(deferredResult.ResolvedAt);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_MixedHandlers_OnlyDeferredOnesFlagged()
+    {
+        // Arrange — two parallel tool calls in the same assistant message: one resolves
+        // synchronously, one defers. Only the deferred one should carry IsDeferred=true.
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "fast_lookup", Description = "Synchronous lookup" },
+            new() { Name = "slow_approval", Description = "Deferred approval" },
+        };
+        var functionMap = new Dictionary<string, Func<string, Task<ToolHandlerResult>>>
+        {
+            ["fast_lookup"] = _ => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Resolved(new ToolCallResult(null, "result_42"))),
+            ["slow_approval"] = _ => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING")),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "fast_lookup",
+                    FunctionArgs = "{}",
+                    ToolCallId = "tc_fast",
+                },
+                new ToolCall
+                {
+                    FunctionName = "slow_approval",
+                    FunctionArgs = "{}",
+                    ToolCallId = "tc_slow",
+                },
+            ],
+            Role = Role.Assistant,
+        };
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
+        Assert.Equal(2, resultMessage.ToolCallResults.Count);
+
+        var fastResult = resultMessage.ToolCallResults.First(r => r.ToolCallId == "tc_fast");
+        Assert.False(fastResult.IsDeferred);
+        Assert.Equal("result_42", fastResult.Result);
+        Assert.Null(fastResult.DeferredAt);
+
+        var slowResult = resultMessage.ToolCallResults.First(r => r.ToolCallId == "tc_slow");
+        Assert.True(slowResult.IsDeferred);
+        Assert.Equal("PENDING", slowResult.Result);
+        Assert.NotNull(slowResult.DeferredAt);
+    }
+
     private static Dictionary<string, Func<string, Task<ToolHandlerResult>>> CreateMockFunctionMap()
     {
         static Task<ToolHandlerResult> Wrap(string text)

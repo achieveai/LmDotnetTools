@@ -123,6 +123,36 @@ public readonly record struct ToolCallResult
     /// </summary>
     [JsonPropertyName("execution_target")]
     public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
+
+    /// <summary>
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> holds an interim
+    /// placeholder text and a final result is expected to be supplied later by the caller's
+    /// loop (or via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c> when running under that loop).
+    /// </summary>
+    [JsonPropertyName("is_deferred")]
+    public bool IsDeferred { get; init; }
+
+    /// <summary>
+    /// Opaque host-supplied metadata captured when the handler signaled deferral.
+    /// </summary>
+    [JsonPropertyName("deferral_metadata")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public System.Collections.Immutable.ImmutableDictionary<string, string>? DeferralMetadata { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the handler signaled deferral. Null on non-deferred results.
+    /// </summary>
+    [JsonPropertyName("deferred_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DeferredAt { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when a previously-deferred placeholder was replaced with a real
+    /// result. Null while still deferred or for results that were never deferred.
+    /// </summary>
+    [JsonPropertyName("resolved_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResolvedAt { get; init; }
 }
 
 /// <summary>
@@ -239,6 +269,10 @@ public record ToolCallResultMessage : IMessage
             IsError = IsError,
             ErrorCode = ErrorCode,
             ExecutionTarget = ExecutionTarget,
+            IsDeferred = IsDeferred,
+            DeferralMetadata = DeferralMetadata,
+            DeferredAt = DeferredAt,
+            ResolvedAt = ResolvedAt,
         };
     }
 
@@ -266,6 +300,10 @@ public record ToolCallResultMessage : IMessage
             IsError = result.IsError,
             ErrorCode = result.ErrorCode,
             ExecutionTarget = result.ExecutionTarget,
+            IsDeferred = result.IsDeferred,
+            DeferralMetadata = result.DeferralMetadata,
+            DeferredAt = result.DeferredAt,
+            ResolvedAt = result.ResolvedAt,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,

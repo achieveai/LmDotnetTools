@@ -30,10 +30,15 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// <see cref="ToolCallResult.ContentBlocks"/>.
     /// </summary>
     /// <remarks>
-    /// FunctionCallMiddleware does not support deferred tool execution — it has no
-    /// resolution channel. If a handler returns <see cref="ToolHandlerResult.Deferred"/>,
-    /// invocation throws <see cref="NotSupportedException"/>. Deferred semantics are
-    /// only available when handlers are dispatched by <c>MultiTurnAgentLoop</c>.
+    /// Deferred handlers (<see cref="ToolHandlerResult.Deferred"/>) surface as
+    /// <see cref="ToolCallResult.IsDeferred"/> = true entries inside the emitted
+    /// <see cref="ToolsCallAggregateMessage"/>. The placeholder text is carried as
+    /// <see cref="ToolCallResult.Result"/>; metadata and the deferral timestamp are populated.
+    /// This middleware does NOT loop or wait for resolution — callers must inspect the aggregate
+    /// for deferred entries and implement their own resolution policy (typically: stash the
+    /// tool_call_id, wait for an external signal, splice the resolved result into history,
+    /// and re-call <c>GenerateReplyAsync</c>). Use <c>MultiTurnAgentLoop</c> for built-in
+    /// deferred bookkeeping with persistence and webhook-friendly idempotent resolution.
     /// </remarks>
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
@@ -77,8 +82,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         Name = name ?? nameof(FunctionCallMiddleware);
 
         // Adapt unified handlers into ToolCallResult-returning handlers for the executor.
-        // Deferred returns surface as NotSupportedException at invocation time — this
-        // middleware has no resolution channel.
+        // Deferred returns surface as ToolCallResult.IsDeferred=true so callers can detect
+        // and resolve them via their own loop. This middleware does not wait for resolution.
         _functionMap = AdaptToToolCallResultHandlers(functionMap);
         _resultCallback = resultCallback;
     }
@@ -98,10 +103,12 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 return result switch
                 {
                     ToolHandlerResult.Resolved r => r.Result,
-                    ToolHandlerResult.Deferred => throw new NotSupportedException(
-                        $"Tool '{key}' returned a deferred result. Deferred tool execution is only "
-                        + "supported when handlers are dispatched by MultiTurnAgentLoop, not by FunctionCallMiddleware."
-                    ),
+                    ToolHandlerResult.Deferred d => new ToolCallResult(toolCallId: null, result: d.Placeholder)
+                    {
+                        IsDeferred = true,
+                        DeferralMetadata = d.Metadata,
+                        DeferredAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    },
                     _ => throw new InvalidOperationException(
                         $"Unknown ToolHandlerResult variant '{result.GetType().Name}' for tool '{key}'."
                     ),
