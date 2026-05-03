@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -56,8 +57,8 @@ public class FunctionRegistryTests
         _ = Assert.Single(contracts);
         _ = Assert.Single(handlers);
 
-        var result = await handlers["func1"]("{}");
-        Assert.Equal("explicit-result", result);
+        var result = await handlers["func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("explicit-result", result.ResultText);
     }
 
     [Fact]
@@ -98,8 +99,8 @@ public class FunctionRegistryTests
         _ = Assert.Single(contracts);
         _ = Assert.Single(handlers);
 
-        var result = await handlers["func1"]("{}");
-        Assert.Equal("provider2-result", result); // provider2 has lower priority (100 < 200)
+        var result = await handlers["func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("provider2-result", result.ResultText); // provider2 has lower priority (100 < 200)
     }
 
     [Fact]
@@ -121,8 +122,8 @@ public class FunctionRegistryTests
         _ = Assert.Single(contracts);
         _ = Assert.Single(handlers);
 
-        var result = await handlers["func1"]("{}");
-        Assert.Equal("provider2-result", result);
+        var result = await handlers["func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("provider2-result", result.ResultText);
     }
 
     [Fact]
@@ -149,10 +150,10 @@ public class FunctionRegistryTests
         Assert.Contains("natural-func1", handlers.Keys); // Natural function with provider prefix
         Assert.Contains("mcp-func1", handlers.Keys); // MCP function with provider prefix
 
-        var naturalResult = await handlers["natural-func1"]("{}");
-        var mcpResult = await handlers["mcp-func1"]("{}");
-        Assert.Equal("natural-result", naturalResult);
-        Assert.Equal("mcp-result", mcpResult);
+        var naturalResult = await handlers["natural-func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        var mcpResult = await handlers["mcp-func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("natural-result", naturalResult.ResultText);
+        Assert.Equal("mcp-result", mcpResult.ResultText);
     }
 
     [Fact]
@@ -175,11 +176,11 @@ public class FunctionRegistryTests
         Assert.Equal(2, handlers.Count);
 
         // Both have same Contract.Name "func1", so collision detection prefixes with provider name
-        var naturalResult = await handlers["natural-func1"]("{}");
-        Assert.Equal("natural-result", naturalResult);
+        var naturalResult = await handlers["natural-func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("natural-result", naturalResult.ResultText);
 
-        var mcpResult = await handlers["mcp-func1"]("{}");
-        Assert.Equal("mcp-result", mcpResult);
+        var mcpResult = await handlers["mcp-func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("mcp-result", mcpResult.ResultText);
     }
 
     [Fact]
@@ -202,8 +203,8 @@ public class FunctionRegistryTests
         _ = Assert.Single(contracts);
         _ = Assert.Single(handlers);
 
-        var result = await handlers["func1"]("{}");
-        Assert.Equal("provider1-result", result);
+        var result = await handlers["func1"]("{}", new ToolCallContext(), CancellationToken.None);
+        Assert.Equal("provider1-result", result.ResultText);
     }
 
     [Fact]
@@ -415,9 +416,9 @@ public class FunctionRegistryTests
         };
     }
 
-    internal static Func<string, Task<string>> CreateTestHandler(string result)
+    internal static ToolHandler CreateTestHandler(string result)
     {
-        return _ => Task.FromResult(result);
+        return (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(result));
     }
 
     private static FunctionContract CreateTestContractWithParameters(string name)
@@ -486,7 +487,7 @@ public class FunctionRegistryTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                 ProviderName = ProviderName,
             });
         }
@@ -520,7 +521,7 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                     ProviderName = ProviderName,
                 },
             ];
@@ -555,7 +556,7 @@ public class FunctionRegistryTests
                         Description = $"Test function {_functionName}",
                         Parameters = [],
                     },
-                    Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                     ProviderName = ProviderName,
                 },
             ];

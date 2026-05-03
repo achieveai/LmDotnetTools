@@ -29,6 +29,26 @@ public interface IConversationStore
         string threadId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Replaces a single previously-appended message identified by its persisted Id.
+    /// Used to mutate <see cref="LmCore.Messages.ToolCallResultMessage"/> placeholders to their
+    /// final form when a deferred tool call is resolved via
+    /// <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    /// </summary>
+    /// <remarks>
+    /// Implementations MUST preserve the message's original timestamp so that load ordering
+    /// remains stable across replacement. Throws <see cref="InvalidOperationException"/> if
+    /// no message with the given Id exists for the thread.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="replacement">The replacement message. Its <see cref="PersistedMessage.Id"/>
+    /// is the lookup key.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task ReplaceMessageAsync(
+        string threadId,
+        PersistedMessage replacement,
+        CancellationToken ct = default);
+
     // === Metadata (property bag for state, session mappings, etc.) ===
 
     /// <summary>

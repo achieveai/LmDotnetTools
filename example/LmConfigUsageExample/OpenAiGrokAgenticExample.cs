@@ -97,7 +97,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args) =>
+            async (args, _, _) =>
             {
                 var weatherArgs = JsonSerializer.Deserialize<WeatherArgs>(args);
                 _logger.LogInformation("[TOOL] Getting weather for {Location}", weatherArgs?.Location);
@@ -112,7 +112,7 @@ public class OpenAiGrokAgenticExample
                     condition = stringArray[Random.Shared.Next(4)],
                 };
 
-                return JsonSerializer.Serialize(weather);
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(weather));
             },
             providerName: "Example"
         );
@@ -134,7 +134,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args) =>
+            async (args, _, _) =>
             {
                 var timeArgs = JsonSerializer.Deserialize<TimeArgs>(args);
                 _logger.LogInformation("[TOOL] Getting time for {Timezone}", timeArgs?.Timezone);
@@ -148,7 +148,7 @@ public class OpenAiGrokAgenticExample
                     date = DateTime.UtcNow.ToString("yyyy-MM-dd"),
                 };
 
-                return JsonSerializer.Serialize(time);
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(time));
             },
             providerName: "Example"
         );
@@ -170,7 +170,7 @@ public class OpenAiGrokAgenticExample
                     },
                 ],
             },
-            async (args) =>
+            async (args, _, _) =>
             {
                 var calcArgs = JsonSerializer.Deserialize<CalculateArgs>(args);
                 _logger.LogInformation("[TOOL] Calculating: {Expression}", calcArgs?.Expression);
@@ -181,18 +181,18 @@ public class OpenAiGrokAgenticExample
                 try
                 {
                     var result = EvaluateSimpleExpression(calcArgs?.Expression ?? "0");
-                    return JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression });
+                    return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression }));
                 }
                 catch (Exception ex)
                 {
-                    return JsonSerializer.Serialize(new { error = ex.Message });
+                    return ToolHandlerResult.FromError(JsonSerializer.Serialize(new { error = ex.Message }));
                 }
             },
             providerName: "Example"
         );
 
         // Build middleware and handlers from registry
-        var (toolCallMiddleware, functionHandlers, _) = registry.BuildToolCallComponents(name: "ToolCallInjection");
+        var (toolCallMiddleware, functionHandlers) = registry.BuildToolCallComponents(name: "ToolCallInjection");
 
         // ===== Step 4: Create Provider Agent =====
         var providerAgent = _agentFactory.CreateStreamingAgent(resolution)
@@ -352,7 +352,7 @@ public class OpenAiGrokAgenticExample
     /// </summary>
     private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
         ToolCallMessage toolCall,
-        IDictionary<string, Func<string, Task<string>>> handlers
+        IDictionary<string, ToolHandler> handlers
     )
     {
         var toolCallId = toolCall.ToolCallId ?? $"call_{toolCall.Index}";
@@ -363,11 +363,12 @@ public class OpenAiGrokAgenticExample
         {
             if (handlers.TryGetValue(functionName, out var handler))
             {
-                var result = await handler(functionArgs);
+                var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
+                var result = await handler(functionArgs, ctx, CancellationToken.None);
                 return new ToolCallResultMessage
                 {
                     ToolCallId = toolCallId,
-                    Result = result,
+                    Result = result.ResultText,
                     Role = Role.User,
                     FromAgent = toolCall.FromAgent,
                     GenerationId = toolCall.GenerationId,

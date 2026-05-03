@@ -30,7 +30,8 @@ public class McpFunctionProvider : IFunctionProvider
         return contracts.Select(contract => new FunctionDescriptor
         {
             Contract = contract,
-            Handler = handlers[contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name],
+            Handler = LegacyHandlerAdapter.ToNewHandler(
+                handlers[contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name]),
             ProviderName = ProviderName,
         });
     }

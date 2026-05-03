@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using Microsoft.Extensions.DependencyInjection;
@@ -145,7 +146,7 @@ public class LoggingIntegrationTests : IDisposable
             },
         };
 
-        var middleware = new FunctionCallMiddleware([testFunction], functionMap, name: "TestMiddleware", logger: _middlewareLogger);
+        var middleware = new FunctionCallMiddleware([testFunction], LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "TestMiddleware", logger: _middlewareLogger);
 
         var mockAgent = new Mock<IAgent>();
         var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"input\":\"test\"}" };

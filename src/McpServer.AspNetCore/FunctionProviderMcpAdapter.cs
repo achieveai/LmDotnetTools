@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,7 +37,11 @@ public static class FunctionProviderMcpAdapter
                     .SelectMany(p => p.GetFunctions())
                     .ToList();
 
-                // Build a lookup dictionary: toolName -> (contract, handler)
+                // Build a lookup dictionary: toolName -> (contract, handler).
+                // FunctionDescriptor.Handler is now Func<string, Task<ToolHandlerResult>>; this MCP
+                // server adapter doesn't support deferred tool execution (it has no resolution
+                // channel), so we adapt to the legacy string-returning shape and a Deferred return
+                // surfaces as NotSupportedException at call time.
                 var toolLookup = new Dictionary<string, (FunctionContract Contract, Func<string, Task<string>> Handler)>();
 
                 foreach (var functionDescriptor in allFunctions)
@@ -52,7 +57,8 @@ public static class FunctionProviderMcpAdapter
                         continue;
                     }
 
-                    toolLookup[toolName] = (functionDescriptor.Contract, functionDescriptor.Handler);
+                    var legacyHandler = LegacyHandlerAdapter.ToLegacyHandler(functionDescriptor.Handler, toolName);
+                    toolLookup[toolName] = (functionDescriptor.Contract, legacyHandler);
 
                     logger?.LogDebug(
                         "Registered MCP tool '{ToolName}' from provider '{Provider}'",

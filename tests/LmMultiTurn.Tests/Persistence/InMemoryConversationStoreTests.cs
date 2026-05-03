@@ -491,6 +491,55 @@ public class InMemoryConversationStoreTests
 
     #endregion
 
+    #region ReplaceMessageAsync Tests
+
+    [Fact]
+    public async Task ReplaceMessageAsync_ReplacesInPlace_AndPreservesTimestamp()
+    {
+        var store = new InMemoryConversationStore();
+        var original = CreateMessage("thread-1", "run-1", "msg-id", 1_000_000, messageOrderIdx: 0);
+        await store.AppendMessagesAsync("thread-1", [original]);
+
+        var replacement = original with
+        {
+            MessageJson = "{\"text\":\"replaced\"}",
+            Timestamp = 9_999_999, // store should ignore this and keep the original timestamp
+        };
+        await store.ReplaceMessageAsync("thread-1", replacement);
+
+        var loaded = await store.LoadMessagesAsync("thread-1");
+        loaded.Should().ContainSingle();
+        loaded[0].Id.Should().Be("msg-id");
+        loaded[0].MessageJson.Should().Be("{\"text\":\"replaced\"}");
+        loaded[0].Timestamp.Should().Be(1_000_000, "ReplaceMessageAsync must preserve the original timestamp");
+    }
+
+    [Fact]
+    public async Task ReplaceMessageAsync_Throws_WhenMessageIdNotFound()
+    {
+        var store = new InMemoryConversationStore();
+        await store.AppendMessagesAsync("thread-1", [CreateMessage("thread-1", "run-1", "existing", 1, 0)]);
+
+        var phantom = CreateMessage("thread-1", "run-1", "does-not-exist", 1, 0);
+
+        var act = () => store.ReplaceMessageAsync("thread-1", phantom);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*does-not-exist*");
+    }
+
+    [Fact]
+    public async Task ReplaceMessageAsync_Throws_WhenThreadNotFound()
+    {
+        var store = new InMemoryConversationStore();
+        var msg = CreateMessage("thread-1", "run-1", "id", 1, 0);
+
+        var act = () => store.ReplaceMessageAsync("never-created-thread", msg);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*never-created-thread*");
+    }
+
+    #endregion
+
     #region Test Helpers
 
     private static List<PersistedMessage> CreateTestMessages(string threadId, string runId, int count)

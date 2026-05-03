@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class ToolCallExecutorTests
@@ -22,9 +24,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["getWeather"] = _ => Task.FromResult("Sunny, 72F"),
+            ["getWeather"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "Sunny, 72F")),
         };
 
         // Act
@@ -60,9 +62,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["failingFunction"] = _ => throw new InvalidOperationException("Something went wrong"),
+            ["failingFunction"] = (_, _, _) => throw new InvalidOperationException("Something went wrong"),
         };
 
         // Act
@@ -98,9 +100,9 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["existingFunction"] = _ => Task.FromResult("ok"),
+            ["existingFunction"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "ok")),
         };
 
         // Act
@@ -150,10 +152,10 @@ public class ToolCallExecutorTests
             Role = Role.Assistant,
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolCallResultHandler>
         {
-            ["successFunc"] = _ => Task.FromResult("ok"),
-            ["failFunc"] = _ => throw new Exception("boom"),
+            ["successFunc"] = (_, _, _) => Task.FromResult(new ToolCallResult(null, "ok")),
+            ["failFunc"] = (_, _, _) => throw new Exception("boom"),
         };
 
         // Act

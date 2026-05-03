@@ -149,7 +149,7 @@ public class McpFunctionCallExtensionsTests
         // Create a middleware using a direct approach rather than assembly scanning
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
         var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
-        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "FunctionCallMiddleware");
+        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "FunctionCallMiddleware");
 
         // Assert
         Assert.NotNull(middleware);

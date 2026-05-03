@@ -75,7 +75,7 @@ public class McpFunctionCallExtensionsBasicTests
         };
 
         // Act - create middleware with these functions
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         // Assert
         Assert.NotNull(middleware);
@@ -131,7 +131,7 @@ public class McpFunctionCallExtensionsBasicTests
         };
 
         // Create middleware with these functions
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         // Assert middleware is properly created
         Assert.NotNull(middleware);

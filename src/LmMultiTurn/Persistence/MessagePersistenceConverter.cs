@@ -34,11 +34,15 @@ public static class MessagePersistenceConverter
 
         var options = jsonOptions ?? DefaultOptions;
         var messageJson = JsonSerializer.Serialize(message, message.GetType(), options);
+        var effectiveThreadId = message.ThreadId ?? threadId;
 
         return new PersistedMessage
         {
-            Id = Guid.NewGuid().ToString("N"),
-            ThreadId = message.ThreadId ?? threadId,
+            // Deterministic Id for ToolCallResultMessage with a non-empty ToolCallId so that
+            // ReplaceMessageAsync can address the row without an in-memory index. Other message
+            // types keep a random Id since they're append-only.
+            Id = BuildPersistedId(message, effectiveThreadId),
+            ThreadId = effectiveThreadId,
             RunId = message.RunId ?? runId,
             ParentRunId = message.ParentRunId,
             GenerationId = message.GenerationId,
@@ -49,6 +53,28 @@ public static class MessagePersistenceConverter
             FromAgent = message.FromAgent,
             MessageJson = messageJson,
         };
+    }
+
+    /// <summary>
+    /// Constructs the deterministic persisted-Id for a <see cref="ToolCallResultMessage"/> with
+    /// a non-empty ToolCallId. Used by <c>MultiTurnAgentBase</c> when calling
+    /// <see cref="IConversationStore.ReplaceMessageAsync"/> on deferred-tool resolution.
+    /// </summary>
+    public static string BuildToolResultPersistedId(string threadId, string toolCallId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+        return $"tcr:{threadId}:{toolCallId}";
+    }
+
+    private static string BuildPersistedId(IMessage message, string threadId)
+    {
+        if (message is ToolCallResultMessage tcr && !string.IsNullOrEmpty(tcr.ToolCallId))
+        {
+            return BuildToolResultPersistedId(threadId, tcr.ToolCallId);
+        }
+
+        return Guid.NewGuid().ToString("N");
     }
 
     /// <summary>

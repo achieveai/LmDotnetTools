@@ -123,6 +123,30 @@ public readonly record struct ToolCallResult
     /// </summary>
     [JsonPropertyName("execution_target")]
     public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
+
+    /// <summary>
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> is empty and a
+    /// final result is expected to be supplied later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    /// The agent loop refuses to send any provider request while a deferred entry remains
+    /// unresolved in history.
+    /// </summary>
+    [JsonPropertyName("is_deferred")]
+    public bool IsDeferred { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the handler signaled deferral. Null on non-deferred results.
+    /// </summary>
+    [JsonPropertyName("deferred_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DeferredAt { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when a previously-deferred placeholder was replaced with a real
+    /// result. Null while still deferred or for results that were never deferred.
+    /// </summary>
+    [JsonPropertyName("resolved_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResolvedAt { get; init; }
 }
 
 /// <summary>
@@ -193,6 +217,32 @@ public record ToolCallResultMessage : IMessage
     public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
 
     /// <summary>
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> is empty and a
+    /// final result will be supplied later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    /// The agent loop refuses to send any provider request while a deferred entry remains
+    /// unresolved in history.
+    /// </summary>
+    [JsonPropertyName("is_deferred")]
+    public bool IsDeferred { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the tool handler signaled deferral. Null on
+    /// non-deferred results.
+    /// </summary>
+    [JsonPropertyName("deferred_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? DeferredAt { get; init; }
+
+    /// <summary>
+    /// Unix-ms timestamp recorded when the deferred placeholder was replaced with a
+    /// real result via <c>ResolveToolCallAsync</c>. Null while still deferred or for
+    /// results that were never deferred.
+    /// </summary>
+    [JsonPropertyName("resolved_at")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResolvedAt { get; init; }
+
+    /// <summary>
     /// Converts this message to a ToolCallResult struct.
     /// </summary>
     public ToolCallResult ToToolCallResult()
@@ -203,6 +253,9 @@ public record ToolCallResultMessage : IMessage
             IsError = IsError,
             ErrorCode = ErrorCode,
             ExecutionTarget = ExecutionTarget,
+            IsDeferred = IsDeferred,
+            DeferredAt = DeferredAt,
+            ResolvedAt = ResolvedAt,
         };
     }
 
@@ -230,6 +283,9 @@ public record ToolCallResultMessage : IMessage
             IsError = result.IsError,
             ErrorCode = result.ErrorCode,
             ExecutionTarget = result.ExecutionTarget,
+            IsDeferred = result.IsDeferred,
+            DeferredAt = result.DeferredAt,
+            ResolvedAt = result.ResolvedAt,
             Role = role,
             FromAgent = fromAgent,
             GenerationId = generationId,

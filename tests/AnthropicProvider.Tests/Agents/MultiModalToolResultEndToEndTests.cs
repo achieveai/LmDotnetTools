@@ -47,31 +47,25 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
             ],
         };
 
-        // Text-only function map (required by FunctionCallMiddleware validation)
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        // Unified function map: handler returns ToolHandlerResult.FromMultiModal — the text and
+        // content blocks travel through the payload struct.
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["search_tool"] = _ => Task.FromResult("Search result text"),
-        };
-
-        // Multimodal function map: simulates an MCP tool returning text + image
-        var mmFunctionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>
-        {
-            ["search_tool"] = _ => Task.FromResult(new ToolCallResult(
-                null,
-                "Here is a medical diagram:",
-                [
-                    new TextToolResultBlock { Text = "Here is a medical diagram:" },
-                    new ImageToolResultBlock
-                    {
-                        Data = CreateMinimalPngBase64(),
-                        MimeType = "image/png",
-                    },
-                ])),
+            ["search_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromMultiModal(
+                    "Here is a medical diagram:",
+                    [
+                        new TextToolResultBlock { Text = "Here is a medical diagram:" },
+                        new ImageToolResultBlock
+                        {
+                            Data = CreateMinimalPngBase64(),
+                            MimeType = "image/png",
+                        },
+                    ])),
         };
 
         // Build middleware and wrap agent for the full pipeline
-        var middleware = new FunctionCallMiddleware(
-            [toolContract], functionMap, mmFunctionMap);
+        var middleware = new FunctionCallMiddleware([toolContract], functionMap);
         var agentWithMiddleware = agent.WithMiddleware(middleware);
         Logger.LogDebug("Agent wrapped with FunctionCallMiddleware (multimodal enabled)");
 

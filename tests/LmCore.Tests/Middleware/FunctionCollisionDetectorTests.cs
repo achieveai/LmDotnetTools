@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -101,7 +102,7 @@ public class FunctionCollisionDetectorTests
                 ClassName = providerName,
                 Description = $"Test function {functionName}",
             },
-            Handler = _ => Task.FromResult($"Result from {functionName}"),
+            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"Result from {functionName}")),
             ProviderName = providerName,
         };
     }
@@ -402,7 +403,7 @@ public class FunctionCollisionDetectorTests
             new()
             {
                 Contract = new FunctionContract { Name = "func1" },
-                Handler = _ => Task.FromResult("result"),
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("result")),
                 ProviderName = string.Empty,
             },
         };

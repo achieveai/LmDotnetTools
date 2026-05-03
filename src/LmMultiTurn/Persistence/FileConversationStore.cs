@@ -63,6 +63,37 @@ public sealed class FileConversationStore : IConversationStore
     }
 
     /// <inheritdoc />
+    public async Task ReplaceMessageAsync(
+        string threadId,
+        PersistedMessage replacement,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
+            var existing = await LoadMessagesFromFileAsync(messagesFile, ct);
+            var idx = existing.FindIndex(m => m.Id == replacement.Id);
+            if (idx < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Message '{replacement.Id}' not found in thread '{threadId}'.");
+            }
+
+            // Preserve original timestamp so load ordering remains stable across replacement.
+            existing[idx] = replacement with { Timestamp = existing[idx].Timestamp };
+            await WriteJsonFileAsync(messagesFile, existing, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
         string threadId,
         CancellationToken ct = default)

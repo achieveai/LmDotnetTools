@@ -19,8 +19,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
-    private readonly IDictionary<string, Func<string, Task<string>>> _parentHandlers;
-    private readonly IDictionary<string, Func<string, Task<ToolCallResult>>>? _parentMultiModalHandlers;
+    private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
     private readonly ILogger _logger;
 
@@ -30,8 +29,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
-        IDictionary<string, Func<string, Task<string>>> parentHandlers,
-        IDictionary<string, Func<string, Task<ToolCallResult>>>? parentMultiModalHandlers,
+        IDictionary<string, ToolHandler> parentHandlers,
         SubAgentOptions options,
         ILogger? logger = null)
     {
@@ -43,7 +41,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentAgent = parentAgent;
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
-        _parentMultiModalHandlers = parentMultiModalHandlers;
         _options = options;
         _logger = logger ?? NullLogger.Instance;
         _concurrencyGate = new SemaphoreSlim(
@@ -373,10 +370,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
-            Func<string, Task<ToolCallResult>>? mmHandler = null;
-            _parentMultiModalHandlers?.TryGetValue(contract.Name, out mmHandler);
-
-            registry.AddFunction(contract, handler, mmHandler, "ParentTools");
+            registry.AddFunction(contract, handler, "ParentTools");
         }
 
         return new MultiTurnAgentLoop(
