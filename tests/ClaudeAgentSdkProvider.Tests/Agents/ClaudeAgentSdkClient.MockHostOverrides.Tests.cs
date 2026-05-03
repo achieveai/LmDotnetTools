@@ -19,17 +19,34 @@ public class ClaudeAgentSdkClientMockHostOverridesTests
         };
         var options = new ClaudeAgentSdkOptions
         {
-            BaseUrl = "http://127.0.0.1:5099/v1",
+            BaseUrl = "http://127.0.0.1:5099",
             AuthToken = "mock-token",
             DisableExperimentalBetas = true,
         };
 
         ClaudeAgentSdkClient.ApplyMockHostOverrides(env, options);
 
-        Assert.Equal("http://127.0.0.1:5099/v1", env["ANTHROPIC_BASE_URL"]);
+        Assert.Equal("http://127.0.0.1:5099", env["ANTHROPIC_BASE_URL"]);
         Assert.Equal("mock-token", env["ANTHROPIC_AUTH_TOKEN"]);
         Assert.Equal("1", env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"]);
         Assert.Equal("preserved", env["UNRELATED"]);
+    }
+
+    [Fact]
+    public void Defensively_strips_trailing_v1_from_BaseUrl()
+    {
+        // Issue #29: the Anthropic SDK CLI re-appends '/v1/messages' to ANTHROPIC_BASE_URL,
+        // so a configured '/v1' suffix produces '/v1/v1/messages' and 404s silently.
+        // ApplyMockHostOverrides must strip it defensively at the provider boundary.
+        var env = new Dictionary<string, string?>();
+        var options = new ClaudeAgentSdkOptions
+        {
+            BaseUrl = "http://127.0.0.1:5099/v1",
+        };
+
+        ClaudeAgentSdkClient.ApplyMockHostOverrides(env, options);
+
+        Assert.Equal("http://127.0.0.1:5099", env["ANTHROPIC_BASE_URL"]);
     }
 
     [Fact]

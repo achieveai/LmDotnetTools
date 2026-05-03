@@ -28,11 +28,7 @@ public sealed class ProviderRegistry
             // Mock entries with known follow-up limitations are tagged here so the UI can
             // surface a caveat next to them. Wire-format gaps are tracked in dedicated issues
             // (see body) — fixing those here lets the gate flip to null and the banner disappears.
-            new(
-                "claude-mock",
-                "Claude (CLI, Mock)",
-                "Known limitation: the Claude CLI's /v1/messages handshake against the mock host "
-                + "currently completes silently with no rendered content. Tracked in #29."),
+            new("claude-mock", "Claude (CLI, Mock)"),
             new(
                 "codex-mock",
                 "Codex (Mock)",
