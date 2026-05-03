@@ -1,6 +1,7 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -323,10 +324,10 @@ public class FunctionRegistryBuilderTests
         Assert.DoesNotContain(contracts, c => c.Name == "getForecast");
 
         // Test handlers work
-        var searchResult = await handlers["search"]("{}");
+        var searchResult = await handlers["search"]("{}", new ToolCallContext(), CancellationToken.None);
         Assert.Equal("MCP-result", searchResult);
 
-        var weatherResult = await handlers["getCurrentWeather"]("{}");
+        var weatherResult = await handlers["getCurrentWeather"]("{}", new ToolCallContext(), CancellationToken.None);
         Assert.Equal("Weather-result", weatherResult);
     }
 
@@ -348,9 +349,9 @@ public class FunctionRegistryBuilderTests
         };
     }
 
-    private static Func<string, Task<string>> CreateTestHandler(string result)
+    private static ToolHandler CreateTestHandler(string result)
     {
-        return _ => Task.FromResult(result);
+        return (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
     }
 
     private class TestFunctionProvider : IFunctionProvider
@@ -376,7 +377,7 @@ public class FunctionRegistryBuilderTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = _ => Task.FromResult($"{ProviderName}-result"),
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
                 ProviderName = ProviderName,
             });
         }

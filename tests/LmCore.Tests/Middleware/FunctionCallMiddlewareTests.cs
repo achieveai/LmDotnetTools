@@ -16,7 +16,7 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
     {
         // Arrange
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, ToolHandler>();
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentNullException>(() => new FunctionCallMiddleware(null!, functionMap));
@@ -47,9 +47,9 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["add"] = args => Task.FromResult("10"),
+            ["add"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "10"))),
         };
 
         // Act & Assert
@@ -69,7 +69,9 @@ public class FunctionCallMiddlewareTests
         };
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(functions, null!));
+        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(
+            functions,
+            (IDictionary<string, ToolHandler>)null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -80,7 +82,7 @@ public class FunctionCallMiddlewareTests
     {
         // Arrange
         var functions = new List<FunctionContract>();
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, ToolHandler>();
 
         // Act & Assert - no exception should be thrown
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -97,10 +99,10 @@ public class FunctionCallMiddlewareTests
             new() { Name = "function2", Description = "Test function 2" },
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["function1"] = args => Task.FromResult("result1"),
-            ["function2"] = args => Task.FromResult("result2"),
+            ["function1"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result1"))),
+            ["function2"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result2"))),
         };
 
         // Act & Assert - no exception should be thrown
@@ -428,39 +430,263 @@ public class FunctionCallMiddlewareTests
         Assert.NotEmpty(toolCallResult.Result);
     }
 
-    private static Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
+    [Fact]
+    public async Task InvokeAsync_DeferredHandler_FromInputToolCall_DoesNotThrowAndFlagsResult()
     {
-        return new Dictionary<string, Func<string, Task<string>>>
+        // Arrange — handler returns Deferred. Previously this threw NotSupportedException;
+        // now it must surface as a deferred-flagged ToolCallResult.
+        var metadata = System.Collections.Immutable.ImmutableDictionary.CreateRange(
+            new Dictionary<string, string> { ["correlation_id"] = "abc-123" });
+
+        var functions = new List<FunctionContract>
         {
-            ["getWeather"] = argsJson =>
+            new() { Name = "approve_action", Description = "Asks human for approval" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING approval", metadata)),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        var toolCallMessage = CreateToolCallMessage("approve_action", new { action = "send_email" });
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
+        var deferredResult = Assert.Single(resultMessage.ToolCallResults);
+        Assert.True(deferredResult.IsDeferred);
+        Assert.Equal("PENDING approval", deferredResult.Result);
+        Assert.NotNull(deferredResult.DeferralMetadata);
+        Assert.Equal("abc-123", deferredResult.DeferralMetadata!["correlation_id"]);
+        Assert.NotNull(deferredResult.DeferredAt);
+        Assert.True(deferredResult.DeferredAt > 0);
+        Assert.Null(deferredResult.ResolvedAt);
+        Assert.False(deferredResult.IsError);
+        // ToolCallExecutor.cs:147 stamps ToolCallId; deferred state must survive the `with` clause.
+        Assert.NotNull(deferredResult.ToolCallId);
+        Assert.Equal("approve_action", deferredResult.ToolName);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DeferredHandler_FromAgentReply_EmitsAggregateWithIsDeferredTrue()
+    {
+        // Arrange — agent generates a tool call; middleware executes the deferred handler
+        // and wraps it into a ToolsCallAggregateMessage.
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "approve_action", Description = "Asks human for approval" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING approval")),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        var userMessage = new TextMessage { Text = "Send the email", Role = Role.User };
+        var context = new MiddlewareContext([userMessage], new GenerateReplyOptions());
+
+        var mockAgent = new Mock<IAgent>();
+        var agentReply = CreateToolCallMessage("approve_action", new { action = "send_email" });
+        _ = mockAgent
+            .Setup(a => a.GenerateReplyAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync([agentReply]);
+
+        // Act
+        var result = (await middleware.InvokeAsync(context, mockAgent.Object)).ToList();
+
+        // Assert
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(result));
+        var deferredResult = Assert.Single(aggregate.ToolsCallResult.ToolCallResults);
+        Assert.True(deferredResult.IsDeferred);
+        Assert.Equal("PENDING approval", deferredResult.Result);
+        Assert.NotNull(deferredResult.DeferredAt);
+        Assert.Null(deferredResult.ResolvedAt);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_MixedHandlers_OnlyDeferredOnesFlagged()
+    {
+        // Arrange — two parallel tool calls in the same assistant message: one resolves
+        // synchronously, one defers. Only the deferred one should carry IsDeferred=true.
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "fast_lookup", Description = "Synchronous lookup" },
+            new() { Name = "slow_approval", Description = "Deferred approval" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["fast_lookup"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Resolved(new ToolCallResult(null, "result_42"))),
+            ["slow_approval"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred("PENDING")),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    FunctionName = "fast_lookup",
+                    FunctionArgs = "{}",
+                    ToolCallId = "tc_fast",
+                },
+                new ToolCall
+                {
+                    FunctionName = "slow_approval",
+                    FunctionArgs = "{}",
+                    ToolCallId = "tc_slow",
+                },
+            ],
+            Role = Role.Assistant,
+        };
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
+        Assert.Equal(2, resultMessage.ToolCallResults.Count);
+
+        var fastResult = resultMessage.ToolCallResults.First(r => r.ToolCallId == "tc_fast");
+        Assert.False(fastResult.IsDeferred);
+        Assert.Equal("result_42", fastResult.Result);
+        Assert.Null(fastResult.DeferredAt);
+
+        var slowResult = resultMessage.ToolCallResults.First(r => r.ToolCallId == "tc_slow");
+        Assert.True(slowResult.IsDeferred);
+        Assert.Equal("PENDING", slowResult.Result);
+        Assert.NotNull(slowResult.DeferredAt);
+    }
+
+    [Fact]
+    public async Task ToolHandler_ReceivesToolCallId_FromContext()
+    {
+        // Arrange — handler captures ctx.ToolCallId; middleware threads it through ToolCallExecutor.
+        ToolCallContext? capturedContext = null;
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "echo_id", Description = "Captures ctx.ToolCallId" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["echo_id"] = (args, ctx, ct) =>
             {
-                ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(GetWeatherAsync(argsJson));
+                capturedContext = ctx;
+                return Task.FromResult<ToolHandlerResult>(
+                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
             },
-            ["getWeatherHistory"] = argsJson =>
+        };
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall { FunctionName = "echo_id", FunctionArgs = "{}", ToolCallId = "call_abc123" },
+            ],
+            Role = Role.Assistant,
+        };
+        var context = new MiddlewareContext([toolCallMessage]);
+
+        // Act
+        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+
+        // Assert
+        Assert.NotNull(capturedContext);
+        Assert.Equal("call_abc123", capturedContext!.ToolCallId);
+    }
+
+    [Fact]
+    public async Task ToolHandler_ReceivesCancellationToken_FromMiddleware()
+    {
+        // Arrange — handler captures the CancellationToken parameter; we pass our own via
+        // InvokeAsync and verify the same token (or one wired to it) lands inside the handler.
+        CancellationToken capturedToken = default;
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "capture_ct", Description = "Captures the CancellationToken parameter" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["capture_ct"] = (args, ctx, ct) =>
             {
-                ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(GetWeatherHistoryAsync(argsJson));
+                capturedToken = ct;
+                return Task.FromResult<ToolHandlerResult>(
+                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
             },
-            ["add"] = argsJson =>
+        };
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls =
+            [
+                new ToolCall { FunctionName = "capture_ct", FunctionArgs = "{}", ToolCallId = "call_ct" },
+            ],
+            Role = Role.Assistant,
+        };
+        var middlewareContext = new MiddlewareContext([toolCallMessage]);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // pre-cancel so we can assert the token's state without racing
+
+        // Act
+        _ = await middleware.InvokeAsync(middlewareContext, new Mock<IAgent>().Object, cts.Token);
+
+        // Assert — the handler observed an already-cancelled token, proving propagation.
+        Assert.True(capturedToken.IsCancellationRequested);
+    }
+
+    private static Dictionary<string, ToolHandler> CreateMockFunctionMap()
+    {
+        static Task<ToolHandlerResult> Wrap(string text)
+            => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, text)));
+
+        return new Dictionary<string, ToolHandler>
+        {
+            ["getWeather"] = (argsJson, _, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(AddAsync(argsJson));
+                return Wrap(GetWeatherAsync(argsJson));
             },
-            ["subtract"] = argsJson =>
+            ["getWeatherHistory"] = (argsJson, _, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(SubtractAsync(argsJson));
+                return Wrap(GetWeatherHistoryAsync(argsJson));
             },
-            ["multiply"] = argsJson =>
+            ["add"] = (argsJson, _, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(MultiplyAsync(argsJson));
+                return Wrap(AddAsync(argsJson));
             },
-            ["divide"] = argsJson =>
+            ["subtract"] = (argsJson, _, _) =>
             {
                 ArgumentNullException.ThrowIfNull(argsJson);
-                return Task.FromResult(DivideAsync(argsJson));
+                return Wrap(SubtractAsync(argsJson));
+            },
+            ["multiply"] = (argsJson, _, _) =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Wrap(MultiplyAsync(argsJson));
+            },
+            ["divide"] = (argsJson, _, _) =>
+            {
+                ArgumentNullException.ThrowIfNull(argsJson);
+                return Wrap(DivideAsync(argsJson));
             },
         };
     }
@@ -860,7 +1086,7 @@ public class FunctionCallMiddlewareTests
 
         TestContextLogger.LogDebugMessage("Function map created");
 
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         TestContextLogger.LogDebugMessage("Middleware created");
 
@@ -1101,7 +1327,7 @@ public class FunctionCallMiddlewareTests
             },
         };
 
-        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+        var middleware = new FunctionCallMiddleware(functionContracts, LegacyHandlerAdapter.WrapToNewHandlers(functionMap));
 
         var messages = new List<IMessage>
         {
@@ -1179,7 +1405,7 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the middleware with the MCP tools
-        var middleware = new FunctionCallMiddleware(functions, functionMap, name: "McpCalculatorTest");
+        var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "McpCalculatorTest");
 
         // Create large numbers to test with
         var firstNumber = 9876543210.123;

@@ -46,11 +46,12 @@ public partial class McpMiddleware : IStreamingMiddleware
         Name = name;
         _logger = logger;
 
-        // Initialize the FunctionCallMiddleware with our function map and logger
+        // Initialize the FunctionCallMiddleware with our function map and logger.
+        // McpMiddleware tools always resolve synchronously via the underlying MCP client;
+        // wrap legacy-shape handlers into the new ToolHandlerResult shape for FunctionCallMiddleware.
         _functionCallMiddleware = new FunctionCallMiddleware(
             functions,
-            functionMap,
-            multiModalFunctionMap: null,
+            LegacyHandlerAdapter.WrapToNewHandlers(functionMap),
             name: Name,
             logger: functionCallLogger);
     }

@@ -91,12 +91,17 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             if (functionMap.TryGetValue(key, out var handler))
             {
                 multiModalMap.TryGetValue(key, out var multiModalHandler);
+                // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
+                // is the canonical handler shape; the text-only handler is no longer used.
+                // Wrap the multi-modal flavor when available, otherwise wrap the text handler.
+                var unifiedHandler = multiModalHandler != null
+                    ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
+                    : LegacyHandlerAdapter.ToNewHandler(handler);
                 functions.Add(
                     new FunctionDescriptor
                     {
                         Contract = contract,
-                        Handler = handler,
-                        MultiModalHandler = multiModalHandler,
+                        Handler = unifiedHandler,
                         ProviderName = providerName ?? "McpClient",
                     }
                 );
@@ -196,7 +201,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
                     },
-                    Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                     ProviderName = serverId,
                 };
 
@@ -270,12 +275,17 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             if (functionMap.TryGetValue(key, out var handler))
             {
                 multiModalMap.TryGetValue(key, out var multiModalHandler);
+                // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
+                // is the canonical handler shape; the text-only handler is no longer used.
+                // Wrap the multi-modal flavor when available, otherwise wrap the text handler.
+                var unifiedHandler = multiModalHandler != null
+                    ? LegacyHandlerAdapter.ToNewHandler(multiModalHandler)
+                    : LegacyHandlerAdapter.ToNewHandler(handler);
                 functions.Add(
                     new FunctionDescriptor
                     {
                         Contract = contract,
-                        Handler = handler,
-                        MultiModalHandler = multiModalHandler,
+                        Handler = unifiedHandler,
                         ProviderName = providerName ?? "McpClient",
                     }
                 );
@@ -462,7 +472,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = _ => Task.FromResult(string.Empty),
+                        Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))),
                         ProviderName = serverId,
                     };
 
@@ -1040,7 +1050,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         var descriptor = new FunctionDescriptor
                         {
                             Contract = new FunctionContract { Name = tool.Name },
-                            Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                             ProviderName = serverId,
                         };
 
@@ -1127,7 +1137,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     var descriptor = new FunctionDescriptor
                     {
                         Contract = new FunctionContract { Name = tool.Name },
-                        Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                        Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                         ProviderName = serverId,
                     };
 

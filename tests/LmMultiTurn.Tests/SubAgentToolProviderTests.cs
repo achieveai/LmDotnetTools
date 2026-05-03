@@ -2,6 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -51,8 +52,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         _manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
-            parentHandlers: new Dictionary<string, Func<string, Task<string>>>(),
-            parentMultiModalHandlers: null,
+            parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options);
 
         _provider = new SubAgentToolProvider(
@@ -90,7 +90,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { template_name = "researcher" });
 
         // Act
-        var act = () => agentHandler(args);
+        var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
@@ -106,7 +106,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { task = "do something" });
 
         // Act
-        var act = () => agentHandler(args);
+        var act = () => agentHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
@@ -122,7 +122,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         var args = JsonSerializer.Serialize(new { });
 
         // Act
-        var act = () => checkHandler(args);
+        var act = () => checkHandler(args, new ToolCallContext(), CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()

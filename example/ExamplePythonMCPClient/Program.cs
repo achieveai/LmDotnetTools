@@ -62,12 +62,12 @@ public class CustomFunctionProvider : IFunctionProvider
             ],
         };
 
-        static async Task<string> askUserHandler(string json)
+        static async Task<ToolHandlerResult> askUserHandler(string json, ToolCallContext context, CancellationToken cancellationToken)
         {
             var jsonObject = JsonNode.Parse(json)!;
             var question = jsonObject["question"]?.ToString() ?? "";
             var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
-            return await Program.AskUser(question, options);
+            return new ToolHandlerResult.Resolved(new ToolCallResult(null, await Program.AskUser(question, options)));
         }
 
         yield return new FunctionDescriptor

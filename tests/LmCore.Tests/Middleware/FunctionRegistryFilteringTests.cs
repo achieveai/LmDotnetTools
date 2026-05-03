@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 
@@ -257,7 +258,7 @@ public class FunctionRegistryFilteringTests
                         ClassName = useClassName ? providerName : null,
                         Description = $"Test function {name} from {providerName}",
                     },
-                    Handler = _ => Task.FromResult($"Result from {name}"),
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"Result from {name}"))),
                     ProviderName = ProviderName,
                 }),
             ];
@@ -553,7 +554,7 @@ public class FunctionRegistryFilteringTests
             .AddProvider(new TestFunctionProvider("Provider1", "func1", "func2"))
             .AddFunction(
                 new FunctionContract { Name = "func1", Description = "Override" },
-                _ => Task.FromResult("overridden result"),
+                (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "overridden result"))),
                 "Explicit"
             )
             .WithFilterConfig(new FunctionFilterConfig { EnableFiltering = false });

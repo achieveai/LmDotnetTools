@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 
@@ -74,7 +75,7 @@ public class McpToolFilter
         var descriptor = new FunctionDescriptor
         {
             Contract = new FunctionContract { Name = originalToolName },
-            Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+            Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
             ProviderName = serverId,
         };
 

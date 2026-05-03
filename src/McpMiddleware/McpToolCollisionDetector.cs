@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -58,7 +59,7 @@ public class McpToolCollisionDetector
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
                     },
-                    Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, string.Empty))), // Dummy handler
                     ProviderName = serverId,
                 };
 

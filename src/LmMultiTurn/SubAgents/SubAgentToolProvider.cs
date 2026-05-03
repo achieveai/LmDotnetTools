@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -151,7 +152,10 @@ public class SubAgentToolProvider : IFunctionProvider
         };
     }
 
-    private async Task<string> HandleAgentToolAsync(string argsJson)
+    private async Task<ToolHandlerResult> HandleAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
@@ -164,7 +168,7 @@ public class SubAgentToolProvider : IFunctionProvider
         if (agentId != null)
         {
             // Resume or send to existing agent
-            return await _manager.ResumeAsync(agentId, task);
+            return new ToolHandlerResult.Resolved(new ToolCallResult(null, await _manager.ResumeAsync(agentId, task)));
         }
 
         // Spawn new agent
@@ -178,11 +182,14 @@ public class SubAgentToolProvider : IFunctionProvider
         var removeTools = ParseCommaSeparated(
             GetOptionalString(root, "remove_tools"));
 
-        return await _manager.SpawnAsync(
-            templateName, task, addTools, removeTools);
+        return new ToolHandlerResult.Resolved(
+            new ToolCallResult(null, await _manager.SpawnAsync(templateName, task, addTools, removeTools)));
     }
 
-    private Task<string> HandleCheckAgentToolAsync(string argsJson)
+    private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
@@ -191,7 +198,8 @@ public class SubAgentToolProvider : IFunctionProvider
             ?? throw new ArgumentException(
                 "The 'agent_id' parameter is required.");
 
-        return Task.FromResult(_manager.Peek(agentId));
+        return Task.FromResult<ToolHandlerResult>(
+            new ToolHandlerResult.Resolved(new ToolCallResult(null, _manager.Peek(agentId))));
     }
 
     private static string? GetOptionalString(

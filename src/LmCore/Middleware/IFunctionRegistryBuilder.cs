@@ -22,12 +22,18 @@ public interface IFunctionRegistryBuilder
     ///     Adds a single function explicitly to the registry.
     /// </summary>
     /// <param name="contract">The function contract</param>
-    /// <param name="handler">The function handler</param>
+    /// <param name="handler">The function handler. Receives raw JSON args and a
+    /// <see cref="ToolCallContext"/> carrying the call's <c>tool_call_id</c> and the host's
+    /// <see cref="CancellationToken"/>. Returns <see cref="ToolHandlerResult"/> — either
+    /// <see cref="ToolHandlerResult.Resolved"/> wrapping a <see cref="ToolCallResult"/>
+    /// (a bare string or <see cref="ToolCallResult"/> is implicitly convertible) or
+    /// <see cref="ToolHandlerResult.Deferred"/> for long-running operations resolved later
+    /// via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.</param>
     /// <param name="providerName">Optional provider name for the function</param>
     /// <returns>The builder for method chaining</returns>
     IFunctionRegistryBuilder AddFunction(
         FunctionContract contract,
-        Func<string, Task<string>> handler,
+        ToolHandler handler,
         string? providerName = null
     );
 
@@ -82,21 +88,12 @@ public interface IFunctionRegistryWithProviders : IFunctionRegistryBuilder
 public interface IConfiguredFunctionRegistry
 {
     /// <summary>
-    ///     Builds the final function collections from the configured registry.
+    ///     Builds the final function collections from the configured registry. Multi-modal
+    ///     payloads are carried by individual <see cref="ToolCallResult"/>s wrapped in
+    ///     <see cref="ToolHandlerResult.Resolved"/>; there is no separate handler track.
     /// </summary>
     /// <returns>A tuple containing the function contracts and their handlers</returns>
-    (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build();
-
-    /// <summary>
-    ///     Builds the final function collections including multimodal handlers.
-    ///     The multimodal handler map is a subset — only functions with multimodal handlers appear in it.
-    /// </summary>
-    /// <returns>A tuple containing function contracts, text-only handlers, and multimodal handlers</returns>
-    (
-        IEnumerable<FunctionContract> Contracts,
-        IDictionary<string, Func<string, Task<string>>> TextHandlers,
-        IDictionary<string, Func<string, Task<ToolCallResult>>> MultiModalHandlers
-    ) BuildWithMultiModal();
+    (IEnumerable<FunctionContract>, IDictionary<string, ToolHandler>) Build();
 
     /// <summary>
     ///     Builds and creates a FunctionCallMiddleware instance directly.

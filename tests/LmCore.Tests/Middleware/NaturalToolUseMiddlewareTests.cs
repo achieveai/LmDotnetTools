@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -7,7 +8,7 @@ public class NaturalToolUseMiddlewareTests
     // Common test context
     private readonly MiddlewareContext _defaultContext;
     private readonly List<FunctionContract> _functionContracts;
-    private readonly Dictionary<string, Func<string, Task<string>>> _functionMap;
+    private readonly Dictionary<string, ToolHandler> _functionMap;
     private readonly Mock<IAgent> _mockFallbackParser;
     private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
 
@@ -41,9 +42,10 @@ public class NaturalToolUseMiddlewareTests
             },
         ];
 
-        _functionMap = new Dictionary<string, Func<string, Task<string>>>
+        _functionMap = new Dictionary<string, ToolHandler>
         {
-            { "GetWeather", async args => await Task.FromResult("{\"temperature\": 72, \"conditions\": \"sunny\"}") },
+            { "GetWeather", (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Resolved(new ToolCallResult(null, "{\"temperature\": 72, \"conditions\": \"sunny\"}"))) },
         };
 
         // Initialize default context

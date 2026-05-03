@@ -92,7 +92,10 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         {
             var (contracts, handlers) = functionRegistry.Build();
             dynamicContracts = [.. contracts.Where(static c => !string.IsNullOrWhiteSpace(c.Name))];
-            dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(handlers, StringComparer.OrdinalIgnoreCase);
+            // Codex SDK consumes legacy string-returning handlers. Deferred tool execution is
+            // a MultiTurnAgentLoop-only feature, so we unwrap ToolHandlerResult.Resolved here
+            // and surface a NotSupportedException if a handler ever returns Deferred.
+            dynamicHandlers = LegacyHandlerAdapter.WrapToLegacyHandlers(handlers, StringComparer.OrdinalIgnoreCase);
         }
 
         _toolPolicy = new CodexToolPolicyEngine(
