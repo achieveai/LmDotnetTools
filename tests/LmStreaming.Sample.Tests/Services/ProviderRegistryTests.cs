@@ -314,6 +314,30 @@ public class ProviderRegistryTests
     }
 
     [Fact]
+    public void KnownLimitation_TaggedOnBrokenMocks_UnsetOnHealthyOnes()
+    {
+        // Surfaces the UX banner that points users at the follow-up issues for the broken
+        // mock variants (#28 codex, #29 claude). When those land, this assertion flips.
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var probe = new FakeFileSystemProbe(executablesOnPath: ["claude", "copilot"]);
+
+        var registry = new ProviderRegistry(probe, () => true);
+        var byId = registry.ListAll().ToDictionary(p => p.Id);
+
+        byId["codex-mock"].KnownLimitation.Should().NotBeNullOrWhiteSpace()
+            .And.Subject.Should().Contain("#28");
+        byId["claude-mock"].KnownLimitation.Should().NotBeNullOrWhiteSpace()
+            .And.Subject.Should().Contain("#29");
+
+        // copilot-mock works end-to-end against the mock host and must NOT carry a caveat.
+        byId["copilot-mock"].KnownLimitation.Should().BeNull();
+
+        // Non-mock entries inherit the default null.
+        byId["openai"].KnownLimitation.Should().BeNull();
+        byId["claude"].KnownLimitation.Should().BeNull();
+    }
+
+    [Fact]
     public void Get_ReturnsNull_ForUnknownProvider()
     {
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");

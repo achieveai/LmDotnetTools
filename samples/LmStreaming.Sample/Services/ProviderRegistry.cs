@@ -16,19 +16,35 @@ namespace LmStreaming.Sample.Services;
 /// </remarks>
 public sealed class ProviderRegistry
 {
-    private static readonly ImmutableArray<(string Id, string DisplayName)> CatalogEntries =
+    private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
         [
-            ("openai", "OpenAI"),
-            ("anthropic", "Anthropic"),
-            ("test", "Test (Mock)"),
-            ("test-anthropic", "Test (Anthropic)"),
-            ("claude", "Claude (CLI)"),
-            ("codex", "Codex"),
-            ("copilot", "Copilot (CLI)"),
-            ("claude-mock", "Claude (CLI, Mock)"),
-            ("codex-mock", "Codex (Mock)"),
-            ("copilot-mock", "Copilot (CLI, Mock)"),
+            new("openai", "OpenAI"),
+            new("anthropic", "Anthropic"),
+            new("test", "Test (Mock)"),
+            new("test-anthropic", "Test (Anthropic)"),
+            new("claude", "Claude (CLI)"),
+            new("codex", "Codex"),
+            new("copilot", "Copilot (CLI)"),
+            // Mock entries with known follow-up limitations are tagged here so the UI can
+            // surface a caveat next to them. Wire-format gaps are tracked in dedicated issues
+            // (see body) — fixing those here lets the gate flip to null and the banner disappears.
+            new(
+                "claude-mock",
+                "Claude (CLI, Mock)",
+                "Known limitation: the Claude CLI's /v1/messages handshake against the mock host "
+                + "currently completes silently with no rendered content. Tracked in #29."),
+            new(
+                "codex-mock",
+                "Codex (Mock)",
+                "Known limitation: Codex CLI defaults to /v1/responses which the mock host does "
+                + "not yet implement, so the run hangs. Tracked in #28."),
+            new("copilot-mock", "Copilot (CLI, Mock)"),
         ];
+
+    private readonly record struct CatalogEntry(
+        string Id,
+        string DisplayName,
+        string? KnownLimitation = null);
 
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableHashSet<string> _staticAvailability;
@@ -59,8 +75,10 @@ public sealed class ProviderRegistry
         var hasOpenAiKey = HasEnvVar("OPENAI_API_KEY");
         var hasAnthropicKey = HasEnvVar("ANTHROPIC_API_KEY");
 
-        foreach (var (id, displayName) in CatalogEntries)
+        foreach (var entry in CatalogEntries)
         {
+            var id = entry.Id;
+            var displayName = entry.DisplayName;
             var isStatic = id switch
             {
                 "test" or "test-anthropic" or "codex" => true,
@@ -81,7 +99,7 @@ public sealed class ProviderRegistry
                 staticBuilder.Add(id);
             }
 
-            builder[id] = new ProviderDescriptor(id, displayName, isStatic);
+            builder[id] = new ProviderDescriptor(id, displayName, isStatic, entry.KnownLimitation);
         }
 
         _byId = builder.ToImmutable();
