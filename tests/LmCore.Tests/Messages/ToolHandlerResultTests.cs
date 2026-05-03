@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using FluentAssertions;
@@ -9,86 +8,72 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 public class ToolHandlerResultTests
 {
     [Fact]
-    public void ImplicitConversion_FromString_ProducesResolved()
+    public void FromText_ProducesResolvedWithTextOnlyPayload()
     {
-        ToolHandlerResult result = "hello";
-
-        result.Should().BeOfType<ToolHandlerResult.Resolved>();
-        ((ToolHandlerResult.Resolved)result).Result.Result.Should().Be("hello");
-    }
-
-    [Fact]
-    public void FromString_FactoryHelper_ProducesResolved()
-    {
-        var result = ToolHandlerResult.FromString("payload");
-
-        result.Should().BeOfType<ToolHandlerResult.Resolved>();
-        result.Result.Result.Should().Be("payload");
-    }
-
-    [Fact]
-    public void ImplicitConversion_FromToolCallResult_ProducesResolved()
-    {
-        var inner = new ToolCallResult(null, "complex", new List<ToolResultContentBlock>
-        {
-            new TextToolResultBlock { Text = "rich" },
-        });
-        ToolHandlerResult result = inner;
+        var result = ToolHandlerResult.FromText("hello");
 
         result.Should().BeOfType<ToolHandlerResult.Resolved>();
         var resolved = (ToolHandlerResult.Resolved)result;
-        resolved.Result.Result.Should().Be("complex");
-        resolved.Result.ContentBlocks.Should().HaveCount(1);
+        resolved.Payload.Text.Should().Be("hello");
+        resolved.Payload.ContentBlocks.Should().BeNull();
+        resolved.Payload.IsError.Should().BeFalse();
+        resolved.Payload.ErrorCode.Should().BeNull();
     }
 
     [Fact]
-    public void Deferred_CarriesPlaceholderAndMetadata()
+    public void FromError_ProducesResolvedWithIsErrorTrue()
     {
-        var metadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
+        var result = ToolHandlerResult.FromError("bad input", errorCode: "E_INPUT");
+
+        result.Should().BeOfType<ToolHandlerResult.Resolved>();
+        var resolved = (ToolHandlerResult.Resolved)result;
+        resolved.Payload.Text.Should().Be("bad input");
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("E_INPUT");
+    }
+
+    [Fact]
+    public void FromMultiModal_ProducesResolvedWithContentBlocks()
+    {
+        var blocks = new List<ToolResultContentBlock>
         {
-            ["correlation_id"] = "abc-123",
-            ["expected_wait_seconds"] = "60",
-        });
+            new TextToolResultBlock { Text = "rich" },
+            new ImageToolResultBlock { Data = "data", MimeType = "image/png" },
+        };
 
-        var deferred = new ToolHandlerResult.Deferred("PENDING approval", metadata);
+        var result = ToolHandlerResult.FromMultiModal("complex", blocks);
 
-        deferred.Placeholder.Should().Be("PENDING approval");
-        deferred.Metadata.Should().NotBeNull();
-        deferred.Metadata!["correlation_id"].Should().Be("abc-123");
+        result.Should().BeOfType<ToolHandlerResult.Resolved>();
+        var resolved = (ToolHandlerResult.Resolved)result;
+        resolved.Payload.Text.Should().Be("complex");
+        resolved.Payload.ContentBlocks.Should().BeSameAs(blocks);
     }
 
     [Fact]
-    public void ResultText_OnResolved_ReturnsValue()
+    public void Deferred_IsEmptyRecord()
     {
-        ToolHandlerResult resolved = new ToolHandlerResult.Resolved(new ToolCallResult(null, "payload"));
-        resolved.ResultText.Should().Be("payload");
-    }
+        var d1 = new ToolHandlerResult.Deferred();
+        var d2 = new ToolHandlerResult.Deferred();
 
-    [Fact]
-    public void ResultText_OnDeferred_Throws()
-    {
-        ToolHandlerResult deferred = new ToolHandlerResult.Deferred("pending");
-
-        var act = () => _ = deferred.ResultText;
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*deferred*");
+        // Empty record — value equality is structural, both instances are equal.
+        d1.Should().Be(d2);
     }
 
     [Fact]
     public void PatternMatch_DistinguishesVariantsExhaustively()
     {
-        ToolHandlerResult resolved = new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok"));
-        ToolHandlerResult deferred = new ToolHandlerResult.Deferred("pending");
+        ToolHandlerResult resolved = ToolHandlerResult.FromText("ok");
+        ToolHandlerResult deferred = new ToolHandlerResult.Deferred();
 
         string Match(ToolHandlerResult r) => r switch
         {
-            ToolHandlerResult.Resolved x => $"resolved:{x.Result.Result}",
-            ToolHandlerResult.Deferred x => $"deferred:{x.Placeholder}",
+            ToolHandlerResult.Resolved x => $"resolved:{x.Payload.Text}",
+            ToolHandlerResult.Deferred => "deferred",
             _ => throw new InvalidOperationException("unreachable"),
         };
 
         Match(resolved).Should().Be("resolved:ok");
-        Match(deferred).Should().Be("deferred:pending");
+        Match(deferred).Should().Be("deferred");
     }
 
     [Fact]
@@ -97,14 +82,10 @@ public class ToolHandlerResultTests
         var original = new ToolCallResultMessage
         {
             ToolCallId = "tc_1",
-            Result = "PENDING",
+            Result = string.Empty,
             ToolName = "approval_tool",
             IsDeferred = true,
             DeferredAt = 1_700_000_000_000,
-            DeferralMetadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-            {
-                ["correlation"] = "abc",
-            }),
         };
 
         var json = JsonSerializer.Serialize(original);
@@ -114,8 +95,6 @@ public class ToolHandlerResultTests
         roundTripped!.ToolCallId.Should().Be("tc_1");
         roundTripped.IsDeferred.Should().BeTrue();
         roundTripped.DeferredAt.Should().Be(1_700_000_000_000);
-        roundTripped.DeferralMetadata.Should().NotBeNull();
-        roundTripped.DeferralMetadata!["correlation"].Should().Be("abc");
     }
 
     [Fact]
@@ -136,27 +115,20 @@ public class ToolHandlerResultTests
     [Fact]
     public void ToolCallResult_Struct_DeferredFields_AreSettableViaWith()
     {
-        var initial = new ToolCallResult("tc_1", "PENDING");
-        var metadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-        {
-            ["correlation"] = "xyz",
-        });
+        var initial = new ToolCallResult("tc_1", string.Empty);
 
         var deferred = initial with
         {
             IsDeferred = true,
-            DeferralMetadata = metadata,
             DeferredAt = 1_700_000_000_000,
         };
 
         deferred.IsDeferred.Should().BeTrue();
-        deferred.DeferralMetadata.Should().NotBeNull();
-        deferred.DeferralMetadata!["correlation"].Should().Be("xyz");
         deferred.DeferredAt.Should().Be(1_700_000_000_000);
         deferred.ResolvedAt.Should().BeNull();
         // Existing fields preserved.
         deferred.ToolCallId.Should().Be("tc_1");
-        deferred.Result.Should().Be("PENDING");
+        deferred.Result.Should().Be(string.Empty);
     }
 
     [Fact]
@@ -165,7 +137,6 @@ public class ToolHandlerResultTests
         var plain = new ToolCallResult("tc_2", "ok");
 
         plain.IsDeferred.Should().BeFalse();
-        plain.DeferralMetadata.Should().BeNull();
         plain.DeferredAt.Should().BeNull();
         plain.ResolvedAt.Should().BeNull();
     }
@@ -173,27 +144,20 @@ public class ToolHandlerResultTests
     [Fact]
     public void ToolCallResult_Struct_JsonRoundTrip_PreservesDeferredFields()
     {
-        var original = new ToolCallResult("tc_3", "PENDING")
+        var original = new ToolCallResult("tc_3", string.Empty)
         {
             IsDeferred = true,
-            DeferralMetadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-            {
-                ["wait_ms"] = "60000",
-            }),
             DeferredAt = 1_700_000_000_000,
         };
 
         var json = JsonSerializer.Serialize(original);
         json.Should().Contain("\"is_deferred\":true");
-        json.Should().Contain("\"deferral_metadata\"");
         json.Should().Contain("\"deferred_at\":1700000000000");
         // Resolved_at omitted on null.
         json.Should().NotContain("resolved_at");
 
         var roundTripped = JsonSerializer.Deserialize<ToolCallResult>(json);
         roundTripped.IsDeferred.Should().BeTrue();
-        roundTripped.DeferralMetadata.Should().NotBeNull();
-        roundTripped.DeferralMetadata!["wait_ms"].Should().Be("60000");
         roundTripped.DeferredAt.Should().Be(1_700_000_000_000);
         roundTripped.ResolvedAt.Should().BeNull();
     }
@@ -206,7 +170,6 @@ public class ToolHandlerResultTests
         var json = JsonSerializer.Serialize(plain);
 
         // Nullable deferral fields are omitted via [JsonIgnore(WhenWritingNull)].
-        json.Should().NotContain("deferral_metadata");
         json.Should().NotContain("deferred_at");
         json.Should().NotContain("resolved_at");
         // `is_deferred` is a non-nullable bool and always serializes (mirrors `is_error`),
@@ -217,70 +180,52 @@ public class ToolHandlerResultTests
     [Fact]
     public void ToToolCallResult_PreservesDeferralFields()
     {
-        var metadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-        {
-            ["ticket"] = "T-99",
-        });
         var record = new ToolCallResultMessage
         {
             ToolCallId = "tc_5",
-            Result = "PENDING",
+            Result = string.Empty,
             ToolName = "send_email",
             IsDeferred = true,
-            DeferralMetadata = metadata,
             DeferredAt = 1_700_000_000_000,
         };
 
         var asStruct = record.ToToolCallResult();
 
         asStruct.IsDeferred.Should().BeTrue();
-        asStruct.DeferralMetadata.Should().BeSameAs(metadata);
         asStruct.DeferredAt.Should().Be(1_700_000_000_000);
         asStruct.ResolvedAt.Should().BeNull();
         asStruct.ToolCallId.Should().Be("tc_5");
-        asStruct.Result.Should().Be("PENDING");
+        asStruct.Result.Should().Be(string.Empty);
     }
 
     [Fact]
     public void FromToolCallResult_PreservesDeferralFields()
     {
-        var metadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-        {
-            ["ticket"] = "T-100",
-        });
-        var asStruct = new ToolCallResult("tc_6", "PENDING")
+        var asStruct = new ToolCallResult("tc_6", string.Empty)
         {
             ToolName = "send_email",
             IsDeferred = true,
-            DeferralMetadata = metadata,
             DeferredAt = 1_700_000_000_000,
         };
 
         var record = ToolCallResultMessage.FromToolCallResult(asStruct);
 
         record.IsDeferred.Should().BeTrue();
-        record.DeferralMetadata.Should().BeSameAs(metadata);
         record.DeferredAt.Should().Be(1_700_000_000_000);
         record.ResolvedAt.Should().BeNull();
         record.ToolCallId.Should().Be("tc_6");
-        record.Result.Should().Be("PENDING");
+        record.Result.Should().Be(string.Empty);
     }
 
     [Fact]
     public void RecordToStructToRecord_RoundTrip_IsLossless_ForDeferralFields()
     {
-        var metadata = ImmutableDictionary.CreateRange(new Dictionary<string, string>
-        {
-            ["ticket"] = "T-101",
-            ["priority"] = "high",
-        });
         var original = new ToolCallResultMessage
         {
             ToolCallId = "tc_7",
-            Result = "PENDING",
+            Result = string.Empty,
             ToolName = "approve",
             IsDeferred = true,
-            DeferralMetadata = metadata,
             DeferredAt = 1_700_000_000_000,
             ResolvedAt = null,
         };
@@ -288,11 +233,53 @@ public class ToolHandlerResultTests
         var roundTripped = ToolCallResultMessage.FromToolCallResult(original.ToToolCallResult());
 
         roundTripped.IsDeferred.Should().Be(original.IsDeferred);
-        roundTripped.DeferralMetadata.Should().BeSameAs(original.DeferralMetadata);
         roundTripped.DeferredAt.Should().Be(original.DeferredAt);
         roundTripped.ResolvedAt.Should().Be(original.ResolvedAt);
         roundTripped.ToolCallId.Should().Be(original.ToolCallId);
         roundTripped.Result.Should().Be(original.Result);
         roundTripped.ToolName.Should().Be(original.ToolName);
+    }
+
+    [Fact]
+    public void ToolCallResultBuilder_FromHandlerResult_StampsToolCallIdAndToolName()
+    {
+        // Locks in the bug fix: the builder must always pull tool_call_id from context, never
+        // leave it null. Previously FunctionCallMiddleware.cs:106 hardcoded null.
+        var result = ToolHandlerResult.FromText("ok");
+
+        var tcr = ToolCallResultBuilder.FromHandlerResult(result, "tc_xyz", "my_tool");
+
+        tcr.ToolCallId.Should().Be("tc_xyz");
+        tcr.ToolName.Should().Be("my_tool");
+        tcr.Result.Should().Be("ok");
+        tcr.IsDeferred.Should().BeFalse();
+        tcr.IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ToolCallResultBuilder_FromHandlerResult_DeferredProducesEmptyResultWithFlag()
+    {
+        var result = new ToolHandlerResult.Deferred();
+
+        var tcr = ToolCallResultBuilder.FromHandlerResult(result, "tc_def", "my_tool");
+
+        tcr.ToolCallId.Should().Be("tc_def");
+        tcr.ToolName.Should().Be("my_tool");
+        tcr.Result.Should().Be(string.Empty);
+        tcr.IsDeferred.Should().BeTrue();
+        tcr.DeferredAt.Should().NotBeNull();
+        tcr.DeferredAt!.Value.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void ToolCallResultBuilder_FromHandlerResult_PropagatesErrorPayload()
+    {
+        var result = ToolHandlerResult.FromError("oops", errorCode: "E_X");
+
+        var tcr = ToolCallResultBuilder.FromHandlerResult(result, "tc_err", "my_tool");
+
+        tcr.IsError.Should().BeTrue();
+        tcr.ErrorCode.Should().Be("E_X");
+        tcr.Result.Should().Be("oops");
     }
 }

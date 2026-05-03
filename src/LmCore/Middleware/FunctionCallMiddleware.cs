@@ -32,13 +32,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// <remarks>
     /// Deferred handlers (<see cref="ToolHandlerResult.Deferred"/>) surface as
     /// <see cref="ToolCallResult.IsDeferred"/> = true entries inside the emitted
-    /// <see cref="ToolsCallAggregateMessage"/>. The placeholder text is carried as
-    /// <see cref="ToolCallResult.Result"/>; metadata and the deferral timestamp are populated.
-    /// This middleware does NOT loop or wait for resolution — callers must inspect the aggregate
-    /// for deferred entries and implement their own resolution policy (typically: stash the
-    /// tool_call_id, wait for an external signal, splice the resolved result into history,
-    /// and re-call <c>GenerateReplyAsync</c>). Use <c>MultiTurnAgentLoop</c> for built-in
-    /// deferred bookkeeping with persistence and webhook-friendly idempotent resolution.
+    /// <see cref="ToolsCallAggregateMessage"/>, with empty <see cref="ToolCallResult.Result"/>
+    /// text and a populated <see cref="ToolCallResult.DeferredAt"/> timestamp. This middleware
+    /// does NOT loop or wait for resolution — callers must inspect the aggregate for deferred
+    /// entries and implement their own resolution policy (typically: stash the tool_call_id,
+    /// wait for an external signal, splice the resolved result into history, and re-call
+    /// <c>GenerateReplyAsync</c>). Use <c>MultiTurnAgentLoop</c> for built-in deferred
+    /// bookkeeping with persistence and webhook-friendly idempotent resolution.
     /// </remarks>
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
@@ -100,19 +100,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             wrapped[key] = async (args, ctx, ct) =>
             {
                 var result = await handler(args, ctx, ct);
-                return result switch
-                {
-                    ToolHandlerResult.Resolved r => r.Result,
-                    ToolHandlerResult.Deferred d => new ToolCallResult(toolCallId: null, result: d.Placeholder)
-                    {
-                        IsDeferred = true,
-                        DeferralMetadata = d.Metadata,
-                        DeferredAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    },
-                    _ => throw new InvalidOperationException(
-                        $"Unknown ToolHandlerResult variant '{result.GetType().Name}' for tool '{key}'."
-                    ),
-                };
+                return ToolCallResultBuilder.FromHandlerResult(result, ctx.ToolCallId, key);
             };
         }
 

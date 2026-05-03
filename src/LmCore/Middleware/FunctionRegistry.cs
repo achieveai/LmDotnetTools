@@ -90,8 +90,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
 
     /// <summary>
     ///     Build the final function collections for <see cref="FunctionCallMiddleware"/>.
-    ///     Multi-modal payloads are carried by individual <see cref="ToolCallResult"/>s
-    ///     wrapped in <see cref="ToolHandlerResult.Resolved"/> — there's no separate handler track.
+    ///     Multi-modal payloads are carried by handlers returning
+    ///     <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>;
+    ///     there's no separate handler track.
     /// </summary>
     public (IEnumerable<FunctionContract>, IDictionary<string, ToolHandler>) Build()
     {
@@ -353,8 +354,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
 
     /// <summary>
     ///     Add a single function explicitly. The handler returns a unified
-    ///     <see cref="ToolHandlerResult"/>; multi-modal payloads are carried by the wrapped
-    ///     <see cref="ToolCallResult.ContentBlocks"/>.
+    ///     <see cref="ToolHandlerResult"/>; multi-modal payloads are carried by
+    ///     <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>.
     /// </summary>
     public FunctionRegistry AddFunction(
         FunctionContract contract,

@@ -168,7 +168,7 @@ public class SubAgentToolProvider : IFunctionProvider
         if (agentId != null)
         {
             // Resume or send to existing agent
-            return new ToolHandlerResult.Resolved(new ToolCallResult(null, await _manager.ResumeAsync(agentId, task)));
+            return ToolHandlerResult.FromText(await _manager.ResumeAsync(agentId, task));
         }
 
         // Spawn new agent
@@ -182,8 +182,8 @@ public class SubAgentToolProvider : IFunctionProvider
         var removeTools = ParseCommaSeparated(
             GetOptionalString(root, "remove_tools"));
 
-        return new ToolHandlerResult.Resolved(
-            new ToolCallResult(null, await _manager.SpawnAsync(templateName, task, addTools, removeTools)));
+        return ToolHandlerResult.FromText(
+            await _manager.SpawnAsync(templateName, task, addTools, removeTools));
     }
 
     private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
@@ -199,7 +199,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 "The 'agent_id' parameter is required.");
 
         return Task.FromResult<ToolHandlerResult>(
-            new ToolHandlerResult.Resolved(new ToolCallResult(null, _manager.Peek(agentId))));
+            ToolHandlerResult.FromText(_manager.Peek(agentId)));
     }
 
     private static string? GetOptionalString(

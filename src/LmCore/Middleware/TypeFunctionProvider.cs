@@ -303,7 +303,7 @@ public class TypeFunctionProvider : IFunctionProvider
                         }
                     )
                     : "{}";
-                return new ToolHandlerResult.Resolved(new ToolCallResult(null, serialized));
+                return ToolHandlerResult.FromText(serialized);
             }
             catch (TargetInvocationException tie)
             {
@@ -312,12 +312,12 @@ public class TypeFunctionProvider : IFunctionProvider
                 var errorJson = JsonSerializer.Serialize(
                     new { error = innerException.Message, type = innerException.GetType().Name }
                 );
-                return new ToolHandlerResult.Resolved(new ToolCallResult(null, errorJson) { IsError = true });
+                return ToolHandlerResult.FromError(errorJson);
             }
             catch (Exception ex)
             {
                 var errorJson = JsonSerializer.Serialize(new { error = ex.Message, type = ex.GetType().Name });
-                return new ToolHandlerResult.Resolved(new ToolCallResult(null, errorJson) { IsError = true });
+                return ToolHandlerResult.FromError(errorJson);
             }
         };
     }

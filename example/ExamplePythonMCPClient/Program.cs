@@ -67,7 +67,7 @@ public class CustomFunctionProvider : IFunctionProvider
             var jsonObject = JsonNode.Parse(json)!;
             var question = jsonObject["question"]?.ToString() ?? "";
             var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
-            return new ToolHandlerResult.Resolved(new ToolCallResult(null, await Program.AskUser(question, options)));
+            return ToolHandlerResult.FromText(await Program.AskUser(question, options));
         }
 
         yield return new FunctionDescriptor

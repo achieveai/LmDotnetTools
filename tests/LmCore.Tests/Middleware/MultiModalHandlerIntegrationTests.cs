@@ -16,12 +16,13 @@ public class MultiModalHandlerIntegrationTests
     public void FunctionRegistry_Build_RetainsHandlerThatReturnsContentBlocks()
     {
         var multiModalHandler = new ToolHandler((_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(
-                new ToolCallResult(null, "multimodal", new List<ToolResultContentBlock>
+            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromMultiModal(
+                "multimodal",
+                new List<ToolResultContentBlock>
                 {
                     new TextToolResultBlock { Text = "some text" },
                     new ImageToolResultBlock { Data = "base64img", MimeType = "image/jpeg" },
-                }))));
+                })));
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
@@ -46,12 +47,13 @@ public class MultiModalHandlerIntegrationTests
         var functionMap = new Dictionary<string, ToolHandler>
         {
             ["image_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Resolved(
-                    new ToolCallResult(null, "multimodal text", new List<ToolResultContentBlock>
+                ToolHandlerResult.FromMultiModal(
+                    "multimodal text",
+                    new List<ToolResultContentBlock>
                     {
                         new TextToolResultBlock { Text = "rich text" },
                         new ImageToolResultBlock { Data = "aW1hZ2VkYXRh", MimeType = "image/png" },
-                    }))),
+                    })),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -87,8 +89,7 @@ public class MultiModalHandlerIntegrationTests
     public void FunctionRegistry_BuildMiddleware_AcceptsContentBlockHandlers()
     {
         var multiModalHandler = new ToolHandler((_, _, _) =>
-            Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Resolved(new ToolCallResult(null, "mm result")))
+            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("mm result"))
         );
 
         var registry = new FunctionRegistry();

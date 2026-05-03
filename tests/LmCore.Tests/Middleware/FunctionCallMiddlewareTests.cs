@@ -49,7 +49,7 @@ public class FunctionCallMiddlewareTests
 
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["add"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "10"))),
+            ["add"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("10")),
         };
 
         // Act & Assert
@@ -101,8 +101,8 @@ public class FunctionCallMiddlewareTests
 
         var functionMap = new Dictionary<string, ToolHandler>
         {
-            ["function1"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result1"))),
-            ["function2"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, "result2"))),
+            ["function1"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("result1")),
+            ["function2"] = (args, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("result2")),
         };
 
         // Act & Assert - no exception should be thrown
@@ -433,11 +433,9 @@ public class FunctionCallMiddlewareTests
     [Fact]
     public async Task InvokeAsync_DeferredHandler_FromInputToolCall_DoesNotThrowAndFlagsResult()
     {
-        // Arrange — handler returns Deferred. Previously this threw NotSupportedException;
-        // now it must surface as a deferred-flagged ToolCallResult.
-        var metadata = System.Collections.Immutable.ImmutableDictionary.CreateRange(
-            new Dictionary<string, string> { ["correlation_id"] = "abc-123" });
-
+        // Arrange — handler returns Deferred. Surfaces as a deferred-flagged ToolCallResult
+        // with empty Result text and IsDeferred=true; ToolCallId/ToolName are stamped in by
+        // ToolCallResultBuilder from the call's context.
         var functions = new List<FunctionContract>
         {
             new() { Name = "approve_action", Description = "Asks human for approval" },
@@ -445,7 +443,7 @@ public class FunctionCallMiddlewareTests
         var functionMap = new Dictionary<string, ToolHandler>
         {
             ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("PENDING approval", metadata)),
+                new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -460,14 +458,13 @@ public class FunctionCallMiddlewareTests
         var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(result));
         var deferredResult = Assert.Single(resultMessage.ToolCallResults);
         Assert.True(deferredResult.IsDeferred);
-        Assert.Equal("PENDING approval", deferredResult.Result);
-        Assert.NotNull(deferredResult.DeferralMetadata);
-        Assert.Equal("abc-123", deferredResult.DeferralMetadata!["correlation_id"]);
+        Assert.Equal(string.Empty, deferredResult.Result);
         Assert.NotNull(deferredResult.DeferredAt);
         Assert.True(deferredResult.DeferredAt > 0);
         Assert.Null(deferredResult.ResolvedAt);
         Assert.False(deferredResult.IsError);
-        // ToolCallExecutor.cs:147 stamps ToolCallId; deferred state must survive the `with` clause.
+        // ToolCallResultBuilder pulls ToolCallId from ToolCallContext — guards against the
+        // historical "ToolCallId = null" bug at FunctionCallMiddleware.cs:106.
         Assert.NotNull(deferredResult.ToolCallId);
         Assert.Equal("approve_action", deferredResult.ToolName);
     }
@@ -484,7 +481,7 @@ public class FunctionCallMiddlewareTests
         var functionMap = new Dictionary<string, ToolHandler>
         {
             ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("PENDING approval")),
+                new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -507,7 +504,7 @@ public class FunctionCallMiddlewareTests
         var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(result));
         var deferredResult = Assert.Single(aggregate.ToolsCallResult.ToolCallResults);
         Assert.True(deferredResult.IsDeferred);
-        Assert.Equal("PENDING approval", deferredResult.Result);
+        Assert.Equal(string.Empty, deferredResult.Result);
         Assert.NotNull(deferredResult.DeferredAt);
         Assert.Null(deferredResult.ResolvedAt);
     }
@@ -525,9 +522,9 @@ public class FunctionCallMiddlewareTests
         var functionMap = new Dictionary<string, ToolHandler>
         {
             ["fast_lookup"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Resolved(new ToolCallResult(null, "result_42"))),
+                ToolHandlerResult.FromText("result_42")),
             ["slow_approval"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("PENDING")),
+                new ToolHandlerResult.Deferred()),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -568,7 +565,7 @@ public class FunctionCallMiddlewareTests
 
         var slowResult = resultMessage.ToolCallResults.First(r => r.ToolCallId == "tc_slow");
         Assert.True(slowResult.IsDeferred);
-        Assert.Equal("PENDING", slowResult.Result);
+        Assert.Equal(string.Empty, slowResult.Result);
         Assert.NotNull(slowResult.DeferredAt);
     }
 
@@ -587,7 +584,7 @@ public class FunctionCallMiddlewareTests
             {
                 capturedContext = ctx;
                 return Task.FromResult<ToolHandlerResult>(
-                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
+                    ToolHandlerResult.FromText("ok"));
             },
         };
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -626,7 +623,7 @@ public class FunctionCallMiddlewareTests
             {
                 capturedToken = ct;
                 return Task.FromResult<ToolHandlerResult>(
-                    new ToolHandlerResult.Resolved(new ToolCallResult(null, "ok")));
+                    ToolHandlerResult.FromText("ok"));
             },
         };
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -654,7 +651,7 @@ public class FunctionCallMiddlewareTests
     private static Dictionary<string, ToolHandler> CreateMockFunctionMap()
     {
         static Task<ToolHandlerResult> Wrap(string text)
-            => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, text)));
+            => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(text));
 
         return new Dictionary<string, ToolHandler>
         {

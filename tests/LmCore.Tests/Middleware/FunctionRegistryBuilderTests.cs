@@ -325,10 +325,10 @@ public class FunctionRegistryBuilderTests
 
         // Test handlers work
         var searchResult = await handlers["search"]("{}", new ToolCallContext(), CancellationToken.None);
-        Assert.Equal("MCP-result", searchResult);
+        Assert.Equal("MCP-result", searchResult.ResultText);
 
         var weatherResult = await handlers["getCurrentWeather"]("{}", new ToolCallContext(), CancellationToken.None);
-        Assert.Equal("Weather-result", weatherResult);
+        Assert.Equal("Weather-result", weatherResult.ResultText);
     }
 
     // Helper methods
@@ -351,7 +351,7 @@ public class FunctionRegistryBuilderTests
 
     private static ToolHandler CreateTestHandler(string result)
     {
-        return (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, result)));
+        return (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(result));
     }
 
     private class TestFunctionProvider : IFunctionProvider
@@ -377,7 +377,7 @@ public class FunctionRegistryBuilderTests
                     Description = $"Test function {name}",
                     Parameters = [],
                 },
-                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Resolved(new ToolCallResult(null, $"{ProviderName}-result"))),
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText($"{ProviderName}-result")),
                 ProviderName = ProviderName,
             });
         }

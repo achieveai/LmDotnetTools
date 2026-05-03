@@ -34,7 +34,7 @@ public static class LegacyHandlerAdapter
             var result = await handler(args, new ToolCallContext(), CancellationToken.None);
             return result switch
             {
-                ToolHandlerResult.Resolved r => r.Result.Result,
+                ToolHandlerResult.Resolved r => r.Payload.Text,
                 ToolHandlerResult.Deferred => throw new NotSupportedException(
                     $"Tool '{toolKey}' returned a deferred result. Deferred tool execution is "
                     + "only supported when handlers are dispatched by MultiTurnAgentLoop."
@@ -71,28 +71,36 @@ public static class LegacyHandlerAdapter
 
     /// <summary>
     /// Wraps a single legacy <c>Func&lt;string, Task&lt;string&gt;&gt;</c> handler into the new
-    /// <see cref="ToolHandlerResult"/> shape. The wrapped handler always returns
-    /// <see cref="ToolHandlerResult.Resolved"/> with a text-only <see cref="ToolCallResult"/>;
-    /// legacy handlers cannot signal deferral.
+    /// <see cref="ToolHandlerResult"/> shape. Always returns
+    /// <see cref="ToolHandlerResult.FromText(string)"/>; legacy handlers cannot signal deferral.
     /// </summary>
     public static ToolHandler ToNewHandler(
         Func<string, Task<string>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _, _) => new ToolHandlerResult.Resolved(new ToolCallResult(null, await legacy(args)));
+        return async (args, _, _) => ToolHandlerResult.FromText(await legacy(args));
     }
 
     /// <summary>
     /// Wraps a single legacy <c>Func&lt;string, Task&lt;ToolCallResult&gt;&gt;</c> handler into
-    /// the new <see cref="ToolHandlerResult"/> shape. Useful for multi-modal handlers where the
-    /// legacy callsite produces a <see cref="ToolCallResult"/> with content blocks; the wrapped
-    /// handler forwards the entire <see cref="ToolCallResult"/> verbatim.
+    /// the new <see cref="ToolHandlerResult"/> shape. Projects the legacy result's text,
+    /// content blocks, and error fields into a <see cref="ToolHandlerResultPayload"/>;
+    /// framework-controlled fields on the legacy result (tool call id, deferral flags) are
+    /// dropped — those are stamped in by <see cref="ToolCallResultBuilder"/> downstream.
     /// </summary>
     public static ToolHandler ToNewHandler(
         Func<string, Task<ToolCallResult>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _, _) => new ToolHandlerResult.Resolved(await legacy(args));
+        return async (args, _, _) =>
+        {
+            var tcr = await legacy(args);
+            return new ToolHandlerResult.Resolved(new ToolHandlerResultPayload(
+                Text: tcr.Result,
+                ContentBlocks: tcr.ContentBlocks,
+                IsError: tcr.IsError,
+                ErrorCode: tcr.ErrorCode));
+        };
     }
 
     /// <summary>

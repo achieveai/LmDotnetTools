@@ -24,11 +24,12 @@ public interface IFunctionRegistryBuilder
     /// <param name="contract">The function contract</param>
     /// <param name="handler">The function handler. Receives raw JSON args and a
     /// <see cref="ToolCallContext"/> carrying the call's <c>tool_call_id</c> and the host's
-    /// <see cref="CancellationToken"/>. Returns <see cref="ToolHandlerResult"/> — either
-    /// <see cref="ToolHandlerResult.Resolved"/> wrapping a <see cref="ToolCallResult"/>
-    /// (a bare string or <see cref="ToolCallResult"/> is implicitly convertible) or
-    /// <see cref="ToolHandlerResult.Deferred"/> for long-running operations resolved later
-    /// via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.</param>
+    /// <see cref="CancellationToken"/>. Returns <see cref="ToolHandlerResult"/> — build with
+    /// <see cref="ToolHandlerResult.FromText(string)"/>,
+    /// <see cref="ToolHandlerResult.FromError(string, string?)"/>, or
+    /// <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>;
+    /// or return <see cref="ToolHandlerResult.Deferred"/> for long-running operations
+    /// resolved later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.</param>
     /// <param name="providerName">Optional provider name for the function</param>
     /// <returns>The builder for method chaining</returns>
     IFunctionRegistryBuilder AddFunction(
@@ -89,8 +90,9 @@ public interface IConfiguredFunctionRegistry
 {
     /// <summary>
     ///     Builds the final function collections from the configured registry. Multi-modal
-    ///     payloads are carried by individual <see cref="ToolCallResult"/>s wrapped in
-    ///     <see cref="ToolHandlerResult.Resolved"/>; there is no separate handler track.
+    ///     payloads are produced by handlers returning
+    ///     <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>;
+    ///     there is no separate handler track.
     /// </summary>
     /// <returns>A tuple containing the function contracts and their handlers</returns>
     (IEnumerable<FunctionContract>, IDictionary<string, ToolHandler>) Build();

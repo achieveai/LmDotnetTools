@@ -47,14 +47,12 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
             ],
         };
 
-        // Unified function map: handler returns ToolHandlerResult.Resolved wrapping a
-        // ToolCallResult — multi-modal payload is carried via ContentBlocks on the
-        // ToolCallResult, no separate map.
+        // Unified function map: handler returns ToolHandlerResult.FromMultiModal — the text and
+        // content blocks travel through the payload struct.
         var functionMap = new Dictionary<string, ToolHandler>
         {
             ["search_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Resolved(new ToolCallResult(
-                    null,
+                ToolHandlerResult.FromMultiModal(
                     "Here is a medical diagram:",
                     [
                         new TextToolResultBlock { Text = "Here is a medical diagram:" },
@@ -63,7 +61,7 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
                             Data = CreateMinimalPngBase64(),
                             MimeType = "image/png",
                         },
-                    ]))),
+                    ])),
         };
 
         // Build middleware and wrap agent for the full pipeline

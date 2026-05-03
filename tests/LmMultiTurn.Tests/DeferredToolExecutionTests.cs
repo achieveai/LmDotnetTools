@@ -43,7 +43,7 @@ public class DeferredToolExecutionTests
         registry.AddFunction(
             BuildContract("approve_directory_read"),
             (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("PENDING approval for /foo")));
+                new ToolHandlerResult.Deferred()));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -66,7 +66,7 @@ public class DeferredToolExecutionTests
         var deferredResult = messages.OfType<ToolCallResultMessage>().Should().ContainSingle().Subject;
         deferredResult.ToolCallId.Should().Be("tc_1");
         deferredResult.IsDeferred.Should().BeTrue();
-        deferredResult.Result.Should().Be("PENDING approval for /foo");
+        deferredResult.Result.Should().Be(string.Empty);
         messages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
 
         // The mock LLM should have been called only once — no second turn fires while
@@ -124,7 +124,7 @@ public class DeferredToolExecutionTests
         registry.AddFunction(
             BuildContract("long_running_op"),
             (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("PENDING long op")));
+                new ToolHandlerResult.Deferred()));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -242,7 +242,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("long_op"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -330,7 +330,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("op"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred("PENDING")));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -384,9 +384,7 @@ public class DeferredToolExecutionTests
         var registry = new FunctionRegistry();
         registry.AddFunction(
             BuildContract("wait_for_human"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(
-                new ToolHandlerResult.Deferred("WAIT", System.Collections.Immutable.ImmutableDictionary
-                    .CreateRange(new Dictionary<string, string> { ["ticket"] = "T-42" }))));
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
 
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
@@ -408,9 +406,72 @@ public class DeferredToolExecutionTests
         info.ToolCallId.Should().Be("tc_meta");
         info.FunctionName.Should().Be("wait_for_human");
         info.FunctionArgs.Should().Be("{\"prompt\":\"approve\"}");
-        info.Placeholder.Should().Be("WAIT");
-        info.Metadata.Should().NotBeNull();
-        info.Metadata!["ticket"].Should().Be("T-42");
+        info.DeferredAtUnixMs.Should().BeGreaterThan(0);
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteTurn_Throws_WhenHistoryHasUnresolvedDeferredResult()
+    {
+        // Arrange — handler defers on the first call. After the deferral lands in history
+        // and the run ends, sending a NEW user input must NOT trigger another LLM call:
+        // the precondition guard in ExecuteTurnAsync should refuse to send a request while
+        // any deferred tool result is unresolved.
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "wait",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_guard",
+            Role = Role.Assistant,
+        };
+        SetupOneTurnResponse(toolCall);
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            BuildContract("wait"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        // First run: tool call defers, run ends.
+        var firstUserInput = new UserInput([new TextMessage { Text = "Start", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(firstUserInput, cts.Token))
+        {
+            // drain
+        }
+
+        // Sanity: the deferred entry is in history and unresolved.
+        var pending = await loop.GetDeferredToolCallsAsync();
+        pending.Should().ContainSingle(p => p.ToolCallId == "tc_guard");
+
+        // Second user input while the deferral is unresolved. The loop's per-run try/catch
+        // converts the precondition guard's InvalidOperationException into a RunCompleted
+        // message with IsError=true (rather than letting it tear down the loop).
+        var followUpInput = new UserInput([new TextMessage { Text = "Hurry up", Role = Role.User }]);
+        var followUpMessages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(followUpInput, cts.Token))
+        {
+            followUpMessages.Add(msg);
+        }
+
+        var failedRun = followUpMessages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
+        failedRun.IsError.Should().BeTrue();
+        failedRun.ErrorMessage.Should().Contain("tc_guard").And.Contain("deferred");
+
+        // Mock LLM should still have been called exactly once — the guard fired before
+        // any second provider request was sent.
+        _mockAgent.Verify(a => a.GenerateReplyStreamingAsync(
+            It.IsAny<IEnumerable<IMessage>>(),
+            It.IsAny<GenerateReplyOptions>(),
+            It.IsAny<CancellationToken>()), Times.Once);
 
         await cts.CancelAsync();
     }

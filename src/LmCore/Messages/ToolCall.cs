@@ -125,19 +125,13 @@ public readonly record struct ToolCallResult
     public ExecutionTarget ExecutionTarget { get; init; } = ExecutionTarget.LocalFunction;
 
     /// <summary>
-    /// Marker for deferred tool execution. When true, <see cref="Result"/> holds an interim
-    /// placeholder text and a final result is expected to be supplied later by the caller's
-    /// loop (or via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c> when running under that loop).
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> is empty and a
+    /// final result is expected to be supplied later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    /// The agent loop refuses to send any provider request while a deferred entry remains
+    /// unresolved in history.
     /// </summary>
     [JsonPropertyName("is_deferred")]
     public bool IsDeferred { get; init; }
-
-    /// <summary>
-    /// Opaque host-supplied metadata captured when the handler signaled deferral.
-    /// </summary>
-    [JsonPropertyName("deferral_metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public System.Collections.Immutable.ImmutableDictionary<string, string>? DeferralMetadata { get; init; }
 
     /// <summary>
     /// Unix-ms timestamp recorded when the handler signaled deferral. Null on non-deferred results.
@@ -223,23 +217,13 @@ public record ToolCallResultMessage : IMessage
     public IList<ToolResultContentBlock>? ContentBlocks { get; init; }
 
     /// <summary>
-    /// Marker for deferred tool execution. When true, <see cref="Result"/> holds an
-    /// interim placeholder text and a final result will be supplied later via
-    /// <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>. The loop ends the current run
-    /// once the deferred placeholder is recorded.
+    /// Marker for deferred tool execution. When true, <see cref="Result"/> is empty and a
+    /// final result will be supplied later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
+    /// The agent loop refuses to send any provider request while a deferred entry remains
+    /// unresolved in history.
     /// </summary>
     [JsonPropertyName("is_deferred")]
     public bool IsDeferred { get; init; }
-
-    /// <summary>
-    /// Opaque host-supplied metadata captured when the tool handler signaled deferral.
-    /// Surfaced via <c>MultiTurnAgentLoop.GetDeferredToolCallsAsync</c> so external
-    /// integrators (UIs, webhook services) can correlate the placeholder with their
-    /// own state.
-    /// </summary>
-    [JsonPropertyName("deferral_metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public System.Collections.Immutable.ImmutableDictionary<string, string>? DeferralMetadata { get; init; }
 
     /// <summary>
     /// Unix-ms timestamp recorded when the tool handler signaled deferral. Null on
@@ -270,7 +254,6 @@ public record ToolCallResultMessage : IMessage
             ErrorCode = ErrorCode,
             ExecutionTarget = ExecutionTarget,
             IsDeferred = IsDeferred,
-            DeferralMetadata = DeferralMetadata,
             DeferredAt = DeferredAt,
             ResolvedAt = ResolvedAt,
         };
@@ -301,7 +284,6 @@ public record ToolCallResultMessage : IMessage
             ErrorCode = result.ErrorCode,
             ExecutionTarget = result.ExecutionTarget,
             IsDeferred = result.IsDeferred,
-            DeferralMetadata = result.DeferralMetadata,
             DeferredAt = result.DeferredAt,
             ResolvedAt = result.ResolvedAt,
             Role = role,

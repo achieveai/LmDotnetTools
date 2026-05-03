@@ -363,6 +363,32 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         // Build messages list with system prompt prepended (if configured)
         var messagesToSend = GetMessagesWithSystemPrompt();
 
+        // Precondition: never send a request while any deferred tool result is unresolved.
+        // The provider would reject an empty tool_result.content, but the real bug is sending
+        // at all — host code must call ResolveToolCallAsync before resuming.
+        foreach (var m in messagesToSend)
+        {
+            if (m is ToolCallResultMessage tcr && tcr.IsDeferred)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot send request: tool call '{tcr.ToolCallId}' is still deferred. " +
+                    "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+            }
+
+            if (m is ToolsCallResultMessage agg)
+            {
+                foreach (var r in agg.ToolCallResults)
+                {
+                    if (r.IsDeferred)
+                    {
+                        throw new InvalidOperationException(
+                            $"Cannot send request: tool call '{r.ToolCallId}' is still deferred. " +
+                            "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                    }
+                }
+            }
+        }
+
         var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
 
         var hasToolCalls = false;
@@ -450,11 +476,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 ToolCallId: result.ToolCallId!,
                 FunctionName: toolCall.FunctionName ?? string.Empty,
                 FunctionArgs: toolCall.FunctionArgs ?? "{}",
-                Placeholder: result.Result,
                 DeferredAtUnixMs: result.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 RunId: toolCall.RunId ?? runId,
-                GenerationId: toolCall.GenerationId ?? generationId,
-                Metadata: result.DeferralMetadata);
+                GenerationId: toolCall.GenerationId ?? generationId);
             _deferred[result.ToolCallId!] = deferredEntry;
 
             // Persist synchronously so a webhook-triggered ReplaceMessageAsync cannot race
@@ -570,37 +594,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         ToolCallMessage toolCall,
         ToolHandlerResult result)
     {
-        return result switch
-        {
-            ToolHandlerResult.Resolved r => new ToolCallResultMessage
-            {
-                ToolCallId = toolCall.ToolCallId,
-                ToolName = toolCall.FunctionName,
-                Result = r.Result.Result ?? string.Empty,
-                ContentBlocks = r.Result.ContentBlocks,
-                IsError = r.Result.IsError,
-                ErrorCode = r.Result.ErrorCode,
-                ExecutionTarget = ExecutionTarget.LocalFunction,
-                Role = Role.User,
-                FromAgent = toolCall.FromAgent,
-                GenerationId = toolCall.GenerationId,
-            },
-            ToolHandlerResult.Deferred d => new ToolCallResultMessage
-            {
-                ToolCallId = toolCall.ToolCallId,
-                ToolName = toolCall.FunctionName,
-                Result = d.Placeholder,
-                IsDeferred = true,
-                DeferralMetadata = d.Metadata,
-                DeferredAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ExecutionTarget = ExecutionTarget.LocalFunction,
-                Role = Role.User,
-                FromAgent = toolCall.FromAgent,
-                GenerationId = toolCall.GenerationId,
-            },
-            _ => throw new InvalidOperationException(
-                $"Unknown ToolHandlerResult variant '{result.GetType().Name}'"),
-        };
+        var tcr = ToolCallResultBuilder.FromHandlerResult(result, toolCall.ToolCallId, toolCall.FunctionName);
+        return ToolCallResultMessage.FromToolCallResult(
+            tcr,
+            role: Role.User,
+            fromAgent: toolCall.FromAgent,
+            generationId: toolCall.GenerationId);
     }
 
     /// <summary>
@@ -656,7 +655,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     IsError = isError,
                     ErrorCode = isError ? "deferred_resolution_error" : null,
                     IsDeferred = false,
-                    DeferralMetadata = null,
                     ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 };
             }
@@ -719,9 +717,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 ToolCallId = e.ToolCallId,
                 FunctionName = e.FunctionName,
                 FunctionArgs = e.FunctionArgs,
-                Placeholder = e.Placeholder,
                 DeferredAtUnixMs = e.DeferredAtUnixMs,
-                Metadata = e.Metadata,
                 RunId = e.RunId,
                 GenerationId = e.GenerationId,
             })
@@ -768,11 +764,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 ToolCallId: tcr.ToolCallId,
                 FunctionName: sourceCall?.FunctionName ?? tcr.ToolName ?? string.Empty,
                 FunctionArgs: sourceCall?.FunctionArgs ?? "{}",
-                Placeholder: tcr.Result,
                 DeferredAtUnixMs: tcr.DeferredAt ?? 0,
                 RunId: tcr.RunId,
-                GenerationId: tcr.GenerationId,
-                Metadata: tcr.DeferralMetadata);
+                GenerationId: tcr.GenerationId);
             _deferred[tcr.ToolCallId] = entry;
 
             // Track the most recent (last in load order) deferring run/generation so a
@@ -897,9 +891,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         string ToolCallId,
         string FunctionName,
         string FunctionArgs,
-        string Placeholder,
         long DeferredAtUnixMs,
         string? RunId,
-        string? GenerationId,
-        ImmutableDictionary<string, string>? Metadata);
+        string? GenerationId);
 }

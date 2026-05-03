@@ -17,13 +17,12 @@ public record FunctionDescriptor
     ///     The function handler that executes the actual function logic.
     ///     Receives raw JSON args and a <see cref="ToolCallContext"/> carrying the call's
     ///     <c>tool_call_id</c> and the host's <see cref="CancellationToken"/>.
-    ///     Returns a <see cref="ToolHandlerResult"/> — either <see cref="ToolHandlerResult.Resolved"/>
-    ///     wrapping a <see cref="ToolCallResult"/> (which may carry text and/or multi-modal
-    ///     <see cref="ToolResultContentBlock"/>s), or <see cref="ToolHandlerResult.Deferred"/> to
-    ///     signal that the result will be supplied later via
-    ///     <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
-    ///     Strings and <see cref="ToolCallResult"/>s can be returned directly via implicit
-    ///     conversion to <see cref="ToolHandlerResult.Resolved"/>.
+    ///     Returns a <see cref="ToolHandlerResult"/> — build one with
+    ///     <see cref="ToolHandlerResult.FromText(string)"/>,
+    ///     <see cref="ToolHandlerResult.FromError(string, string?)"/>, or
+    ///     <see cref="ToolHandlerResult.FromMultiModal(string, IList{ToolResultContentBlock})"/>;
+    ///     or return <see cref="ToolHandlerResult.Deferred"/> to signal that the result will
+    ///     be supplied later via <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>.
     /// </summary>
     public required ToolHandler Handler { get; init; }
 

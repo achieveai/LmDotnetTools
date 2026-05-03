@@ -112,7 +112,7 @@ public class OpenAiGrokAgenticExample
                     condition = stringArray[Random.Shared.Next(4)],
                 };
 
-                return JsonSerializer.Serialize(weather);
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(weather));
             },
             providerName: "Example"
         );
@@ -148,7 +148,7 @@ public class OpenAiGrokAgenticExample
                     date = DateTime.UtcNow.ToString("yyyy-MM-dd"),
                 };
 
-                return JsonSerializer.Serialize(time);
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(time));
             },
             providerName: "Example"
         );
@@ -181,11 +181,11 @@ public class OpenAiGrokAgenticExample
                 try
                 {
                     var result = EvaluateSimpleExpression(calcArgs?.Expression ?? "0");
-                    return JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression });
+                    return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result, expression = calcArgs?.Expression }));
                 }
                 catch (Exception ex)
                 {
-                    return JsonSerializer.Serialize(new { error = ex.Message });
+                    return ToolHandlerResult.FromError(JsonSerializer.Serialize(new { error = ex.Message }));
                 }
             },
             providerName: "Example"
