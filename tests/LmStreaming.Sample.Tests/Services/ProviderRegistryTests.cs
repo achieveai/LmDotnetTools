@@ -335,6 +335,12 @@ public class ProviderRegistryTests
         // Non-mock entries inherit the default null.
         byId["openai"].KnownLimitation.Should().BeNull();
         byId["claude"].KnownLimitation.Should().BeNull();
+
+        // Get() must propagate KnownLimitation just like ListAll() — guards against future
+        // refactors that recompose descriptors without preserving the caveat.
+        registry.Get("codex-mock")!.KnownLimitation.Should().Contain("#28");
+        registry.Get("claude-mock")!.KnownLimitation.Should().Contain("#29");
+        registry.Get("copilot-mock")!.KnownLimitation.Should().BeNull();
     }
 
     [Fact]
