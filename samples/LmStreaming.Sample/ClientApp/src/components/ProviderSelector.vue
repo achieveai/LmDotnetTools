@@ -122,9 +122,16 @@ watch(
           :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
           :data-testid="`provider-option-${provider.id}`"
           :disabled="disabled || !provider.available"
+          :title="provider.knownLimitation ?? undefined"
           @click="handleSelect(provider.id)"
         >
           <span class="item-name">{{ provider.displayName }}</span>
+          <span
+            v-if="provider.available && provider.knownLimitation"
+            class="item-warning"
+            :data-testid="`provider-warning-${provider.id}`"
+            aria-label="known limitation"
+          >⚠</span>
           <span v-if="!provider.available" class="item-status">unavailable</span>
           <span v-else-if="provider.id === selectedProviderId" class="check-mark">✓</span>
         </button>
@@ -242,6 +249,14 @@ watch(
   color: #9aa0a6;
   margin-left: 8px;
   flex-shrink: 0;
+}
+
+.item-warning {
+  font-size: 13px;
+  color: #b8860b;
+  margin-left: 8px;
+  flex-shrink: 0;
+  cursor: help;
 }
 
 .check-mark {
