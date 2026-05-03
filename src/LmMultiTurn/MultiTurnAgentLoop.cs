@@ -366,24 +366,31 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         // Precondition: never send a request while any deferred tool result is unresolved.
         // The provider would reject an empty tool_result.content, but the real bug is sending
         // at all — host code must call ResolveToolCallAsync before resuming.
-        foreach (var m in messagesToSend)
+        // Fast path: if no known deferrals exist, skip the O(n) history scan. The scan is
+        // belt-and-suspenders against history rebuilt from a store that wasn't routed
+        // through _deferred (e.g., a partially-applied OnHistoryRestoredAsync); when
+        // _deferred IS empty, the in-memory index is the authoritative answer.
+        if (!_deferred.IsEmpty)
         {
-            if (m is ToolCallResultMessage tcr && tcr.IsDeferred)
+            foreach (var m in messagesToSend)
             {
-                throw new InvalidOperationException(
-                    $"Cannot send request: tool call '{tcr.ToolCallId}' is still deferred. " +
-                    "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
-            }
-
-            if (m is ToolsCallResultMessage agg)
-            {
-                foreach (var r in agg.ToolCallResults)
+                if (m is ToolCallResultMessage tcr && tcr.IsDeferred)
                 {
-                    if (r.IsDeferred)
+                    throw new InvalidOperationException(
+                        $"Cannot send request: tool call '{tcr.ToolCallId}' is still deferred. " +
+                        "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                }
+
+                if (m is ToolsCallResultMessage agg)
+                {
+                    foreach (var r in agg.ToolCallResults)
                     {
-                        throw new InvalidOperationException(
-                            $"Cannot send request: tool call '{r.ToolCallId}' is still deferred. " +
-                            "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                        if (r.IsDeferred)
+                        {
+                            throw new InvalidOperationException(
+                                $"Cannot send request: tool call '{r.ToolCallId}' is still deferred. " +
+                                "Resolve all deferred tool calls via ResolveToolCallAsync before resuming.");
+                        }
                     }
                 }
             }
@@ -482,8 +489,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             _deferred[result.ToolCallId!] = deferredEntry;
 
             // Persist synchronously so a webhook-triggered ReplaceMessageAsync cannot race
-            // the placeholder's append.
-            await AddDeferredToHistoryAsync(result, ct);
+            // the placeholder's append. If persistence fails, unwind the deferred-entry
+            // registration so a future resolution doesn't find a half-applied state — the
+            // exception propagates up to the run loop and surfaces as a RunFailed.
+            try
+            {
+                await AddDeferredToHistoryAsync(result, ct);
+            }
+            catch
+            {
+                _ = _deferred.TryRemove(result.ToolCallId!, out _);
+                throw;
+            }
             await PublishToAllAsync(result, ct);
 
             Logger.LogInformation(
@@ -572,6 +589,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             var result = await handler(functionArgs, ctx, ct);
             return BuildResultMessage(toolCall, result);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Caller-initiated cancellation (shutdown, run abort) must propagate — converting
+            // it into an LLM-visible error message would silently swallow the abort and let
+            // the loop continue.
+            throw;
+        }
         catch (Exception ex)
         {
             // Tool execution errors are returned to the LLM for retry/correction
@@ -620,6 +644,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         IList<ToolResultContentBlock>? contentBlocks = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(result);
 
@@ -711,6 +736,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// </summary>
     public Task<IReadOnlyList<DeferredToolCallInfo>> GetDeferredToolCallsAsync(CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var snapshot = _deferred.Values
             .Select(e => new DeferredToolCallInfo
             {
@@ -880,6 +906,29 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 ex,
                 "Failed to enqueue resume sentinel for run {RunId}",
                 sentinelInput.Resume?.ResumeForRunId);
+
+            // Restore scheduling state so a future ResolveToolCallAsync (or per-run finally)
+            // can retry the sentinel. Without this, _resumeScheduled stays true and the
+            // deferring markers stay null — TryScheduleAutoResume short-circuits on its
+            // first guard and the loop is permanently stuck.
+            // Only restore if no concurrent state change happened; if a new turn has
+            // already deferred and set fresh markers, we must not clobber them.
+            var sentinelRunId = sentinelInput.Resume?.ResumeForRunId;
+            var sentinelGenId = sentinelInput.Resume?.ResumeForGenerationId;
+            if (sentinelRunId != null && sentinelGenId != null)
+            {
+                lock (_resumeLock)
+                {
+                    if (_resumeScheduled
+                        && _lastDeferringRunId == null
+                        && _lastDeferringGenerationId == null)
+                    {
+                        _lastDeferringRunId = sentinelRunId;
+                        _lastDeferringGenerationId = sentinelGenId;
+                        _resumeScheduled = false;
+                    }
+                }
+            }
         }
     }
 

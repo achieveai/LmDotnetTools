@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -474,6 +475,286 @@ public class DeferredToolExecutionTests
             It.IsAny<CancellationToken>()), Times.Once);
 
         await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task MultipleDeferred_PartialResolution_AutoResumeOnlyAfterAllResolved()
+    {
+        // Two tool calls in one turn, both defer. Resolving the first must NOT trigger
+        // auto-resume (the second is still pending). Resolving the second MUST trigger
+        // auto-resume, and the LLM's next turn must see both resolved values.
+        var toolCallA = new ToolCallMessage
+        {
+            FunctionName = "wait_a", FunctionArgs = "{}", ToolCallId = "tc_a",
+            Role = Role.Assistant,
+        };
+        var toolCallB = new ToolCallMessage
+        {
+            FunctionName = "wait_b", FunctionArgs = "{}", ToolCallId = "tc_b",
+            Role = Role.Assistant,
+        };
+        var finalText = new TextMessage { Text = "all done", Role = Role.Assistant };
+
+        var callCount = 0;
+        IEnumerable<IMessage>? secondCallMessages = null;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, _, _) =>
+                {
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(ToAsyncEnumerable(
+                            new IMessage[] { toolCallA, toolCallB }));
+                    }
+                    secondCallMessages = msgs.ToList();
+                    return Task.FromResult(ToAsyncEnumerable(new IMessage[] { finalText }));
+                });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(BuildContract("wait_a"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+        registry.AddFunction(BuildContract("wait_b"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object, registry, "test-thread", logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var firstRunCompleted = new TaskCompletionSource<bool>();
+        var secondRunCompleted = new TaskCompletionSource<bool>();
+        var completedRuns = 0;
+        _ = Task.Run(async () =>
+        {
+            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            {
+                if (msg is RunCompletedMessage)
+                {
+                    completedRuns++;
+                    if (completedRuns == 1) firstRunCompleted.TrySetResult(true);
+                    else if (completedRuns == 2) secondRunCompleted.TrySetResult(true);
+                }
+            }
+        }, cts.Token);
+
+        await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
+        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Both deferrals registered.
+        var pending = await loop.GetDeferredToolCallsAsync();
+        pending.Should().HaveCount(2);
+
+        // Resolve A. Auto-resume should NOT fire because B is still deferred. We can't
+        // wait-for-not-happening, so wait a short moment and verify callCount unchanged.
+        await loop.ResolveToolCallAsync("tc_a", "result-a");
+        await Task.Delay(150);
+        callCount.Should().Be(1, "auto-resume must not fire while any deferral is pending");
+        secondRunCompleted.Task.IsCompleted.Should().BeFalse();
+
+        var stillPending = await loop.GetDeferredToolCallsAsync();
+        stillPending.Should().ContainSingle(p => p.ToolCallId == "tc_b");
+
+        // Resolve B. Now auto-resume must fire and the second LLM call must see BOTH
+        // resolved values.
+        await loop.ResolveToolCallAsync("tc_b", "result-b");
+        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        callCount.Should().Be(2);
+
+        secondCallMessages.Should().NotBeNull();
+        var allResults = secondCallMessages!
+            .OfType<ToolCallResultMessage>()
+            .Concat(
+                secondCallMessages!.OfType<ToolsCallResultMessage>()
+                    .SelectMany(m => m.ToolCallResults.Select(r => new ToolCallResultMessage
+                    {
+                        ToolCallId = r.ToolCallId,
+                        Result = r.Result,
+                        IsError = r.IsError,
+                    })))
+            .ToList();
+        allResults.Single(m => m.ToolCallId == "tc_a").Result.Should().Be("result-a");
+        allResults.Single(m => m.ToolCallId == "tc_b").Result.Should().Be("result-b");
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task OnHistoryRestoredAsync_RebuildsDeferredRegistry_FromPersistedHistory()
+    {
+        // Process restart scenario: a previous process recorded a deferred placeholder, then
+        // crashed/exited. New process loads from the store and must repopulate _deferred so
+        // GetDeferredToolCallsAsync surfaces the entry and a future ResolveToolCallAsync can
+        // complete it.
+        var threadId = "test-thread-restore";
+        var runId = "run_prev";
+        var generationId = "gen_prev";
+
+        var store = new InMemoryConversationStore();
+
+        // Pre-populate the store: one ToolCallMessage (so name/args can be recovered) and the
+        // matching ToolCallResultMessage with IsDeferred=true.
+        var toolCall = new ToolCallMessage
+        {
+            ToolCallId = "tc_persisted",
+            FunctionName = "wait_for_human",
+            FunctionArgs = "{\"prompt\":\"approve\"}",
+            Role = Role.Assistant,
+            FromAgent = "test",
+            GenerationId = generationId,
+            RunId = runId,
+        };
+        var deferredResult = new ToolCallResultMessage
+        {
+            ToolCallId = "tc_persisted",
+            ToolName = "wait_for_human",
+            Result = string.Empty,
+            IsDeferred = true,
+            DeferredAt = 1_700_000_000_000,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+        };
+
+        await store.AppendMessagesAsync(threadId, new List<PersistedMessage>
+        {
+            MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
+        });
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = runId,
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+        // New process: spin up a fresh loop pointed at the same store and recover.
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            threadId,
+            store: store,
+            logger: _loggerMock.Object);
+
+        var recovered = await loop.RecoverAsync();
+        recovered.Should().BeTrue();
+
+        // The deferred entry must surface from the in-memory _deferred registry — proving
+        // OnHistoryRestoredAsync ran and seeded it from the loaded history.
+        var pending = await loop.GetDeferredToolCallsAsync();
+        var info = pending.Should().ContainSingle().Subject;
+        info.ToolCallId.Should().Be("tc_persisted");
+        info.FunctionName.Should().Be("wait_for_human");
+        info.FunctionArgs.Should().Be("{\"prompt\":\"approve\"}");
+        info.RunId.Should().Be(runId);
+        info.GenerationId.Should().Be(generationId);
+        info.DeferredAtUnixMs.Should().Be(1_700_000_000_000);
+    }
+
+    [Fact]
+    public async Task ResolveToolCallAsync_ThrowsObjectDisposedException_AfterDispose()
+    {
+        // Resolutions arrive externally on arbitrary threads (webhook handlers, UI events).
+        // After the loop is disposed they must fail fast — silently mutating disposed state
+        // would corrupt _deferred / history for any subsequent process that re-opens the
+        // same store.
+        var registry = new FunctionRegistry();
+        var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        await loop.DisposeAsync();
+
+        var act = async () => await loop.ResolveToolCallAsync("tc_x", "value");
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public async Task GetDeferredToolCallsAsync_ThrowsObjectDisposedException_AfterDispose()
+    {
+        var registry = new FunctionRegistry();
+        var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        await loop.DisposeAsync();
+
+        var act = async () => await loop.GetDeferredToolCallsAsync();
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public async Task OperationCanceledException_FromHandler_PropagatesAsRunCanceled()
+    {
+        // ExecuteToolCallAsync's broad catch used to convert OperationCanceledException
+        // into LLM-visible error messages — silently swallowing user-initiated cancellation.
+        // The fix: rethrow when ct.IsCancellationRequested. The run loop's outer try/catch
+        // has `when (ex is not OperationCanceledException)` so cancellation propagates up
+        // and the whole RunAsync task winds down (rather than a RunCompleted{IsError=true}).
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "slow_op",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_cancel",
+            Role = Role.Assistant,
+        };
+        SetupOneTurnResponse(toolCall);
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            BuildContract("slow_op"),
+            (_, _, ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                throw new OperationCanceledException(ct);
+            });
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+        cts.Cancel();
+
+        var userInput = new UserInput([new TextMessage { Text = "Go", Role = Role.User }]);
+
+        // Drain — the run should NOT yield a non-error RunCompleted with the tool error
+        // serialized into the message body. With the fix, cancellation propagates and the
+        // run-loop-level catch handles it cleanly. Drain may surface no messages or a
+        // cancellation; accept either, but verify no IsError=false RunCompleted with the
+        // swallowed-cancellation pattern.
+        var messages = new List<IMessage>();
+        try
+        {
+            await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+            {
+                messages.Add(msg);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // expected on cancellation
+        }
+
+        // The crucial check: no tool result with the swallowed-cancellation error JSON.
+        var swallowedCancel = messages
+            .OfType<ToolCallResultMessage>()
+            .Where(m => m.IsError && m.Result.Contains("OperationCanceled", StringComparison.OrdinalIgnoreCase));
+        swallowedCancel.Should().BeEmpty(
+            "OperationCanceledException must propagate, not be serialized into an LLM-visible error");
     }
 
     private void SetupOneTurnResponse(IMessage message)

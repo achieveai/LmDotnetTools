@@ -282,4 +282,24 @@ public class ToolHandlerResultTests
         tcr.ErrorCode.Should().Be("E_X");
         tcr.Result.Should().Be("oops");
     }
+
+    [Fact]
+    public void ToolCallResultBuilder_FromHandlerResult_PropagatesContentBlocks()
+    {
+        // Multi-modal payload survives the builder mapping by reference — no copy, no rewrap.
+        // Covered indirectly by MultiModalHandlerIntegrationTests; this is the direct unit test.
+        var blocks = new List<ToolResultContentBlock>
+        {
+            new TextToolResultBlock { Text = "caption" },
+            new ImageToolResultBlock { Data = "abc", MimeType = "image/png" },
+        };
+        var result = ToolHandlerResult.FromMultiModal("text", blocks);
+
+        var tcr = ToolCallResultBuilder.FromHandlerResult(result, "tc_mm", "image_tool");
+
+        tcr.ToolCallId.Should().Be("tc_mm");
+        tcr.ToolName.Should().Be("image_tool");
+        tcr.Result.Should().Be("text");
+        tcr.ContentBlocks.Should().BeSameAs(blocks);
+    }
 }

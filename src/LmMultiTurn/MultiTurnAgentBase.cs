@@ -256,43 +256,38 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// without racing the placeholder's persistence.
     /// </summary>
     /// <remarks>
-    /// In-memory append happens first, then persistence is awaited inline. The non-deferred
-    /// <see cref="AddToHistory"/> path remains fire-and-forget — synchronous persistence is
-    /// only required where in-place replacement is on the table.
+    /// Persistence runs first; the in-memory append happens only after the store has accepted
+    /// the message. If persistence fails, the exception propagates and no in-memory state is
+    /// mutated — callers (e.g., <c>MultiTurnAgentLoop.ExecuteAndPublishToolCallAsync</c>) are
+    /// responsible for unwinding any pre-registered deferred entries on failure. The
+    /// non-deferred <see cref="AddToHistory"/> path remains fire-and-forget; synchronous
+    /// persistence is only required where in-place replacement is on the table.
     /// </remarks>
     protected async Task AddDeferredToHistoryAsync(IMessage message, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        if (Store != null)
+        {
+            string? runId;
+            lock (_stateLock)
+            {
+                runId = _currentRunId;
+            }
+
+            if (runId != null)
+            {
+                // Persist BEFORE the in-memory append so a failure leaves no orphaned entry
+                // in ConversationHistory. Letting the exception propagate is intentional —
+                // the deferred-tool guarantee is load-bearing for webhook resolution.
+                var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+                await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+            }
+        }
+
         lock (_historyLock)
         {
             ConversationHistory.Add(message);
-        }
-
-        if (Store == null)
-        {
-            return;
-        }
-
-        string? runId;
-        lock (_stateLock)
-        {
-            runId = _currentRunId;
-        }
-
-        if (runId == null)
-        {
-            return;
-        }
-
-        try
-        {
-            var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
-            await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to persist deferred-tool placeholder");
         }
     }
 
@@ -546,6 +541,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         return _inputChannel.Writer.WriteAsync(queuedInput, ct);
     }
+
+    /// <summary>
+    /// Throws <see cref="ObjectDisposedException"/> if the agent has been disposed. Public API
+    /// methods on subclasses (e.g., <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>) call this
+    /// to fail fast instead of mutating disposed state.
+    /// </summary>
+    protected void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_isDisposed, this);
 
     /// <summary>
     /// Convenience method to drain all currently available inputs from the queue.

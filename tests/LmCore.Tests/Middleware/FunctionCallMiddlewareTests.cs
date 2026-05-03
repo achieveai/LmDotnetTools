@@ -510,6 +510,48 @@ public class FunctionCallMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeStreamingAsync_DeferredHandler_FromInputToolCall_FlagsResultAsDeferred()
+    {
+        // Mirrors InvokeAsync_DeferredHandler_FromInputToolCall_DoesNotThrowAndFlagsResult,
+        // but exercises the streaming code path (InvokeStreamingAsync). The deferred handler
+        // returns Deferred(); the middleware must surface IsDeferred=true with empty Result
+        // text and a non-null ToolCallId — same guarantees the non-streaming path provides.
+        var functions = new List<FunctionContract>
+        {
+            new() { Name = "approve_action", Description = "Asks human for approval" },
+        };
+        var functionMap = new Dictionary<string, ToolHandler>
+        {
+            ["approve_action"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                new ToolHandlerResult.Deferred()),
+        };
+
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        var toolCallMessage = CreateToolCallMessage("approve_action", new { action = "send_email" });
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
+        var nextAgent = new MockStreamingAgent([]);
+
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, nextAgent);
+        var results = new List<IMessage>();
+        await foreach (var msg in resultStream)
+        {
+            results.Add(msg);
+        }
+
+        // Assert
+        var resultMessage = Assert.IsType<ToolsCallResultMessage>(Assert.Single(results.OfType<ToolsCallResultMessage>()));
+        var deferredResult = Assert.Single(resultMessage.ToolCallResults);
+        Assert.True(deferredResult.IsDeferred);
+        Assert.Equal(string.Empty, deferredResult.Result);
+        Assert.NotNull(deferredResult.DeferredAt);
+        Assert.Null(deferredResult.ResolvedAt);
+        Assert.False(deferredResult.IsError);
+        Assert.NotNull(deferredResult.ToolCallId);
+        Assert.Equal("approve_action", deferredResult.ToolName);
+    }
+
+    [Fact]
     public async Task InvokeAsync_MixedHandlers_OnlyDeferredOnesFlagged()
     {
         // Arrange — two parallel tool calls in the same assistant message: one resolves
