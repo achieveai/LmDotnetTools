@@ -120,13 +120,36 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             _logger?.LogInformation("Starting claude-agent-sdk CLI process with model {Model}", request.ModelId);
 
-            // 1. Locate Node.js
-            var nodePath = _options.NodeJsPath ?? FindNodeJs();
-            _logger?.LogDebug("Using Node.js at: {NodePath}", nodePath);
+            // 1. Locate the CLI. Two supported forms:
+            //    - claude(.exe): standalone native binary from @anthropic-ai/claude-code
+            //                    (the modern path, no Node.js needed)
+            //    - cli.js:       legacy bundle from @anthropic-ai/claude-agent-sdk@0.1.x
+            //                    (still supported; spawned via Node)
+            // We prefer the native binary when both are installed because 0.1.x carries
+            // a known null-deref in the OAuth client_data path (see ResultEvent failure
+            // handler below for how that surfaces).
+            var cliPath = _options.CliPath ?? FindClaudeCli();
+            var useNativeBinary = IsNativeClaudeBinary(cliPath);
+            _logger?.LogDebug(
+                "Using Claude CLI at: {CliPath} ({Mode})",
+                cliPath,
+                useNativeBinary ? "native binary" : "Node.js bundle");
 
-            // 2. Locate CLI
-            var cliPath = _options.CliPath ?? FindClaudeAgentSdkCli();
-            _logger?.LogDebug("Using claude-agent-sdk CLI at: {CliPath}", cliPath);
+            // 1a. Sanity-check the SDK package version. The CLI surfaces internal exceptions
+            // through ResultEvent.Subtype = "error_during_execution" with IsError = false,
+            // so without explicit handling (see SubscribeToMessagesAsync / SendMessagesAsync)
+            // failed turns look like clean completions and the caller silently advances.
+            // Recent versions also carry upstream fixes for known bugs (e.g. the v0.1.55
+            // null-deref in x80() on the OAuth client_data path); newer is preferable.
+            WarnIfStaleSdkVersion(cliPath);
+
+            // 2. Locate Node.js only if we need it (legacy cli.js path)
+            string? nodePath = null;
+            if (!useNativeBinary)
+            {
+                nodePath = _options.NodeJsPath ?? FindNodeJs();
+                _logger?.LogDebug("Using Node.js at: {NodePath}", nodePath);
+            }
 
             // 3. Create system prompt temp file if provided
             if (!string.IsNullOrEmpty(request.SystemPrompt))
@@ -136,15 +159,21 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 _logger?.LogDebug("Created system prompt temp file: {File}", _systemPromptTempFile);
             }
 
-            // 4. Build CLI arguments
-            var args = BuildCliArguments(request);
-            _logger?.LogDebug("CLI arguments: node \"{CliPath}\" {Args}", cliPath, args);
+            // 4. Build CLI arguments. The arg surface differs between the two CLIs — the
+            // modern claude.exe (2.x) supports --effort directly; the legacy cli.js (0.1.x)
+            // doesn't, and unknown flags crash it silently. BuildCliArguments knows which
+            // form to emit based on useNativeBinary.
+            var args = BuildCliArguments(request, useNativeBinary);
+            _logger?.LogDebug(
+                "CLI invocation: {Exe} {Args}",
+                useNativeBinary ? cliPath : $"{nodePath} \"{cliPath}\"",
+                args);
 
-            // 5. Configure process
+            // 5. Configure process. Native binary is invoked directly; cli.js goes through Node.
             var startInfo = new ProcessStartInfo
             {
-                FileName = nodePath,
-                Arguments = $"\"{cliPath}\" {args}",
+                FileName = useNativeBinary ? cliPath : nodePath!,
+                Arguments = useNativeBinary ? args : $"\"{cliPath}\" {args}",
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -159,22 +188,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Set environment variable for stream close timeout (in seconds)
             startInfo.Environment["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300";
 
-            // Map reasoning effort to MAX_THINKING_TOKENS env var
-            // (CLI doesn't support --reasoning-effort flag as of v0.1.55)
-            var thinkingTokens = request.ReasoningEffort?.ToLowerInvariant() switch
+            // Reasoning-effort wiring depends on the CLI form:
+            // - claude.exe 2.x exposes a documented --effort flag (added in BuildCliArguments).
+            // - Legacy cli.js (0.1.x) doesn't support it (and unknown flags crash it), so we
+            //   fall back to the MAX_THINKING_TOKENS env var with the canonical token-count
+            //   mapping the CLI used internally for that version.
+            if (!useNativeBinary)
             {
-                "low" => "2048",
-                "medium" => "4096",
-                "high" => "8192",
-                "xhigh" => "16384",
-                _ => null
-            };
-            if (thinkingTokens != null)
-            {
-                startInfo.Environment["MAX_THINKING_TOKENS"] = thinkingTokens;
-                _logger?.LogInformation(
-                    "Reasoning effort '{Effort}' mapped to MAX_THINKING_TOKENS={Tokens}",
-                    request.ReasoningEffort, thinkingTokens);
+                var thinkingTokens = TokenBudgetForEffort(request.ReasoningEffort);
+                if (thinkingTokens != null)
+                {
+                    startInfo.Environment["MAX_THINKING_TOKENS"] = thinkingTokens.Value.ToString();
+                    _logger?.LogInformation(
+                        "Reasoning effort '{Effort}' mapped to MAX_THINKING_TOKENS={Tokens} (legacy cli.js path)",
+                        request.ReasoningEffort,
+                        thinkingTokens);
+                }
             }
 
             // 6. Start process
@@ -372,6 +401,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             {
                 _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
             }
+            // Rate-limit advisories from claude-code 2.x — log per-status so a throttled
+            // or denied request is obvious without flooding the log on the happy path.
+            else if (jsonlEvent is RateLimitEvent rateLimitEvent)
+            {
+                LogRateLimit(rateLimitEvent);
+            }
             // System init events contain session info and available tools
             else if (jsonlEvent is SystemInitEvent systemInitEvent)
             {
@@ -392,17 +427,27 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Result events contain final execution summary with usage and cost info
             else if (jsonlEvent is ResultEvent resultEvent)
             {
-                _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
-                    resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
-                if (resultEvent.IsError)
+                var failed = !IsSuccessSubtype(resultEvent.Subtype);
+                _logger?.LogTrace(
+                    "Received ResultEvent: Subtype={Subtype}, IsError={IsError}, NumTurns={NumTurns}, ApiMs={ApiMs}, SessionId={SessionId}",
+                    resultEvent.Subtype,
+                    resultEvent.IsError,
+                    resultEvent.NumTurns,
+                    resultEvent.DurationApiMs,
+                    resultEvent.SessionId);
+
+                if (failed)
                 {
+                    LogResultFailure(resultEvent);
+
                     if (isWorking && _stdinWriter != null)
                     {
-                        // Send "retry...." message to the agent
+                        // Mid-turn failure with an open stdin — ask the model to retry. We avoid
+                        // doing this for "cold" failures (no assistant content yet) because those
+                        // typically indicate a CLI/config problem that retrying won't fix.
                         _logger?.LogWarning(
-                            "Error encountered during agent execution: {Error}. Sending retry message to agent.",
-                            resultEvent.Result ?? "Unknown error"
-                        );
+                            "Failed turn (subtype={Subtype}) with prior assistant output present; sending retry.",
+                            resultEvent.Subtype);
 
                         isWorking = false;
                         var jsonLine = JsonSerializer.Serialize(
@@ -446,8 +491,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 // In OneShot mode: stdin is already closed, process will exit
                 // In Interactive mode: stdin remains open for next SendMessagesAsync call
                 _logger?.LogDebug(
-                    "{Mode} mode: ResultEvent received, ending current turn",
-                    _options.Mode
+                    "{Mode} mode: ResultEvent received (subtype={Subtype}), ending current turn",
+                    _options.Mode,
+                    resultEvent.Subtype
                 );
 
                 // In OneShot mode, clean up BEFORE returning from the iterator
@@ -552,6 +598,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 {
                     _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
                 }
+                else if (jsonlEvent is RateLimitEvent rateLimitEvent)
+                {
+                    LogRateLimit(rateLimitEvent);
+                }
                 else if (jsonlEvent is SystemInitEvent systemInitEvent)
                 {
                     _logger?.LogInformation(
@@ -574,14 +624,32 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
                 else if (jsonlEvent is ResultEvent resultEvent)
                 {
-                    _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
-                        resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
+                    var failed = !IsSuccessSubtype(resultEvent.Subtype);
+                    _logger?.LogTrace(
+                        "Received ResultEvent: Subtype={Subtype}, IsError={IsError}, NumTurns={NumTurns}, ApiMs={ApiMs}, SessionId={SessionId}",
+                        resultEvent.Subtype,
+                        resultEvent.IsError,
+                        resultEvent.NumTurns,
+                        resultEvent.DurationApiMs,
+                        resultEvent.SessionId);
 
-                    // Yield a marker message so caller knows turn is complete
+                    if (failed)
+                    {
+                        LogResultFailure(resultEvent);
+                    }
+
+                    // Yield a marker so the caller (e.g. duplex state machine) can react. We
+                    // mark IsError based on Subtype, NOT the upstream is_error flag — see
+                    // ResultEventMessage docs for why.
                     yield return new ResultEventMessage
                     {
-                        IsError = resultEvent.IsError,
+                        Subtype = resultEvent.Subtype,
+                        IsError = failed,
                         Result = resultEvent.Result,
+                        Errors = resultEvent.Errors ?? [],
+                        NumTurns = resultEvent.NumTurns,
+                        DurationMs = resultEvent.DurationMs,
+                        DurationApiMs = resultEvent.DurationApiMs,
                     };
                 }
                 else
@@ -951,7 +1019,18 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         GC.SuppressFinalize(this);
     }
 
-    private string BuildCliArguments(ClaudeAgentSdkRequest request)
+    /// <summary>
+    ///     Build the command-line argument string for the Claude CLI. The flag surface differs
+    ///     between distributions:
+    ///     <list type="bullet">
+    ///         <item><c>claude.exe</c> (from <c>@anthropic-ai/claude-code@2.x</c>) exposes the
+    ///         documented <c>--effort low|medium|high|xhigh|max</c> flag.</item>
+    ///         <item>Legacy <c>cli.js</c> (from <c>@anthropic-ai/claude-agent-sdk@0.1.x</c>)
+    ///         does not — and rejects unknown flags by crashing — so reasoning effort there is
+    ///         set out-of-band via the <c>MAX_THINKING_TOKENS</c> env var in <see cref="StartAsync"/>.</item>
+    ///     </list>
+    /// </summary>
+    private string BuildCliArguments(ClaudeAgentSdkRequest request, bool useNativeBinary)
     {
         var args = new List<string>
         {
@@ -1006,10 +1085,230 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             args.Add("--no-session-persistence");
         }
 
-        // NOTE: Reasoning effort is passed via MAX_THINKING_TOKENS env var in StartAsync,
-        // not as a CLI flag (--reasoning-effort is not supported as of v0.1.55).
+        // Reasoning effort: native binary takes the documented flag, legacy CLI gets the
+        // env-var fallback (set in StartAsync). Don't pass --effort to legacy cli.js — it
+        // doesn't recognize it and crashes.
+        if (useNativeBinary)
+        {
+            var effort = NormalizeEffortLevel(request.ReasoningEffort);
+            if (effort != null)
+            {
+                args.Add($"--effort {effort}");
+            }
+        }
 
         return string.Join(" ", args);
+    }
+
+    /// <summary>
+    ///     Validate and normalize a reasoning-effort string against the levels accepted by
+    ///     <c>claude.exe --effort</c>: <c>low</c>, <c>medium</c>, <c>high</c>, <c>xhigh</c>,
+    ///     <c>max</c>. Case-insensitive; returns null for empty/unknown input so the caller
+    ///     can omit the flag entirely (CLI then uses its default).
+    /// </summary>
+    private static string? NormalizeEffortLevel(string? effort)
+    {
+        if (string.IsNullOrWhiteSpace(effort))
+        {
+            return null;
+        }
+
+        return effort.Trim().ToLowerInvariant() switch
+        {
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            "xhigh" => "xhigh",
+            "max" => "max",
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    ///     Map an effort level back to a thinking-token budget for the legacy
+    ///     <c>MAX_THINKING_TOKENS</c> env var used by <c>cli.js</c> (0.1.x). The mapping is the
+    ///     canonical one the CLI applied internally:
+    ///     <list type="bullet">
+    ///         <item><c>low</c>    → 2 048 (&lt; 2K)</item>
+    ///         <item><c>medium</c> → 4 096 (&lt; 4K)</item>
+    ///         <item><c>high</c>   → 8 192 (&lt; 8K)</item>
+    ///         <item><c>xhigh</c>  → 16 384 (&lt; 16K)</item>
+    ///         <item><c>max</c>    → 32 768 (&lt; 32K)</item>
+    ///     </list>
+    ///     Returns null when the effort string is empty or unrecognized.
+    /// </summary>
+    private static int? TokenBudgetForEffort(string? effort) =>
+        NormalizeEffortLevel(effort) switch
+        {
+            "low" => 2048,
+            "medium" => 4096,
+            "high" => 8192,
+            "xhigh" => 16384,
+            "max" => 32768,
+            _ => null,
+        };
+
+    /// <summary>
+    ///     Read the SDK package's <c>package.json</c> and warn on versions known to misbehave.
+    ///     Layouts differ between distributions:
+    ///     <list type="bullet">
+    ///         <item><c>@anthropic-ai/claude-code</c>: <c>bin/claude(.exe)</c>, <c>package.json</c> two levels up.</item>
+    ///         <item><c>@anthropic-ai/claude-agent-sdk@0.1.x</c>: <c>cli.js</c>, <c>package.json</c> one level up.</item>
+    ///     </list>
+    ///     The 0.1.x bundle ships with a null-deref in <c>x80()</c> on the OAuth <c>client_data</c>
+    ///     path that surfaces as <c>ResultEvent.Subtype = "error_during_execution"</c> with no
+    ///     model output. The subtype-based error handling in <see cref="SubscribeToMessagesAsync"/>
+    ///     surfaces those failures cleanly, but the operator should still upgrade.
+    /// </summary>
+    private void WarnIfStaleSdkVersion(string cliPath)
+    {
+        try
+        {
+            var packageJson = FindNearestPackageJson(cliPath);
+            if (packageJson == null)
+            {
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(packageJson));
+            if (!doc.RootElement.TryGetProperty("version", out var versionEl) ||
+                versionEl.ValueKind != JsonValueKind.String)
+            {
+                return;
+            }
+
+            var name = doc.RootElement.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : "(unknown)";
+            var version = versionEl.GetString();
+            _logger?.LogInformation(
+                "Claude CLI package: {Name}@{Version} (path: {CliPath})",
+                name,
+                version,
+                cliPath);
+
+            // Known-bad bundle: claude-agent-sdk@0.1.x. Newer claude-code (2.x) ships its
+            // own native binary that isn't affected by the cli.js bug, so don't gate on the
+            // claude-code version here.
+            var isLegacySdk = string.Equals(name, "@anthropic-ai/claude-agent-sdk", StringComparison.Ordinal);
+            if (isLegacySdk && !string.IsNullOrEmpty(version) &&
+                version.StartsWith("0.1.", StringComparison.Ordinal))
+            {
+                _logger?.LogWarning(
+                    "claude-agent-sdk {Version} silently fails every turn " +
+                    "(subtype=error_during_execution, null-deref on effortLevel). Upgrade: " +
+                    "npm install -g @anthropic-ai/claude-code (preferred) or " +
+                    "npm install -g @anthropic-ai/claude-agent-sdk@latest.",
+                    version);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Could not read package.json near {CliPath}", cliPath);
+        }
+    }
+
+    /// <summary>
+    ///     Walk up from <paramref name="filePath"/> until we hit a directory containing
+    ///     <c>package.json</c> (skipping <c>node_modules</c> and <c>@anthropic-ai</c> scope dirs).
+    ///     Stops at four levels deep — enough for both layouts we support.
+    /// </summary>
+    private static string? FindNearestPackageJson(string filePath)
+    {
+        var dir = Path.GetDirectoryName(filePath);
+        for (var i = 0; i < 4 && !string.IsNullOrEmpty(dir); i++)
+        {
+            var candidate = Path.Combine(dir, "package.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     A turn is considered successful only when the SDK reports <c>subtype: "success"</c>.
+    ///     Any other value (<c>error_during_execution</c>, <c>error_max_turns</c>, etc.) means
+    ///     the run failed even if the legacy <c>is_error</c> flag is <c>false</c>.
+    /// </summary>
+    private static bool IsSuccessSubtype(string? subtype) =>
+        string.Equals(subtype, "success", StringComparison.Ordinal);
+
+    /// <summary>
+    ///     Emit a structured warning that surfaces the actual SDK-reported errors, the model-API
+    ///     duration (zero indicates the request never reached the model), and an upgrade hint
+    ///     for the well-known v0.1.x null-effortLevel signature. Without this, a non-success
+    ///     <c>ResultEvent</c> in stream-json mode looks like a clean turn end and the caller
+    ///     misattributes the failure to "the model didn't call its tools."
+    /// </summary>
+    private void LogResultFailure(ResultEvent resultEvent)
+    {
+        var firstError = resultEvent.Errors?.FirstOrDefault();
+        var looksLikeEffortLevelBug = firstError != null
+            && firstError.Contains("effortLevel", StringComparison.Ordinal)
+            && firstError.Contains("null", StringComparison.Ordinal);
+
+        _logger?.LogError(
+            "[Agent:{SessionId}] claude-agent-sdk turn failed (subtype={Subtype}, num_turns={NumTurns}, " +
+            "duration_api_ms={ApiMs}). The model {ModelInvoked}. " +
+            "SDK errors: {Errors}{UpgradeHint}",
+            CurrentSession?.SessionId,
+            resultEvent.Subtype,
+            resultEvent.NumTurns,
+            resultEvent.DurationApiMs,
+            resultEvent.DurationApiMs is > 0 ? "was invoked but errored after responding" : "was NEVER invoked",
+            resultEvent.Errors is { Count: > 0 } e
+                ? string.Join(" | ", e.Select(s => TruncateForLog(s, 240)))
+                : "(none)",
+            looksLikeEffortLevelBug
+                ? ". This signature is the known v0.1.x null-effortLevel deref — run: " +
+                  "npm install -g @anthropic-ai/claude-agent-sdk@latest"
+                : string.Empty);
+    }
+
+    /// <summary>
+    ///     Surface a rate-limit advisory from the CLI. Logs at INFO when the request was
+    ///     allowed (informational), at WARN when not — overage rejection or throttling are
+    ///     things the operator wants to know about. Falls back to DEBUG when the payload
+    ///     is missing fields we'd need to make a better decision.
+    /// </summary>
+    private void LogRateLimit(RateLimitEvent ev)
+    {
+        var info = ev.RateLimitInfo;
+        if (info == null)
+        {
+            _logger?.LogDebug("[Agent:{SessionId}] rate_limit_event with no rate_limit_info payload", ev.SessionId);
+            return;
+        }
+
+        var allowed = string.Equals(info.Status, "allowed", StringComparison.Ordinal);
+        var resetsAtIso = info.ResetsAt is long resets
+            ? DateTimeOffset.FromUnixTimeSeconds(resets).ToString("O")
+            : "(unknown)";
+
+        if (allowed)
+        {
+            _logger?.LogInformation(
+                "[Agent:{SessionId}] Rate-limit OK: window={Window}, resetsAt={ResetsAt}, usingOverage={UsingOverage}",
+                ev.SessionId,
+                info.RateLimitType,
+                resetsAtIso,
+                info.IsUsingOverage);
+        }
+        else
+        {
+            _logger?.LogWarning(
+                "[Agent:{SessionId}] Rate-limit NOT allowed: status={Status}, window={Window}, " +
+                "resetsAt={ResetsAt}, overageStatus={OverageStatus}, overageDisabledReason={OverageReason}",
+                ev.SessionId,
+                info.Status,
+                info.RateLimitType,
+                resetsAtIso,
+                info.OverageStatus,
+                info.OverageDisabledReason);
+        }
     }
 
     /// <summary>
@@ -1024,54 +1323,225 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         return "node";
     }
 
-    private static string FindClaudeAgentSdkCli()
+    /// <summary>
+    ///     Returns true when <paramref name="path"/> looks like the modern self-contained
+    ///     <c>claude</c>/<c>claude.exe</c> binary (from <c>@anthropic-ai/claude-code</c>) rather
+    ///     than the legacy <c>cli.js</c> bundle (from <c>@anthropic-ai/claude-agent-sdk@0.1.x</c>).
+    ///     The native binary embeds its runtime and is spawned directly; the Node bundle needs
+    ///     <c>node</c> as a host process.
+    /// </summary>
+    private static bool IsNativeClaudeBinary(string path)
     {
-        // Try to find in global npm modules
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            // Windows: AppData\Roaming\npm\node_modules
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var npmGlobalPath = Path.Combine(
-                appData,
-                "npm",
-                "node_modules",
-                "@anthropic-ai",
-                "claude-agent-sdk",
-                "cli.js"
-            );
-            if (File.Exists(npmGlobalPath))
-            {
-                return npmGlobalPath;
-            }
+        var ext = Path.GetExtension(path);
+        return string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, string.Empty, StringComparison.Ordinal); // unix `claude` binary, no extension
+    }
 
-            // Also check ProgramFiles for system-wide installations
-            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var systemPath = Path.Combine(
-                programFiles,
-                "nodejs",
-                "node_modules",
-                "@anthropic-ai",
-                "claude-agent-sdk",
-                "cli.js"
-            );
-            if (File.Exists(systemPath))
+    /// <summary>
+    ///     Locate a Claude CLI to drive in stream-json mode, preferring the modern native binary.
+    ///     Search order:
+    ///     <list type="number">
+    ///         <item>npm global prefix from <c>npm root -g</c> (catches non-default prefixes such as nvm-for-windows or Volta).</item>
+    ///         <item>Standard Windows <c>%APPDATA%\npm\node_modules</c> (default npm).</item>
+    ///         <item>Windows <c>%ProgramFiles%\nodejs\node_modules</c> (system-wide installs).</item>
+    ///         <item>Unix <c>/usr/local/lib/node_modules</c>.</item>
+    ///     </list>
+    ///     Within each location, prefer <c>@anthropic-ai/claude-code/bin/claude(.exe)</c> over the
+    ///     legacy <c>@anthropic-ai/claude-agent-sdk/cli.js</c>.
+    /// </summary>
+    private string FindClaudeCli()
+    {
+        var roots = EnumerateNodeModulesRoots().ToList();
+        _logger?.LogTrace("Searching for Claude CLI in {Count} npm roots: {Roots}", roots.Count, string.Join("; ", roots));
+
+        var binaryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "claude.exe" : "claude";
+        foreach (var root in roots)
+        {
+            var nativeBinary = Path.Combine(root, "@anthropic-ai", "claude-code", "bin", binaryName);
+            if (File.Exists(nativeBinary))
             {
-                return systemPath;
+                return nativeBinary;
             }
         }
-        else
+
+        // Legacy fallback: cli.js from the older claude-agent-sdk layout.
+        foreach (var root in roots)
         {
-            // Unix-like: /usr/local/lib/node_modules
-            var globalPath = "/usr/local/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js";
-            if (File.Exists(globalPath))
+            var legacyJs = Path.Combine(root, "@anthropic-ai", "claude-agent-sdk", "cli.js");
+            if (File.Exists(legacyJs))
             {
-                return globalPath;
+                return legacyJs;
             }
         }
 
         throw new FileNotFoundException(
-            "claude-agent-sdk CLI not found. Please install: npm install -g @anthropic-ai/claude-agent-sdk"
-        );
+            "Claude CLI not found. Install one of:\n" +
+            "  npm install -g @anthropic-ai/claude-code        (preferred — native binary)\n" +
+            "  npm install -g @anthropic-ai/claude-agent-sdk   (legacy cli.js)\n" +
+            "Or set ClaudeAgentSdkOptions.CliPath explicitly.");
+    }
+
+    /// <summary>
+    ///     Enumerate plausible global <c>node_modules</c> roots in priority order, deduplicated.
+    ///     Querying <c>npm root -g</c> is the most reliable way to handle custom prefixes
+    ///     (nvm-for-windows, Volta, custom <c>npm config set prefix</c>); we still fall back to
+    ///     well-known platform defaults if that probe fails.
+    /// </summary>
+    private IEnumerable<string> EnumerateNodeModulesRoots()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Highest-confidence source: ask npm directly. Often fails when npm.cmd isn't on
+        // PATH for the host .NET process (common with nvm-for-windows / Volta), so we
+        // also probe via Node — cli.js needs Node on PATH anyway.
+        foreach (var probed in new[] { TryGetNpmGlobalRoot(), TryGetNodeGlobalRoot() })
+        {
+            if (probed != null && seen.Add(probed))
+            {
+                yield return probed;
+            }
+        }
+
+        // node.exe / node living in <root>\nodejs\... ⇒ siblings have node_modules.
+        // Catches nvm-for-windows installs at C:\nvm4w\nodejs\, Volta toolchains, etc.
+        foreach (var nodeDir in TryFindNodeInstallDirs())
+        {
+            var siblingModules = Path.Combine(nodeDir, "node_modules");
+            if (Directory.Exists(siblingModules) && seen.Add(siblingModules))
+            {
+                yield return siblingModules;
+            }
+        }
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var defaultRoaming = Path.Combine(appData, "npm", "node_modules");
+            if (seen.Add(defaultRoaming))
+            {
+                yield return defaultRoaming;
+            }
+
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var nodejsSysRoot = Path.Combine(programFiles, "nodejs", "node_modules");
+            if (seen.Add(nodejsSysRoot))
+            {
+                yield return nodejsSysRoot;
+            }
+        }
+        else
+        {
+            var unixDefault = "/usr/local/lib/node_modules";
+            if (seen.Add(unixDefault))
+            {
+                yield return unixDefault;
+            }
+
+            var homebrewArm = "/opt/homebrew/lib/node_modules";
+            if (seen.Add(homebrewArm))
+            {
+                yield return homebrewArm;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Probe <c>npm root -g</c>. Returns null on any failure (e.g. <c>npm.cmd</c> not on PATH).
+    /// </summary>
+    private string? TryGetNpmGlobalRoot() =>
+        RunCapture(
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "npm.cmd" : "npm",
+            "root -g");
+
+    /// <summary>
+    ///     Probe <c>node -p</c> for the global modules path. Reliable when <c>node</c> is on PATH
+    ///     (which is required for legacy <c>cli.js</c> anyway), and importantly works even when
+    ///     <c>npm.cmd</c> isn't visible to the host process.
+    /// </summary>
+    private string? TryGetNodeGlobalRoot() =>
+        RunCapture(
+            "node",
+            "-p \"require('module').globalPaths.find(p => p.endsWith('node_modules')) || ''\"");
+
+    /// <summary>
+    ///     Discover plausible node install directories by inspecting <c>PATH</c> for entries
+    ///     that contain a <c>node</c>/<c>node.exe</c> file. The same directory typically holds
+    ///     <c>npm.cmd</c>, <c>claude.cmd</c>, and a sibling <c>node_modules</c>.
+    /// </summary>
+    private static IEnumerable<string> TryFindNodeInstallDirs()
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(pathEnv))
+        {
+            yield break;
+        }
+
+        var nodeBin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "node.exe" : "node";
+        foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string fullPath;
+            try
+            {
+                fullPath = Path.Combine(dir.Trim(), nodeBin);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (File.Exists(fullPath))
+            {
+                yield return Path.GetDirectoryName(fullPath)!;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Run a child process with a tight timeout and return trimmed stdout, or null on any
+    ///     failure (process not found, non-zero exit, timeout, missing/non-existent output).
+    /// </summary>
+    private string? RunCapture(string fileName, string arguments)
+    {
+        try
+        {
+            using var probe = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                },
+            };
+            if (!probe.Start())
+            {
+                return null;
+            }
+
+            if (!probe.WaitForExit(3000))
+            {
+                try { probe.Kill(true); } catch { /* best-effort */ }
+                return null;
+            }
+
+            if (probe.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var output = probe.StandardOutput.ReadToEnd().Trim();
+            return string.IsNullOrEmpty(output) || !Directory.Exists(output) ? null : output;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "{File} {Args} probe failed", fileName, arguments);
+            return null;
+        }
     }
 
     private async IAsyncEnumerable<string> ReadStdoutLinesAsync(

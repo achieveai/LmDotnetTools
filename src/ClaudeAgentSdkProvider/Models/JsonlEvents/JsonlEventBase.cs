@@ -12,6 +12,7 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 [JsonDerivedType(typeof(FileHistorySnapshotEvent), "file-history-snapshot")]
 [JsonDerivedType(typeof(SystemInitEvent), "system")]
 [JsonDerivedType(typeof(ResultEvent), "result")]
+[JsonDerivedType(typeof(RateLimitEvent), "rate_limit_event")]
 public abstract record JsonlEventBase
 {
     // Note: The 'type' property is handled by JsonPolymorphic discriminator,
