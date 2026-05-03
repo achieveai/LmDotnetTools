@@ -74,7 +74,8 @@ public sealed class ClaudeAgentSdkAgainstMockTests
             ],
         };
 
-        await client.StartAsync(request);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await client.StartAsync(request, cts.Token);
         var userMessage = new TextMessage
         {
             Role = Role.User,
@@ -82,7 +83,6 @@ public sealed class ClaudeAgentSdkAgainstMockTests
         };
 
         var renderedText = new System.Text.StringBuilder();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         try
         {
             await foreach (var message in client.SendMessagesAsync([userMessage], cts.Token))

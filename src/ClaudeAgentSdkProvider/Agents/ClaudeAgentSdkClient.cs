@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 #pragma warning disable IDE0058 // Expression value is never used
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
@@ -179,7 +180,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             // Optional overrides for E2E tests against a mock provider host. Setting any of
             // these on the child process redirects the CLI away from the real Anthropic API.
-            ApplyMockHostOverrides(startInfo.Environment, _options);
+            ApplyMockHostOverrides(startInfo.Environment, _options, _logger);
 
             // 6. Start process
             _process = Process.Start(startInfo);
@@ -1270,14 +1271,35 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     ///     the CLI honours: <c>ANTHROPIC_BASE_URL</c>, <c>ANTHROPIC_AUTH_TOKEN</c>,
     ///     <c>CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS</c>.
     /// </summary>
-    internal static void ApplyMockHostOverrides(IDictionary<string, string?> environment, ClaudeAgentSdkOptions options)
+    /// <remarks>
+    ///     The Anthropic SDK / Claude Agent SDK CLI re-appends <c>/v1/messages</c> to whatever
+    ///     <c>ANTHROPIC_BASE_URL</c> it reads. A trailing <c>/v1</c> on <see cref="ClaudeAgentSdkOptions.BaseUrl"/>
+    ///     therefore produces requests against <c>/v1/v1/messages</c> which 404 silently (issue #29).
+    ///     This method defensively strips a trailing <c>/v1</c> via <see cref="BaseUrlNormalizer.StripV1Suffix"/>
+    ///     and emits a warning so the caller can correct the configuration.
+    /// </remarks>
+    internal static void ApplyMockHostOverrides(
+        IDictionary<string, string?> environment,
+        ClaudeAgentSdkOptions options,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(environment);
         ArgumentNullException.ThrowIfNull(options);
 
         if (!string.IsNullOrEmpty(options.BaseUrl))
         {
-            environment["ANTHROPIC_BASE_URL"] = options.BaseUrl;
+            var normalized = BaseUrlNormalizer.StripV1Suffix(options.BaseUrl);
+            if (!string.Equals(normalized, options.BaseUrl, StringComparison.Ordinal))
+            {
+                logger?.LogWarning(
+                    "ClaudeAgentSdkOptions.BaseUrl '{ConfiguredBaseUrl}' ends in '/v1'; the Anthropic SDK CLI "
+                    + "re-appends '/v1/messages', which would produce '/v1/v1/messages' (issue #29). "
+                    + "Stripping to '{NormalizedBaseUrl}' for ANTHROPIC_BASE_URL — please update the caller "
+                    + "to drop the '/v1' suffix.",
+                    options.BaseUrl,
+                    normalized);
+            }
+            environment["ANTHROPIC_BASE_URL"] = normalized;
         }
         if (!string.IsNullOrEmpty(options.AuthToken))
         {
