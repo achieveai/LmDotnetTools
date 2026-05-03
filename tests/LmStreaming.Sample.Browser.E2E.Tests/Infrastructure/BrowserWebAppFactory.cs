@@ -35,25 +35,41 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 {
     private readonly string _providerMode;
-    private readonly ITestAgentBuilder _builder;
+    private readonly ITestAgentBuilder? _builder;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
-    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder builder)
+    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder? builder)
     {
-        if (
-            !string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase)
-        )
+        // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
+        // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
+        // MockProviderHostLifetime that boots automatically at app startup; for those modes the
+        // builder is unused and may be null.
+        var isScriptedMode =
+            string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase);
+        var isMockHostMode =
+            string.Equals(providerMode, "claude-mock", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(providerMode, "codex-mock", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(providerMode, "copilot-mock", StringComparison.OrdinalIgnoreCase);
+
+        if (!isScriptedMode && !isMockHostMode)
         {
             throw new ArgumentException(
-                $"providerMode must be 'test' or 'test-anthropic'; got '{providerMode}'",
+                $"providerMode must be 'test', 'test-anthropic', or a *-mock variant; got '{providerMode}'",
                 nameof(providerMode)
             );
         }
 
+        if (isScriptedMode && builder is null)
+        {
+            throw new ArgumentNullException(
+                nameof(builder),
+                "Scripted provider modes require an ITestAgentBuilder.");
+        }
+
         _providerMode = providerMode;
-        _builder = builder ?? throw new ArgumentNullException(nameof(builder));
+        _builder = builder;
 
         // Program.cs reads LM_PROVIDER_MODE at the top-level, well before any host-builder
         // callback fires. Set it here so the sample picks the right test-mode agent factory.
@@ -80,11 +96,16 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         // ConfigureTestServices runs after Program.cs's default registrations, so
         // AddSingleton + RemoveAll last-wins semantics guarantee our builder is resolved.
-        builder.ConfigureTestServices(services =>
+        // For *-mock modes the builder is unused (real CLI drives the in-process mock host),
+        // so leave the default registration in place when none is supplied.
+        if (_builder is not null)
         {
-            services.RemoveAll<ITestAgentBuilder>();
-            services.AddSingleton(_builder);
-        });
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<ITestAgentBuilder>();
+                services.AddSingleton(_builder);
+            });
+        }
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
