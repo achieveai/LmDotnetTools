@@ -72,7 +72,14 @@ var app = MockProviderHostBuilder.Build(
 
 await app.StartAsync();
 var baseUrl = app.Urls.First();           // e.g., http://127.0.0.1:51234
-// point your CLI at $"{baseUrl}/v1" via OPENAI_BASE_URL / ANTHROPIC_BASE_URL
+// OPENAI_BASE_URL: point at $"{baseUrl}/v1" (the in-house client appends
+// /chat/completions or /messages directly, so the configured value must
+// already include the /v1 segment).
+// ANTHROPIC_BASE_URL (used by the official Anthropic SDK / Claude Agent SDK
+// CLI): point at $"{baseUrl}" — NO trailing /v1. The SDK appends
+// /v1/messages itself, and a configured /v1 segment produces /v1/v1/messages
+// which 404s silently (issue #29). Use BaseUrlNormalizer.StripV1Suffix /
+// EnsureV1Suffix from LmCore.Utils to pick the correct convention.
 ```
 
 ## Authoring scenarios

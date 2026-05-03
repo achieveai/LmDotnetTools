@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
@@ -258,6 +259,10 @@ try
                             "claude-mock", "the in-process mock provider host is not running");
                     }
 
+                    // Claude Agent SDK CLI appends /v1/messages itself, so the configured
+                    // value must NOT end in /v1 (issue #29). Strip defensively so config drift
+                    // doesn't silently turn into 404s.
+                    var claudeMockBaseUrl = BaseUrlNormalizer.StripV1Suffix(mockBaseUrl);
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateClaudeAgentLoop(
                             threadId,
@@ -267,7 +272,7 @@ try
                             loggerFactory,
                             mcpBaseUrl,
                             llmQueryMcpExamType,
-                            mockBaseUrlOverride: mockBaseUrl,
+                            mockBaseUrlOverride: claudeMockBaseUrl,
                             mockAuthTokenOverride: "mock-token"));
                 }
 
@@ -985,11 +990,13 @@ public partial class Program
                 ? string.Join(",", mode.EnabledTools)
                 : string.Empty;
 
+        // claude-agent-sdk CLI v0.1.55 does not recognize --no-checkpoints /
+        // --no-session-persistence. Setting DisableCheckpoints / DisableSessionPersistence makes
+        // the CLI exit immediately with "unknown option", which surfaces to the chat client as
+        // "the agent completes with no assistant content rendered" (issue #29).
         var claudeOptions = new ClaudeAgentSdkOptions
         {
             MaxTurnsPerRun = 50,
-            DisableCheckpoints = true,
-            DisableSessionPersistence = true,
             AllowedTools = allowedTools,
             BaseUrl = string.IsNullOrWhiteSpace(mockBaseUrlOverride) ? null : mockBaseUrlOverride,
             AuthToken = string.IsNullOrWhiteSpace(mockAuthTokenOverride) ? null : mockAuthTokenOverride,

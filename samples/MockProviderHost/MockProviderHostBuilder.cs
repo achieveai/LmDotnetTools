@@ -98,6 +98,23 @@ public static class MockProviderHostBuilder
         app.MapPost("/v1/messages", ctx =>
             ForwardAsync(ctx, anthropicClient, "/v1/messages", openAiHeaders: false));
 
+        // Catch-all so mismatched paths surface a logged 404 rather than failing silently —
+        // diagnostic anchor for E2E tests where a BaseUrl misconfiguration would otherwise
+        // present as "the CLI completes with no rendered content" (see issue #29).
+        app.MapFallback(async ctx =>
+        {
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()
+                ?.CreateLogger("MockProviderHost.Unmatched");
+            logger?.LogWarning(
+                "Unmatched request: {Method} {Path}{Query} (host expected /healthz, /v1/chat/completions, /v1/messages)",
+                ctx.Request.Method,
+                ctx.Request.Path,
+                ctx.Request.QueryString);
+            ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+            await ctx.Response.WriteAsync(
+                $"Mock provider host: no route for {ctx.Request.Method} {ctx.Request.Path}");
+        });
+
         return app;
     }
 
