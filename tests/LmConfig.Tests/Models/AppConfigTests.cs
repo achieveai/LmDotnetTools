@@ -34,7 +34,7 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
+        var appConfig = new AppConfig { Models = [], ProviderRegistry = providerRegistry };
 
         // Act
         var openAIConnection = appConfig.GetProviderConnection("OpenAI");
@@ -81,7 +81,7 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
+        var appConfig = new AppConfig { Models = [], ProviderRegistry = providerRegistry };
 
         // Act
         var registeredProviders = appConfig.GetRegisteredProviders();
@@ -111,7 +111,7 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
+        var appConfig = new AppConfig { Models = [], ProviderRegistry = providerRegistry };
 
         // Act & Assert
         Assert.True(appConfig.IsProviderRegistered("OpenAI"));
@@ -127,7 +127,7 @@ public class AppConfigTests
         // Arrange
         System.Diagnostics.Debug.WriteLine("Testing AppConfig with null ProviderRegistry");
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = null };
+        var appConfig = new AppConfig { Models = [], ProviderRegistry = null };
 
         // Act & Assert
         Assert.Null(appConfig.GetProviderConnection("OpenAI"));

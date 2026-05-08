@@ -48,3 +48,6 @@ node_modules/
 # WebSocket recordings
 **/recordings/
 .logs/
+
+# Husky.Net auto-install scratch dir
+.husky/_/

@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
-using Moq;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -157,7 +156,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
 
         // Act - Multiple concurrent requests
         var tasks = new List<Task<IReadOnlyList<ModelConfig>>>();
-        for (int i = 0; i < 5; i++)
+        for (var i = 0; i < 5; i++)
         {
             tasks.Add(service.GetModelConfigsAsync());
         }

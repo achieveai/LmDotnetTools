@@ -19,7 +19,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -42,7 +42,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -68,7 +68,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         services.AddLmConfig(appConfig);
         var serviceProvider = services.BuildServiceProvider();
@@ -106,7 +106,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act - Register multiple times (should not cause issues)
         services.AddLmConfig(appConfig);
@@ -137,7 +137,7 @@ public class OpenRouterModelServiceRegistrationTests
             client.DefaultRequestHeaders.Add("User-Agent", "CustomTestAgent");
         });
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -160,7 +160,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         // Note: Not adding HttpClient explicitly
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -179,7 +179,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -201,7 +201,7 @@ public class OpenRouterModelServiceRegistrationTests
                 var services = new ServiceCollection();
                 services.AddLogging();
                 services.AddHttpClient();
-                var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+                var appConfig = new AppConfig { Models = [] };
                 services.AddLmConfig(appConfig);
                 return services.BuildServiceProvider();
             },
@@ -212,7 +212,7 @@ public class OpenRouterModelServiceRegistrationTests
                 services.AddHttpClient();
                 services.AddLmConfig(options =>
                 {
-                    options.AppConfig = new AppConfig { Models = new List<ModelConfig>() };
+                    options.AppConfig = new AppConfig { Models = [] };
                     options.RegisterAsDefaultAgent = false;
                 });
                 return services.BuildServiceProvider();
@@ -238,7 +238,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLogging();
         services.AddHttpClient();
 
-        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
+        var appConfig = new AppConfig { Models = [] };
 
         services.AddLmConfig(appConfig);
         var serviceProvider = services.BuildServiceProvider();

@@ -4,7 +4,6 @@ using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -37,7 +36,7 @@ public class OpenRouterModelServiceMappingTests
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -71,7 +70,7 @@ public class OpenRouterModelServiceMappingTests
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -103,7 +102,7 @@ public class OpenRouterModelServiceMappingTests
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -283,7 +282,7 @@ public class OpenRouterModelServiceMappingTests
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
     }
 }

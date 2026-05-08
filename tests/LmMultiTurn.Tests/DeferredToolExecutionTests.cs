@@ -785,15 +785,12 @@ public class DeferredToolExecutionTests
             .Returns(Task.FromResult(ToAsyncEnumerable([message])));
     }
 
-    private static FunctionContract BuildContract(string name)
+    private static FunctionContract BuildContract(string name) => new()
     {
-        return new()
-        {
-            Name = name,
-            Description = $"Test contract for {name}",
-            Parameters = [],
-        };
-    }
+        Name = name,
+        Description = $"Test contract for {name}",
+        Parameters = [],
+    };
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         IEnumerable<IMessage> messages,

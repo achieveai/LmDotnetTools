@@ -1,4 +1,3 @@
-using System.Linq;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
@@ -6,10 +5,8 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 
 namespace LmConfig.Tests;
 
@@ -38,8 +35,8 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = new[]
-            {
+            Models =
+            [
                 new ModelConfig
                 {
                     Id = "test-model",
@@ -52,19 +49,19 @@ public class UnifiedAgentTests
                             RecommendedMaxPromptTokens = 3000,
                         },
                     },
-                    Providers = new[]
-                    {
+                    Providers =
+                    [
                         new ProviderConfig
                         {
                             Name = "TestProvider",
                             ModelName = "test-model-name",
                             Priority = 1,
                             Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
-                            Tags = new[] { "test" },
+                            Tags = ["test"],
                         },
-                    },
+                    ],
                 },
-            },
+            ],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>
             {
                 ["TestProvider"] = new ProviderConnectionInfo
@@ -98,8 +95,8 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = new[]
-            {
+            Models =
+            [
                 new ModelConfig
                 {
                     Id = "test-model",
@@ -112,19 +109,19 @@ public class UnifiedAgentTests
                             RecommendedMaxPromptTokens = 3000,
                         },
                     },
-                    Providers = new[]
-                    {
+                    Providers =
+                    [
                         new ProviderConfig
                         {
                             Name = "TestProvider",
                             ModelName = "test-model-name",
                             Priority = 1,
                             Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
-                            Tags = new[] { "test" },
+                            Tags = ["test"],
                         },
-                    },
+                    ],
                 },
-            },
+            ],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>
             {
                 ["TestProvider"] = new ProviderConnectionInfo
@@ -171,7 +168,7 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = Array.Empty<ModelConfig>(),
+            Models = [],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>(),
         };
 
@@ -194,8 +191,8 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = new[]
-            {
+            Models =
+            [
                 new ModelConfig
                 {
                     Id = "gpt-4.1",
@@ -208,19 +205,19 @@ public class UnifiedAgentTests
                             RecommendedMaxPromptTokens = 3000,
                         },
                     },
-                    Providers = new[]
-                    {
+                    Providers =
+                    [
                         new ProviderConfig
                         {
                             Name = "OpenRouter",
                             ModelName = "openai/gpt-4.1", // Different from the model ID
                             Priority = 1,
                             Pricing = new PricingConfig { PromptPerMillion = 2.0, CompletionPerMillion = 8.0 },
-                            Tags = new[] { "openai-compatible" },
+                            Tags = ["openai-compatible"],
                         },
-                    },
+                    ],
                 },
-            },
+            ],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>
             {
                 ["OpenRouter"] = new ProviderConnectionInfo
@@ -271,10 +268,9 @@ public class UnifiedAgentTests
                 (messages, options, ct) => capturedOptions = options
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Role = Role.Assistant, Text = "Test response" },
-                }
+                ]
             );
 
         mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
@@ -323,8 +319,8 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = new[]
-            {
+            Models =
+            [
                 new ModelConfig
                 {
                     Id = "claude-3-sonnet",
@@ -337,19 +333,19 @@ public class UnifiedAgentTests
                             RecommendedMaxPromptTokens = 3000,
                         },
                     },
-                    Providers = new[]
-                    {
+                    Providers =
+                    [
                         new ProviderConfig
                         {
                             Name = "OpenRouter",
                             ModelName = "anthropic/claude-3-sonnet", // Different from the model ID
                             Priority = 1,
                             Pricing = new PricingConfig { PromptPerMillion = 3.0, CompletionPerMillion = 15.0 },
-                            Tags = new[] { "openai-compatible" },
+                            Tags = ["openai-compatible"],
                         },
-                    },
+                    ],
                 },
-            },
+            ],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>
             {
                 ["OpenRouter"] = new ProviderConnectionInfo
@@ -449,8 +445,8 @@ public class UnifiedAgentTests
         // Arrange
         var config = new AppConfig
         {
-            Models = new[]
-            {
+            Models =
+            [
                 new ModelConfig
                 {
                     Id = "deepseek-r1",
@@ -463,19 +459,19 @@ public class UnifiedAgentTests
                             RecommendedMaxPromptTokens = 3000,
                         },
                     },
-                    Providers = new[]
-                    {
+                    Providers =
+                    [
                         new ProviderConfig
                         {
                             Name = "DeepSeek",
                             ModelName = "deepseek-reasoner", // Different from the model ID
                             Priority = 1,
                             Pricing = new PricingConfig { PromptPerMillion = 0.55, CompletionPerMillion = 2.19 },
-                            Tags = new[] { "reasoning" },
+                            Tags = ["reasoning"],
                         },
-                    },
+                    ],
                 },
-            },
+            ],
             ProviderRegistry = new Dictionary<string, ProviderConnectionInfo>
             {
                 ["DeepSeek"] = new ProviderConnectionInfo
@@ -526,10 +522,9 @@ public class UnifiedAgentTests
                 (messages, options, ct) => capturedOptions = options
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Role = Role.Assistant, Text = "Test response" },
-                }
+                ]
             );
 
         mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);

@@ -315,9 +315,12 @@ public static partial class ImageMessageExtensions
         }
 
         // Normalize non-standard MIME types
-        return string.Equals(fallbackMimeType, "image/jpg", StringComparison.OrdinalIgnoreCase)
-            ? "image/jpeg"
-            : fallbackMimeType ?? "application/octet-stream";
+        if (string.Equals(fallbackMimeType, "image/jpg", StringComparison.OrdinalIgnoreCase))
+        {
+            return "image/jpeg";
+        }
+
+        return fallbackMimeType ?? "application/octet-stream";
     }
 
     // Create BinaryData with explicit mime type

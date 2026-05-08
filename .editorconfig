@@ -134,15 +134,16 @@ csharp_style_var_for_built_in_types = true:suggestion
 csharp_style_var_when_type_is_apparent = true:suggestion
 csharp_style_var_elsewhere = true:suggestion
 
-# Expression-bodied members
-csharp_style_expression_bodied_methods = false:suggestion
-csharp_style_expression_bodied_constructors = false:suggestion
-csharp_style_expression_bodied_operators = false:suggestion
-csharp_style_expression_bodied_properties = true:suggestion
-csharp_style_expression_bodied_indexers = true:suggestion
-csharp_style_expression_bodied_accessors = true:suggestion
-csharp_style_expression_bodied_lambdas = true:suggestion
-csharp_style_expression_bodied_local_functions = false:suggestion
+# Expression-bodied members — allow both forms (silent severity) so the formatter
+# does not rewrite single-expression methods like `=> new(...)` into block bodies.
+csharp_style_expression_bodied_methods = when_on_single_line:silent
+csharp_style_expression_bodied_constructors = when_on_single_line:silent
+csharp_style_expression_bodied_operators = when_on_single_line:silent
+csharp_style_expression_bodied_properties = true:silent
+csharp_style_expression_bodied_indexers = true:silent
+csharp_style_expression_bodied_accessors = true:silent
+csharp_style_expression_bodied_lambdas = true:silent
+csharp_style_expression_bodied_local_functions = when_on_single_line:silent
 
 # Pattern matching preferences
 csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
@@ -229,8 +230,23 @@ dotnet_diagnostic.IDE0011.severity = error
 # IDE0110: Remove unnecessary discard
 dotnet_diagnostic.IDE0110.severity = warning
 
-# IDE0046: Convert to conditional expression
-dotnet_diagnostic.IDE0046.severity = warning
+# IDE0046: Convert to conditional expression — suppressed globally because the
+# rewrite collapses guard-clause early-returns into deeply nested ternaries that
+# harm readability in parser/dispatcher methods (per PR #33 review feedback).
+dotnet_diagnostic.IDE0046.severity = none
+
+# IDE0021/IDE0022/IDE0023/IDE0024/IDE0025/IDE0026/IDE0027/IDE0061: expression body
+# preferences — suppressed so the formatter does not rewrite single-expression
+# methods/constructors/operators/properties/accessors/local functions back and
+# forth. Either form is acceptable (per PR #33 review feedback on churn).
+dotnet_diagnostic.IDE0021.severity = none
+dotnet_diagnostic.IDE0022.severity = none
+dotnet_diagnostic.IDE0023.severity = none
+dotnet_diagnostic.IDE0024.severity = none
+dotnet_diagnostic.IDE0025.severity = none
+dotnet_diagnostic.IDE0026.severity = none
+dotnet_diagnostic.IDE0027.severity = none
+dotnet_diagnostic.IDE0061.severity = none
 
 # IDE0075: Simplify conditional expression
 dotnet_diagnostic.IDE0075.severity = warning

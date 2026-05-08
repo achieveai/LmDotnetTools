@@ -133,7 +133,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddDays(1), // Future timestamp
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
 
         await SaveTestCache(invalidCache);
@@ -163,7 +163,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = null, // Missing models data
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
 
         await SaveTestCache(invalidCache);
@@ -193,7 +193,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
 
         await SaveTestCache(cache);
@@ -217,7 +217,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
 
         await SaveTestCache(cache);
