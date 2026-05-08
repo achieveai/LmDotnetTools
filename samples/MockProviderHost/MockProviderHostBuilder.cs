@@ -1,5 +1,9 @@
 using System.Net.Http.Headers;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.MockProviderHost;
 
@@ -36,8 +40,9 @@ public static class MockProviderHostBuilder
 
         var openAiHandler = responder.AsOpenAiHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAi"));
         var anthropicHandler = responder.AsAnthropicHandler(loggerFactory?.CreateLogger("MockProviderHost.Anthropic"));
+        var responsesHandler = responder.AsOpenAiResponsesHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAiResponses"));
 
-        return BuildFromHandlers(openAiHandler, anthropicHandler, urls, loggerFactory);
+        return BuildFromHandlers(openAiHandler, anthropicHandler, responsesHandler, responder, urls, loggerFactory);
     }
 
     /// <summary>
@@ -46,9 +51,18 @@ public static class MockProviderHostBuilder
     /// interpose tee/capture handlers between the host and the inner scripted handlers, so they
     /// can assert byte-equality between what the host streams and what the inner handlers produced.
     /// </summary>
+    /// <remarks>
+    ///     The <paramref name="responsesResponder"/> is used directly for the WebSocket transport
+    ///     (which can't go through an <see cref="HttpMessageHandler"/>), while
+    ///     <paramref name="responsesHandler"/> serves the HTTP+SSE path. Tests can pass a tee
+    ///     handler for byte-identity assertions while still pointing the WS path at the same
+    ///     responder.
+    /// </remarks>
     internal static WebApplication BuildFromHandlers(
         HttpMessageHandler openAiHandler,
         HttpMessageHandler anthropicHandler,
+        HttpMessageHandler? responsesHandler = null,
+        ScriptedSseResponder? responsesResponder = null,
         string[]? urls = null,
         ILoggerFactory? loggerFactory = null)
     {
@@ -73,6 +87,7 @@ public static class MockProviderHostBuilder
         }
 
         var app = builder.Build();
+        _ = app.UseWebSockets();
 
         var openAiClient = new HttpClient(openAiHandler, disposeHandler: true)
         {
@@ -82,12 +97,19 @@ public static class MockProviderHostBuilder
         {
             BaseAddress = new Uri("http://mock.local/"),
         };
+        HttpClient? responsesClient = responsesHandler is null
+            ? null
+            : new HttpClient(responsesHandler, disposeHandler: true)
+            {
+                BaseAddress = new Uri("http://mock.local/"),
+            };
 
         // Dispose the in-process clients (and their wrapped handlers) when the host shuts down.
         _ = app.Lifetime.ApplicationStopping.Register(() =>
         {
             openAiClient.Dispose();
             anthropicClient.Dispose();
+            responsesClient?.Dispose();
         });
 
         _ = app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
@@ -97,6 +119,37 @@ public static class MockProviderHostBuilder
 
         _ = app.MapPost("/v1/messages", ctx =>
             ForwardAsync(ctx, anthropicClient, "/v1/messages", openAiHeaders: false));
+
+        if (responsesClient is not null)
+        {
+            _ = app.MapPost("/v1/responses", ctx =>
+                ForwardAsync(ctx, responsesClient, "/v1/responses", openAiHeaders: true));
+        }
+
+        if (responsesResponder is not null)
+        {
+            // Only GET upgrades to WebSocket — POST is handled above for HTTP+SSE, and
+            // restricting this route prevents future verbs from being silently swallowed.
+            _ = app.MapGet("/v1/responses", async ctx =>
+            {
+                var logger = ctx.RequestServices.GetService<ILoggerFactory>()
+                    ?.CreateLogger("MockProviderHost.OpenAiResponsesWs");
+                if (!ctx.WebSockets.IsWebSocketRequest)
+                {
+                    // Match real Responses API behavior: clients must upgrade to a WebSocket.
+                    ctx.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
+                    ctx.Response.Headers["Upgrade"] = "websocket";
+                    ctx.Response.Headers["Connection"] = "Upgrade";
+                    await ctx.Response.WriteAsync(
+                        "WebSocket upgrade required for /v1/responses (use POST for HTTP+SSE)");
+                    return;
+                }
+
+                using var socket = await ctx.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+                await ServeResponsesWebSocketAsync(socket, responsesResponder, logger, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+            });
+        }
 
         // Catch-all so mismatched paths surface a logged 404 rather than failing silently —
         // diagnostic anchor for E2E tests where a BaseUrl misconfiguration would otherwise
@@ -116,6 +169,234 @@ public static class MockProviderHostBuilder
         });
 
         return app;
+    }
+
+    private static async Task ServeResponsesWebSocketAsync(
+        WebSocket socket,
+        ScriptedSseResponder responder,
+        ILogger? logger,
+        CancellationToken cancellationToken)
+    {
+        var receiveBuffer = new byte[8 * 1024];
+
+        while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        {
+            string? frameText;
+            try
+            {
+                frameText = await ReadFullTextFrameAsync(socket, receiveBuffer, cancellationToken).ConfigureAwait(false);
+            }
+            catch (WebSocketException wsEx)
+            {
+                logger?.LogDebug(wsEx, "WebSocket read aborted");
+                return;
+            }
+
+            if (frameText is null)
+            {
+                return;
+            }
+
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(frameText);
+            }
+            catch (JsonException ex)
+            {
+                logger?.LogWarning(ex, "Malformed JSON on WebSocket frame; closing");
+                await socket.CloseAsync(
+                    WebSocketCloseStatus.InvalidPayloadData,
+                    "Invalid JSON",
+                    cancellationToken
+                ).ConfigureAwait(false);
+                return;
+            }
+
+            using (doc)
+            {
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var typeProp)
+                    || typeProp.ValueKind != JsonValueKind.String
+                    || typeProp.GetString() != ResponseEventTypes.ClientResponseCreate)
+                {
+                    logger?.LogWarning("Frame missing or invalid 'type' = response.create; closing");
+                    await socket.CloseAsync(
+                        WebSocketCloseStatus.InvalidPayloadData,
+                        "Expected response.create",
+                        cancellationToken
+                    ).ConfigureAwait(false);
+                    return;
+                }
+
+                var ctx = BuildResponsesContext(root);
+                var model = root.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String
+                    ? m.GetString()
+                    : null;
+
+                try
+                {
+                    await responder.EmitResponseEventsAsync(socket, ctx, model, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger?.LogError(ex, "Failure while emitting WebSocket events");
+                    if (socket.State == WebSocketState.Open)
+                    {
+                        await socket.CloseAsync(
+                            WebSocketCloseStatus.InternalServerError,
+                            "Emit failure",
+                            cancellationToken
+                        ).ConfigureAwait(false);
+                    }
+
+                    return;
+                }
+            }
+        }
+
+        if (socket.State == WebSocketState.Open)
+        {
+            // If the request was aborted, the original token is already cancelled; pass
+            // CancellationToken.None so the close frame can still be written before we exit.
+            var closeToken = cancellationToken.IsCancellationRequested
+                ? CancellationToken.None
+                : cancellationToken;
+            try
+            {
+                await socket.CloseAsync(
+                    WebSocketCloseStatus.NormalClosure,
+                    "session ended",
+                    closeToken
+                ).ConfigureAwait(false);
+            }
+            catch (WebSocketException wsEx)
+            {
+                logger?.LogDebug(wsEx, "Best-effort close after session end failed");
+            }
+        }
+    }
+
+    private static async Task<string?> ReadFullTextFrameAsync(
+        WebSocket socket,
+        byte[] buffer,
+        CancellationToken cancellationToken)
+    {
+        var sb = new StringBuilder();
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                if (socket.State == WebSocketState.CloseReceived)
+                {
+                    await socket.CloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "client closed",
+                        cancellationToken
+                    ).ConfigureAwait(false);
+                }
+
+                return null;
+            }
+
+            sb.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+            if (result.EndOfMessage)
+            {
+                return sb.ToString();
+            }
+        }
+    }
+
+    private static ScriptedRequestContext BuildResponsesContext(JsonElement root)
+    {
+        var systemPrompt = root.TryGetProperty("instructions", out var instr)
+            && instr.ValueKind == JsonValueKind.String
+                ? instr.GetString() ?? string.Empty
+                : string.Empty;
+
+        string? latestUser = null;
+        var tools = new List<string>();
+
+        if (root.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in input.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (item.TryGetProperty("role", out var role)
+                    && role.ValueKind == JsonValueKind.String
+                    && string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase))
+                {
+                    latestUser = ExtractInputText(item);
+                }
+            }
+        }
+
+        if (root.TryGetProperty("tools", out var toolsEl) && toolsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var tool in toolsEl.EnumerateArray())
+            {
+                if (tool.ValueKind == JsonValueKind.Object
+                    && tool.TryGetProperty("name", out var n)
+                    && n.ValueKind == JsonValueKind.String)
+                {
+                    tools.Add(n.GetString()!);
+                }
+            }
+        }
+
+        return new ScriptedRequestContext
+        {
+            Wire = ScriptedWireFormat.OpenAiResponses,
+            RequestBody = root.Clone(),
+            SystemPrompt = systemPrompt,
+            Tools = tools,
+            LatestUserMessage = latestUser,
+        };
+    }
+
+    private static string? ExtractInputText(JsonElement item)
+    {
+        if (!item.TryGetProperty("content", out var content))
+        {
+            return null;
+        }
+
+        if (content.ValueKind == JsonValueKind.String)
+        {
+            return content.GetString();
+        }
+
+        if (content.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var part in content.EnumerateArray())
+        {
+            if (part.ValueKind != JsonValueKind.Object
+                || !part.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var t = type.GetString();
+            if ((t is "input_text" or "output_text" or "text")
+                && part.TryGetProperty("text", out var textProp)
+                && textProp.ValueKind == JsonValueKind.String)
+            {
+                return textProp.GetString();
+            }
+        }
+
+        return null;
     }
 
     private static async Task ForwardAsync(

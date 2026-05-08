@@ -11,16 +11,42 @@ streamed back to the client originates from `SseStreamHttpContent` /
 
 ## Endpoints
 
-| Method | Path                    | Wire                | Description                              |
-|--------|-------------------------|---------------------|------------------------------------------|
-| GET    | `/healthz`              | text/plain `ok`     | Liveness probe.                          |
-| POST   | `/v1/chat/completions`  | OpenAI SSE          | Streaming chat completion.               |
-| POST   | `/v1/messages`          | Anthropic SSE       | Streaming Anthropic messages.            |
+| Method | Path                    | Wire                              | Description                                                          |
+|--------|-------------------------|-----------------------------------|----------------------------------------------------------------------|
+| GET    | `/healthz`              | text/plain `ok`                   | Liveness probe.                                                      |
+| POST   | `/v1/chat/completions`  | OpenAI SSE                        | Streaming chat completion.                                           |
+| POST   | `/v1/messages`          | Anthropic SSE                     | Streaming Anthropic messages.                                        |
+| POST   | `/v1/responses`         | OpenAI Responses API SSE          | Streaming `response.create` events (text + function-call).           |
+| GET    | `/v1/responses` (Upgrade: websocket) | OpenAI Responses API JSON frames | WebSocket transport — accepts multiple `response.create` frames per socket. |
 
 `Authorization` and `x-api-key` headers are accepted and ignored — the inner
 `ScriptedSseResponder` does not authenticate. Conventional response headers
 (`openai-version`, `anthropic-version`, request id) are echoed so strict SDKs
 don't reject responses.
+
+### `/v1/responses` event grammar
+
+Both transports emit the same ordered `ResponseEvent` sequence built by
+`OpenAiResponsesEventStreamWriter` (`src/LmTestUtils/TestMode/`). HTTP+SSE wraps
+each event in a `data: <json>\n\n` envelope; the WebSocket transport sends each
+event as a single text frame containing the same JSON object — the two paths
+deliver byte-equal events at the JSON layer.
+
+Supported event types (server→client):
+
+- `response.created` / `response.in_progress` / `response.completed`
+- `response.output_item.added` / `response.output_item.done` (text and function_call items)
+- `response.content_part.added` / `response.content_part.done` (text parts)
+- `response.output_text.delta` / `response.output_text.done`
+- `response.function_call_arguments.delta` / `response.function_call_arguments.done`
+
+Unsupported in v1 (deferred to follow-up issues): `response.web_search_call.*`
+and `codex.rate_limits` server-side tool events.
+
+The WebSocket path accepts one client frame type — `{"type":"response.create",
+...}` — matching the request body shape of the HTTP route. Malformed JSON or a
+wrong `type` discriminator closes the socket with status 1003
+(`InvalidPayloadData`).
 
 ## Running standalone
 
@@ -95,9 +121,10 @@ follow-ups:
 
 - File-based script loader (`--script <path>`).
 - Per-request scenario routing via `X-Mock-Scenario` header.
-- Embeddings / rerank / `/v1/responses` / image / audio endpoints.
+- Embeddings / rerank / image / audio endpoints.
 - Admin API for hot-swapping scripts at runtime.
 - Docker image.
+- `response.web_search_call.*` and `codex.rate_limits` events on `/v1/responses`.
 
 ## Copilot CLI integration (investigation, issue #14)
 

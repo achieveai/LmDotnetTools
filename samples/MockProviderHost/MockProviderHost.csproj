@@ -10,6 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="..\..\src\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.MockProviderHost.Tests" />
