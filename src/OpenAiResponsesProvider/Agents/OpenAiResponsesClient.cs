@@ -98,9 +98,27 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
 
         if (!response.IsSuccessStatusCode)
         {
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            string errorBody;
+            try
+            {
+                errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception readEx) when (readEx is not OperationCanceledException)
+            {
+                errorBody = "<unable to read response body>";
+            }
+
+            _logger.LogError(
+                "OpenAI Responses API error: {StatusCode} {ReasonPhrase} Body={ErrorBody}",
+                (int)response.StatusCode,
+                response.ReasonPhrase,
+                errorBody
+            );
+
             throw new HttpRequestException(
-                $"OpenAI Responses API returned {(int)response.StatusCode} {response.ReasonPhrase}: {errorBody}"
+                $"OpenAI Responses API returned {(int)response.StatusCode} {response.ReasonPhrase}: {errorBody}",
+                inner: null,
+                response.StatusCode
             );
         }
 

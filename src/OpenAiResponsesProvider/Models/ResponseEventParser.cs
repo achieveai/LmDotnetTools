@@ -141,17 +141,17 @@ public static class ResponseEventParser
         switch (ev)
         {
             case ResponseLifecycleEvent lifecycle:
-                obj["response"] = JsonNode.Parse(lifecycle.Response.GetRawText());
+                obj["response"] = ToJsonNode(lifecycle.Response);
                 break;
             case ResponseOutputItemEvent item:
                 obj["output_index"] = item.OutputIndex;
-                obj["item"] = JsonNode.Parse(item.Item.GetRawText());
+                obj["item"] = ToJsonNode(item.Item);
                 break;
             case ResponseContentPartEvent part:
                 obj["item_id"] = part.ItemId;
                 obj["output_index"] = part.OutputIndex;
                 obj["content_index"] = part.ContentIndex;
-                obj["part"] = JsonNode.Parse(part.Part.GetRawText());
+                obj["part"] = ToJsonNode(part.Part);
                 break;
             case ResponseOutputTextDeltaEvent delta:
                 obj["item_id"] = delta.ItemId;
@@ -193,14 +193,12 @@ public static class ResponseEventParser
 
     private static JsonElement ToElement(JsonNode? node)
     {
-        if (node is null)
-        {
-            using var doc = JsonDocument.Parse("null");
-            return doc.RootElement.Clone();
-        }
+        return JsonSerializer.SerializeToElement(node);
+    }
 
-        using var doc2 = JsonDocument.Parse(node.ToJsonString());
-        return doc2.RootElement.Clone();
+    private static JsonNode? ToJsonNode(JsonElement element)
+    {
+        return JsonSerializer.Deserialize<JsonNode>(element);
     }
 
     private static JsonObject? ExtraExcludingKnown(JsonObject obj)

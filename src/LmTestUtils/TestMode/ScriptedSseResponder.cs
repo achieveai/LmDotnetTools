@@ -580,72 +580,8 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 ? instr.GetString() ?? string.Empty
                 : string.Empty;
 
-        string? latest = null;
-        if (root.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in input.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                if (!item.TryGetProperty("role", out var role)
-                    || role.ValueKind != JsonValueKind.String
-                    || !string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                latest = ReadResponsesInputText(item);
-            }
-        }
-
+        var latest = ResponsesInputReader.ExtractLatestUserText(root, concatenateAll: true);
         return (systemPrompt, latest);
-    }
-
-    private static string ReadResponsesInputText(JsonElement item)
-    {
-        if (!item.TryGetProperty("content", out var content))
-        {
-            return string.Empty;
-        }
-
-        if (content.ValueKind == JsonValueKind.String)
-        {
-            return content.GetString() ?? string.Empty;
-        }
-
-        if (content.ValueKind != JsonValueKind.Array)
-        {
-            return string.Empty;
-        }
-
-        var sb = new StringBuilder();
-        foreach (var part in content.EnumerateArray())
-        {
-            if (part.ValueKind != JsonValueKind.Object
-                || !part.TryGetProperty("type", out var type)
-                || type.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var t = type.GetString();
-            if ((t is "input_text" or "output_text" or "text")
-                && part.TryGetProperty("text", out var textProp)
-                && textProp.ValueKind == JsonValueKind.String)
-            {
-                if (sb.Length > 0)
-                {
-                    _ = sb.Append('\n');
-                }
-
-                _ = sb.Append(textProp.GetString());
-            }
-        }
-
-        return sb.ToString();
     }
 
     private static (string systemPrompt, string? latestUser) ExtractAnthropic(JsonElement root)

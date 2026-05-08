@@ -149,7 +149,7 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
             return new InstructionPlan("completion", null, [InstructionMessage.ForText(5)]);
         }
 
-        var latest = ExtractLatestUserText(root) ?? string.Empty;
+        var latest = ResponsesInputReader.ExtractLatestUserText(root, concatenateAll: false) ?? string.Empty;
         var (singlePlan, _) = TrySingleInstruction(latest);
         if (singlePlan != null)
         {
@@ -194,7 +194,7 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
                 continue;
             }
 
-            var text = ReadInputText(item);
+            var text = ResponsesInputReader.ReadContentText(item, concatenateAll: false);
             if (string.IsNullOrEmpty(text))
             {
                 continue;
@@ -234,31 +234,6 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
         return count;
     }
 
-    private static string? ExtractLatestUserText(JsonElement root)
-    {
-        if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        string? latest = null;
-        foreach (var item in input.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object || !IsRole(item, "user"))
-            {
-                continue;
-            }
-
-            var text = ReadInputText(item);
-            if (!string.IsNullOrEmpty(text))
-            {
-                latest = text;
-            }
-        }
-
-        return latest;
-    }
-
     private static bool IsRole(JsonElement item, string role)
     {
         return item.TryGetProperty("role", out var r)
@@ -271,46 +246,5 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
         return item.TryGetProperty("type", out var t)
             && t.ValueKind == JsonValueKind.String
             && string.Equals(t.GetString(), type, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string ReadInputText(JsonElement item)
-    {
-        if (!item.TryGetProperty("content", out var content))
-        {
-            return string.Empty;
-        }
-
-        if (content.ValueKind == JsonValueKind.String)
-        {
-            return content.GetString() ?? string.Empty;
-        }
-
-        if (content.ValueKind != JsonValueKind.Array)
-        {
-            return string.Empty;
-        }
-
-        foreach (var part in content.EnumerateArray())
-        {
-            if (part.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (!part.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var typeStr = type.GetString();
-            if (typeStr is "input_text" or "output_text" or "text"
-                && part.TryGetProperty("text", out var textProp)
-                && textProp.ValueKind == JsonValueKind.String)
-            {
-                return textProp.GetString() ?? string.Empty;
-            }
-        }
-
-        return string.Empty;
     }
 }

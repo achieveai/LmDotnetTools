@@ -205,10 +205,12 @@ public static class MockProviderHostBuilder
             catch (JsonException ex)
             {
                 logger?.LogWarning(ex, "Malformed JSON on WebSocket frame; closing");
-                await socket.CloseAsync(
+                await TryCloseAsync(
+                    socket,
                     WebSocketCloseStatus.InvalidPayloadData,
                     "Invalid JSON",
-                    cancellationToken
+                    cancellationToken,
+                    logger
                 ).ConfigureAwait(false);
                 return;
             }
@@ -222,10 +224,12 @@ public static class MockProviderHostBuilder
                     || typeProp.GetString() != ResponseEventTypes.ClientResponseCreate)
                 {
                     logger?.LogWarning("Frame missing or invalid 'type' = response.create; closing");
-                    await socket.CloseAsync(
+                    await TryCloseAsync(
+                        socket,
                         WebSocketCloseStatus.InvalidPayloadData,
                         "Expected response.create",
-                        cancellationToken
+                        cancellationToken,
+                        logger
                     ).ConfigureAwait(false);
                     return;
                 }
@@ -243,15 +247,13 @@ public static class MockProviderHostBuilder
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger?.LogError(ex, "Failure while emitting WebSocket events");
-                    if (socket.State == WebSocketState.Open)
-                    {
-                        await socket.CloseAsync(
-                            WebSocketCloseStatus.InternalServerError,
-                            "Emit failure",
-                            cancellationToken
-                        ).ConfigureAwait(false);
-                    }
-
+                    await TryCloseAsync(
+                        socket,
+                        WebSocketCloseStatus.InternalServerError,
+                        "Emit failure",
+                        CancellationToken.None,
+                        logger
+                    ).ConfigureAwait(false);
                     return;
                 }
             }
@@ -264,18 +266,44 @@ public static class MockProviderHostBuilder
             var closeToken = cancellationToken.IsCancellationRequested
                 ? CancellationToken.None
                 : cancellationToken;
-            try
-            {
-                await socket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    "session ended",
-                    closeToken
-                ).ConfigureAwait(false);
-            }
-            catch (WebSocketException wsEx)
-            {
-                logger?.LogDebug(wsEx, "Best-effort close after session end failed");
-            }
+            await TryCloseAsync(
+                socket,
+                WebSocketCloseStatus.NormalClosure,
+                "session ended",
+                closeToken,
+                logger
+            ).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    ///     Best-effort close that swallows <see cref="WebSocketException"/>,
+    ///     <see cref="OperationCanceledException"/>, and <see cref="ObjectDisposedException"/>.
+    ///     Use from any post-failure or shutdown path where a close frame is desirable but
+    ///     not load-bearing — re-throwing here would replace the original failure with a
+    ///     transport detail.
+    /// </summary>
+    private static async Task TryCloseAsync(
+        WebSocket socket,
+        WebSocketCloseStatus status,
+        string description,
+        CancellationToken cancellationToken,
+        ILogger? logger)
+    {
+        if (socket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
+        try
+        {
+            await socket.CloseAsync(status, description, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is WebSocketException
+                                   or OperationCanceledException
+                                   or ObjectDisposedException)
+        {
+            logger?.LogDebug(ex, "Best-effort WebSocket close ({Status}) failed", status);
         }
     }
 
@@ -317,26 +345,8 @@ public static class MockProviderHostBuilder
                 ? instr.GetString() ?? string.Empty
                 : string.Empty;
 
-        string? latestUser = null;
+        var latestUser = ResponsesInputReader.ExtractLatestUserText(root, concatenateAll: false);
         var tools = new List<string>();
-
-        if (root.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in input.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                if (item.TryGetProperty("role", out var role)
-                    && role.ValueKind == JsonValueKind.String
-                    && string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase))
-                {
-                    latestUser = ExtractInputText(item);
-                }
-            }
-        }
 
         if (root.TryGetProperty("tools", out var toolsEl) && toolsEl.ValueKind == JsonValueKind.Array)
         {
@@ -357,46 +367,8 @@ public static class MockProviderHostBuilder
             RequestBody = root.Clone(),
             SystemPrompt = systemPrompt,
             Tools = tools,
-            LatestUserMessage = latestUser,
+            LatestUserMessage = string.IsNullOrEmpty(latestUser) ? null : latestUser,
         };
-    }
-
-    private static string? ExtractInputText(JsonElement item)
-    {
-        if (!item.TryGetProperty("content", out var content))
-        {
-            return null;
-        }
-
-        if (content.ValueKind == JsonValueKind.String)
-        {
-            return content.GetString();
-        }
-
-        if (content.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        foreach (var part in content.EnumerateArray())
-        {
-            if (part.ValueKind != JsonValueKind.Object
-                || !part.TryGetProperty("type", out var type)
-                || type.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var t = type.GetString();
-            if ((t is "input_text" or "output_text" or "text")
-                && part.TryGetProperty("text", out var textProp)
-                && textProp.ValueKind == JsonValueKind.String)
-            {
-                return textProp.GetString();
-            }
-        }
-
-        return null;
     }
 
     private static async Task ForwardAsync(

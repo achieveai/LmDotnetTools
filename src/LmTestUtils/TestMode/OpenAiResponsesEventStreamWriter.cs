@@ -351,8 +351,7 @@ public static class OpenAiResponsesEventStreamWriter
 
     private static JsonElement ToJsonElement(JsonNode node)
     {
-        using var doc = JsonDocument.Parse(node.ToJsonString());
-        return doc.RootElement.Clone();
+        return JsonSerializer.SerializeToElement(node);
     }
 
     private static IEnumerable<string> ChunkWords(string text, int wordsPerChunk)
