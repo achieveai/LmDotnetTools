@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -94,16 +93,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 
             _subAgentManager = new SubAgentManager(
                 parentAgent: this,
-                parentContracts: contracts.ToList(),
+                parentContracts: [.. contracts],
                 parentHandlers: handlers,
                 options: subAgentOptions,
                 logger: logger);
 
             var toolProvider = new SubAgentToolProvider(
                 _subAgentManager,
-                subAgentOptions.Templates.Keys.ToList());
+                [.. subAgentOptions.Templates.Keys]);
 
-            functionRegistry.AddProvider(toolProvider);
+            _ = functionRegistry.AddProvider(toolProvider);
         }
 
         // Build tool call components from registry
@@ -784,7 +783,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 continue;
             }
 
-            toolCallsById.TryGetValue(tcr.ToolCallId, out var sourceCall);
+            _ = toolCallsById.TryGetValue(tcr.ToolCallId, out var sourceCall);
 
             var entry = new DeferredEntry(
                 ToolCallId: tcr.ToolCallId,

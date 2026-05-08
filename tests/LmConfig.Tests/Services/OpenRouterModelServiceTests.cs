@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -112,7 +111,7 @@ public class OpenRouterModelServiceTests : IDisposable
         var provider = modelConfig.Providers[0];
         Assert.Equal("OpenRouter", provider.Name);
         Assert.Equal("test-model-1", provider.ModelName);
-        Assert.Contains("openrouter", provider.Tags ?? Array.Empty<string>());
+        Assert.Contains("openrouter", provider.Tags ?? []);
     }
 
     [Fact]

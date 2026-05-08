@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 
 namespace LmConfig.Tests.Capabilities;
@@ -188,7 +187,7 @@ public class ModelCapabilitiesTests
                 capability == "function_calling"
                     ? new FunctionCallingCapability { SupportsTools = (bool)setupValue }
                     : null,
-            SupportsStreaming = capability == "streaming" ? (bool)setupValue : true,
+            SupportsStreaming = capability != "streaming" || (bool)setupValue,
         };
 
         // Act

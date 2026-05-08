@@ -156,7 +156,7 @@ public static class EnvironmentHelper
             // in a normal clone but a FILE in a git worktree (containing a "gitdir:" pointer),
             // so accept either form.
             var dotGitPath = Path.Combine(currentDir.FullName, ".git");
-            bool hasDotGit = Directory.Exists(dotGitPath) || File.Exists(dotGitPath);
+            var hasDotGit = Directory.Exists(dotGitPath) || File.Exists(dotGitPath);
             if (
                 currentDir.GetFiles("*.sln").Length > 0
                 || hasDotGit

@@ -3,9 +3,7 @@ using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using HttpProviderConfig = AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig;
 
 namespace LmConfig.Tests.TestUtilities;
 
@@ -14,13 +12,16 @@ namespace LmConfig.Tests.TestUtilities;
 /// </summary>
 public class LmConfigTestBuilder
 {
-    private readonly List<ModelConfig> _models = new();
-    private readonly Dictionary<string, ProviderConnectionInfo> _providerRegistry = new();
+    private readonly List<ModelConfig> _models = [];
+    private readonly Dictionary<string, ProviderConnectionInfo> _providerRegistry = [];
 
     /// <summary>
     /// Creates a new test builder instance.
     /// </summary>
-    public static LmConfigTestBuilder Create() => new();
+    public static LmConfigTestBuilder Create()
+    {
+        return new();
+    }
 
     /// <summary>
     /// Adds a model with basic configuration suitable for most tests.
@@ -36,14 +37,14 @@ public class LmConfigTestBuilder
     )
     {
         modelName ??= $"{modelId}-v1";
-        tags ??= new[] { "test" };
+        tags ??= ["test"];
 
         var model = new ModelConfig
         {
             Id = modelId,
             Capabilities = CreateDefaultCapabilities(),
-            Providers = new[]
-            {
+            Providers =
+            [
                 new AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConfig
                 {
                     Name = providerName,
@@ -56,7 +57,7 @@ public class LmConfigTestBuilder
                     },
                     Tags = tags,
                 },
-            },
+            ],
         };
 
         _models.Add(model);
@@ -100,8 +101,8 @@ public class LmConfigTestBuilder
         {
             Id = modelId,
             Capabilities = CreateDefaultCapabilities(),
-            Providers = new[]
-            {
+            Providers =
+            [
                 new AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConfig
                 {
                     Name = "OpenRouter",
@@ -112,9 +113,9 @@ public class LmConfigTestBuilder
                         PromptPerMillion = promptCost,
                         CompletionPerMillion = completionCost,
                     },
-                    Tags = new[] { "fallback", "openai-compatible" },
+                    Tags = ["fallback", "openai-compatible"],
                 },
-            },
+            ],
         };
 
         _models.Add(model);
@@ -139,7 +140,7 @@ public class LmConfigTestBuilder
             WithProvider("TestProvider");
         }
 
-        return new AppConfig { Models = _models.ToArray(), ProviderRegistry = _providerRegistry };
+        return new AppConfig { Models = [.. _models], ProviderRegistry = _providerRegistry };
     }
 
     /// <summary>
@@ -181,7 +182,7 @@ public class LmConfigTestBuilder
 /// </summary>
 public class EnvironmentVariableScope : IDisposable
 {
-    private readonly Dictionary<string, string?> _originalValues = new();
+    private readonly Dictionary<string, string?> _originalValues = [];
 
     /// <summary>
     /// Sets an environment variable for the duration of the scope.
@@ -265,12 +266,16 @@ public static class TestData
     /// <summary>
     /// Creates a simple test model configuration.
     /// </summary>
-    public static ModelConfig CreateTestModel(string id = "test-model") =>
-        LmConfigTestBuilder.Create().WithModel(id).BuildConfig().Models[0];
+    public static ModelConfig CreateTestModel(string id = "test-model")
+    {
+        return LmConfigTestBuilder.Create().WithModel(id).BuildConfig().Models[0];
+    }
 
     /// <summary>
     /// Creates a test provider connection.
     /// </summary>
-    public static ProviderConnectionInfo CreateTestProvider(string name = "TestProvider") =>
-        LmConfigTestBuilder.Create().WithProvider(name).BuildConfig().ProviderRegistry[name];
+    public static ProviderConnectionInfo CreateTestProvider(string name = "TestProvider")
+    {
+        return LmConfigTestBuilder.Create().WithProvider(name).BuildConfig().ProviderRegistry![name];
+    }
 }

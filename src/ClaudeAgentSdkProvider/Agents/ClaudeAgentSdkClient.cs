@@ -183,11 +183,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             ApplyMockHostOverrides(startInfo.Environment, _options, _logger);
 
             // 6. Start process
-            _process = Process.Start(startInfo);
-            if (_process == null)
-            {
-                throw new InvalidOperationException("Failed to start claude-agent-sdk process");
-            }
+            _process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start claude-agent-sdk process");
 
             // Use UTF-8 WITHOUT BOM for writing to Node.js process
             // BOM would corrupt the first JSON line and cause parsing failures

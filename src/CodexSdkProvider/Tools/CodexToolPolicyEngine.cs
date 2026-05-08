@@ -51,18 +51,24 @@ public sealed class CodexToolPolicyEngine
             return false;
         }
 
-        return server.EnabledTools is { Count: > 0 }
-            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase)
-            ? false
-            : server.DisabledTools is not
-            { Count: > 0 }
+        if (server.EnabledTools is { Count: > 0 }
+            && !server.EnabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return server.DisabledTools is not { Count: > 0 }
             || !server.DisabledTools.Contains(toolName, StringComparer.OrdinalIgnoreCase);
     }
 
     public bool IsDynamicToolAllowed(string? toolName)
     {
-        return string.IsNullOrWhiteSpace(toolName)
-            ? false
-            : _dynamicToolNames.Contains(toolName) && (_enabledTools == null || _enabledTools.Contains(toolName));
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return false;
+        }
+
+        return _dynamicToolNames.Contains(toolName)
+            && (_enabledTools == null || _enabledTools.Contains(toolName));
     }
 }

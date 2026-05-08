@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Moq.Protected;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -20,7 +19,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
     private readonly HttpClient _httpClient;
     private readonly string _tempCacheDir;
     private readonly string _tempCacheFile;
-    private static readonly string[] item = new[] { "text" };
+    private static readonly string[] item = ["text"];
 
     public OpenRouterModelServiceComprehensiveTests()
     {
@@ -54,7 +53,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -100,7 +99,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -128,7 +127,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -161,7 +160,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -200,7 +199,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var result = await (Task<IReadOnlyList<ModelConfig>>)
-            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+            method!.Invoke(service, [cache, CancellationToken.None])!;
 
         // Assert
         Assert.NotNull(result);
@@ -232,7 +231,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { validCache })!;
+        var result = (bool)method!.Invoke(service, [validCache])!;
 
         // Assert
         Assert.True(result);
@@ -246,7 +245,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = null,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
         var service = CreateService();
 
@@ -257,7 +256,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { invalidCache })!;
+        var result = (bool)method!.Invoke(service, [invalidCache])!;
 
         // Assert
         Assert.False(result);
@@ -271,7 +270,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": []}"""),
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
         var service = CreateService();
 
@@ -282,7 +281,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { invalidCache })!;
+        var result = (bool)method!.Invoke(service, [invalidCache])!;
 
         // Assert
         Assert.False(result);
@@ -296,7 +295,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(1), // Future timestamp
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
         var service = CreateService();
 
@@ -307,7 +306,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { invalidCache })!;
+        var result = (bool)method!.Invoke(service, [invalidCache])!;
 
         // Assert
         Assert.False(result);
@@ -321,7 +320,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": [{"invalid": "structure"}]}"""), // Missing required fields
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
         var service = CreateService();
 
@@ -332,7 +331,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { invalidCache })!;
+        var result = (bool)method!.Invoke(service, [invalidCache])!;
 
         // Assert
         Assert.False(result);
@@ -357,7 +356,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         );
 
         // Act
-        var result = (bool)method!.Invoke(service, new object[] { invalidCache })!;
+        var result = (bool)method!.Invoke(service, [invalidCache])!;
 
         // Assert
         Assert.False(result);
@@ -378,7 +377,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Act
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var result = (bool)method!.Invoke(service, new object[] { cache })!;
+        var result = (bool)method!.Invoke(service, [cache])!;
         stopwatch.Stop();
 
         // Assert
@@ -534,7 +533,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
     }
 
@@ -640,7 +639,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
     }
 
@@ -717,7 +716,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
     }
 
@@ -768,7 +767,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>(),
+            ModelDetails = [],
         };
     }
 
@@ -819,7 +818,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
     {
         // Create a cache with many models to test performance
         var models = new List<object>();
-        for (int i = 0; i < 100; i++)
+        for (var i = 0; i < 100; i++)
         {
             models.Add(
                 new
@@ -839,7 +838,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         var modelsData = JsonNode.Parse(JsonSerializer.Serialize(new { data = models }));
 
         var modelDetails = new Dictionary<string, JsonNode>();
-        for (int i = 0; i < 100; i++)
+        for (var i = 0; i < 100; i++)
         {
             modelDetails[$"test-model-{i}"] = JsonNode.Parse(
                 $$"""

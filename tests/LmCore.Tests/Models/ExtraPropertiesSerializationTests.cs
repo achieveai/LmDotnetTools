@@ -61,7 +61,7 @@ public class ExtraPropertiesSerializationTests
         // Deserialize and verify that the extra properties are accessible
         var deserialized = JsonSerializer.Deserialize<Usage>(json, options);
         Assert.NotNull(deserialized);
-        Assert.Equal(10, deserialized!.PromptTokens);
+        Assert.Equal(10, deserialized.PromptTokens);
         Assert.Equal(20, deserialized.CompletionTokens);
         Assert.Equal(30, deserialized.TotalTokens);
 
@@ -115,7 +115,7 @@ public class ExtraPropertiesSerializationTests
         // Deserialize and verify that the extra properties are accessible
         var deserialized = JsonSerializer.Deserialize<GenerateReplyOptions>(json, options);
         Assert.NotNull(deserialized);
-        Assert.Equal("gpt-4", deserialized!.ModelId);
+        Assert.Equal("gpt-4", deserialized.ModelId);
         Assert.Equal(0.7f, deserialized.Temperature);
         Assert.Equal(1000, deserialized.MaxToken);
 

@@ -1,7 +1,5 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using FluentAssertions;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 
@@ -13,7 +11,7 @@ public class ToolHandlerResultTests
         var result = ToolHandlerResult.FromText("hello");
 
         result.Should().BeOfType<ToolHandlerResult.Resolved>();
-        var resolved = (ToolHandlerResult.Resolved)result;
+        var resolved = result;
         resolved.Payload.Text.Should().Be("hello");
         resolved.Payload.ContentBlocks.Should().BeNull();
         resolved.Payload.IsError.Should().BeFalse();
@@ -26,7 +24,7 @@ public class ToolHandlerResultTests
         var result = ToolHandlerResult.FromError("bad input", errorCode: "E_INPUT");
 
         result.Should().BeOfType<ToolHandlerResult.Resolved>();
-        var resolved = (ToolHandlerResult.Resolved)result;
+        var resolved = result;
         resolved.Payload.Text.Should().Be("bad input");
         resolved.Payload.IsError.Should().BeTrue();
         resolved.Payload.ErrorCode.Should().Be("E_INPUT");
@@ -44,7 +42,7 @@ public class ToolHandlerResultTests
         var result = ToolHandlerResult.FromMultiModal("complex", blocks);
 
         result.Should().BeOfType<ToolHandlerResult.Resolved>();
-        var resolved = (ToolHandlerResult.Resolved)result;
+        var resolved = result;
         resolved.Payload.Text.Should().Be("complex");
         resolved.Payload.ContentBlocks.Should().BeSameAs(blocks);
     }
@@ -65,12 +63,15 @@ public class ToolHandlerResultTests
         ToolHandlerResult resolved = ToolHandlerResult.FromText("ok");
         ToolHandlerResult deferred = new ToolHandlerResult.Deferred();
 
-        string Match(ToolHandlerResult r) => r switch
+        static string Match(ToolHandlerResult r)
         {
-            ToolHandlerResult.Resolved x => $"resolved:{x.Payload.Text}",
-            ToolHandlerResult.Deferred => "deferred",
-            _ => throw new InvalidOperationException("unreachable"),
-        };
+            return r switch
+            {
+                ToolHandlerResult.Resolved x => $"resolved:{x.Payload.Text}",
+                ToolHandlerResult.Deferred => "deferred",
+                _ => throw new InvalidOperationException("unreachable"),
+            };
+        }
 
         Match(resolved).Should().Be("resolved:ok");
         Match(deferred).Should().Be("deferred");

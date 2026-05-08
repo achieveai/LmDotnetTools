@@ -1,0 +1,39 @@
+<Project>
+
+  <!--
+    Auto-install Husky.Net Git hooks when developers restore packages.
+    Runs once per machine (Husky.Net keeps its own state in .git/hooks).
+    Skipped in CI to keep agent runs fast — CI invokes the gate directly.
+
+    The target writes a sentinel file (.husky/_/install.stamp) regardless of
+    whether `dotnet husky install` succeeds, so MSBuild won't re-fire the
+    target on subsequent restores in environments where the hook can't be
+    installed (worktrees, shallow clones, missing tool manifest). Both Exec
+    tasks set IgnoreExitCode="true" so a failure to install hooks does not
+    surface as MSB3073, keeping the build output clean.
+  -->
+  <Target
+    Name="HuskyInstall"
+    Condition="'$(HUSKY)' != '0' AND '$(CI)' != 'true' AND '$(GITHUB_ACTIONS)' != 'true' AND '$(IsCrossTargetingBuild)' != 'true'"
+    BeforeTargets="Restore;CollectPackageReferences"
+    Inputs="$(MSBuildThisFileDirectory).husky/task-runner.json"
+    Outputs="$(MSBuildThisFileDirectory).husky/_/install.stamp">
+    <Exec
+      Command="dotnet tool restore"
+      WorkingDirectory="$(MSBuildThisFileDirectory)"
+      IgnoreExitCode="true"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low"
+      StandardErrorImportance="Low" />
+    <Exec
+      Command="dotnet husky install"
+      WorkingDirectory="$(MSBuildThisFileDirectory)"
+      IgnoreExitCode="true"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low"
+      StandardErrorImportance="Low" />
+    <MakeDir Directories="$(MSBuildThisFileDirectory).husky/_" />
+    <Touch Files="$(MSBuildThisFileDirectory).husky/_/install.stamp" AlwaysCreate="true" />
+  </Target>
+
+</Project>

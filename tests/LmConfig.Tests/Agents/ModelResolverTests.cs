@@ -1,12 +1,7 @@
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using LmConfig.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
 
 namespace LmConfig.Tests.Agents;
 
@@ -28,11 +23,10 @@ public class ModelResolverTests
         // Arrange
         var models = new List<ModelConfig>
         {
-            new ModelConfig
-            {
+            new() {
                 Id = "test-model",
-                Providers = new[]
-                {
+                Providers =
+                [
                     new ProviderConfig
                     {
                         Name = "Provider1",
@@ -45,7 +39,7 @@ public class ModelResolverTests
                         ModelName = "test-model-v1",
                         Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                     },
-                },
+                ],
             },
         };
 
@@ -77,11 +71,10 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new ModelConfig
-            {
+            new() {
                 Id = "test-model",
-                Providers = new[]
-                {
+                Providers =
+                [
                     new ProviderConfig
                     {
                         Name = "InvalidProvider",
@@ -94,7 +87,7 @@ public class ModelResolverTests
                         ModelName = "test-model-v1",
                         Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                     },
-                },
+                ],
             },
         };
 
@@ -139,11 +132,10 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new ModelConfig
-            {
+            new() {
                 Id = "test-model",
-                Providers = new[]
-                {
+                Providers =
+                [
                     new ProviderConfig
                     {
                         Name = "Provider1",
@@ -156,7 +148,7 @@ public class ModelResolverTests
                         ModelName = "test-model-v1",
                         Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                     },
-                },
+                ],
             },
         };
 
@@ -204,11 +196,10 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new ModelConfig
-            {
+            new() {
                 Id = "test-model",
-                Providers = new[]
-                {
+                Providers =
+                [
                     new ProviderConfig
                     {
                         Name = "InvalidProvider1",
@@ -233,7 +224,7 @@ public class ModelResolverTests
                         ModelName = "test-model-v1",
                         Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                     },
-                },
+                ],
             },
         };
 
@@ -285,11 +276,10 @@ public class ModelResolverTests
 
         var models = new List<ModelConfig>
         {
-            new ModelConfig
-            {
+            new() {
                 Id = "test-model",
-                Providers = new[]
-                {
+                Providers =
+                [
                     new ProviderConfig
                     {
                         Name = "", // Empty name
@@ -302,7 +292,7 @@ public class ModelResolverTests
                         ModelName = "test-model-v1",
                         Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                     },
-                },
+                ],
             },
         };
 

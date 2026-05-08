@@ -84,7 +84,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Adapt unified handlers into ToolCallResult-returning handlers for the executor.
         // Deferred returns surface as ToolCallResult.IsDeferred=true so callers can detect
         // and resolve them via their own loop. This middleware does not wait for resolution.
-        _functionMap = AdaptToToolCallResultHandlers(functionMap);
+        _functionMap = AdaptToToolCallResultHandlers(functionMap ?? new Dictionary<string, ToolHandler>());
         _resultCallback = resultCallback;
     }
 

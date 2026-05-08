@@ -387,7 +387,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> InvalidStringCollectionTestCases =>
         [
-            [new[] { "valid", null!, "valid" }, "Collection with null element"],
+            [new[] { "valid", null, "valid" }, "Collection with null element"],
             [itemArray3, "Collection with empty element"],
             [itemArray4, "Collection with whitespace element"],
         ];

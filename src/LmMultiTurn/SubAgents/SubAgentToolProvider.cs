@@ -213,14 +213,10 @@ public class SubAgentToolProvider : IFunctionProvider
 
     private static string[]? ParseCommaSeparated(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        return value
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : [.. value
             .Split(',', StringSplitOptions.RemoveEmptyEntries
-                | StringSplitOptions.TrimEntries)
-            .ToArray();
+                | StringSplitOptions.TrimEntries)];
     }
 }

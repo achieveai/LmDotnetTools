@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -117,7 +116,7 @@ public class DeferredToolExecutionTests
                     {
                         return Task.FromResult(ToAsyncEnumerable([toolCall]));
                     }
-                    secondCallMessages = msgs.ToList();
+                    secondCallMessages = [.. msgs];
                     return Task.FromResult(ToAsyncEnumerable([finalAssistantText]));
                 });
 
@@ -236,8 +235,8 @@ public class DeferredToolExecutionTests
             {
                 callCount++;
                 return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([(IMessage)toolCall]))
-                    : Task.FromResult(ToAsyncEnumerable([(IMessage)finalText]));
+                    ? Task.FromResult(ToAsyncEnumerable([toolCall]))
+                    : Task.FromResult(ToAsyncEnumerable([finalText]));
             });
 
         var registry = new FunctionRegistry();
@@ -264,8 +263,14 @@ public class DeferredToolExecutionTests
                 if (msg is RunCompletedMessage)
                 {
                     completedRuns++;
-                    if (completedRuns == 1) firstRunCompleted.TrySetResult(true);
-                    else if (completedRuns == 2) secondRunCompleted.TrySetResult(true);
+                    if (completedRuns == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (completedRuns == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
+                    }
                 }
             }
         }, cts.Token);
@@ -324,8 +329,8 @@ public class DeferredToolExecutionTests
             {
                 callCount++;
                 return callCount == 1
-                    ? Task.FromResult(ToAsyncEnumerable([(IMessage)toolCall]))
-                    : Task.FromResult(ToAsyncEnumerable([(IMessage)finalText]));
+                    ? Task.FromResult(ToAsyncEnumerable([toolCall]))
+                    : Task.FromResult(ToAsyncEnumerable([finalText]));
             });
 
         var registry = new FunctionRegistry();
@@ -351,7 +356,10 @@ public class DeferredToolExecutionTests
                 if (msg is RunCompletedMessage)
                 {
                     completedRuns++;
-                    if (completedRuns == 1) firstRunCompleted.TrySetResult(true);
+                    if (completedRuns == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
                 }
             }
         }, cts.Token);
@@ -485,12 +493,16 @@ public class DeferredToolExecutionTests
         // auto-resume, and the LLM's next turn must see both resolved values.
         var toolCallA = new ToolCallMessage
         {
-            FunctionName = "wait_a", FunctionArgs = "{}", ToolCallId = "tc_a",
+            FunctionName = "wait_a",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_a",
             Role = Role.Assistant,
         };
         var toolCallB = new ToolCallMessage
         {
-            FunctionName = "wait_b", FunctionArgs = "{}", ToolCallId = "tc_b",
+            FunctionName = "wait_b",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_b",
             Role = Role.Assistant,
         };
         var finalText = new TextMessage { Text = "all done", Role = Role.Assistant };
@@ -509,10 +521,10 @@ public class DeferredToolExecutionTests
                     if (callCount == 1)
                     {
                         return Task.FromResult(ToAsyncEnumerable(
-                            new IMessage[] { toolCallA, toolCallB }));
+                            [toolCallA, toolCallB]));
                     }
-                    secondCallMessages = msgs.ToList();
-                    return Task.FromResult(ToAsyncEnumerable(new IMessage[] { finalText }));
+                    secondCallMessages = [.. msgs];
+                    return Task.FromResult(ToAsyncEnumerable([finalText]));
                 });
 
         var registry = new FunctionRegistry();
@@ -537,8 +549,14 @@ public class DeferredToolExecutionTests
                 if (msg is RunCompletedMessage)
                 {
                     completedRuns++;
-                    if (completedRuns == 1) firstRunCompleted.TrySetResult(true);
-                    else if (completedRuns == 2) secondRunCompleted.TrySetResult(true);
+                    if (completedRuns == 1)
+                    {
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (completedRuns == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
+                    }
                 }
             }
         }, cts.Token);
@@ -621,11 +639,11 @@ public class DeferredToolExecutionTests
             RunId = runId,
         };
 
-        await store.AppendMessagesAsync(threadId, new List<PersistedMessage>
-        {
+        await store.AppendMessagesAsync(threadId,
+        [
             MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
             MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
-        });
+        ]);
         await store.SaveMetadataAsync(threadId, new ThreadMetadata
         {
             ThreadId = threadId,

@@ -126,7 +126,7 @@ public class RealAnthropicResponseParsingTests
         Assert.Equal(3, allToolCalls.Select(t => t.ToolCallId).ToHashSet().Count);
 
         // Verify search queries
-        var args = allToolCalls.Select(tc => tc.FunctionArgs!).ToList();
+        var args = allToolCalls.Select(tc => tc.FunctionArgs).ToList();
         Assert.Contains("Alport", args[0]);
         Assert.Contains("type IV collagen", args[1]);
         Assert.Contains("basement membrane", args[2]);
@@ -381,6 +381,6 @@ public class RealAnthropicResponseParsingTests
         Assert.Null(streamedUpdates[0].FunctionArgs);
 
         // Second (final at stop) has accumulated args with actual query
-        Assert.Contains("Alport", streamedUpdates[1].FunctionArgs!);
+        Assert.Contains("Alport", streamedUpdates[1].FunctionArgs);
     }
 }

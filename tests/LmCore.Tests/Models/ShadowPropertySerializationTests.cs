@@ -79,7 +79,7 @@ public class ShadowPropertySerializationTests
 
         // Assert
         Assert.NotNull(usage);
-        Assert.Equal(10, usage!.PromptTokens);
+        Assert.Equal(10, usage.PromptTokens);
         Assert.Equal(20, usage.CompletionTokens);
         Assert.Equal(30, usage.TotalTokens);
 
@@ -157,7 +157,7 @@ public class ShadowPropertySerializationTests
 
         // Assert
         Assert.NotNull(replyOptions);
-        Assert.Equal("gpt-4", replyOptions!.ModelId);
+        Assert.Equal("gpt-4", replyOptions.ModelId);
         Assert.Equal(0.7f, replyOptions.Temperature);
         Assert.Equal(1000, replyOptions.MaxToken);
 

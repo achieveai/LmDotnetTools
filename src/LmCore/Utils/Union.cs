@@ -135,10 +135,10 @@ public record Union<T1, T2, T3> : Union<T1, T2>
         : base(type) { }
 
     public Union(T1 value)
-        : base(value!) { }
+        : base(value) { }
 
     public Union(T2 value)
-        : base(value!) { }
+        : base(value) { }
 
     public Union(T3 value)
         : base(typeof(T3))
@@ -237,13 +237,13 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
         : base(type) { }
 
     public Union(T1 value)
-        : base(value!) { }
+        : base(value) { }
 
     public Union(T2 value)
-        : base(value!) { }
+        : base(value) { }
 
     public Union(T3 value)
-        : base(value!) { }
+        : base(value) { }
 
     public Union(T4 value)
         : base(typeof(T4))

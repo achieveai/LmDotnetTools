@@ -73,7 +73,7 @@ public sealed class ClaudeMockProviderTests
         var separator = OperatingSystem.IsWindows() ? ';' : ':';
         var exeNames = OperatingSystem.IsWindows()
             ? new[] { "claude.exe", "claude.cmd", "claude.ps1" }
-            : new[] { "claude" };
+            : ["claude"];
 
         foreach (var dir in pathEnv.Split(separator, StringSplitOptions.RemoveEmptyEntries))
         {

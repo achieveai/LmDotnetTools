@@ -71,7 +71,7 @@ public class FunctionCallMiddlewareTests
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(
             functions,
-            (IDictionary<string, ToolHandler>)null!));
+            null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -646,7 +646,7 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(capturedContext);
-        Assert.Equal("call_abc123", capturedContext!.ToolCallId);
+        Assert.Equal("call_abc123", capturedContext.ToolCallId);
     }
 
     [Fact]
@@ -693,7 +693,9 @@ public class FunctionCallMiddlewareTests
     private static Dictionary<string, ToolHandler> CreateMockFunctionMap()
     {
         static Task<ToolHandlerResult> Wrap(string text)
-            => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(text));
+        {
+            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(text));
+        }
 
         return new Dictionary<string, ToolHandler>
         {
@@ -1426,7 +1428,7 @@ public class FunctionCallMiddlewareTests
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
         var toolCalls = aggregate.ToolsCallMessage.GetToolCalls();
         Assert.NotNull(toolCalls);
-        Assert.True(toolCalls!.Count() >= 2, "Should contain at least two tool calls");
+        Assert.True(toolCalls.Count() >= 2, "Should contain at least two tool calls");
         Assert.Contains(toolCalls, call => call.FunctionName == "python-mcp.list_directory");
         // Optionally, check that both tool calls are present (by id or argument)
     }
@@ -1488,7 +1490,7 @@ public class FunctionCallMiddlewareTests
         _ = Assert.Single(toolsCallResultMessage.ToolCallResults);
         var resultJson = toolsCallResultMessage
             .ToolCallResults.FirstOrDefault(tr => tr.ToolCallId == toolCallId)
-            .Result!;
+            .Result;
         Assert.NotNull(resultJson);
 
         var resultValue = JsonSerializer.Deserialize<double>(resultJson);

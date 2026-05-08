@@ -134,10 +134,12 @@ public static class JsonScenarioLoader
             nameOrPath);
     }
 
-    private static string EnsureJsonExtension(string nameOrPath) =>
-        nameOrPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+    private static string EnsureJsonExtension(string nameOrPath)
+    {
+        return nameOrPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
             ? nameOrPath
             : nameOrPath + ".json";
+    }
 
     private static Func<ScriptedRequestContext, bool> BuildMatcher(string roleKey, ScenarioMatch? match)
     {

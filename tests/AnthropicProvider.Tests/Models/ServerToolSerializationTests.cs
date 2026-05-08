@@ -168,7 +168,7 @@ public class ServerToolSerializationTests
         var content = JsonSerializer.Deserialize<AnthropicResponseContent>(json, _jsonOptions);
 
         Assert.IsType<AnthropicResponseServerToolUseContent>(content);
-        var serverToolUse = (AnthropicResponseServerToolUseContent)content!;
+        var serverToolUse = (AnthropicResponseServerToolUseContent)content;
         Assert.Equal("srvtoolu_01ABC", serverToolUse.Id);
         Assert.Equal("web_search", serverToolUse.Name);
         Assert.Equal("current weather", serverToolUse.Input.GetProperty("query").GetString());
@@ -196,7 +196,7 @@ public class ServerToolSerializationTests
         var content = JsonSerializer.Deserialize<AnthropicResponseContent>(json, _jsonOptions);
 
         Assert.IsType<AnthropicWebSearchToolResultContent>(content);
-        var result = (AnthropicWebSearchToolResultContent)content!;
+        var result = (AnthropicWebSearchToolResultContent)content;
         Assert.Equal("srvtoolu_01ABC", result.ToolUseId);
         Assert.Equal(JsonValueKind.Array, result.Content.ValueKind);
         Assert.Equal(1, result.Content.GetArrayLength());
@@ -216,7 +216,7 @@ public class ServerToolSerializationTests
         var content = JsonSerializer.Deserialize<AnthropicResponseContent>(json, _jsonOptions);
 
         Assert.IsType<AnthropicWebFetchToolResultContent>(content);
-        var result = (AnthropicWebFetchToolResultContent)content!;
+        var result = (AnthropicWebFetchToolResultContent)content;
         Assert.Equal("srvtoolu_02DEF", result.ToolUseId);
     }
 
@@ -234,7 +234,7 @@ public class ServerToolSerializationTests
         var content = JsonSerializer.Deserialize<AnthropicResponseContent>(json, _jsonOptions);
 
         Assert.IsType<AnthropicBashCodeExecutionToolResultContent>(content);
-        var result = (AnthropicBashCodeExecutionToolResultContent)content!;
+        var result = (AnthropicBashCodeExecutionToolResultContent)content;
         Assert.Equal("srvtoolu_03GHI", result.ToolUseId);
     }
 
@@ -261,7 +261,7 @@ public class ServerToolSerializationTests
         var response = JsonSerializer.Deserialize<AnthropicResponse>(json, _jsonOptions);
 
         Assert.NotNull(response);
-        Assert.Equal(4, response!.Content.Count);
+        Assert.Equal(4, response.Content.Count);
         Assert.IsType<AnthropicResponseTextContent>(response.Content[0]);
         Assert.IsType<AnthropicResponseServerToolUseContent>(response.Content[1]);
         Assert.IsType<AnthropicWebSearchToolResultContent>(response.Content[2]);
@@ -292,7 +292,7 @@ public class ServerToolSerializationTests
         var content = JsonSerializer.Deserialize<AnthropicResponseContent>(json, _jsonOptions);
 
         Assert.IsType<AnthropicResponseTextContent>(content);
-        var textContent = (AnthropicResponseTextContent)content!;
+        var textContent = (AnthropicResponseTextContent)content;
         Assert.Equal("The answer is 42.", textContent.Text);
         Assert.NotNull(textContent.Citations);
         Assert.Single(textContent.Citations);

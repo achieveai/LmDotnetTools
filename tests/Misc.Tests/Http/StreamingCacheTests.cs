@@ -1,10 +1,8 @@
 using System.Net;
-using System.Net.Http;
 using System.Text;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Http;
 using AchieveAi.LmDotnetTools.Misc.Storage;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -111,7 +109,7 @@ public class StreamingCacheTests
             StatusCode = 200,
             Content = testData,
             ContentType = "application/json",
-            Headers = new Dictionary<string, string[]>(),
+            Headers = [],
             CachedAt = DateTime.UtcNow,
             ExpiresAt = DateTime.UtcNow.Add(TimeSpan.FromHours(1)),
         };
@@ -141,7 +139,7 @@ public class StreamingCacheTests
             StatusCode = 200,
             Content = testData,
             ContentType = "application/json",
-            Headers = new Dictionary<string, string[]>(),
+            Headers = [],
             CachedAt = DateTime.UtcNow,
             ExpiresAt = DateTime.UtcNow.Add(TimeSpan.FromHours(1)),
         };

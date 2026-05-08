@@ -47,12 +47,14 @@ public sealed class ErrorHandlingTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
-        ) =>
-            Task.FromResult(
+        )
+        {
+            return Task.FromResult(
                 new HttpResponseMessage(HttpStatusCode.InternalServerError)
                 {
                     Content = new StringContent("{\"error\":\"simulated provider outage\"}"),
                 }
             );
+        }
     }
 }

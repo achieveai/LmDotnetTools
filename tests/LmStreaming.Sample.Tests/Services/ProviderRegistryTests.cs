@@ -373,7 +373,10 @@ public class ProviderRegistryTests
             return new EnvScope(name, previous);
         }
 
-        public void Dispose() => Environment.SetEnvironmentVariable(_name, _previous);
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable(_name, _previous);
+        }
     }
 }
 

@@ -343,7 +343,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         foreach (var msg in requestMessages.EnumerateArray())
         {
-            var role = msg.GetProperty("role").GetString()!;
+            var role = msg.GetProperty("role").GetString();
 
             // No consecutive same-role messages
             Assert.NotEqual(
@@ -453,11 +453,11 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // Streaming emits ToolCallUpdateMessage, not ToolCallMessage
         var toolUse = responseMessages.OfType<ToolCallUpdateMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
-        Assert.Equal("web_search", toolUse!.FunctionName);
+        Assert.Equal("web_search", toolUse.FunctionName);
 
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
-        Assert.Equal("web_search", toolResult!.ToolName);
+        Assert.Equal("web_search", toolResult.ToolName);
     }
 
     [Fact]
@@ -516,7 +516,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
-        Assert.True(toolResult!.IsError);
+        Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
 
         Logger.LogInformation(
@@ -584,12 +584,12 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var toolUse = responseMessages.OfType<ToolCallMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolUse);
-        Assert.Equal("web_fetch", toolUse!.FunctionName);
+        Assert.Equal("web_fetch", toolUse.FunctionName);
         Assert.Equal("srvtoolu_fetch_01", toolUse.ToolCallId);
 
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
-        Assert.Equal("web_fetch", toolResult!.ToolName);
+        Assert.Equal("web_fetch", toolResult.ToolName);
         Assert.False(toolResult.IsError);
 
         // Verify the wire format uses web_fetch_tool_result (not web_search_tool_result)
@@ -663,7 +663,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
 
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
-        Assert.True(toolResult!.IsError);
+        Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
 
         Logger.LogInformation(
@@ -728,7 +728,7 @@ public class ServerToolStreamingE2ETests : LoggingTestBase
         // AND verify the request body doesn't contain incorrect type strings.
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(toolResult);
-        Assert.True(toolResult!.IsError);
+        Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
         Assert.Equal("web_search", toolResult.ToolName);
         Assert.Equal("srvtoolu_err_03", toolResult.ToolCallId);

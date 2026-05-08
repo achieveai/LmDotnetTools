@@ -69,12 +69,9 @@ public static class MessagePersistenceConverter
 
     private static string BuildPersistedId(IMessage message, string threadId)
     {
-        if (message is ToolCallResultMessage tcr && !string.IsNullOrEmpty(tcr.ToolCallId))
-        {
-            return BuildToolResultPersistedId(threadId, tcr.ToolCallId);
-        }
-
-        return Guid.NewGuid().ToString("N");
+        return message is ToolCallResultMessage tcr && !string.IsNullOrEmpty(tcr.ToolCallId)
+            ? BuildToolResultPersistedId(threadId, tcr.ToolCallId)
+            : Guid.NewGuid().ToString("N");
     }
 
     /// <summary>

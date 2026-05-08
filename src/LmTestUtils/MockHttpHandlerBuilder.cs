@@ -639,7 +639,7 @@ public class ConversationState
         return _state.TryGetValue(key, out var value) ? value as T : null;
     }
 
-    public T GetValue<T>(string key, T defaultValue = default!)
+    public T GetValue<T>(string key, T defaultValue = default)
         where T : struct
     {
         return _state.TryGetValue(key, out var value) && value is T typedValue ? typedValue : defaultValue;

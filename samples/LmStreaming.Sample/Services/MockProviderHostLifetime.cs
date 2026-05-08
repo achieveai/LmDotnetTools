@@ -25,7 +25,6 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
     private readonly Func<ScriptedSseResponder> _responderFactory;
     private readonly ILogger<MockProviderHostLifetime> _logger;
     private WebApplication? _app;
-    private string? _baseUrl;
     private bool _disposed;
 
     public MockProviderHostLifetime(ILogger<MockProviderHostLifetime> logger)
@@ -44,11 +43,11 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
     }
 
     /// <summary>Bound base URL, e.g. <c>http://127.0.0.1:5099</c>. Null until startup succeeds.</summary>
-    public string? BaseUrl => _baseUrl;
+    public string? BaseUrl { get; private set; }
 
     /// <summary>True after the inner Kestrel app has bound a port. Used by the registry's
     /// availability gate for the <c>*-mock</c> providers.</summary>
-    public bool IsRunning => _baseUrl is not null;
+    public bool IsRunning => BaseUrl is not null;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -68,8 +67,8 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
 
             // Kestrel may rewrite a 0-port binding into the actual bound URL; pick the first
             // resolved address.
-            _baseUrl = _app.Urls.FirstOrDefault();
-            if (_baseUrl is null)
+            BaseUrl = _app.Urls.FirstOrDefault();
+            if (BaseUrl is null)
             {
                 _logger.LogWarning(
                     "Mock provider host started but did not report a bound URL; *-mock providers will be unavailable");
@@ -78,7 +77,7 @@ public sealed class MockProviderHostLifetime : IHostedService, IAsyncDisposable
 
             _logger.LogInformation(
                 "Mock provider host running at {BaseUrl} — *-mock providers are now selectable",
-                _baseUrl);
+                BaseUrl);
         }
         catch (Exception ex)
         {

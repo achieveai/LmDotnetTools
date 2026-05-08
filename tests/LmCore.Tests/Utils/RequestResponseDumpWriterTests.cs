@@ -21,7 +21,7 @@ public class RequestResponseDumpWriterTests
             );
 
             Assert.NotNull(writer);
-            var ex = Record.Exception(() => writer!.WriteRequest(new { Value = "test" }));
+            var ex = Record.Exception(() => writer.WriteRequest(new { Value = "test" }));
             Assert.Null(ex);
         }
         finally
@@ -44,7 +44,7 @@ public class RequestResponseDumpWriterTests
         );
 
         Assert.NotNull(writer);
-        Assert.Throws<NotSupportedException>(() => writer!.WriteRequest(new NonSerializablePayload()));
+        Assert.Throws<NotSupportedException>(() => writer.WriteRequest(new NonSerializablePayload()));
     }
 
     [Fact]
@@ -63,8 +63,8 @@ public class RequestResponseDumpWriterTests
             );
 
             Assert.NotNull(writer);
-            var ex1 = Record.Exception(() => writer!.AppendResponseChunk(new { Chunk = 1 }));
-            var ex2 = Record.Exception(() => writer!.AppendResponseChunk(new { Chunk = 2 }));
+            var ex1 = Record.Exception(() => writer.AppendResponseChunk(new { Chunk = 1 }));
+            var ex2 = Record.Exception(() => writer.AppendResponseChunk(new { Chunk = 2 }));
             Assert.Null(ex1);
             Assert.Null(ex2);
         }

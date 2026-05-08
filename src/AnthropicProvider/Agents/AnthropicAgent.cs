@@ -167,7 +167,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
             if (request.Thinking != null && _logger.IsEnabled(LogLevel.Trace))
             {
-                var requestJson = System.Text.Json.JsonSerializer.Serialize(request, s_dumpJsonOptions);
+                var requestJson = JsonSerializer.Serialize(request, s_dumpJsonOptions);
                 _logger.LogTrace("Full request with thinking enabled: {RequestJson}", requestJson);
             }
 

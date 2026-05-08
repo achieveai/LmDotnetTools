@@ -59,17 +59,17 @@ public static class MockProviderHostBuilder
 
         if (loggerFactory is not null)
         {
-            builder.Services.AddSingleton(loggerFactory);
+            _ = builder.Services.AddSingleton(loggerFactory);
         }
         else
         {
-            builder.Logging.ClearProviders();
-            builder.Logging.SetMinimumLevel(LogLevel.Warning);
+            _ = builder.Logging.ClearProviders();
+            _ = builder.Logging.SetMinimumLevel(LogLevel.Warning);
         }
 
         if (urls is not null && urls.Length > 0)
         {
-            builder.WebHost.UseUrls(urls);
+            _ = builder.WebHost.UseUrls(urls);
         }
 
         var app = builder.Build();
@@ -84,24 +84,24 @@ public static class MockProviderHostBuilder
         };
 
         // Dispose the in-process clients (and their wrapped handlers) when the host shuts down.
-        app.Lifetime.ApplicationStopping.Register(() =>
+        _ = app.Lifetime.ApplicationStopping.Register(() =>
         {
             openAiClient.Dispose();
             anthropicClient.Dispose();
         });
 
-        app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
+        _ = app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
 
-        app.MapPost("/v1/chat/completions", ctx =>
+        _ = app.MapPost("/v1/chat/completions", ctx =>
             ForwardAsync(ctx, openAiClient, "/v1/chat/completions", openAiHeaders: true));
 
-        app.MapPost("/v1/messages", ctx =>
+        _ = app.MapPost("/v1/messages", ctx =>
             ForwardAsync(ctx, anthropicClient, "/v1/messages", openAiHeaders: false));
 
         // Catch-all so mismatched paths surface a logged 404 rather than failing silently —
         // diagnostic anchor for E2E tests where a BaseUrl misconfiguration would otherwise
         // present as "the CLI completes with no rendered content" (see issue #29).
-        app.MapFallback(async ctx =>
+        _ = app.MapFallback(async ctx =>
         {
             var logger = ctx.RequestServices.GetService<ILoggerFactory>()
                 ?.CreateLogger("MockProviderHost.Unmatched");

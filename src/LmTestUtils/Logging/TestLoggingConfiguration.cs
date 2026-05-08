@@ -162,7 +162,7 @@ public static class TestLoggingConfiguration
     public static ILogger<T> CreateLogger<T>()
     {
         InitializeOnce();
-        return new SerilogLoggerFactory(_sharedLogger!, dispose: false).CreateLogger<T>();
+        return new SerilogLoggerFactory(_sharedLogger, dispose: false).CreateLogger<T>();
     }
 
     /// <summary>
@@ -173,7 +173,7 @@ public static class TestLoggingConfiguration
     public static ILogger CreateLogger(string categoryName)
     {
         InitializeOnce();
-        return new SerilogLoggerFactory(_sharedLogger!, dispose: false).CreateLogger(categoryName);
+        return new SerilogLoggerFactory(_sharedLogger, dispose: false).CreateLogger(categoryName);
     }
 
     /// <summary>

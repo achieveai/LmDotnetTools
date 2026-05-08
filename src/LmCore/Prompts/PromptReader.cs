@@ -184,7 +184,7 @@ public class PromptReader : IPromptReader
                     )
                     : new TextMessage
                     {
-                        Role = role! switch
+                        Role = role switch
                         {
                             "system" => Role.System,
                             "user" => Role.User,

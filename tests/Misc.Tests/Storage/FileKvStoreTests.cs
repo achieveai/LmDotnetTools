@@ -1,4 +1,3 @@
-using System.IO;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -139,7 +138,7 @@ public class FileKvStoreTests
         {
             Id = 123,
             Name = "Test Object",
-            Values = new List<string> { "value1", "value2", "value3" },
+            Values = ["value1", "value2", "value3"],
             CreatedAt = DateTime.UtcNow,
         };
 
@@ -510,7 +509,7 @@ public class FileKvStoreTests
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
-        public List<string> Values { get; set; } = new();
+        public List<string> Values { get; set; } = [];
         public DateTime CreatedAt { get; set; }
     }
 

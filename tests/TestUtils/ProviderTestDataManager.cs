@@ -160,7 +160,7 @@ public class ProviderTestDataManager
             ? []
             : Directory
                 .GetFiles(directoryPath, "*.LmCoreRequest.json")
-                .Select(path => Path.GetFileName(path)!)
+                .Select(path => Path.GetFileName(path))
                 .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
                 .Distinct();
     }

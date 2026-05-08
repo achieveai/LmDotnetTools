@@ -38,7 +38,7 @@ public sealed class FileSystemProbe : IFileSystemProbe
         var isWindows = OperatingSystem.IsWindows();
         var suffixes = isWindows
             ? new[] { string.Empty, ".exe", ".cmd", ".bat", ".ps1" }
-            : new[] { string.Empty };
+            : [string.Empty];
 
         foreach (var dir in path.Split(Path.PathSeparator))
         {

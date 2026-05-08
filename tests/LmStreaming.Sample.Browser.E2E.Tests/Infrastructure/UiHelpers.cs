@@ -8,46 +8,88 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 public static class UiHelpers
 {
     /// <summary>The chat input textarea. Type into it then call <c>SendButton().ClickAsync()</c>.</summary>
-    public static ILocator Textarea(this IPage page) => page.GetByTestId("chat-input-textarea");
+    public static ILocator Textarea(this IPage page)
+    {
+        return page.GetByTestId("chat-input-textarea");
+    }
 
     /// <summary>Send button — becomes disabled while the send is in-flight.</summary>
-    public static ILocator SendButton(this IPage page) => page.GetByTestId("send-button");
+    public static ILocator SendButton(this IPage page)
+    {
+        return page.GetByTestId("send-button");
+    }
 
     /// <summary>Stop button — only rendered while the stream is active.</summary>
-    public static ILocator StopButton(this IPage page) => page.GetByTestId("stop-button");
+    public static ILocator StopButton(this IPage page)
+    {
+        return page.GetByTestId("stop-button");
+    }
 
     /// <summary>Clear-conversation button in the header.</summary>
-    public static ILocator ClearButton(this IPage page) => page.GetByTestId("clear-button");
+    public static ILocator ClearButton(this IPage page)
+    {
+        return page.GetByTestId("clear-button");
+    }
 
     /// <summary>Error banner — rendered only when an error is present.</summary>
-    public static ILocator ErrorBanner(this IPage page) => page.GetByTestId("error-banner");
+    public static ILocator ErrorBanner(this IPage page)
+    {
+        return page.GetByTestId("error-banner");
+    }
 
     /// <summary>The scrollable message list container.</summary>
-    public static ILocator MessageList(this IPage page) => page.GetByTestId("message-list");
+    public static ILocator MessageList(this IPage page)
+    {
+        return page.GetByTestId("message-list");
+    }
 
     /// <summary>All user message groups in order of appearance.</summary>
-    public static ILocator UserMessageGroups(this IPage page) => page.GetByTestId("user-message-group");
+    public static ILocator UserMessageGroups(this IPage page)
+    {
+        return page.GetByTestId("user-message-group");
+    }
 
     /// <summary>All assistant message groups in order of appearance.</summary>
-    public static ILocator AssistantMessageGroups(this IPage page) => page.GetByTestId("assistant-message-group");
+    public static ILocator AssistantMessageGroups(this IPage page)
+    {
+        return page.GetByTestId("assistant-message-group");
+    }
 
     /// <summary>All rendered assistant text bubbles (multi-bubble per group possible).</summary>
-    public static ILocator AssistantText(this IPage page) => page.GetByTestId("assistant-text");
+    public static ILocator AssistantText(this IPage page)
+    {
+        return page.GetByTestId("assistant-text");
+    }
 
     /// <summary>All metadata pills (one per group that produced thinking/tool-call events).</summary>
-    public static ILocator MetadataPills(this IPage page) => page.GetByTestId("metadata-pill");
+    public static ILocator MetadataPills(this IPage page)
+    {
+        return page.GetByTestId("metadata-pill");
+    }
 
     /// <summary>Thinking pill items inside a metadata pill.</summary>
-    public static ILocator ThinkingPills(this IPage page) => page.GetByTestId("thinking-pill");
+    public static ILocator ThinkingPills(this IPage page)
+    {
+        return page.GetByTestId("thinking-pill");
+    }
 
     /// <summary>Tool-call pill items (use <c>data-tool-name</c> to identify specific tool).</summary>
-    public static ILocator ToolCallPills(this IPage page) => page.GetByTestId("tool-call-pill");
+    public static ILocator ToolCallPills(this IPage page)
+    {
+        return page.GetByTestId("tool-call-pill");
+    }
 
     /// <summary>Mode selector button in the header.</summary>
-    public static ILocator ModeSelectorButton(this IPage page) => page.GetByTestId("mode-selector-button");
+    public static ILocator ModeSelectorButton(this IPage page)
+    {
+        return page.GetByTestId("mode-selector-button");
+    }
 
     /// <summary>Mode option menu item. Pass the mode id (e.g., <c>default</c>, <c>medical</c>).</summary>
-    public static ILocator ModeOption(this IPage page, string modeId) => page.GetByTestId($"mode-option-{modeId}");
+    public static ILocator ModeOption(this IPage page, string modeId)
+    {
+        return page.GetByTestId($"mode-option-{modeId}");
+    }
 
     /// <summary>
     /// Type a message into the chat input and click the send button. Returns after the

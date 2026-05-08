@@ -630,7 +630,9 @@ public class CodexAgentLoopTests : LoggingTestBase
         }
 
         public Task EnsureStartedAsync(CodexBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeThreadAsync(options, ct);
+        {
+            return StartOrResumeThreadAsync(options, ct);
+        }
 
         public async IAsyncEnumerable<CodexTurnEventEnvelope> RunStreamingAsync(
             string input,
@@ -656,6 +658,9 @@ public class CodexAgentLoopTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

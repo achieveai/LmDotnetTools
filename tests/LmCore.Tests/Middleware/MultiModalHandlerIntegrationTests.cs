@@ -1,6 +1,4 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -18,11 +16,10 @@ public class MultiModalHandlerIntegrationTests
         var multiModalHandler = new ToolHandler((_, _, _) =>
             Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromMultiModal(
                 "multimodal",
-                new List<ToolResultContentBlock>
-                {
+                [
                     new TextToolResultBlock { Text = "some text" },
                     new ImageToolResultBlock { Data = "base64img", MimeType = "image/jpeg" },
-                })));
+                ])));
 
         var registry = new FunctionRegistry();
         registry.AddFunction(
@@ -49,11 +46,10 @@ public class MultiModalHandlerIntegrationTests
             ["image_tool"] = (_, _, _) => Task.FromResult<ToolHandlerResult>(
                 ToolHandlerResult.FromMultiModal(
                     "multimodal text",
-                    new List<ToolResultContentBlock>
-                    {
+                    [
                         new TextToolResultBlock { Text = "rich text" },
                         new ImageToolResultBlock { Data = "aW1hZ2VkYXRh", MimeType = "image/png" },
-                    })),
+                    ])),
         };
 
         var middleware = new FunctionCallMiddleware(functions, functionMap);
@@ -80,7 +76,7 @@ public class MultiModalHandlerIntegrationTests
         var toolCallResult = resultMessage.ToolCallResults.First();
         Assert.Equal("multimodal text", toolCallResult.Result);
         Assert.NotNull(toolCallResult.ContentBlocks);
-        Assert.Equal(2, toolCallResult.ContentBlocks!.Count);
+        Assert.Equal(2, toolCallResult.ContentBlocks.Count);
         Assert.IsType<TextToolResultBlock>(toolCallResult.ContentBlocks[0]);
         Assert.IsType<ImageToolResultBlock>(toolCallResult.ContentBlocks[1]);
     }

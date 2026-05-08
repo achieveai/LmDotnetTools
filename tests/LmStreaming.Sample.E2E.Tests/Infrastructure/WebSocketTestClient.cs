@@ -180,9 +180,15 @@ public sealed class FrameCollection : IReadOnlyList<JsonDocument>, IDisposable
 
     public int Count => _frames.Count;
 
-    public IEnumerator<JsonDocument> GetEnumerator() => _frames.GetEnumerator();
+    public IEnumerator<JsonDocument> GetEnumerator()
+    {
+        return _frames.GetEnumerator();
+    }
 
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
+    }
 
     public void Dispose()
     {

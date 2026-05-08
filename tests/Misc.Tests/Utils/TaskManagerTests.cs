@@ -103,14 +103,14 @@ public class TaskManagerTests
             new()
             {
                 Task = "Task 1",
-                SubTasks = new List<string> { "Subtask 1.1", "Subtask 1.2" },
-                Notes = new List<string> { "Note 1", "Note 2" },
+                SubTasks = ["Subtask 1.1", "Subtask 1.2"],
+                Notes = ["Note 1", "Note 2"],
             },
             new()
             {
                 Task = "Task 2",
-                SubTasks = new List<string> { "Subtask 2.1" },
-                Notes = new List<string> { "Note A" },
+                SubTasks = ["Subtask 2.1"],
+                Notes = ["Note A"],
             },
         };
 
@@ -179,7 +179,7 @@ public class TaskManagerTests
             new()
             {
                 Task = "Main task",
-                SubTasks = new List<string> { "", "Valid subtask", "   ", null! },
+                SubTasks = ["", "Valid subtask", "   ", null!],
             },
         };
 
@@ -198,7 +198,7 @@ public class TaskManagerTests
     {
         // Act
         var result1 = _taskManager.BulkInitialize(null!);
-        var result2 = _taskManager.BulkInitialize(new List<TaskManager.BulkTaskItem>());
+        var result2 = _taskManager.BulkInitialize([]);
 
         // Assert
         result1.Should().Be("Error: No tasks provided for initialization.");
@@ -667,12 +667,12 @@ public class TaskManagerTests
                         new()
                         {
                             Task = $"Bulk {opNum} Task 1",
-                            SubTasks = new() { $"Sub {opNum}.1" },
+                            SubTasks = [$"Sub {opNum}.1"],
                         },
                         new()
                         {
                             Task = $"Bulk {opNum} Task 2",
-                            SubTasks = new() { $"Sub {opNum}.2" },
+                            SubTasks = [$"Sub {opNum}.2"],
                         },
                     };
                     return _taskManager.BulkInitialize(bulkTasks);
@@ -793,6 +793,8 @@ public class TaskManagerTests
                             break;
                         case 4:
                             results.Add(await Task.Run(() => _taskManager.GetMarkdown()));
+                            break;
+                        default:
                             break;
                     }
                 })

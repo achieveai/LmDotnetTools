@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Services;
 /// <summary>
 /// Lazy lifetime wrapper for the codex MCP server. The underlying
 /// <see cref="McpFunctionProviderServer"/> is registered as a singleton (without an
-/// <see cref="Microsoft.Extensions.Hosting.IHostedService"/> registration), and we only
+/// <see cref="IHostedService"/> registration), and we only
 /// call <c>StartAsync</c> on it the first time a codex agent is created. Subsequent
 /// callers await the cached <see cref="Task{T}"/> from the same <see cref="Lazy{T}"/>.
 /// </summary>
@@ -69,7 +69,7 @@ public sealed class CodexMcpServerLifetime : IAsyncDisposable
         {
             try
             {
-                await _start.Value.ConfigureAwait(false);
+                _ = await _start.Value.ConfigureAwait(false);
             }
             catch
             {

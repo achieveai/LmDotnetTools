@@ -224,7 +224,7 @@ public static class ValidationHelper
         ValidateNotNullOrEmpty(allowedValues, nameof(allowedValues));
 
         var allowedList = allowedValues.ToList();
-        if (!allowedList.Contains(value!, StringComparer.OrdinalIgnoreCase))
+        if (!allowedList.Contains(value, StringComparer.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
                 $"Invalid value '{value}'. Allowed values: {string.Join(", ", allowedList)}",

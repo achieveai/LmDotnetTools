@@ -13,8 +13,10 @@ public static class ScriptedSseAssertions
     /// <summary>Filter frames by their <c>$type</c> discriminator (case-sensitive).</summary>
     public static IEnumerable<JsonElement> OfMessageType(
         this IEnumerable<JsonDocument> frames,
-        string typeName) =>
-            OfMessageType(frames, [typeName]);
+        string typeName)
+    {
+        return OfMessageType(frames, [typeName]);
+    }
 
     /// <summary>
     /// Filter frames matching any of <paramref name="typeNames"/> in a single pass over
@@ -175,17 +177,21 @@ public static class ScriptedSseAssertions
             && (role.GetString()?.Equals("assistant", StringComparison.OrdinalIgnoreCase) ?? false);
     }
 
-    private static bool IsToolCallFrame(string type) =>
-        type is "tool_call"
+    private static bool IsToolCallFrame(string type)
+    {
+        return type is "tool_call"
             or "tools_call"
             or "tool_call_update"
             or "tools_call_update"
             or "tools_call_aggregate";
+    }
 
-    private static bool IsToolCallResultFrame(string type) =>
-        type is "tool_call_result"
+    private static bool IsToolCallResultFrame(string type)
+    {
+        return type is "tool_call_result"
             or "tools_call_result"
             or "tools_call_aggregate";
+    }
 
     private static string? TryReadFunctionName(JsonElement element)
     {

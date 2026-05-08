@@ -23,33 +23,39 @@ public class FailoverServiceCollectionExtensionsTests : LoggingTestBase
         return config.GetSection("Failover");
     }
 
-    private static Dictionary<string, string?> ValidEmbeddingConfig() => new()
+    private static Dictionary<string, string?> ValidEmbeddingConfig()
     {
-        ["Failover:Primary:Endpoint"] = "http://primary",
-        ["Failover:Primary:Model"] = "model-a",
-        ["Failover:Primary:ApiKey"] = "key-a",
-        ["Failover:Primary:EmbeddingSize"] = "8",
-        ["Failover:Backup:Endpoint"] = "http://backup",
-        ["Failover:Backup:Model"] = "model-b",
-        ["Failover:Backup:ApiKey"] = "key-b",
-        ["Failover:Backup:EmbeddingSize"] = "8",
-        ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
-        ["Failover:FailoverOnHttpError"] = "true",
-        ["Failover:RecoveryIntervalSeconds"] = "120"
-    };
+        return new()
+        {
+            ["Failover:Primary:Endpoint"] = "http://primary",
+            ["Failover:Primary:Model"] = "model-a",
+            ["Failover:Primary:ApiKey"] = "key-a",
+            ["Failover:Primary:EmbeddingSize"] = "8",
+            ["Failover:Backup:Endpoint"] = "http://backup",
+            ["Failover:Backup:Model"] = "model-b",
+            ["Failover:Backup:ApiKey"] = "key-b",
+            ["Failover:Backup:EmbeddingSize"] = "8",
+            ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
+            ["Failover:FailoverOnHttpError"] = "true",
+            ["Failover:RecoveryIntervalSeconds"] = "120"
+        };
+    }
 
-    private static Dictionary<string, string?> ValidRerankConfig() => new()
+    private static Dictionary<string, string?> ValidRerankConfig()
     {
-        ["Failover:Primary:Endpoint"] = "http://primary",
-        ["Failover:Primary:Model"] = "rerank-a",
-        ["Failover:Primary:ApiKey"] = "key-a",
-        ["Failover:Backup:Endpoint"] = "http://backup",
-        ["Failover:Backup:Model"] = "rerank-b",
-        ["Failover:Backup:ApiKey"] = "key-b",
-        ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
-        ["Failover:FailoverOnHttpError"] = "true",
-        ["Failover:RecoveryIntervalSeconds"] = "120"
-    };
+        return new()
+        {
+            ["Failover:Primary:Endpoint"] = "http://primary",
+            ["Failover:Primary:Model"] = "rerank-a",
+            ["Failover:Primary:ApiKey"] = "key-a",
+            ["Failover:Backup:Endpoint"] = "http://backup",
+            ["Failover:Backup:Model"] = "rerank-b",
+            ["Failover:Backup:ApiKey"] = "key-b",
+            ["Failover:PrimaryRequestTimeoutSeconds"] = "5",
+            ["Failover:FailoverOnHttpError"] = "true",
+            ["Failover:RecoveryIntervalSeconds"] = "120"
+        };
+    }
 
     [Fact]
     [Trait("Category", "Resiliency")]

@@ -45,7 +45,7 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
         Logger.LogTrace("Generated response: {ResponseType}", response?.GetType().Name);
 
         Assert.NotNull(response);
-        var result = response!.ToList();
+        var result = response.ToList();
         Assert.NotEmpty(result);
         Assert.IsType<UsageMessage>(result.Last());
 

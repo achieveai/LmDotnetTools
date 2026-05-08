@@ -68,7 +68,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // The built-in tool should have a Type property
         var webSearchTool = tools.FirstOrDefault(t => t.Type == "web_search_20250305");
         Assert.NotNull(webSearchTool);
-        Assert.Equal("web_search", webSearchTool!.Name);
+        Assert.Equal("web_search", webSearchTool.Name);
 
         Logger.LogTrace("Successfully verified built-in web_search tool was sent in request");
     }
@@ -294,7 +294,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
             .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
-        Assert.Equal("web_search", serverToolUse!.FunctionName);
+        Assert.Equal("web_search", serverToolUse.FunctionName);
         Assert.Equal("srvtoolu_stream_01", serverToolUse.ToolCallId);
         Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
         Logger.LogTrace(
@@ -305,7 +305,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
 
         var serverToolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(serverToolResult);
-        Assert.Equal("web_search", serverToolResult!.ToolName);
+        Assert.Equal("web_search", serverToolResult.ToolName);
         Assert.False(serverToolResult.IsError);
         Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult.ExecutionTarget);
         Logger.LogTrace(
@@ -320,9 +320,9 @@ public class ServerToolIntegrationTests : LoggingTestBase
         {
             var cited = citationMessages.First();
             Assert.NotNull(cited.Citations);
-            Assert.NotEmpty(cited.Citations!);
+            Assert.NotEmpty(cited.Citations);
             Logger.LogTrace("TextWithCitations verified: {CitationCount} citations",
-                cited.Citations!.Count);
+                cited.Citations.Count);
         }
     }
 
@@ -360,7 +360,7 @@ public class ServerToolIntegrationTests : LoggingTestBase
         // Verify error result
         var toolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(toolResult);
-        Assert.True(toolResult!.IsError);
+        Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
         Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
         Logger.LogTrace("Error result verified: IsError={IsError}, ErrorCode={ErrorCode}",
@@ -427,20 +427,20 @@ public class ServerToolIntegrationTests : LoggingTestBase
         var serverToolUse = responseMessages.OfType<ToolCallUpdateMessage>()
             .LastOrDefault(m => m.ExecutionTarget == ExecutionTarget.ProviderServer);
         Assert.NotNull(serverToolUse);
-        Assert.Equal("web_search", serverToolUse!.FunctionName);
+        Assert.Equal("web_search", serverToolUse.FunctionName);
         Assert.Equal("srvtoolu_chain_01", serverToolUse.ToolCallId);
         Assert.Equal(ExecutionTarget.ProviderServer, serverToolUse.ExecutionTarget);
 
         var serverToolResult = responseMessages.OfType<ToolCallResultMessage>().FirstOrDefault();
         Assert.NotNull(serverToolResult);
-        Assert.Equal("web_search", serverToolResult!.ToolName);
+        Assert.Equal("web_search", serverToolResult.ToolName);
         Assert.Equal(ExecutionTarget.ProviderServer, serverToolResult.ExecutionTarget);
 
         var citedText = responseMessages.OfType<TextWithCitationsMessage>().FirstOrDefault();
         Assert.NotNull(citedText);
-        Assert.NotNull(citedText!.Citations);
-        Assert.NotEmpty(citedText.Citations!);
-        Assert.Equal("https://example.com", citedText.Citations![0].Url);
+        Assert.NotNull(citedText.Citations);
+        Assert.NotEmpty(citedText.Citations);
+        Assert.Equal("https://example.com", citedText.Citations[0].Url);
 
         Logger.LogTrace("Instruction chain test passed: ServerToolUse, ServerToolResult, TextWithCitations all verified");
     }
