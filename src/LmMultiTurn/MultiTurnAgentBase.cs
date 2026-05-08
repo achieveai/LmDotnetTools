@@ -250,7 +250,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// Adds a message that represents a deferred tool-call placeholder, waiting on persistence
     /// to complete before returning. Used by <c>MultiTurnAgentLoop</c> when a tool handler
-    /// returns <see cref="LmCore.Messages.ToolHandlerResult.Deferred"/>: the placeholder must
+    /// returns <see cref="ToolHandlerResult.Deferred"/>: the placeholder must
     /// be durable in the store before any subscriber sees it, so a webhook-triggered
     /// <c>ResolveToolCallAsync</c> can safely call <see cref="IConversationStore.ReplaceMessageAsync"/>
     /// without racing the placeholder's persistence.
@@ -534,12 +534,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        if (_inputChannel.Writer.TryWrite(queuedInput))
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        return _inputChannel.Writer.WriteAsync(queuedInput, ct);
+        return _inputChannel.Writer.TryWrite(queuedInput) ? ValueTask.CompletedTask : _inputChannel.Writer.WriteAsync(queuedInput, ct);
     }
 
     /// <summary>
@@ -547,7 +542,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// methods on subclasses (e.g., <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>) call this
     /// to fail fast instead of mutating disposed state.
     /// </summary>
-    protected void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_isDisposed, this);
+    protected void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+    }
 
     /// <summary>
     /// Convenience method to drain all currently available inputs from the queue.

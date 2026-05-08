@@ -39,15 +39,22 @@ public sealed class ScriptedSseResponder
     }
 
     /// <summary>Starts a new scripted responder definition.</summary>
-    public static ScriptedSseBuilder New() => new();
+    public static ScriptedSseBuilder New()
+    {
+        return new();
+    }
 
     /// <summary>Wraps this responder in an OpenAI-flavored <see cref="HttpMessageHandler"/>.</summary>
-    public HttpMessageHandler AsOpenAiHandler(ILogger? logger = null) =>
-        new ScriptedHandler(this, ScriptedWireFormat.OpenAi, logger ?? _logger);
+    public HttpMessageHandler AsOpenAiHandler(ILogger? logger = null)
+    {
+        return new ScriptedHandler(this, ScriptedWireFormat.OpenAi, logger ?? _logger);
+    }
 
     /// <summary>Wraps this responder in an Anthropic-flavored <see cref="HttpMessageHandler"/>.</summary>
-    public HttpMessageHandler AsAnthropicHandler(ILogger? logger = null) =>
-        new ScriptedHandler(this, ScriptedWireFormat.Anthropic, logger ?? _logger);
+    public HttpMessageHandler AsAnthropicHandler(ILogger? logger = null)
+    {
+        return new ScriptedHandler(this, ScriptedWireFormat.Anthropic, logger ?? _logger);
+    }
 
     internal InstructionPlan? TakeNextPlan(ScriptedRequestContext ctx)
     {
@@ -108,7 +115,10 @@ public sealed class ScriptedSseBuilder
     }
 
     /// <summary>Finalize the builder into a responder.</summary>
-    public ScriptedSseResponder Build() => new(_roles, _logger);
+    public ScriptedSseResponder Build()
+    {
+        return new(_roles, _logger);
+    }
 }
 
 /// <summary>Per-role turn builder.</summary>
@@ -135,11 +145,16 @@ public sealed class ScriptedRoleBuilder
     }
 
     /// <summary>Begin defining another role.</summary>
-    public ScriptedRoleBuilder ForRole(string key, Func<ScriptedRequestContext, bool> matches) =>
-        _parent.ForRole(key, matches);
+    public ScriptedRoleBuilder ForRole(string key, Func<ScriptedRequestContext, bool> matches)
+    {
+        return _parent.ForRole(key, matches);
+    }
 
     /// <summary>Finalize the builder.</summary>
-    public ScriptedSseResponder Build() => _parent.Build();
+    public ScriptedSseResponder Build()
+    {
+        return _parent.Build();
+    }
 }
 
 /// <summary>Fluent <see cref="InstructionPlan"/> composer used inside <see cref="ScriptedRoleBuilder.Turn"/>.</summary>
@@ -224,12 +239,14 @@ public sealed class InstructionPlanBuilder
         return this;
     }
 
-    internal InstructionPlan Build() =>
-        new(_idBase, _reasoningLength, _messages)
+    internal InstructionPlan Build()
+    {
+        return new(_idBase, _reasoningLength, _messages)
         {
             CacheCreationInputTokens = _cacheCreation,
             CacheReadInputTokens = _cacheRead,
         };
+    }
 }
 
 /// <summary>Metadata about an incoming request for role dispatch.</summary>
@@ -251,13 +268,17 @@ public sealed class ScriptedRequestContext
     public string? LatestUserMessage { get; init; }
 
     /// <summary>Convenience: true if the request advertises a tool named <paramref name="name"/>.</summary>
-    public bool HasTool(string name) =>
-        Tools.Any(t => string.Equals(t, name, StringComparison.OrdinalIgnoreCase));
+    public bool HasTool(string name)
+    {
+        return Tools.Any(t => string.Equals(t, name, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>Convenience: true if the system prompt contains <paramref name="substring"/>.</summary>
-    public bool SystemPromptContains(string substring) =>
-        !string.IsNullOrEmpty(substring)
+    public bool SystemPromptContains(string substring)
+    {
+        return !string.IsNullOrEmpty(substring)
             && SystemPrompt.Contains(substring, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>Wire format discriminator.</summary>
@@ -286,16 +307,21 @@ internal sealed class ScriptedRole
     public int TurnCount => _turnCount;
     public int Remaining => _turns.Count;
 
-    public bool Matches(ScriptedRequestContext ctx) => _matcher(ctx);
+    public bool Matches(ScriptedRequestContext ctx)
+    {
+        return _matcher(ctx);
+    }
 
     public void Enqueue(InstructionPlan plan)
     {
         _turns.Enqueue(plan);
-        Interlocked.Increment(ref _turnCount);
+        _ = Interlocked.Increment(ref _turnCount);
     }
 
-    public InstructionPlan? TryDequeue() =>
-        _turns.TryDequeue(out var plan) ? plan : null;
+    public InstructionPlan? TryDequeue()
+    {
+        return _turns.TryDequeue(out var plan) ? plan : null;
+    }
 }
 
 internal sealed class ScriptedHandler : HttpMessageHandler
@@ -588,6 +614,8 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         return names;
     }
 
-    private static string Preview(string s) =>
-        string.IsNullOrEmpty(s) ? "<empty>" : (s.Length > 80 ? s[..80] + "…" : s);
+    private static string Preview(string s)
+    {
+        return string.IsNullOrEmpty(s) ? "<empty>" : (s.Length > 80 ? s[..80] + "…" : s);
+    }
 }

@@ -23,10 +23,15 @@ public sealed class ScriptedBuilder : ITestAgentBuilder
         _subAgentFactory = subAgentFactory;
     }
 
-    public HttpMessageHandler CreateHandler(string providerMode, ILoggerFactory loggerFactory) => _handler;
+    public HttpMessageHandler CreateHandler(string providerMode, ILoggerFactory loggerFactory)
+    {
+        return _handler;
+    }
 
     public SubAgentOptions? CreateSubAgentOptions(
         ILoggerFactory loggerFactory,
-        Func<IStreamingAgent> providerAgentFactory) =>
-            _subAgentFactory?.Invoke(loggerFactory, providerAgentFactory);
+        Func<IStreamingAgent> providerAgentFactory)
+    {
+        return _subAgentFactory?.Invoke(loggerFactory, providerAgentFactory);
+    }
 }

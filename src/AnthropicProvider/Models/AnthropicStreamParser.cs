@@ -693,7 +693,7 @@ public class AnthropicStreamParser
                 [
                     new ToolCallUpdate
                     {
-                        ToolCallId = block.Id!,
+                        ToolCallId = block.Id,
                         Index = block.Index,
                         // Only include FunctionName if it's available and not null
                         FunctionName = !string.IsNullOrEmpty(block.Name) ? block.Name : null,
@@ -823,7 +823,7 @@ public class AnthropicStreamParser
         // Add finalized ToolCallMessage to _messages for GetAllMessages() (joined history).
         var serverToolUse = new ToolCallMessage
         {
-            ToolCallId = block.Id!,
+            ToolCallId = block.Id,
             FunctionName = block.Name ?? string.Empty,
             FunctionArgs = finalArgs,
             ExecutionTarget = ExecutionTarget.ProviderServer,
@@ -839,7 +839,7 @@ public class AnthropicStreamParser
         // finalize the builder AND pass through this message, creating a duplicate.
         var finalUpdate = new ToolCallUpdateMessage
         {
-            ToolCallId = block.Id!,
+            ToolCallId = block.Id,
             Index = block.Index,
             FunctionName = block.Name ?? string.Empty,
             FunctionArgs = finalArgs,

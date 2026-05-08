@@ -17,8 +17,10 @@ public static class ScriptedScenario
     /// <summary>
     /// Selects the provider-appropriate handler for <paramref name="providerMode"/>.
     /// </summary>
-    public static HttpMessageHandler HandlerFor(this ScriptedSseResponder responder, string providerMode) =>
-        providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
+    public static HttpMessageHandler HandlerFor(this ScriptedSseResponder responder, string providerMode)
+    {
+        return providerMode == "test-anthropic" ? responder.AsAnthropicHandler() : responder.AsOpenAiHandler();
+    }
 
     /// <summary>
     /// Boots a <see cref="BrowserWebAppFactory"/> around <paramref name="handler"/>, opens

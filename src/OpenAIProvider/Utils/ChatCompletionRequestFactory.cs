@@ -272,7 +272,7 @@ public static class ChatCompletionRequestFactory
             {
                 foreach (var prop in deserializedObject)
                 {
-                    jsonObject[prop.Key] = prop.Value!;
+                    jsonObject[prop.Key] = prop.Value;
                 }
             }
         }

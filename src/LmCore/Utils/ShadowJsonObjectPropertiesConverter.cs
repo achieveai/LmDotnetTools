@@ -111,7 +111,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
                     var propertyValue = property.GetValue(value);
                     if (propertyValue != null)
                     {
-                        writer.WritePropertyName(attr.Name!);
+                        writer.WritePropertyName(attr.Name);
                         JsonSerializer.Serialize(writer, propertyValue, property.PropertyType, options);
                     }
                 }

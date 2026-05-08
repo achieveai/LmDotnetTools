@@ -28,7 +28,7 @@ public class McpFunctionCallExtensionsTests
 
         // Log the types we've found
         Debug.WriteLine($"Found GreetingTool: {greetingToolType.FullName}");
-        Debug.WriteLine($"Found CalculatorTool: {calculatorToolType!.FullName}");
+        Debug.WriteLine($"Found CalculatorTool: {calculatorToolType.FullName}");
 
         // Check that there are methods with McpServerToolAttribute on the GreetingTool
         var greetingToolMethods = greetingToolType
@@ -58,33 +58,33 @@ public class McpFunctionCallExtensionsTests
         // Test GreetingTool methods
         var sayHelloContract = contractsList.FirstOrDefault(c => c.Name == "SayHello");
         Assert.NotNull(sayHelloContract);
-        Assert.Equal("Greets a person by name", sayHelloContract!.Description);
+        Assert.Equal("Greets a person by name", sayHelloContract.Description);
         Assert.NotNull(sayHelloContract.Parameters);
-        _ = Assert.Single(sayHelloContract.Parameters!);
-        Assert.Equal("name", sayHelloContract.Parameters!.First().Name);
+        _ = Assert.Single(sayHelloContract.Parameters);
+        Assert.Equal("name", sayHelloContract.Parameters.First().Name);
 
         var sayGoodbyeContract = contractsList.FirstOrDefault(c => c.Name == "SayGoodbye");
         Assert.NotNull(sayGoodbyeContract);
-        Assert.Equal("Says goodbye to a person by name", sayGoodbyeContract!.Description);
+        Assert.Equal("Says goodbye to a person by name", sayGoodbyeContract.Description);
         Assert.NotNull(sayGoodbyeContract.Parameters);
-        _ = Assert.Single(sayGoodbyeContract.Parameters!);
-        Assert.Equal("name", sayGoodbyeContract.Parameters!.First().Name);
+        _ = Assert.Single(sayGoodbyeContract.Parameters);
+        Assert.Equal("name", sayGoodbyeContract.Parameters.First().Name);
 
         // Test CalculatorTool methods
         var addContract = contractsList.FirstOrDefault(c => c.Name == "Add");
         Assert.NotNull(addContract);
-        Assert.Equal("Adds two numbers", addContract!.Description);
+        Assert.Equal("Adds two numbers", addContract.Description);
         Assert.NotNull(addContract.Parameters);
-        var addParams = addContract.Parameters!.ToList();
+        var addParams = addContract.Parameters.ToList();
         Assert.Equal(2, addParams.Count);
         Assert.Equal("a", addParams[0].Name);
         Assert.Equal("b", addParams[1].Name);
 
         var divideContract = contractsList.FirstOrDefault(c => c.Name == "Divide");
         Assert.NotNull(divideContract);
-        Assert.Equal("Divides the first number by the second", divideContract!.Description);
+        Assert.Equal("Divides the first number by the second", divideContract.Description);
         Assert.NotNull(divideContract.Parameters);
-        var divideParams = divideContract.Parameters!.ToList();
+        var divideParams = divideContract.Parameters.ToList();
         Assert.Equal(2, divideParams.Count);
         Assert.Equal("a", divideParams[0].Name);
         Assert.Equal("b", divideParams[1].Name);
@@ -110,7 +110,7 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(calculatorToolType);
 
         // Act - test with specific tool types rather than scanning whole assembly
-        var toolTypes = new[] { greetingToolType, calculatorToolType! };
+        var toolTypes = new[] { greetingToolType, calculatorToolType };
         var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
 
         // Act & Assert for SayHello
@@ -147,7 +147,7 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(calculatorToolType);
 
         // Create a middleware using a direct approach rather than assembly scanning
-        var toolTypes = new[] { greetingToolType, calculatorToolType! };
+        var toolTypes = new[] { greetingToolType, calculatorToolType };
         var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
         var middleware = new FunctionCallMiddleware(functions, LegacyHandlerAdapter.WrapToNewHandlers(functionMap), name: "FunctionCallMiddleware");
 

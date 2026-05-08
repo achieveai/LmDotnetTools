@@ -418,7 +418,7 @@ public class JsonFragmentAccumulatorTests
         var completionEvent = completionEvents.First();
         Assert.Equal("root", completionEvent.Path);
         Assert.NotNull(completionEvent.TextValue);
-        Assert.True(completionEvent.TextValue!.Length > 0);
+        Assert.True(completionEvent.TextValue.Length > 0);
 
         TestContextLogger.LogDebug("JsonComplete emitted. Json: {Json}", completionEvent.TextValue);
     }

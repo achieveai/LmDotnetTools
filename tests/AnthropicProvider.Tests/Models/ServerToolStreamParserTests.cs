@@ -207,7 +207,7 @@ public class ServerToolStreamParserTests
         // The final block stop should produce a TextWithCitationsMessage
         var citationsMsg = stopMessages.OfType<TextWithCitationsMessage>().FirstOrDefault();
         Assert.NotNull(citationsMsg);
-        Assert.Equal("The answer is 42.", citationsMsg!.Text);
+        Assert.Equal("The answer is 42.", citationsMsg.Text);
         Assert.NotNull(citationsMsg.Citations);
         Assert.Single(citationsMsg.Citations);
         Assert.Equal("web_search_result_location", citationsMsg.Citations[0].Type);
@@ -326,7 +326,7 @@ public class ServerToolStreamParserTests
             .ToList();
         Assert.Single(joinedServerToolCalls);
         Assert.Equal("srvtoolu_01", joinedServerToolCalls[0].ToolCallId);
-        Assert.Contains("test query", joinedServerToolCalls[0].FunctionArgs!);
+        Assert.Contains("test query", joinedServerToolCalls[0].FunctionArgs);
 
         Assert.Contains(accumulated, m => m is ToolCallResultMessage);
     }
@@ -726,14 +726,14 @@ public class ServerToolStreamParserTests
         var finalMsg = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(stopMessages));
         Assert.Equal("srvtoolu_delta_01", finalMsg.ToolCallId);
         Assert.Equal(ExecutionTarget.ProviderServer, finalMsg.ExecutionTarget);
-        Assert.Contains("test search", finalMsg.FunctionArgs!);
+        Assert.Contains("test search", finalMsg.FunctionArgs);
 
         // GetAllMessages (joined) must have exactly ONE — the final one with accumulated args
         var joined = parser.GetAllMessages().OfType<ToolCallMessage>()
             .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
             .ToList();
         Assert.Single(joined);
-        Assert.Contains("test search", joined[0].FunctionArgs!);
+        Assert.Contains("test search", joined[0].FunctionArgs);
     }
 
     /// <summary>
@@ -956,7 +956,7 @@ public class ServerToolStreamParserTests
         Assert.NotNull(result.FunctionArgs);
         Assert.DoesNotContain("{}{", result.FunctionArgs);
 
-        var parsed = JsonDocument.Parse(result.FunctionArgs!);
+        var parsed = JsonDocument.Parse(result.FunctionArgs);
         Assert.Equal("test search", parsed.RootElement.GetProperty("query").GetString());
     }
 

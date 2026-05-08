@@ -38,6 +38,10 @@ Invoke-CiStep "dotnet info" {
 }
 
 if (-not $SkipRestore) {
+    Invoke-CiStep "restore tools" {
+        dotnet tool restore
+    }
+
     Invoke-CiStep "restore solution" {
         dotnet restore $solution
     }
@@ -47,6 +51,13 @@ if (-not $SkipRestore) {
             dotnet restore $project
         }
     }
+}
+
+# Format gate: enforce that .editorconfig whitespace rules pass before
+# building. Pairs with the centralized TreatWarningsAsErrors flag so the
+# build step below catches any analyzer warning as an error.
+Invoke-CiStep "format whitespace verify" {
+    dotnet format whitespace $solution --verify-no-changes --verbosity diagnostic --no-restore
 }
 
 Invoke-CiStep "build solution" {

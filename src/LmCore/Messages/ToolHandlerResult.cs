@@ -48,7 +48,9 @@ public abstract record ToolHandlerResult
     /// Builds a <see cref="Resolved"/> with a text-only payload. Most common case.
     /// </summary>
     public static Resolved FromText(string text)
-        => new(new ToolHandlerResultPayload(text));
+    {
+        return new(new ToolHandlerResultPayload(text));
+    }
 
     /// <summary>
     /// Builds a <see cref="Resolved"/> with <see cref="ToolHandlerResultPayload.IsError"/>
@@ -56,7 +58,9 @@ public abstract record ToolHandlerResult
     /// (e.g., validation failures, expected API errors) so the LLM sees the error flag.
     /// </summary>
     public static Resolved FromError(string text, string? errorCode = null)
-        => new(new ToolHandlerResultPayload(text, IsError: true, ErrorCode: errorCode));
+    {
+        return new(new ToolHandlerResultPayload(text, IsError: true, ErrorCode: errorCode));
+    }
 
     /// <summary>
     /// Builds a <see cref="Resolved"/> carrying multi-modal content blocks (e.g., MCP
@@ -64,7 +68,9 @@ public abstract record ToolHandlerResult
     /// support fall back to it.
     /// </summary>
     public static Resolved FromMultiModal(string text, IList<ToolResultContentBlock> blocks)
-        => new(new ToolHandlerResultPayload(text, ContentBlocks: blocks));
+    {
+        return new(new ToolHandlerResultPayload(text, ContentBlocks: blocks));
+    }
 
     /// <summary>
     /// Convenience accessor for the resolved text. Throws on <see cref="Deferred"/> —

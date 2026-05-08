@@ -73,7 +73,7 @@ public class ChatCompletionRequestConverterTests
 
         // Make sure TopP is not null before accessing Value
         _ = Assert.NotNull(result.TopP);
-        Assert.Equal(0.95d, result.TopP!.Value, 5);
+        Assert.Equal(0.95d, result.TopP.Value, 5);
 
         Assert.Equal(expected, result.Stop);
         Assert.Equal(42, result.RandomSeed);

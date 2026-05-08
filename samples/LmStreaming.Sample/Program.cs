@@ -1,7 +1,7 @@
+using System.Collections.Immutable;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
@@ -20,7 +20,6 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using ModelContextProtocol.Client;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -28,6 +27,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using ModelContextProtocol.Client;
 using Serilog;
 using Serilog.Enrichers.CallerInfo;
 using Serilog.Events;
@@ -278,13 +278,10 @@ try
 
                 if (string.Equals(normalizedProviderId, "copilot-mock", StringComparison.Ordinal))
                 {
-                    if (string.IsNullOrWhiteSpace(mockBaseUrl))
-                    {
-                        throw new ProviderUnavailableException(
-                            "copilot-mock", "the in-process mock provider host is not running");
-                    }
-
-                    return new MultiTurnAgentPool.AgentCreationResult(
+                    return string.IsNullOrWhiteSpace(mockBaseUrl)
+                        ? throw new ProviderUnavailableException(
+                            "copilot-mock", "the in-process mock provider host is not running")
+                        : new MultiTurnAgentPool.AgentCreationResult(
                         CreateCopilotAgentLoop(
                             threadId,
                             mode,
@@ -377,7 +374,7 @@ try
                         loggerFactory);
                     if (mcpClients.Count > 0)
                     {
-                        ownedResources = mcpClients.Cast<IAsyncDisposable>().ToList();
+                        ownedResources = [.. mcpClients.Cast<IAsyncDisposable>()];
                     }
                 }
 
@@ -1174,7 +1171,7 @@ public partial class Program
                 ["books"] = booksClient,
             };
 
-            registry.AddMcpClientsAsync(mcpClients, "LlmQuery").GetAwaiter().GetResult();
+            _ = registry.AddMcpClientsAsync(mcpClients, "LlmQuery").GetAwaiter().GetResult();
 
             logger.LogInformation(
                 "Connected to LlmQuery book search MCP server for thread {ThreadId}",

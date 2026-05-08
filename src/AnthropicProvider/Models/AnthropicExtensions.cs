@@ -155,7 +155,7 @@ public static class AnthropicExtensions
                 new TextWithCitationsMessage
                 {
                     Text = textWithCitations.Text,
-                    Citations = [.. textWithCitations.Citations!
+                    Citations = [.. textWithCitations.Citations
                         .Select(c => new CitationInfo
                         {
                             Type = c.Type,

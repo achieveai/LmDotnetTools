@@ -92,7 +92,7 @@ public sealed class ProviderRegistry
 
             if (isStatic)
             {
-                staticBuilder.Add(id);
+                _ = staticBuilder.Add(id);
             }
 
             builder[id] = new ProviderDescriptor(id, displayName, isStatic, entry.KnownLimitation);
@@ -156,16 +156,13 @@ public sealed class ProviderRegistry
 
     private static string? NormalizeId(string? providerId)
     {
-        if (string.IsNullOrWhiteSpace(providerId))
-        {
-            return null;
-        }
-
-        return providerId.Trim().ToLowerInvariant();
+        return string.IsNullOrWhiteSpace(providerId) ? null : providerId.Trim().ToLowerInvariant();
     }
 
-    private static bool IsMockProvider(string normalizedId) =>
-        normalizedId.EndsWith("-mock", StringComparison.Ordinal);
+    private static bool IsMockProvider(string normalizedId)
+    {
+        return normalizedId.EndsWith("-mock", StringComparison.Ordinal);
+    }
 
     private static bool HasEnvVar(string name)
     {
@@ -175,11 +172,6 @@ public sealed class ProviderRegistry
     private static bool HasCliPath(string envVar, string cliName, IFileSystemProbe probe)
     {
         var explicitPath = Environment.GetEnvironmentVariable(envVar);
-        if (!string.IsNullOrWhiteSpace(explicitPath))
-        {
-            return probe.FileExists(explicitPath);
-        }
-
-        return probe.IsExecutableOnPath(cliName);
+        return !string.IsNullOrWhiteSpace(explicitPath) ? probe.FileExists(explicitPath) : probe.IsExecutableOnPath(cliName);
     }
 }

@@ -100,7 +100,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             // Send the task as user input (triggers first turn)
-            await agent.SendAsync(
+            _ = await agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             _logger.LogInformation(
@@ -117,7 +117,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         catch
         {
             // Release the gate on failure
-            _concurrencyGate.Release();
+            _ = _concurrencyGate.Release();
             throw;
         }
     }
@@ -139,7 +139,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (state.Status == SubAgentStatus.Running)
         {
             // Inject message into the currently running agent
-            await state.Agent.SendAsync(
+            _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
 
             return JsonSerializer.Serialize(new
@@ -163,7 +163,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             if (state.Store != null
                 && state.Agent is MultiTurnAgentBase agentBase)
             {
-                await agentBase.RecoverAsync();
+                _ = await agentBase.RecoverAsync();
             }
 
             // Cancel and dispose the old CTS to prevent double-monitor bugs:
@@ -204,7 +204,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
-            await state.Agent.SendAsync(
+            _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
 
             state.Status = SubAgentStatus.Running;
@@ -221,7 +221,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch
         {
-            _concurrencyGate.Release();
+            _ = _concurrencyGate.Release();
             throw;
         }
     }
@@ -267,8 +267,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Get the list of available template names.
     /// </summary>
-    public IReadOnlyList<string> GetTemplateNames() =>
-        _options.Templates.Keys.ToList().AsReadOnly();
+    public IReadOnlyList<string> GetTemplateNames()
+    {
+        return _options.Templates.Keys.ToList().AsReadOnly();
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -370,7 +372,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
-            registry.AddFunction(contract, handler, "ParentTools");
+            _ = registry.AddFunction(contract, handler, "ParentTools");
         }
 
         return new MultiTurnAgentLoop(
@@ -412,7 +414,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             result ??= [];
             foreach (var tool in addTools)
             {
-                result.Add(tool);
+                _ = result.Add(tool);
             }
         }
 
@@ -429,7 +431,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             foreach (var tool in removeTools)
             {
-                result.Remove(tool);
+                _ = result.Remove(tool);
             }
         }
 
@@ -457,7 +459,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     state.TurnBuffer.Enqueue(summary);
                     while (state.TurnBuffer.Count > 10)
                     {
-                        state.TurnBuffer.TryDequeue(out _);
+                        _ = state.TurnBuffer.TryDequeue(out _);
                     }
                 }
 
@@ -502,7 +504,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // cancellation, or exception), release the semaphore here.
             if (!completionHandled)
             {
-                _concurrencyGate.Release();
+                _ = _concurrencyGate.Release();
             }
         }
     }
@@ -546,7 +548,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         finally
         {
-            _concurrencyGate.Release();
+            _ = _concurrencyGate.Release();
         }
     }
 
@@ -554,7 +556,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         try
         {
-            await _parentAgent.SendAsync(
+            _ = await _parentAgent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = text }]);
         }
         catch (Exception ex)
@@ -572,44 +574,34 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
-        switch (msg)
+        return msg switch
         {
-            case TextMessage tm when tm.Role == Role.Assistant && !tm.IsThinking:
-                return new SubAgentTurnSummary
-                {
-                    MessageType = "text",
-                    TextPreview = Truncate(tm.Text, 100),
-                };
-
-            case ToolCallMessage tc:
-                return new SubAgentTurnSummary
-                {
-                    MessageType = "tool_call",
-                    ToolName = tc.FunctionName,
-                    ToolArgsPreview = Truncate(tc.FunctionArgs, 80),
-                };
-
-            case ToolCallResultMessage tcr:
-                return new SubAgentTurnSummary
-                {
-                    MessageType = "tool_result",
-                    ToolName = tcr.ToolName,
-                    TextPreview = Truncate(tcr.Result, 100),
-                };
-
-            default:
-                return null;
-        }
+            TextMessage tm when tm.Role == Role.Assistant && !tm.IsThinking => new SubAgentTurnSummary
+            {
+                MessageType = "text",
+                TextPreview = Truncate(tm.Text, 100),
+            },
+            ToolCallMessage tc => new SubAgentTurnSummary
+            {
+                MessageType = "tool_call",
+                ToolName = tc.FunctionName,
+                ToolArgsPreview = Truncate(tc.FunctionArgs, 80),
+            },
+            ToolCallResultMessage tcr => new SubAgentTurnSummary
+            {
+                MessageType = "tool_result",
+                ToolName = tcr.ToolName,
+                TextPreview = Truncate(tcr.Result, 100),
+            },
+            _ => null,
+        };
     }
 
     private static string? Truncate(string? text, int maxLength)
     {
-        if (text == null)
-        {
-            return null;
-        }
-
-        return text.Length <= maxLength
+        return text == null
+            ? null
+            : text.Length <= maxLength
             ? text
             : text[..maxLength] + "...";
     }
@@ -621,18 +613,24 @@ public sealed class SubAgentManager : IAsyncDisposable
     private sealed class SubAgentLoopLoggerAdapter(ILogger inner) : ILogger<MultiTurnAgentLoop>
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull =>
-            inner.BeginScope(state);
+            where TState : notnull
+        {
+            return inner.BeginScope(state);
+        }
 
-        public bool IsEnabled(LogLevel logLevel) =>
-            inner.IsEnabled(logLevel);
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return inner.IsEnabled(logLevel);
+        }
 
         public void Log<TState>(
             LogLevel logLevel,
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter) =>
+            Func<TState, Exception?, string> formatter)
+        {
             inner.Log(logLevel, eventId, state, exception, formatter);
+        }
     }
 }

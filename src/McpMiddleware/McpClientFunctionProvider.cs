@@ -90,7 +90,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
-                multiModalMap.TryGetValue(key, out var multiModalHandler);
+                _ = multiModalMap.TryGetValue(key, out var multiModalHandler);
                 // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
                 // is the canonical handler shape; the text-only handler is no longer used.
                 // Wrap the multi-modal flavor when available, otherwise wrap the text handler.
@@ -274,7 +274,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
-                multiModalMap.TryGetValue(key, out var multiModalHandler);
+                _ = multiModalMap.TryGetValue(key, out var multiModalHandler);
                 // The multi-modal handler (returning ToolCallResult with optional ContentBlocks)
                 // is the canonical handler shape; the text-only handler is no longer used.
                 // Wrap the multi-modal flavor when available, otherwise wrap the text handler.

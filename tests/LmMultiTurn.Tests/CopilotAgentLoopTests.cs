@@ -335,7 +335,9 @@ public class CopilotAgentLoopTests : LoggingTestBase
         }
 
         public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
-            => StartOrResumeSessionAsync(options, ct);
+        {
+            return StartOrResumeSessionAsync(options, ct);
+        }
 
         public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
             string input,
@@ -350,7 +352,10 @@ public class CopilotAgentLoopTests : LoggingTestBase
             }
         }
 
-        public Task InterruptTurnAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task InterruptTurnAsync(CancellationToken ct = default)
+        {
+            return Task.CompletedTask;
+        }
 
         public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken ct = default)
         {
@@ -358,6 +363,9 @@ public class CopilotAgentLoopTests : LoggingTestBase
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

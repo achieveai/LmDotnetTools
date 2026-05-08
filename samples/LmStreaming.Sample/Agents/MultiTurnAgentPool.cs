@@ -490,7 +490,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         AgentEntry entry;
         lock (lockObj)
         {
-            _agents.TryRemove(threadId, out oldEntry);
+            _ = _agents.TryRemove(threadId, out oldEntry);
             entry = CreateAgentEntry(threadId, mode, resolvedProviderId, requestResponseDumpFileName: null);
             _agents[threadId] = entry;
         }

@@ -220,7 +220,7 @@ public class ServerToolRequestTests
 
         foreach (var msg in requestMessages.EnumerateArray())
         {
-            var role = msg.GetProperty("role").GetString()!;
+            var role = msg.GetProperty("role").GetString();
             Assert.NotEqual(previousRole, role, StringComparer.Ordinal);
             previousRole = role;
 
@@ -316,7 +316,7 @@ public class ServerToolRequestTests
                             "tool_result should have content field"
                         );
 
-                        var resultStr = resultContent.GetString()!;
+                        var resultStr = resultContent.GetString();
                         Assert.Contains("content", resultStr);
                         Assert.Contains("null", resultStr);
                     }

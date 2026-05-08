@@ -134,9 +134,11 @@ public sealed class ByteIdentityTests
         openAiTee.CapturedBytes.Should().BeEmpty("openai handler must not be touched on the anthropic route");
     }
 
-    private static ScriptedSseResponder BuildResponder() =>
-        ScriptedSseResponder.New()
+    private static ScriptedSseResponder BuildResponder()
+    {
+        return ScriptedSseResponder.New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
                 .Turn(t => t.Text("Hello from the scripted parent."))
             .Build();
+    }
 }

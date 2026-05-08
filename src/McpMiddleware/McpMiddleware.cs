@@ -384,7 +384,9 @@ public partial class McpMiddleware : IStreamingMiddleware
             var client = kvp.Value;
 
             if (!toolsByClient.TryGetValue(clientId, out var tools) || tools.Count == 0)
+            {
                 continue;
+            }
 
             logger.LogInformation(
                 "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
@@ -458,7 +460,9 @@ public partial class McpMiddleware : IStreamingMiddleware
         foreach (var kvp in mcpClients)
         {
             if (!toolsByClient.TryGetValue(kvp.Key, out var tools))
+            {
                 continue;
+            }
 
             foreach (var tool in tools)
             {

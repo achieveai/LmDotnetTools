@@ -52,7 +52,7 @@ public record Usage
             rv = this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty };
         }
 
-        rv = rv with { ExtraProperties = rv.ExtraProperties!.Add(key, value) };
+        rv = rv with { ExtraProperties = rv.ExtraProperties.Add(key, value) };
         return rv;
     }
 

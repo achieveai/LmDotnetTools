@@ -83,7 +83,7 @@ public class McpServerTests
             // The message received by the agent should be the initial text message
             var textMessage = receivedMessage as TextMessage;
             Assert.NotNull(textMessage);
-            Assert.Equal("Hello, I need help", textMessage!.Text);
+            Assert.Equal("Hello, I need help", textMessage.Text);
         }
         finally
         {

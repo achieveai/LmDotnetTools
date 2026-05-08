@@ -64,7 +64,7 @@ public sealed class AnthropicSpecificTests
 
         var usageFrame = frames
             .OfMessageType("usage")
-            .FirstOrDefault(f => HasCacheMetrics(f));
+            .FirstOrDefault(HasCacheMetrics);
         usageFrame.ValueKind.Should().NotBe(JsonValueKind.Undefined,
             "a usage frame with cache-creation/cache-read metrics should be emitted");
     }
@@ -82,10 +82,12 @@ public sealed class AnthropicSpecificTests
             || HasExtraProperty(usage, "cache_read_input_tokens");
     }
 
-    private static bool HasPositiveInt(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var prop)
+    private static bool HasPositiveInt(JsonElement obj, string name)
+    {
+        return obj.TryGetProperty(name, out var prop)
             && prop.ValueKind == JsonValueKind.Number
             && prop.GetInt32() > 0;
+    }
 
     private static bool HasExtraProperty(JsonElement usage, string name)
     {

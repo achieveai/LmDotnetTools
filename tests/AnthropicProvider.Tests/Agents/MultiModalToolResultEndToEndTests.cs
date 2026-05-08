@@ -131,7 +131,7 @@ public class MultiModalToolResultEndToEndTests : LoggingTestBase
         var messagesArray = doc.RootElement.GetProperty("messages");
 
         // Find the user message containing the tool_result content block
-        JsonElement? toolResultBlock = FindToolResultBlock(messagesArray);
+        var toolResultBlock = FindToolResultBlock(messagesArray);
         Assert.NotNull(toolResultBlock);
         Logger.LogDebug("Found tool_result block in second HTTP request");
 

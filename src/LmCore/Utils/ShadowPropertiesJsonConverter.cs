@@ -118,7 +118,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
                     if (propertyValue != null
                         && !(propertyValue is JsonElement je && je.ValueKind == JsonValueKind.Undefined))
                     {
-                        writer.WritePropertyName(attr.Name!);
+                        writer.WritePropertyName(attr.Name);
                         JsonSerializer.Serialize(writer, propertyValue, property.PropertyType, options);
                     }
                 }

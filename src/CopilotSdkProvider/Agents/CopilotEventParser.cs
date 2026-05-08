@@ -10,12 +10,9 @@ internal static class CopilotEventParser
 {
     public static string? ExtractSessionId(JsonElement? root)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        return root.Value.TryGetProperty("sessionId", out var sessionIdProp)
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty("sessionId", out var sessionIdProp)
             && sessionIdProp.ValueKind == JsonValueKind.String
             ? sessionIdProp.GetString()
             : root.Value.TryGetProperty("session", out var sessionProp)
@@ -80,20 +77,14 @@ internal static class CopilotEventParser
 
     public static string? ExtractSessionUpdateKind(JsonElement? parameters)
     {
-        if (!parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (parameters.Value.TryGetProperty("update", out var updateProp)
+        return !parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : parameters.Value.TryGetProperty("update", out var updateProp)
             && updateProp.ValueKind == JsonValueKind.Object
             && updateProp.TryGetProperty("sessionUpdate", out var kindProp)
-            && kindProp.ValueKind == JsonValueKind.String)
-        {
-            return kindProp.GetString();
-        }
-
-        return parameters.Value.TryGetProperty("sessionUpdate", out var directKindProp)
+            && kindProp.ValueKind == JsonValueKind.String
+            ? kindProp.GetString()
+            : parameters.Value.TryGetProperty("sessionUpdate", out var directKindProp)
             && directKindProp.ValueKind == JsonValueKind.String
             ? directKindProp.GetString()
             : null;
@@ -101,12 +92,9 @@ internal static class CopilotEventParser
 
     public static JsonElement? ExtractSessionUpdateElement(JsonElement? parameters)
     {
-        if (!parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        return parameters.Value.TryGetProperty("update", out var updateProp)
+        return !parameters.HasValue || parameters.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : parameters.Value.TryGetProperty("update", out var updateProp)
             && updateProp.ValueKind == JsonValueKind.Object
             ? updateProp.Clone()
             : parameters.Value.Clone();

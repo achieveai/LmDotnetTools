@@ -35,6 +35,8 @@
     <NoWarn>$(NoWarn);IDE0130;IDE0330</NoWarn>
     <!-- IDE0130: Namespace does not match folder structure (intentional naming convention) -->
     <!-- IDE0330: Prefer readonly span (uses .NET 9 Lock type, incompatible with .NET 8) -->
+    <!-- Enforce zero-warning builds repo-wide. Local opt-out via -p:TreatWarningsAsErrors=false. -->
+    <TreatWarningsAsErrors Condition="'$(TreatWarningsAsErrors)' == ''">true</TreatWarningsAsErrors>
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>

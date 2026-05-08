@@ -16,25 +16,25 @@ internal sealed class DefaultTestAgentBuilder : ITestAgentBuilder
 
     public HttpMessageHandler CreateHandler(string providerMode, ILoggerFactory loggerFactory)
     {
-        if (string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase))
-        {
-            return new AnthropicTestSseMessageHandler(
+        return string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase)
+            ? new AnthropicTestSseMessageHandler(
                 loggerFactory.CreateLogger<AnthropicTestSseMessageHandler>())
             {
                 WordsPerChunk = DefaultWordsPerChunk,
                 ChunkDelayMs = DefaultChunkDelayMs,
+            }
+            : new TestSseMessageHandler(
+                loggerFactory.CreateLogger<TestSseMessageHandler>())
+            {
+                WordsPerChunk = DefaultWordsPerChunk,
+                ChunkDelayMs = DefaultChunkDelayMs,
             };
-        }
-
-        return new TestSseMessageHandler(
-            loggerFactory.CreateLogger<TestSseMessageHandler>())
-        {
-            WordsPerChunk = DefaultWordsPerChunk,
-            ChunkDelayMs = DefaultChunkDelayMs,
-        };
     }
 
     public SubAgentOptions? CreateSubAgentOptions(
         ILoggerFactory loggerFactory,
-        Func<IStreamingAgent> providerAgentFactory) => null;
+        Func<IStreamingAgent> providerAgentFactory)
+    {
+        return null;
+    }
 }

@@ -555,7 +555,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
         if (!string.IsNullOrWhiteSpace(directTool))
         {
-            return (directTool!, directArgs);
+            return (directTool, directArgs);
         }
 
         // Fallback: RPC method carries the tool name directly (e.g., tools/call::<name>).
@@ -624,7 +624,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     var value = item.GetString();
                     if (!string.IsNullOrWhiteSpace(value))
                     {
-                        result.Add(value!);
+                        result.Add(value);
                     }
                 }
                 else if (item.ValueKind == JsonValueKind.Object
@@ -634,7 +634,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                     var value = idProp.GetString();
                     if (!string.IsNullOrWhiteSpace(value))
                     {
-                        result.Add(value!);
+                        result.Add(value);
                     }
                 }
             }

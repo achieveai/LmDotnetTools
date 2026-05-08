@@ -96,7 +96,7 @@ public class ImmutableDictionarySerializationTests
         var deserialized = JsonSerializer.Deserialize<Dictionary<string, string>>(json, options);
         // Assert
         Assert.NotNull(deserialized);
-        Assert.Equal(2, deserialized!.Count);
+        Assert.Equal(2, deserialized.Count);
         Assert.Equal("value1", deserialized["key1"]);
         Assert.Equal("value2", deserialized["key2"]);
     }
@@ -116,7 +116,7 @@ public class ImmutableDictionarySerializationTests
         var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, string>>(json, options);
         // Assert
         Assert.NotNull(deserialized);
-        Assert.Equal(2, deserialized!.Count);
+        Assert.Equal(2, deserialized.Count);
         Assert.Equal("value1", deserialized["key1"]);
         Assert.Equal("value2", deserialized["key2"]);
     }
@@ -267,7 +267,7 @@ public class ImmutableDictionarySerializationTests
         var deserialized = JsonSerializer.Deserialize<TestClassWithExtensionData>(json, options);
         // Assert
         Assert.NotNull(deserialized);
-        Assert.Equal("Test", deserialized!.Name);
+        Assert.Equal("Test", deserialized.Name);
         Assert.Equal(10, deserialized.Value);
         // Check extra properties - they should be accessible through the ExtraProperties property
         Assert.NotNull(deserialized.ExtraProperties);
@@ -312,7 +312,7 @@ public class ImmutableDictionarySerializationTests
         var deserialized = JsonSerializer.Deserialize<TestClassWithNestedProperties>(json, options);
         // Assert
         Assert.NotNull(deserialized);
-        Assert.Equal("Test", deserialized!.Name);
+        Assert.Equal("Test", deserialized.Name);
         Assert.Equal(10, deserialized.Value);
         // Check extra properties - they should be accessible through the ExtraProperties property
         Assert.NotNull(deserialized.ExtraProperties);

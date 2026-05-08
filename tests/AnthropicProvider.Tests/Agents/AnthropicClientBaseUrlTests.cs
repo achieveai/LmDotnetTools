@@ -50,7 +50,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
 
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
             Logger.LogInformation("Default URL request URI: {RequestUri}", requestUri);
-            Assert.Contains("api.anthropic.com/v1/messages", requestUri!);
+            Assert.Contains("api.anthropic.com/v1/messages", requestUri);
         }
         finally
         {
@@ -88,7 +88,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         // Assert
         var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
         Logger.LogInformation("Explicit URL request URI: {RequestUri}", requestUri);
-        Assert.Contains("custom-api.example.com/v1/messages", requestUri!);
+        Assert.Contains("custom-api.example.com/v1/messages", requestUri);
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         // Assert - URL is used as-is, /messages appended directly
         var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
         Logger.LogInformation("As-is URL request URI: {RequestUri}", requestUri);
-        Assert.Contains("custom-api.example.com/messages", requestUri!);
+        Assert.Contains("custom-api.example.com/messages", requestUri);
     }
 
     [Fact]
@@ -154,7 +154,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             // Assert
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
             Logger.LogInformation("Env var URL request URI: {RequestUri}", requestUri);
-            Assert.Contains("env-custom-api.example.com/v1/messages", requestUri!);
+            Assert.Contains("env-custom-api.example.com/v1/messages", requestUri);
         }
         finally
         {
@@ -192,7 +192,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             // Assert - URL is used as-is, /messages appended directly
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
             Logger.LogInformation("Env var as-is URL request URI: {RequestUri}", requestUri);
-            Assert.Contains("env-no-v1.example.com/messages", requestUri!);
+            Assert.Contains("env-no-v1.example.com/messages", requestUri);
         }
         finally
         {
@@ -235,8 +235,8 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
             // Assert
             var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
             Logger.LogInformation("Priority test request URI: {RequestUri}", requestUri);
-            Assert.Contains("explicit-api.example.com/v1/messages", requestUri!);
-            Assert.DoesNotContain("env-api.example.com", requestUri!);
+            Assert.Contains("explicit-api.example.com/v1/messages", requestUri);
+            Assert.DoesNotContain("env-api.example.com", requestUri);
         }
         finally
         {
@@ -274,7 +274,7 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         // Assert - path should be preserved, /messages appended
         var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
         Logger.LogInformation("Custom path URL request URI: {RequestUri}", requestUri);
-        Assert.Contains("api.kimi.com/coding/messages", requestUri!);
+        Assert.Contains("api.kimi.com/coding/messages", requestUri);
     }
 
     [Fact]
@@ -393,6 +393,6 @@ public class AnthropicClientBaseUrlTests : LoggingTestBase
         // Assert
         var requestUri = requestCapture.LastRequest?.RequestUri?.ToString();
         Logger.LogInformation("HttpClient ctor URL: {RequestUri}", requestUri);
-        Assert.Contains("httpclient-ctor.example.com/v1/messages", requestUri!);
+        Assert.Contains("httpclient-ctor.example.com/v1/messages", requestUri);
     }
 }

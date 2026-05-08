@@ -333,7 +333,7 @@ public class DiagnosticsController(ILogger<DiagnosticsController> logger) : Cont
                 },
             });
             await writer.WriteLineAsync(initializeRequest);
-            await writer.WriteLineAsync("""{"jsonrpc":"2.0","method":"initialized"}""");
+            await writer.WriteLineAsync(/*lang=json,strict*/ """{"jsonrpc":"2.0","method":"initialized"}""");
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(timeoutMs, 1_000)));

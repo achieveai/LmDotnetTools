@@ -30,7 +30,7 @@ public class ServerToolResponseConversionTests
 
         var serverToolUseMsg = messages.OfType<ToolCallMessage>().SingleOrDefault();
         Assert.NotNull(serverToolUseMsg);
-        Assert.Equal("srvtoolu_01", serverToolUseMsg!.ToolCallId);
+        Assert.Equal("srvtoolu_01", serverToolUseMsg.ToolCallId);
         Assert.Equal("web_search", serverToolUseMsg.FunctionName);
         Assert.Equal(ExecutionTarget.ProviderServer, serverToolUseMsg.ExecutionTarget);
         var args = JsonDocument.Parse(serverToolUseMsg.FunctionArgs ?? "{}").RootElement;
@@ -62,7 +62,7 @@ public class ServerToolResponseConversionTests
 
         var resultMsg = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(resultMsg);
-        Assert.Equal("srvtoolu_01", resultMsg!.ToolCallId);
+        Assert.Equal("srvtoolu_01", resultMsg.ToolCallId);
         Assert.Equal("web_search", resultMsg.ToolName);
         Assert.Equal(ExecutionTarget.ProviderServer, resultMsg.ExecutionTarget);
         Assert.False(resultMsg.IsError);
@@ -92,7 +92,7 @@ public class ServerToolResponseConversionTests
 
         var resultMsg = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(resultMsg);
-        Assert.Equal("web_fetch", resultMsg!.ToolName);
+        Assert.Equal("web_fetch", resultMsg.ToolName);
         Assert.Equal(ExecutionTarget.ProviderServer, resultMsg.ExecutionTarget);
     }
 
@@ -120,7 +120,7 @@ public class ServerToolResponseConversionTests
 
         var resultMsg = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(resultMsg);
-        Assert.Equal("bash_code_execution", resultMsg!.ToolName);
+        Assert.Equal("bash_code_execution", resultMsg.ToolName);
         Assert.Equal(ExecutionTarget.ProviderServer, resultMsg.ExecutionTarget);
     }
 
@@ -148,7 +148,7 @@ public class ServerToolResponseConversionTests
 
         var resultMsg = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(resultMsg);
-        Assert.True(resultMsg!.IsError);
+        Assert.True(resultMsg.IsError);
         Assert.Equal("max_uses_exceeded", resultMsg.ErrorCode);
         Assert.Equal(ExecutionTarget.ProviderServer, resultMsg.ExecutionTarget);
     }
@@ -228,7 +228,7 @@ public class ServerToolResponseConversionTests
 
         var citMsg = messages.OfType<TextWithCitationsMessage>().SingleOrDefault();
         Assert.NotNull(citMsg);
-        Assert.Equal("The answer is 42.", citMsg!.Text);
+        Assert.Equal("The answer is 42.", citMsg.Text);
         Assert.NotNull(citMsg.Citations);
         Assert.Single(citMsg.Citations);
         Assert.Equal("web_search_result_location", citMsg.Citations[0].Type);
@@ -242,7 +242,7 @@ public class ServerToolResponseConversionTests
         var response = JsonSerializer.Deserialize<AnthropicResponse>(json, _jsonOptions);
 
         Assert.NotNull(response);
-        var messages = response!.ToMessages("test-agent");
+        var messages = response.ToMessages("test-agent");
 
         // The fixture has: text + server_tool_use + web_search_tool_result + text_with_citations + usage
         Assert.True(messages.Count >= 4, $"Expected at least 4 messages, got {messages.Count}");
@@ -250,21 +250,21 @@ public class ServerToolResponseConversionTests
         // Verify server tool use
         var toolUse = messages.OfType<ToolCallMessage>().SingleOrDefault();
         Assert.NotNull(toolUse);
-        Assert.Equal("web_search", toolUse!.FunctionName);
+        Assert.Equal("web_search", toolUse.FunctionName);
         Assert.Equal("srvtoolu_01ABC", toolUse.ToolCallId);
         Assert.Equal(ExecutionTarget.ProviderServer, toolUse.ExecutionTarget);
 
         // Verify server tool result
         var toolResult = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(toolResult);
-        Assert.Equal("web_search", toolResult!.ToolName);
+        Assert.Equal("web_search", toolResult.ToolName);
         Assert.False(toolResult.IsError);
         Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
 
         // Verify text with citations
         var citMsg = messages.OfType<TextWithCitationsMessage>().SingleOrDefault();
         Assert.NotNull(citMsg);
-        Assert.NotNull(citMsg!.Citations);
+        Assert.NotNull(citMsg.Citations);
         Assert.Single(citMsg.Citations);
         Assert.Equal("web_search_result_location", citMsg.Citations[0].Type);
     }
@@ -276,11 +276,11 @@ public class ServerToolResponseConversionTests
         var response = JsonSerializer.Deserialize<AnthropicResponse>(json, _jsonOptions);
 
         Assert.NotNull(response);
-        var messages = response!.ToMessages("test-agent");
+        var messages = response.ToMessages("test-agent");
 
         var toolResult = messages.OfType<ToolCallResultMessage>().SingleOrDefault();
         Assert.NotNull(toolResult);
-        Assert.True(toolResult!.IsError);
+        Assert.True(toolResult.IsError);
         Assert.Equal("max_uses_exceeded", toolResult.ErrorCode);
         Assert.Equal(ExecutionTarget.ProviderServer, toolResult.ExecutionTarget);
     }

@@ -195,7 +195,7 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
                 }
                 else if (!string.IsNullOrEmpty(message.ExplicitText))
                 {
-                    await WriteTextEventsAsync(writer, message.ExplicitText!, contentIndex, cancellationToken);
+                    await WriteTextEventsAsync(writer, message.ExplicitText, contentIndex, cancellationToken);
                     contentIndex++;
                 }
                 else if (message.ToolCalls != null)

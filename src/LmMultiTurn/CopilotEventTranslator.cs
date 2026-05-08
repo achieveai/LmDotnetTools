@@ -461,12 +461,7 @@ internal sealed class CopilotEventTranslator
                 }
 
                 var combined = sb.ToString().Trim();
-                if (!string.IsNullOrEmpty(combined))
-                {
-                    return combined;
-                }
-
-                return content.GetRawText();
+                return !string.IsNullOrEmpty(combined) ? combined : content.GetRawText();
             }
 
             return content.GetRawText();

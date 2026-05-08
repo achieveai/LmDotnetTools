@@ -1,0 +1,30 @@
+<Project>
+
+  <!--
+    Auto-install Husky.Net Git hooks when developers restore packages.
+    Runs once per machine (Husky.Net keeps its own state in .git/hooks).
+    Skipped in CI to keep agent runs fast — CI invokes the gate directly.
+  -->
+  <Target
+    Name="HuskyInstall"
+    Condition="'$(HUSKY)' != '0' AND '$(CI)' != 'true' AND '$(GITHUB_ACTIONS)' != 'true' AND '$(IsCrossTargetingBuild)' != 'true'"
+    BeforeTargets="Restore;CollectPackageReferences"
+    Inputs="$(MSBuildThisFileDirectory).husky/task-runner.json"
+    Outputs="$(MSBuildThisFileDirectory).husky/_/husky.sh">
+    <Exec
+      Command="dotnet tool restore"
+      WorkingDirectory="$(MSBuildThisFileDirectory)"
+      ContinueOnError="true"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low"
+      StandardErrorImportance="Low" />
+    <Exec
+      Command="dotnet husky install"
+      WorkingDirectory="$(MSBuildThisFileDirectory)"
+      ContinueOnError="true"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="Low"
+      StandardErrorImportance="Low" />
+  </Target>
+
+</Project>

@@ -116,22 +116,15 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
             await transport.SendNotificationAsync("initialized", null, ct);
 
-            JsonElement threadResponse;
-            if (!string.IsNullOrWhiteSpace(effectiveOptions.ThreadId))
-            {
-                threadResponse = await transport.SendRequestAsync(
+            var threadResponse = !string.IsNullOrWhiteSpace(effectiveOptions.ThreadId)
+                ? await transport.SendRequestAsync(
                     "thread/resume",
                     BuildThreadResumeParams(effectiveOptions),
-                    ct);
-            }
-            else
-            {
-                threadResponse = await transport.SendRequestAsync(
+                    ct)
+                : await transport.SendRequestAsync(
                     "thread/start",
                     BuildThreadStartParams(effectiveOptions),
                     ct);
-            }
-
             CurrentCodexThreadId = CodexEventParser.ExtractThreadId(threadResponse) ?? effectiveOptions.ThreadId;
             CurrentTurnId = null;
             DependencyState = "ready";
@@ -354,7 +347,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
             var run = GetActiveRun();
             if (!string.IsNullOrWhiteSpace(run?.TurnId))
             {
-                await TryInterruptTurnInternalAsync(transport, run.TurnId!, CancellationToken.None);
+                await TryInterruptTurnInternalAsync(transport, run.TurnId, CancellationToken.None);
             }
 
             await transport.StopAsync(timeout, ct);

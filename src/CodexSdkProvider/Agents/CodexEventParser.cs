@@ -9,18 +9,12 @@ internal static class CodexEventParser
 {
     public static string? ExtractThreadId(JsonElement? root)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("threadId", out var threadIdProp)
-            && threadIdProp.ValueKind == JsonValueKind.String)
-        {
-            return threadIdProp.GetString();
-        }
-
-        return root.Value.TryGetProperty("thread_id", out var threadIdSnake)
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty("threadId", out var threadIdProp)
+            && threadIdProp.ValueKind == JsonValueKind.String
+            ? threadIdProp.GetString()
+            : root.Value.TryGetProperty("thread_id", out var threadIdSnake)
             && threadIdSnake.ValueKind == JsonValueKind.String
             ? threadIdSnake.GetString()
             : root.Value.TryGetProperty("thread", out var threadProp)
@@ -33,18 +27,12 @@ internal static class CodexEventParser
 
     public static string? ExtractTurnId(JsonElement? root)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (root.Value.TryGetProperty("turnId", out var turnIdProp)
-            && turnIdProp.ValueKind == JsonValueKind.String)
-        {
-            return turnIdProp.GetString();
-        }
-
-        return root.Value.TryGetProperty("turn_id", out var turnIdSnake)
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty("turnId", out var turnIdProp)
+            && turnIdProp.ValueKind == JsonValueKind.String
+            ? turnIdProp.GetString()
+            : root.Value.TryGetProperty("turn_id", out var turnIdSnake)
             && turnIdSnake.ValueKind == JsonValueKind.String
             ? turnIdSnake.GetString()
             : root.Value.TryGetProperty("turn", out var turnProp)
@@ -57,12 +45,9 @@ internal static class CodexEventParser
 
     public static string? ExtractTurnStatus(JsonElement? root)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        return root.Value.TryGetProperty("status", out var statusProp)
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty("status", out var statusProp)
             && statusProp.ValueKind == JsonValueKind.String
             ? statusProp.GetString()
             : root.Value.TryGetProperty("turn", out var turnProp)
@@ -75,12 +60,9 @@ internal static class CodexEventParser
 
     public static string? ExtractTurnErrorMessage(JsonElement? root)
     {
-        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        return root.Value.TryGetProperty("error", out var errorProp)
+        return !root.HasValue || root.Value.ValueKind != JsonValueKind.Object
+            ? null
+            : root.Value.TryGetProperty("error", out var errorProp)
             && errorProp.ValueKind == JsonValueKind.Object
             && errorProp.TryGetProperty("message", out var messageProp)
             && messageProp.ValueKind == JsonValueKind.String
