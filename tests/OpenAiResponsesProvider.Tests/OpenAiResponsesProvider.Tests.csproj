@@ -3,8 +3,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>AchieveAi.LmDotnetTools.MockProviderHost.Tests</RootNamespace>
-    <AssemblyName>AchieveAi.LmDotnetTools.MockProviderHost.Tests</AssemblyName>
+    <RootNamespace>AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests</RootNamespace>
+    <AssemblyName>AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests</AssemblyName>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -24,9 +24,8 @@
     <PackageReference Include="FluentAssertions" Version="7.1.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\samples\MockProviderHost\MockProviderHost.csproj" />
-    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\..\src\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />

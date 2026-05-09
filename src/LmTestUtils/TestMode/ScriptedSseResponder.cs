@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -54,6 +56,55 @@ public sealed class ScriptedSseResponder
     public HttpMessageHandler AsAnthropicHandler(ILogger? logger = null)
     {
         return new ScriptedHandler(this, ScriptedWireFormat.Anthropic, logger ?? _logger);
+    }
+
+    /// <summary>
+    ///     Wraps this responder in an OpenAI Responses API <see cref="HttpMessageHandler"/>
+    ///     that handles <c>POST /v1/responses</c> SSE streaming.
+    /// </summary>
+    public HttpMessageHandler AsOpenAiResponsesHandler(ILogger? logger = null)
+    {
+        return new ScriptedHandler(this, ScriptedWireFormat.OpenAiResponses, logger ?? _logger);
+    }
+
+    /// <summary>
+    ///     Emits a single response.create exchange to <paramref name="socket"/>: matches the
+    ///     supplied <paramref name="ctx"/> against the role table, picks the next plan, and
+    ///     writes each <see cref="ResponseEvent"/> as a single text frame in wire order.
+    /// </summary>
+    /// <remarks>
+    ///     The host is responsible for the surrounding read loop — this method handles a single
+    ///     turn (one <c>response.create</c> → one event-stream burst). The frame contents are
+    ///     identical to what <see cref="OpenAiResponsesEventStreamWriter"/> produces, so
+    ///     WebSocket and HTTP+SSE deliver byte-equal events at the JSON layer.
+    /// </remarks>
+    public async Task EmitResponseEventsAsync(
+        WebSocket socket,
+        ScriptedRequestContext ctx,
+        string? model = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(socket);
+        ArgumentNullException.ThrowIfNull(ctx);
+
+        var plan = TakeNextPlan(ctx)
+            ?? new InstructionPlan("scripted-fallback", null, [InstructionMessage.ForExplicitText("ok")]);
+
+        var events = OpenAiResponsesEventStreamWriter.Write(plan, model);
+        foreach (var ev in events)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var json = ResponseEventParser.ToJsonObject(ev).ToJsonString();
+            var bytes = Encoding.UTF8.GetBytes(json);
+            await socket.SendAsync(
+                new ArraySegment<byte>(bytes),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                cancellationToken
+            ).ConfigureAwait(false);
+        }
     }
 
     internal InstructionPlan? TakeNextPlan(ScriptedRequestContext ctx)
@@ -289,6 +340,9 @@ public enum ScriptedWireFormat
 
     /// <summary>Anthropic messages SSE.</summary>
     Anthropic,
+
+    /// <summary>OpenAI Responses API event stream (HTTP+SSE on <c>/v1/responses</c>).</summary>
+    OpenAiResponses,
 }
 
 internal sealed class ScriptedRole
@@ -354,7 +408,12 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        var expectedSuffix = _wire == ScriptedWireFormat.OpenAi ? "/v1/chat/completions" : "/messages";
+        var expectedSuffix = _wire switch
+        {
+            ScriptedWireFormat.OpenAi => "/v1/chat/completions",
+            ScriptedWireFormat.OpenAiResponses => "/v1/responses",
+            _ => "/messages",
+        };
         if (!request.RequestUri.AbsolutePath.EndsWith(expectedSuffix, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogWarning(
@@ -432,9 +491,17 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 };
             }
 
-            HttpContent content = _wire == ScriptedWireFormat.OpenAi
-                ? new SseStreamHttpContent(plan, model, DefaultWordsPerChunk, DefaultChunkDelayMs)
-                : new AnthropicSseStreamHttpContent(plan, model, DefaultWordsPerChunk, DefaultChunkDelayMs);
+            HttpContent content = _wire switch
+            {
+                ScriptedWireFormat.OpenAi => new SseStreamHttpContent(plan, model, DefaultWordsPerChunk, DefaultChunkDelayMs),
+                ScriptedWireFormat.OpenAiResponses => OpenAiResponsesSseStreamHttpContent.FromPlan(
+                    plan,
+                    model,
+                    DefaultWordsPerChunk,
+                    DefaultChunkDelayMs
+                ),
+                _ => new AnthropicSseStreamHttpContent(plan, model, DefaultWordsPerChunk, DefaultChunkDelayMs),
+            };
 
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
             response.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
@@ -445,9 +512,12 @@ internal sealed class ScriptedHandler : HttpMessageHandler
 
     private ScriptedRequestContext BuildContext(JsonElement root)
     {
-        var (systemPrompt, latestUser) = _wire == ScriptedWireFormat.OpenAi
-            ? ExtractOpenAi(root)
-            : ExtractAnthropic(root);
+        var (systemPrompt, latestUser) = _wire switch
+        {
+            ScriptedWireFormat.OpenAi => ExtractOpenAi(root),
+            ScriptedWireFormat.OpenAiResponses => ExtractOpenAiResponses(root),
+            _ => ExtractAnthropic(root),
+        };
 
         var tools = ExtractToolNames(root);
 
@@ -500,6 +570,18 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         }
 
         return (systemPrompt.ToString(), latest);
+    }
+
+    private static (string systemPrompt, string? latestUser) ExtractOpenAiResponses(JsonElement root)
+    {
+        // System prompt lives in `instructions` (string) on the Responses request.
+        var systemPrompt = root.TryGetProperty("instructions", out var instr)
+            && instr.ValueKind == JsonValueKind.String
+                ? instr.GetString() ?? string.Empty
+                : string.Empty;
+
+        var latest = ResponsesInputReader.ExtractLatestUserText(root, concatenateAll: true);
+        return (systemPrompt, latest);
     }
 
     private static (string systemPrompt, string? latestUser) ExtractAnthropic(JsonElement root)
@@ -594,7 +676,7 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 continue;
             }
 
-            // OpenAI shape: { type: "function", function: { name: "..." } }
+            // OpenAI chat-completions shape: { type: "function", function: { name: "..." } }
             if (tool.TryGetProperty("function", out var fn)
                 && fn.ValueKind == JsonValueKind.Object
                 && fn.TryGetProperty("name", out var fnName)
@@ -604,7 +686,9 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 continue;
             }
 
-            // Anthropic shape: { name: "...", description: "...", input_schema: {...} }
+            // Responses API + Anthropic shapes both expose `name` at the tool root:
+            //   Responses: { type: "function", name: "...", parameters: {...} }
+            //   Anthropic: { name: "...", description: "...", input_schema: {...} }
             if (tool.TryGetProperty("name", out var nm) && nm.ValueKind == JsonValueKind.String)
             {
                 names.Add(nm.GetString()!);

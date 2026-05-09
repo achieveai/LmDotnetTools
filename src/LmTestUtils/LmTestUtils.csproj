@@ -29,5 +29,6 @@
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
+    <ProjectReference Include="..\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
   </ItemGroup>
 </Project>
