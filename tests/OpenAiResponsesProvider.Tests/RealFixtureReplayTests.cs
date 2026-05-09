@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
 
@@ -146,29 +147,16 @@ public sealed class RealFixtureReplayTests
 
     private static string LocateFixtureDirectory()
     {
-        // Walk up from the test assembly directory until we find the repo's samples/ folder.
-        var dir = AppContext.BaseDirectory;
-        for (var i = 0; i < 10 && dir is not null; i++)
+        var root = EnvironmentHelper.FindWorkspaceRoot(AppContext.BaseDirectory);
+        var path = Path.Combine(root, "samples", "MockProviderHost", "fixtures", "openai-responses-websocket");
+        if (!Directory.Exists(path))
         {
-            var candidate = Path.Combine(
-                dir,
-                "samples",
-                "MockProviderHost",
-                "fixtures",
-                "openai-responses-websocket"
+            throw new DirectoryNotFoundException(
+                $"Could not locate fixture directory '{path}' from workspace root '{root}'."
             );
-            if (Directory.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = Path.GetDirectoryName(dir);
         }
 
-        throw new DirectoryNotFoundException(
-            "Could not locate samples/MockProviderHost/fixtures/openai-responses-websocket/ "
-            + "from " + AppContext.BaseDirectory
-        );
+        return path;
     }
 
     private sealed record CapturedFrame(string Text, bool FromClient);
