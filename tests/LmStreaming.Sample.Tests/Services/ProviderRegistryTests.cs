@@ -316,22 +316,15 @@ public class ProviderRegistryTests
     [Fact]
     public void KnownLimitation_TaggedOnBrokenMocks_UnsetOnHealthyOnes()
     {
-        // Surfaces the UX banner that points users at the follow-up issues for the broken
-        // mock variants. #29 (claude-mock) is fixed; only #28 (codex-mock) still carries a
-        // caveat. When that lands, this assertion flips.
+        // Mock variants that work end-to-end must NOT carry a caveat.
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
         var probe = new FakeFileSystemProbe(executablesOnPath: ["claude", "copilot"]);
 
         var registry = new ProviderRegistry(probe, () => true);
         var byId = registry.ListAll().ToDictionary(p => p.Id);
 
-        byId["codex-mock"].KnownLimitation.Should().NotBeNullOrWhiteSpace()
-            .And.Subject.Should().Contain("#28");
-
-        // claude-mock works end-to-end after issue #29 fix and must NOT carry a caveat.
+        byId["codex-mock"].KnownLimitation.Should().BeNull();
         byId["claude-mock"].KnownLimitation.Should().BeNull();
-
-        // copilot-mock works end-to-end against the mock host and must NOT carry a caveat.
         byId["copilot-mock"].KnownLimitation.Should().BeNull();
 
         // Non-mock entries inherit the default null.

@@ -11,6 +11,10 @@ namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 
 public sealed class CodexSdkClient : ICodexSdkClient
 {
+    private const string OpenAiApiKeyEnvironmentVariable = "OPENAI_API_KEY";
+    private const string ResponsesModelProviderId = "lm-dotnet-tools-openai-responses";
+    private const string ResponsesModelProviderName = "LmDotnetTools OpenAI Responses";
+
     private readonly CodexSdkOptions _options;
     private readonly ILogger<CodexSdkClient>? _logger;
     private readonly JsonSerializerOptions _json;
@@ -660,6 +664,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
             ["experimentalRawEvents"] = false,
         };
 
+        ApplyModelProviderOverride(parameters, options);
+
         if (options.DynamicTools is { Count: > 0 })
         {
             parameters["dynamicTools"] = options.DynamicTools.Select(tool =>
@@ -686,7 +692,7 @@ public sealed class CodexSdkClient : ICodexSdkClient
 
     private object BuildThreadResumeParams(CodexBridgeInitOptions options)
     {
-        return new Dictionary<string, object?>
+        var parameters = new Dictionary<string, object?>
         {
             ["threadId"] = options.ThreadId,
             ["model"] = options.Model,
@@ -697,6 +703,10 @@ public sealed class CodexSdkClient : ICodexSdkClient
             ["baseInstructions"] = options.BaseInstructions,
             ["developerInstructions"] = options.DeveloperInstructions,
         };
+
+        ApplyModelProviderOverride(parameters, options);
+
+        return parameters;
     }
 
     private static object BuildTurnStartParams(string threadId, string input)
@@ -716,6 +726,16 @@ public sealed class CodexSdkClient : ICodexSdkClient
         };
     }
 
+    private static void ApplyModelProviderOverride(
+        Dictionary<string, object?> parameters,
+        CodexBridgeInitOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.BaseUrl))
+        {
+            parameters["modelProvider"] = ResponsesModelProviderId;
+        }
+    }
+
     private static Dictionary<string, object?> BuildConfig(CodexBridgeInitOptions options)
     {
         var config = new Dictionary<string, object?>
@@ -725,6 +745,8 @@ public sealed class CodexSdkClient : ICodexSdkClient
                 network_access = options.NetworkAccessEnabled,
             },
         };
+
+        AddResponsesModelProviderConfig(config, options);
 
         if (!string.IsNullOrWhiteSpace(options.WebSearchMode))
         {
@@ -763,6 +785,36 @@ public sealed class CodexSdkClient : ICodexSdkClient
         }
 
         return config;
+    }
+
+    private static void AddResponsesModelProviderConfig(
+        Dictionary<string, object?> config,
+        CodexBridgeInitOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.BaseUrl))
+        {
+            return;
+        }
+
+        var provider = new Dictionary<string, object?>
+        {
+            ["name"] = ResponsesModelProviderName,
+            ["base_url"] = options.BaseUrl,
+            ["wire_api"] = "responses",
+            ["requires_openai_auth"] = false,
+            ["supports_websockets"] = true,
+        };
+
+        if (!string.IsNullOrWhiteSpace(options.ApiKey))
+        {
+            provider["env_key"] = OpenAiApiKeyEnvironmentVariable;
+        }
+
+        config["model_provider"] = ResponsesModelProviderId;
+        config["model_providers"] = new Dictionary<string, object?>
+        {
+            [ResponsesModelProviderId] = provider,
+        };
     }
 
     private string BuildDefaultCommandApprovalDecision()
