@@ -25,15 +25,8 @@ public sealed class ProviderRegistry
             new("claude", "Claude (CLI)"),
             new("codex", "Codex"),
             new("copilot", "Copilot (CLI)"),
-            // Mock entries with known follow-up limitations are tagged here so the UI can
-            // surface a caveat next to them. Wire-format gaps are tracked in dedicated issues
-            // (see body) — fixing those here lets the gate flip to null and the banner disappears.
             new("claude-mock", "Claude (CLI, Mock)"),
-            new(
-                "codex-mock",
-                "Codex (Mock)",
-                "Known limitation: Codex CLI defaults to /v1/responses which the mock host does "
-                + "not yet implement, so the run hangs. Tracked in #28."),
+            new("codex-mock", "Codex (Mock)"),
             new("copilot-mock", "Copilot (CLI, Mock)"),
         ];
 
