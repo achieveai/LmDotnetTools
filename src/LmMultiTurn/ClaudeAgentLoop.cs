@@ -27,7 +27,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private readonly ClaudeAgentSdkOptions _claudeOptions;
     private readonly Dictionary<string, McpServerConfig> _mcpServers;
     private readonly ILoggerFactory? _loggerFactory;
-    private readonly Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? _clientFactory;
+    private readonly Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? _clientFactory;
     private readonly SemaphoreSlim _restartLock = new(1, 1);
 
     private IClaudeAgentSdkClient? _client;
@@ -108,7 +108,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? clientFactory = null)
+        Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null)
         : base(
             threadId,
             systemPrompt,
@@ -424,7 +424,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 if (msg is SystemInitMessage)
                 {
                     await OnDequeueDetectedAsync("SystemInitMessage", ct);
-                    // Don't publish this message to subscribers
+                    // Publish so consumers can capture SessionId (e.g. for --resume on a later run);
+                    // skip AddToHistory because this is SDK metadata, not a conversational turn.
+                    await PublishToAllAsync(msg, ct);
                     continue;
                 }
 
