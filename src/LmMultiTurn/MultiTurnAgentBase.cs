@@ -112,6 +112,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
 
+    /// <summary>
+    /// The most recent run id observed (current or last completed). Available to
+    /// subclasses overriding metadata persistence — for example, recording a
+    /// provider session id alongside the run it belongs to.
+    /// </summary>
+    protected string? LatestRunId
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _latestRunId;
+            }
+        }
+    }
+
     #endregion
 
     #region Constructor
