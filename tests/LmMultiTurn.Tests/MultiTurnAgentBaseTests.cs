@@ -23,6 +23,8 @@ public class MultiTurnAgentBaseTests
     private class TestMultiTurnAgent : MultiTurnAgentBase
     {
         private readonly List<IMessage> _messagesToReturn;
+        private readonly bool _stripReceiptIdsFromAssignment;
+        private readonly TimeSpan _fallbackGracePeriod;
 
         public int ExecuteCallCount { get; private set; }
         public string? LastRunId { get; private set; }
@@ -34,12 +36,18 @@ public class MultiTurnAgentBaseTests
             bool shouldFork = false,
             string? systemPrompt = null,
             ILogger? logger = null,
-            IConversationStore? store = null)
+            IConversationStore? store = null,
+            bool stripReceiptIdsFromAssignment = false,
+            TimeSpan? fallbackGracePeriod = null)
             : base(threadId, systemPrompt, store: store, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
+            _stripReceiptIdsFromAssignment = stripReceiptIdsFromAssignment;
+            _fallbackGracePeriod = fallbackGracePeriod ?? TimeSpan.FromMilliseconds(100);
             _ = shouldFork; // No longer used but kept for API compatibility
         }
+
+        protected override TimeSpan FallbackGracePeriod => _fallbackGracePeriod;
 
         protected override async Task RunLoopAsync(CancellationToken ct)
         {
@@ -64,9 +72,16 @@ public class MultiTurnAgentBaseTests
                 LastRunId = assignment.RunId;
                 LastGenerationId = assignment.GenerationId;
 
+                // Optionally strip InputIds to model implementations (e.g.,
+                // ClaudeAgentLoop's dequeue-deferred publisher) that may publish a
+                // RunAssignmentMessage that doesn't list the caller's receipt.
+                var publishedAssignment = _stripReceiptIdsFromAssignment
+                    ? assignment with { InputIds = [] }
+                    : assignment;
+
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
-                    Assignment = assignment,
+                    Assignment = publishedAssignment,
                     ThreadId = ThreadId,
                 }, ct);
 
@@ -209,6 +224,179 @@ public class MultiTurnAgentBaseTests
         await cts.CancelAsync();
         await agent.StopAsync();
         await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_TerminatesViaFallback_WhenAssignmentMissesReceiptId()
+    {
+        // Arrange: an agent that simulates an implementation publishing a
+        // RunAssignmentMessage with empty InputIds (e.g., ClaudeAgentLoop's
+        // dequeue-deferred publish path missing the dequeue signal).
+        var testMessage = new TextMessage { Text = "Response", Role = Role.Assistant };
+        var agent = new TestMultiTurnAgent(
+            "test-thread",
+            messagesToReturn: [testMessage],
+            stripReceiptIdsFromAssignment: true,
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(100));
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "Hello", Role = Role.User }],
+            InputId: "fallback-test-input");
+
+        // Act: enumerate ExecuteRunAsync. Wraps in WaitAsync so a hang fails the
+        // test cleanly with TimeoutException instead of bleeding into xUnit's
+        // outer timeout.
+        var receivedMessages = new List<IMessage>();
+        var executeTask = Task.Run(async () =>
+        {
+            await foreach (var msg in agent.ExecuteRunAsync(userInput, cts.Token))
+            {
+                receivedMessages.Add(msg);
+            }
+        });
+
+        await executeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        receivedMessages.OfType<RunAssignmentMessage>().Should().NotBeEmpty();
+        receivedMessages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
+
+        // Cleanup
+        await cts.CancelAsync();
+        await agent.StopAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_DoesNotTerminateOnPriorRunCompletion_WhenOurRunStillPending()
+    {
+        // Regression: the deferred fallback must NOT trip on a prior in-flight
+        // run's completion before our run has even started. The agent here
+        // strips receipt ids on the FIRST run only — modeling: a prior run was
+        // already in flight when we subscribed (its RunAssignmentMessage came
+        // through but didn't list our receipt because we hadn't sent yet), then
+        // our run starts and is correctly receipt-correlated. Without the
+        // deferred-fallback grace logic, the immediate fallback would fire on
+        // run #1's completion and yield-break before run #2 (our run) ran.
+        var firstResponse = new TextMessage { Text = "First run response", Role = Role.Assistant };
+        var secondResponse = new TextMessage { Text = "Second run response", Role = Role.Assistant };
+        var agent = new TwoRunTestAgent(
+            "test-thread",
+            firstRunMessages: [firstResponse],
+            secondRunMessages: [secondResponse],
+            stripReceiptOnFirstRun: true,
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(200));
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        // Pre-queue an input that will become run #1 BEFORE we subscribe via
+        // ExecuteRunAsync. This input belongs to a different caller (us, here,
+        // simulating concurrent callers).
+        await agent.SendAsync(
+            [new TextMessage { Text = "First", Role = Role.User }],
+            inputId: "prior-input");
+
+        // Brief delay so run #1 starts and its assignment is published.
+        await Task.Delay(50);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "Second", Role = Role.User }],
+            InputId: "our-input");
+
+        var receivedMessages = new List<IMessage>();
+        var executeTask = Task.Run(async () =>
+        {
+            await foreach (var msg in agent.ExecuteRunAsync(userInput, cts.Token))
+            {
+                receivedMessages.Add(msg);
+            }
+        });
+
+        await executeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Must have observed BOTH responses — the iterator should not have
+        // terminated on run #1's completion.
+        receivedMessages.OfType<TextMessage>().Should().Contain(m => m.Text == "Second run response",
+            "ExecuteRunAsync must wait for our actual run, not yield-break on a prior run's completion");
+
+        await cts.CancelAsync();
+        await agent.StopAsync();
+        await agent.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Test agent that distinguishes the first run from later runs so we can
+    /// model a prior in-flight run that did not include the caller's receipt.
+    /// </summary>
+    private sealed class TwoRunTestAgent : MultiTurnAgentBase
+    {
+        private readonly List<IMessage> _firstRunMessages;
+        private readonly List<IMessage> _secondRunMessages;
+        private readonly bool _stripReceiptOnFirstRun;
+        private readonly TimeSpan _fallbackGracePeriod;
+        private int _runIndex;
+
+        public TwoRunTestAgent(
+            string threadId,
+            List<IMessage> firstRunMessages,
+            List<IMessage> secondRunMessages,
+            bool stripReceiptOnFirstRun,
+            TimeSpan fallbackGracePeriod)
+            : base(threadId)
+        {
+            _firstRunMessages = firstRunMessages;
+            _secondRunMessages = secondRunMessages;
+            _stripReceiptOnFirstRun = stripReceiptOnFirstRun;
+            _fallbackGracePeriod = fallbackGracePeriod;
+        }
+
+        protected override TimeSpan FallbackGracePeriod => _fallbackGracePeriod;
+
+        protected override async Task RunLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                if (!await InputReader.WaitToReadAsync(ct))
+                {
+                    break;
+                }
+
+                TryDrainInputs(out var batch);
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
+                _runIndex++;
+                var assignment = StartRun(batch);
+                var stripReceipts = _stripReceiptOnFirstRun && _runIndex == 1;
+                var publishedAssignment = stripReceipts
+                    ? assignment with { InputIds = [] }
+                    : assignment;
+
+                await PublishToAllAsync(new RunAssignmentMessage
+                {
+                    Assignment = publishedAssignment,
+                    ThreadId = ThreadId,
+                }, ct);
+
+                var messagesForThisRun = _runIndex == 1 ? _firstRunMessages : _secondRunMessages;
+                try
+                {
+                    foreach (var msg in messagesForThisRun)
+                    {
+                        await PublishToAllAsync(msg, ct);
+                    }
+                }
+                finally
+                {
+                    await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, 0, ct: ct);
+                }
+            }
+        }
     }
 
     [Fact]

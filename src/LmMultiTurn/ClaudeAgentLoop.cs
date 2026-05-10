@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
@@ -39,8 +40,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <summary>
     /// Tracks inputs sent to CLI, awaiting enqueue/dequeue confirmation.
     /// Used for correlating queue-operation events with original user inputs.
+    /// Concurrent because writers run on the run-loop thread (Enqueue) while
+    /// readers can run on Claude SDK event-handler threads (TryDequeue from
+    /// <see cref="OnDequeueDetectedAsync"/>) and on the run-loop thread again
+    /// (TryDequeue from <see cref="FlushPendingRunAssignmentsAsync"/>).
+    /// Internal for direct test coverage of the flush path.
     /// </summary>
-    private readonly Queue<(QueuedInput Input, RunAssignment Assignment)> _pendingCliInputs = new();
+    internal readonly ConcurrentQueue<(QueuedInput Input, RunAssignment Assignment)> _pendingCliInputs = new();
 
     /// <summary>
     /// The active subscription to stdout messages (Interactive mode).
@@ -50,8 +56,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <summary>
     /// Track if we're waiting for a dequeue (previous send not yet assigned).
     /// When true, new messages should be queued locally instead of sent to CLI.
+    /// Volatile because the field is read on Claude SDK event-handler threads
+    /// while the run-loop thread mutates it.
     /// </summary>
-    private bool _awaitingDequeue;
+    private volatile bool _awaitingDequeue;
     private string? _lastObservedGenerationId;
 
     /// <summary>
@@ -338,6 +346,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 }
                 finally
                 {
+                    // Safety net: if the dequeue heuristic never fired (e.g., CLI exited
+                    // without producing a recognizable signal, mock providers, or a
+                    // partial protocol response), the RunAssignmentMessage was never
+                    // published and consumers correlating completion to assignment via
+                    // receipt id would hang. Flush any still-pending inputs now so the
+                    // completion below can be matched.
+                    await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
                     // Pass pending message count so workflows know if more runs will follow
                     await CompleteRunAsync(
                         assignment.RunId,
@@ -691,6 +707,42 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 "OnDequeueDetected: {QueueSize} messages in local queue, will be processed in RunLoopAsync",
                 _localMessageQueue.Count);
         }
+    }
+
+    /// <summary>
+    /// Drain any inputs whose RunAssignmentMessage hasn't yet been published for
+    /// <paramref name="runId"/> and publish them before run completion. This is a
+    /// safety net for cases where the dequeue heuristic in
+    /// <see cref="OnDequeueDetectedAsync"/> never fired — without it, consumers
+    /// correlating <see cref="RunCompletedMessage"/> to <see cref="RunAssignmentMessage"/>
+    /// would never see an assignment for this run.
+    /// </summary>
+    internal async Task FlushPendingRunAssignmentsAsync(string runId, CancellationToken ct)
+    {
+        // Only drain inputs belonging to this run; later runs' inputs stay queued.
+        while (_pendingCliInputs.TryPeek(out var peeked) &&
+               string.Equals(peeked.Assignment.RunId, runId, StringComparison.Ordinal))
+        {
+            if (!_pendingCliInputs.TryDequeue(out var pending))
+            {
+                break;
+            }
+
+            Logger.LogWarning(
+                "Publishing deferred RunAssignmentMessage at run completion (dequeue heuristic missed) - RunId: {RunId}, ReceiptId: {ReceiptId}",
+                pending.Assignment.RunId,
+                pending.Input.ReceiptId);
+
+            await PublishToAllAsync(new RunAssignmentMessage
+            {
+                Assignment = pending.Assignment,
+                ThreadId = ThreadId,
+            }, ct);
+        }
+
+        // We've published whatever we owed; clear awaiting flag so subsequent runs
+        // start clean.
+        _awaitingDequeue = false;
     }
 
     /// <summary>

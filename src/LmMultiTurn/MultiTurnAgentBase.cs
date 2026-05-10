@@ -83,6 +83,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// </summary>
     protected IConversationStore? Store { get; }
 
+    /// <summary>
+    /// Grace period the deferred-fallback in <see cref="ExecuteRunAsync"/> waits
+    /// for additional channel activity before firing on a completion that has no
+    /// receipt-correlated assignment. Override in tests to keep them fast.
+    /// </summary>
+    protected virtual TimeSpan FallbackGracePeriod => TimeSpan.FromSeconds(2);
+
     #endregion
 
     #region Public Properties
@@ -633,27 +640,99 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
             Logger.LogDebug("ExecuteRun queued. ReceiptId: {ReceiptId}", receiptId);
 
+            // Receipt-id correlation is the primary signal. The deferred fallback below
+            // only engages when an implementation publishes a RunCompletedMessage for a
+            // run whose RunAssignmentMessage we observed but did NOT list our receipt
+            // (a publisher bug — the concrete production case is a Claude dequeue
+            // heuristic that misses, leaving the receipt-correlated assignment never
+            // emitted).
             string? targetRunId = null;
+            string? pendingFallbackRunId = null;
+            var observedAssignmentRunIds = new HashSet<string>(StringComparer.Ordinal);
 
-            // Yield messages until run completes
-            await foreach (var msg in outputChannel.Reader.ReadAllAsync(ct))
+            // Yield messages until run completes. We use a manual read loop instead of
+            // ReadAllAsync because the deferred-fallback path needs a grace period to
+            // distinguish "prior in-flight run completed and our run is about to start"
+            // (a new RunAssignmentMessage will arrive shortly — abort the fallback)
+            // from "publisher bug on our actual run" (no further messages come — fire
+            // the fallback). Without this, an immediate fallback on completion would
+            // race-terminate the iterator before the caller's run executes.
+            while (true)
             {
-                yield return msg;
-
-                // Track run assignment for our receipt
-                if (msg is RunAssignmentMessage assignment &&
-                    assignment.Assignment.InputIds?.Contains(receiptId) == true)
+                bool hasMessage;
+                if (pendingFallbackRunId != null)
                 {
-                    targetRunId = assignment.Assignment.RunId;
-                    Logger.LogDebug("ExecuteRun assigned to RunId: {RunId}", targetRunId);
+                    using var graceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    graceCts.CancelAfter(FallbackGracePeriod);
+                    try
+                    {
+                        hasMessage = await outputChannel.Reader.WaitToReadAsync(graceCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // Grace period elapsed without any further activity — the
+                        // pending completion is the terminal one. Fire fallback.
+                        Logger.LogWarning(
+                            "ExecuteRun terminating on RunId {RunId} via deferred fallback — receipt {ReceiptId} was never observed in a RunAssignmentMessage and no further messages arrived within {GraceMs}ms. "
+                            + "This indicates the implementation did not publish a receipt-correlated assignment for this run.",
+                            pendingFallbackRunId,
+                            receiptId,
+                            (int)FallbackGracePeriod.TotalMilliseconds);
+                        yield break;
+                    }
+                }
+                else
+                {
+                    hasMessage = await outputChannel.Reader.WaitToReadAsync(ct);
                 }
 
-                // Check for run completion
-                if (msg is RunCompletedMessage completed &&
-                    completed.CompletedRunId == targetRunId)
+                if (!hasMessage)
                 {
-                    Logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
+                    // Channel completed — exit cleanly.
                     yield break;
+                }
+
+                while (outputChannel.Reader.TryRead(out var msg))
+                {
+                    yield return msg;
+
+                    if (msg is RunAssignmentMessage assignment)
+                    {
+                        var runId = assignment.Assignment.RunId;
+                        if (!string.IsNullOrEmpty(runId))
+                        {
+                            _ = observedAssignmentRunIds.Add(runId);
+                        }
+
+                        // A new assignment arrived — any pending fallback was for an
+                        // earlier run, not ours. Clear it.
+                        pendingFallbackRunId = null;
+
+                        if (assignment.Assignment.InputIds?.Contains(receiptId) == true)
+                        {
+                            targetRunId = runId;
+                            Logger.LogDebug("ExecuteRun assigned to RunId: {RunId}", targetRunId);
+                        }
+                    }
+
+                    if (msg is RunCompletedMessage completed && !string.IsNullOrEmpty(completed.CompletedRunId))
+                    {
+                        // Primary: receipt-correlated match — exit immediately.
+                        if (targetRunId != null && completed.CompletedRunId == targetRunId)
+                        {
+                            Logger.LogDebug("ExecuteRun completed for RunId: {RunId}", targetRunId);
+                            yield break;
+                        }
+
+                        // Defer: receipt-id correlation never fired, and this completion
+                        // is for a run whose assignment we observed since subscribing.
+                        // We don't break yet — a subsequent RunAssignmentMessage would
+                        // indicate this completion belonged to an earlier run, not ours.
+                        if (targetRunId == null && observedAssignmentRunIds.Contains(completed.CompletedRunId))
+                        {
+                            pendingFallbackRunId = completed.CompletedRunId;
+                        }
+                    }
                 }
             }
         }
