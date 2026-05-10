@@ -148,9 +148,11 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                     break;
 
                 case ResponseOutputItemEvent itemEvent when itemEvent.Type == ResponseEventTypes.OutputItemAdded:
-                    if (TryReadString(itemEvent.Item, "type", out var itemType)
+                    if (
+                        TryReadString(itemEvent.Item, "type", out var itemType)
                         && itemType == "function_call"
-                        && TryReadString(itemEvent.Item, "id", out var fnItemId))
+                        && TryReadString(itemEvent.Item, "id", out var fnItemId)
+                    )
                     {
                         pendingFunctionCalls[fnItemId] = new PendingFunctionCall(
                             ItemId: fnItemId,
@@ -161,6 +163,25 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                             ),
                             OutputIndex: itemEvent.OutputIndex
                         );
+                    }
+
+                    break;
+
+                case ResponseOutputItemEvent itemEvent
+                    when itemEvent.Type == ResponseEventTypes.OutputItemDone
+                        && TryReadString(itemEvent.Item, "type", out var reasoningItemType)
+                        && reasoningItemType == "reasoning":
+                    if (TryExtractReasoning(itemEvent.Item, out var reasoning, out var visibility))
+                    {
+                        yield return new ReasoningMessage
+                        {
+                            Reasoning = reasoning,
+                            Visibility = visibility,
+                            Role = Role.Assistant,
+                            FromAgent = fromAgent,
+                            GenerationId = generationId,
+                            MessageOrderIdx = itemEvent.OutputIndex,
+                        };
                     }
 
                     break;
@@ -185,8 +206,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
                 case ResponseOutputTextDoneEvent doneEvent:
                     var finalText = doneEvent.Text;
-                    if (string.IsNullOrEmpty(finalText)
-                        && textBuffers.TryGetValue(doneEvent.OutputIndex, out var accumulated))
+                    if (
+                        string.IsNullOrEmpty(finalText)
+                        && textBuffers.TryGetValue(doneEvent.OutputIndex, out var accumulated)
+                    )
                     {
                         finalText = accumulated.ToString();
                     }
@@ -279,19 +302,68 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         return true;
     }
 
-    private static bool TryExtractUsage(JsonElement responseElement, out Usage usage)
+    private static bool TryExtractReasoning(JsonElement item, out string reasoning, out ReasoningVisibility visibility)
     {
-        usage = new Usage();
-        if (responseElement.ValueKind != JsonValueKind.Object
-            || !responseElement.TryGetProperty("usage", out var usageEl)
-            || usageEl.ValueKind != JsonValueKind.Object)
+        reasoning = string.Empty;
+        visibility = ReasoningVisibility.Plain;
+
+        if (item.ValueKind != JsonValueKind.Object)
         {
             return false;
         }
 
-        var inputTokens = usageEl.TryGetProperty("input_tokens", out var inEl) && inEl.ValueKind == JsonValueKind.Number
-            ? inEl.GetInt32()
-            : 0;
+        if (item.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.Array)
+        {
+            var builder = new StringBuilder();
+            foreach (var summaryItem in summary.EnumerateArray())
+            {
+                if (TryReadString(summaryItem, "text", out var text) && !string.IsNullOrEmpty(text))
+                {
+                    if (builder.Length > 0)
+                    {
+                        _ = builder.AppendLine();
+                    }
+
+                    _ = builder.Append(text);
+                }
+            }
+
+            if (builder.Length > 0)
+            {
+                reasoning = builder.ToString();
+                return true;
+            }
+        }
+
+        if (
+            TryReadString(item, "encrypted_content", out var encryptedContent)
+            && !string.IsNullOrEmpty(encryptedContent)
+        )
+        {
+            reasoning = encryptedContent;
+            visibility = ReasoningVisibility.Encrypted;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractUsage(JsonElement responseElement, out Usage usage)
+    {
+        usage = new Usage();
+        if (
+            responseElement.ValueKind != JsonValueKind.Object
+            || !responseElement.TryGetProperty("usage", out var usageEl)
+            || usageEl.ValueKind != JsonValueKind.Object
+        )
+        {
+            return false;
+        }
+
+        var inputTokens =
+            usageEl.TryGetProperty("input_tokens", out var inEl) && inEl.ValueKind == JsonValueKind.Number
+                ? inEl.GetInt32()
+                : 0;
         var outputTokens =
             usageEl.TryGetProperty("output_tokens", out var outEl) && outEl.ValueKind == JsonValueKind.Number
                 ? outEl.GetInt32()

@@ -53,36 +53,41 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     // Configure Serilog from appsettings.json with all enrichers
-    _ = builder.Host.UseSerilog((context, services, configuration) =>
-    {
-        var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "lmstreaming-.jsonl");
+    _ = builder.Host.UseSerilog(
+        (context, services, configuration) =>
+        {
+            var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "lmstreaming-.jsonl");
 
-        _ = configuration
-            .ReadFrom.Configuration(context.Configuration)
-            .ReadFrom.Services(services)
-            .Enrich.FromLogContext()
-            .Enrich.WithMachineName()
-            .Enrich.WithThreadId()
-            .Enrich.WithExceptionDetails()
-            .Enrich.WithProperty("Application", "LmStreaming.Sample")
-            // Add caller info: file path, line number, method name, namespace
-            .Enrich.WithCallerInfo(
-                includeFileInfo: true,
-                assemblyPrefix: "AchieveAi.",  // Match our assemblies
-                filePathDepth: 3)              // Include last 3 path segments
-                                               // File sink with structured JSON (includes all enriched properties)
-            .WriteTo.File(
-                new CompactJsonFormatter(),
-                logPath,
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 7,
-                shared: true)
-            // Console sink with readable format
-            .WriteTo.Console(
-                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}");
+            _ = configuration
+                .ReadFrom.Configuration(context.Configuration)
+                .ReadFrom.Services(services)
+                .Enrich.FromLogContext()
+                .Enrich.WithMachineName()
+                .Enrich.WithThreadId()
+                .Enrich.WithExceptionDetails()
+                .Enrich.WithProperty("Application", "LmStreaming.Sample")
+                // Add caller info: file path, line number, method name, namespace
+                .Enrich.WithCallerInfo(
+                    includeFileInfo: true,
+                    assemblyPrefix: "AchieveAi.", // Match our assemblies
+                    filePathDepth: 3
+                ) // Include last 3 path segments
+                  // File sink with structured JSON (includes all enriched properties)
+                .WriteTo.File(
+                    new CompactJsonFormatter(),
+                    logPath,
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 7,
+                    shared: true
+                )
+                // Console sink with readable format
+                .WriteTo.Console(
+                    outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}"
+                );
 
-        Log.Information("Serilog configured. Log file location: {LogPath}", logPath);
-    });
+            Log.Information("Serilog configured. Log file location: {LogPath}", logPath);
+        }
+    );
 
     // Add LmStreaming services
     _ = builder.Services.AddLmStreaming(options =>
@@ -131,7 +136,8 @@ try
     // don't pay the startup cost and so the codex provider stays selectable from the
     // dropdown regardless of LM_PROVIDER_MODE.
     _ = builder.Services.AddSingleton<IFunctionProvider>(
-        new TypeFunctionProvider(typeof(SampleTools), providerName: "SampleTools"));
+        new TypeFunctionProvider(typeof(SampleTools), providerName: "SampleTools")
+    );
     _ = builder.Services.AddMcpFunctionProviderServerLazy(options =>
     {
         options.Port = codexMcpPort;
@@ -151,10 +157,11 @@ try
     // computed for the boot default so the global tools API stays stable; per-conversation
     // built-in tools are derived from the resolved provider id at agent-creation time.
     var builtInTools = GetBuiltInToolsForProvider(providerMode);
-    var builtInToolDefinitions = builtInTools?
-        .OfType<AnthropicBuiltInTool>()
-        .Select(t => new ToolDefinition { Name = t.Name, Description = $"Server-side {t.Name} tool ({t.Type})" })
-        .ToList()
+    var builtInToolDefinitions =
+        builtInTools
+            ?.OfType<AnthropicBuiltInTool>()
+            .Select(t => new ToolDefinition { Name = t.Name, Description = $"Server-side {t.Name} tool ({t.Type})" })
+            .ToList()
         ?? [];
     _ = builder.Services.AddSingleton<IReadOnlyList<ToolDefinition>>(builtInToolDefinitions);
 
@@ -169,24 +176,23 @@ try
     // Provider id → IStreamingAgent. Receives the per-conversation provider id resolved
     // by the pool (request → persisted → default), so this factory does not know about
     // LM_PROVIDER_MODE — it just dispatches by id.
-    _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp => providerId =>
+    _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp =>
+        providerId =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
             return providerId.ToLowerInvariant() switch
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
-                "test-anthropic" => CreateAnthropicTestAgent(
-                    loggerFactory,
-                    sp.GetRequiredService<ITestAgentBuilder>()),
-                "test" => CreateTestAgent(
-                    loggerFactory,
-                    sp.GetRequiredService<ITestAgentBuilder>()),
+                "test-anthropic" => CreateAnthropicTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
+                "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
                 _ => throw new ProviderUnavailableException(
                     providerId,
-                    "no IStreamingAgent factory is registered for this provider"),
+                    "no IStreamingAgent factory is registered for this provider"
+                ),
             };
-        });
+        }
+    );
 
     // Read LlmQueryMcp config for books/question MCP servers
     var llmQueryMcpBaseUrl = builder.Configuration["LlmQueryMcp:BaseUrl"];
@@ -220,7 +226,9 @@ try
                     if (string.IsNullOrWhiteSpace(mockBaseUrl))
                     {
                         throw new ProviderUnavailableException(
-                            "codex-mock", "the in-process mock provider host is not running");
+                            "codex-mock",
+                            "the in-process mock provider host is not running"
+                        );
                     }
 
                     string codexEndpoint;
@@ -233,7 +241,8 @@ try
                         throw new ProviderUnavailableException(
                             "codex-mock",
                             $"MCP server failed to start: {ex.Message}",
-                            ex);
+                            ex
+                        );
                     }
 
                     return new MultiTurnAgentPool.AgentCreationResult(
@@ -248,7 +257,9 @@ try
                             mcpBaseUrl,
                             llmQueryMcpExamType,
                             mockBaseUrlOverride: $"{mockBaseUrl}/v1",
-                            mockApiKeyOverride: "mock-token"));
+                            mockApiKeyOverride: "mock-token"
+                        )
+                    );
                 }
 
                 if (string.Equals(normalizedProviderId, "claude-mock", StringComparison.Ordinal))
@@ -256,7 +267,9 @@ try
                     if (string.IsNullOrWhiteSpace(mockBaseUrl))
                     {
                         throw new ProviderUnavailableException(
-                            "claude-mock", "the in-process mock provider host is not running");
+                            "claude-mock",
+                            "the in-process mock provider host is not running"
+                        );
                     }
 
                     // Claude Agent SDK CLI appends /v1/messages itself, so the configured
@@ -273,24 +286,30 @@ try
                             mcpBaseUrl,
                             llmQueryMcpExamType,
                             mockBaseUrlOverride: claudeMockBaseUrl,
-                            mockAuthTokenOverride: "mock-token"));
+                            mockAuthTokenOverride: "mock-token"
+                        )
+                    );
                 }
 
                 if (string.Equals(normalizedProviderId, "copilot-mock", StringComparison.Ordinal))
                 {
                     return string.IsNullOrWhiteSpace(mockBaseUrl)
                         ? throw new ProviderUnavailableException(
-                            "copilot-mock", "the in-process mock provider host is not running")
+                            "copilot-mock",
+                            "the in-process mock provider host is not running"
+                        )
                         : new MultiTurnAgentPool.AgentCreationResult(
-                        CreateCopilotAgentLoop(
-                            threadId,
-                            mode,
-                            functionRegistry,
-                            requestResponseDumpFileName,
-                            conversationStore,
-                            loggerFactory,
-                            mockBaseUrlOverride: $"{mockBaseUrl}/v1",
-                            mockApiKeyOverride: "mock-token"));
+                            CreateCopilotAgentLoop(
+                                threadId,
+                                mode,
+                                functionRegistry,
+                                requestResponseDumpFileName,
+                                conversationStore,
+                                loggerFactory,
+                                mockBaseUrlOverride: $"{mockBaseUrl}/v1",
+                                mockApiKeyOverride: "mock-token"
+                            )
+                        );
                 }
 
                 if (string.Equals(normalizedProviderId, "codex", StringComparison.Ordinal))
@@ -308,7 +327,8 @@ try
                         throw new ProviderUnavailableException(
                             "codex",
                             $"MCP server failed to start: {ex.Message}",
-                            ex);
+                            ex
+                        );
                     }
 
                     return new MultiTurnAgentPool.AgentCreationResult(
@@ -321,7 +341,9 @@ try
                             loggerFactory,
                             codexEndpoint,
                             mcpBaseUrl,
-                            llmQueryMcpExamType));
+                            llmQueryMcpExamType
+                        )
+                    );
                 }
 
                 if (string.Equals(normalizedProviderId, "claude", StringComparison.Ordinal))
@@ -334,7 +356,9 @@ try
                             conversationStore,
                             loggerFactory,
                             mcpBaseUrl,
-                            llmQueryMcpExamType));
+                            llmQueryMcpExamType
+                        )
+                    );
                 }
 
                 if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
@@ -346,7 +370,9 @@ try
                             functionRegistry,
                             requestResponseDumpFileName,
                             conversationStore,
-                            loggerFactory));
+                            loggerFactory
+                        )
+                    );
                 }
 
                 var providerAgent = agentFactory(normalizedProviderId);
@@ -357,8 +383,10 @@ try
                 var filteredRegistry = new FunctionRegistry();
                 foreach (var contract in allContracts)
                 {
-                    if (allHandlers.TryGetValue(contract.Name, out var handler)
-                        && (enabledToolSet == null || enabledToolSet.Contains(contract.Name)))
+                    if (
+                        allHandlers.TryGetValue(contract.Name, out var handler)
+                        && (enabledToolSet == null || enabledToolSet.Contains(contract.Name))
+                    )
                     {
                         _ = filteredRegistry.AddFunction(contract, handler, "SampleTools");
                     }
@@ -370,8 +398,12 @@ try
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
-                        filteredRegistry, threadId, mcpBaseUrl, llmQueryMcpExamType,
-                        loggerFactory);
+                        filteredRegistry,
+                        threadId,
+                        mcpBaseUrl,
+                        llmQueryMcpExamType,
+                        loggerFactory
+                    );
                     if (mcpClients.Count > 0)
                     {
                         ownedResources = [.. mcpClients.Cast<IAsyncDisposable>()];
@@ -388,19 +420,24 @@ try
 
                     // Enable extended thinking for Anthropic-compatible providers
                     var extraProperties = ImmutableDictionary<string, object?>.Empty;
-                    if (string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
-                        || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal))
+                    if (
+                        string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal)
+                    )
                     {
                         var budgetTokens = int.TryParse(
                             Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
-                            out var parsed) ? parsed : 2048;
-                        extraProperties = extraProperties.Add(
-                            "Thinking", new AnthropicThinking(budgetTokens));
+                            out var parsed
+                        )
+                            ? parsed
+                            : 2048;
+                        extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
                     }
 
                     // Test-mode DI seam: opt-in sub-agent orchestration. Real-provider modes
                     // never resolve this service, so production wiring is unchanged.
-                    var isTestMode = string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
+                    var isTestMode =
+                        string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
@@ -422,7 +459,8 @@ try
                         },
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
-                        subAgentOptions: subAgentOptions);
+                        subAgentOptions: subAgentOptions
+                    );
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
                 }
@@ -433,8 +471,13 @@ try
                     {
                         foreach (var resource in ownedResources)
                         {
-                            try { resource.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-                            catch { /* ignore cleanup errors */ }
+                            try
+                            {
+                                resource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                            }
+                            catch
+                            { /* ignore cleanup errors */
+                            }
                         }
                     }
 
@@ -443,7 +486,8 @@ try
             },
             providerRegistry: providerRegistry,
             conversationStore: conversationStore,
-            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>());
+            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>()
+        );
     });
 
     // Register the ChatWebSocketManager
@@ -455,15 +499,18 @@ try
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
     logger.LogInformation(
         "Application started. Environment: {Environment}, WebSocket path: /ws",
-        app.Environment.EnvironmentName);
+        app.Environment.EnvironmentName
+    );
 
     // Use Serilog request logging for HTTP requests
-    _ = app.UseSerilogRequestLogging(options => options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    _ = app.UseSerilogRequestLogging(options =>
+        options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
         {
             diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value ?? string.Empty);
             diagnosticContext.Set("RequestScheme", httpContext.Request.Scheme ?? string.Empty);
             diagnosticContext.Set("UserAgent", httpContext.Request.Headers.UserAgent.ToString() ?? string.Empty);
-        });
+        }
+    );
 
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
@@ -478,100 +525,106 @@ try
     _ = app.UseLmStreaming();
 
     // Map custom WebSocket endpoint for chat using ChatWebSocketManager
-    _ = app.Map("/ws", async (
-        HttpContext context,
-        ChatWebSocketManager wsManager,
-        IChatModeStore modeStore,
-        ILogger<Program> wsLogger,
-        CancellationToken cancellationToken) =>
-    {
-        if (!context.WebSockets.IsWebSocketRequest)
+    _ = app.Map(
+        "/ws",
+        async (
+            HttpContext context,
+            ChatWebSocketManager wsManager,
+            IChatModeStore modeStore,
+            ILogger<Program> wsLogger,
+            CancellationToken cancellationToken
+        ) =>
         {
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await context.Response.WriteAsync("WebSocket connection required", cancellationToken);
-            return;
-        }
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", cancellationToken);
+                return;
+            }
 
-        // Get threadId from query string (required for agent routing)
-        var threadId = context.Request.Query["threadId"].FirstOrDefault()
-            ?? context.Request.Query["connectionId"].FirstOrDefault()
-            ?? Guid.NewGuid().ToString();
+            // Get threadId from query string (required for agent routing)
+            var threadId =
+                context.Request.Query["threadId"].FirstOrDefault()
+                ?? context.Request.Query["connectionId"].FirstOrDefault()
+                ?? Guid.NewGuid().ToString();
 
-        // Get modeId from query string (optional, defaults to system default)
-        var modeId = context.Request.Query["modeId"].FirstOrDefault();
-        var mode = !string.IsNullOrEmpty(modeId)
-            ? await modeStore.GetModeAsync(modeId, cancellationToken)
-            : null;
+            // Get modeId from query string (optional, defaults to system default)
+            var modeId = context.Request.Query["modeId"].FirstOrDefault();
+            var mode = !string.IsNullOrEmpty(modeId) ? await modeStore.GetModeAsync(modeId, cancellationToken) : null;
 
-        // Optional per-conversation provider override. Honored only when the thread has
-        // not yet locked in a provider (first message). Persisted threads keep their
-        // original provider regardless of what the client sends.
-        var providerId = context.Request.Query["providerId"].FirstOrDefault();
+            // Optional per-conversation provider override. Honored only when the thread has
+            // not yet locked in a provider (first message). Persisted threads keep their
+            // original provider regardless of what the client sends.
+            var providerId = context.Request.Query["providerId"].FirstOrDefault();
 
-        var recordEnabled = app.Environment.IsDevelopment()
-            && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
+            var recordEnabled =
+                app.Environment.IsDevelopment() && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
 
-        StreamWriter? recordWriter = null;
-        string? requestResponseDumpFileName = null;
-        if (recordEnabled)
-        {
-            var recordingsDir = Path.Combine(app.Environment.ContentRootPath, "recordings");
-            _ = Directory.CreateDirectory(recordingsDir);
-            var sessionBaseName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}";
+            StreamWriter? recordWriter = null;
+            string? requestResponseDumpFileName = null;
+            if (recordEnabled)
+            {
+                var recordingsDir = Path.Combine(app.Environment.ContentRootPath, "recordings");
+                _ = Directory.CreateDirectory(recordingsDir);
+                var sessionBaseName = $"{threadId}_{DateTime.UtcNow:yyyyMMddTHHmmss}";
 
-            var wsFileName = $"{sessionBaseName}.ws.jsonl";
-            recordWriter = new StreamWriter(
-                Path.Combine(
-                    recordingsDir,
-                    wsFileName),
-                false,
-                new UTF8Encoding(false));
+                var wsFileName = $"{sessionBaseName}.ws.jsonl";
+                recordWriter = new StreamWriter(
+                    Path.Combine(recordingsDir, wsFileName),
+                    false,
+                    new UTF8Encoding(false)
+                );
 
-            requestResponseDumpFileName = Path.Combine(recordingsDir, $"{sessionBaseName}.llm");
+                requestResponseDumpFileName = Path.Combine(recordingsDir, $"{sessionBaseName}.llm");
 
+                wsLogger.LogInformation(
+                    "Recording enabled for thread {ThreadId}. WS file: {WsFile}, LLM dump base: {DumpBase}",
+                    threadId,
+                    wsFileName,
+                    requestResponseDumpFileName
+                );
+            }
+
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
             wsLogger.LogInformation(
-                "Recording enabled for thread {ThreadId}. WS file: {WsFile}, LLM dump base: {DumpBase}",
+                "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
                 threadId,
-                wsFileName,
-                requestResponseDumpFileName);
-        }
+                mode?.Id ?? "default"
+            );
 
-        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        wsLogger.LogInformation(
-            "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
-            threadId,
-            mode?.Id ?? "default");
-
-        try
-        {
-            await wsManager.HandleConnectionAsync(
-                webSocket,
-                threadId,
-                mode,
-                providerId,
-                requestResponseDumpFileName,
-                recordWriter,
-                cancellationToken);
-        }
-        finally
-        {
-            if (recordWriter != null)
+            try
             {
-                await recordWriter.DisposeAsync();
+                await wsManager.HandleConnectionAsync(
+                    webSocket,
+                    threadId,
+                    mode,
+                    providerId,
+                    requestResponseDumpFileName,
+                    recordWriter,
+                    cancellationToken
+                );
             }
-
-            if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+            finally
             {
-                await webSocket.CloseAsync(
-                    System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
-                    "Server closing",
-                    CancellationToken.None);
-            }
+                if (recordWriter != null)
+                {
+                    await recordWriter.DisposeAsync();
+                }
 
-            webSocket.Dispose();
-            wsLogger.LogInformation("WebSocket connection closed for thread {ThreadId}", threadId);
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation("WebSocket connection closed for thread {ThreadId}", threadId);
+            }
         }
-    });
+    );
 
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
@@ -604,21 +657,17 @@ public partial class Program
     /// <summary>
     ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     /// </summary>
-    private static IStreamingAgent CreateTestAgent(
-        ILoggerFactory loggerFactory,
-        ITestAgentBuilder testAgentBuilder)
+    private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
 
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("http://test-mode/v1"),
-        };
+        var httpClient = new HttpClient(testHandler) { BaseAddress = new Uri("http://test-mode/v1") };
 
         var openClient = new OpenClient(
             httpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>());
+            logger: loggerFactory.CreateLogger<OpenClient>()
+        );
 
         return new OpenClientAgent("MockLLM", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
@@ -632,14 +681,12 @@ public partial class Program
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
             "OPENAI_BASE_URL",
-            defaultValue: "https://api.openai.com/v1");
+            defaultValue: "https://api.openai.com/v1"
+        );
 
         Log.Information("Creating OpenAI agent with base URL: {BaseUrl}", baseUrl);
 
-        var openClient = new OpenClient(
-            apiKey,
-            baseUrl,
-            logger: loggerFactory.CreateLogger<OpenClient>());
+        var openClient = new OpenClient(apiKey, baseUrl, logger: loggerFactory.CreateLogger<OpenClient>());
 
         return new OpenClientAgent("OpenAI", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
@@ -653,14 +700,16 @@ public partial class Program
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
             "ANTHROPIC_BASE_URL",
-            defaultValue: "https://api.anthropic.com/v1");
+            defaultValue: "https://api.anthropic.com/v1"
+        );
 
         Log.Information("Creating Anthropic agent with base URL: {BaseUrl}", baseUrl);
 
         var anthropicClient = new AnthropicClient(
             apiKey,
             baseUrl: baseUrl,
-            logger: loggerFactory.CreateLogger<AnthropicClient>());
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
 
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
@@ -674,24 +723,20 @@ public partial class Program
     /// </summary>
     private static IStreamingAgent CreateAnthropicTestAgent(
         ILoggerFactory loggerFactory,
-        ITestAgentBuilder testAgentBuilder)
+        ITestAgentBuilder testAgentBuilder
+    )
     {
         var testHandler = testAgentBuilder.CreateHandler("test-anthropic", loggerFactory);
 
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("http://test-mode/v1"),
-        };
+        var httpClient = new HttpClient(testHandler) { BaseAddress = new Uri("http://test-mode/v1") };
 
         var anthropicClient = new AnthropicClient(
             httpClient,
             baseUrl: "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<AnthropicClient>());
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
 
-        return new AnthropicAgent(
-            "MockAnthropic",
-            anthropicClient,
-            loggerFactory.CreateLogger<AnthropicAgent>());
+        return new AnthropicAgent("MockAnthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
     private static CodexAgentLoop CreateCodexAgentLoop(
@@ -705,7 +750,8 @@ public partial class Program
         string? llmQueryMcpBaseUrl,
         string? llmQueryMcpExamType,
         string? mockBaseUrlOverride = null,
-        string? mockApiKeyOverride = null)
+        string? mockApiKeyOverride = null
+    )
     {
         var enabledTools = mode.EnabledTools;
         var codexOptions = CreateCodexOptions(requestResponseDumpFileName, threadId);
@@ -758,12 +804,13 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CodexAgentLoop>(),
-            loggerFactory: loggerFactory);
+            loggerFactory: loggerFactory
+        );
     }
 
     private static CodexSdkOptions CreateCodexOptions(string? requestResponseDumpFileName, string threadId)
     {
-        var codexCliPath = Environment.GetEnvironmentVariable("CODEX_CLI_PATH") ?? "codex";
+        var codexCliPath = ResolveCodexCliPath(Environment.GetEnvironmentVariable("CODEX_CLI_PATH"));
         var codexCliMinVersion = Environment.GetEnvironmentVariable("CODEX_CLI_MIN_VERSION") ?? "0.101.0";
         var apiKey = Environment.GetEnvironmentVariable("CODEX_API_KEY");
         var webSearchMode = Environment.GetEnvironmentVariable("CODEX_WEB_SEARCH_MODE") ?? "disabled";
@@ -775,65 +822,80 @@ public partial class Program
         var developerInstructions = Environment.GetEnvironmentVariable("CODEX_DEVELOPER_INSTRUCTIONS");
         var modelInstructionsFile = Environment.GetEnvironmentVariable("CODEX_MODEL_INSTRUCTIONS_FILE");
         var toolBridgeModeRaw = Environment.GetEnvironmentVariable("CODEX_TOOL_BRIDGE_MODE") ?? "hybrid";
-        var exposeInternalToolsAsToolMessages = !bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_EXPOSE_INTERNAL_TOOLS_AS_TOOL_MESSAGES"),
-            out var parsedExposeInternalToolsAsToolMessages) || parsedExposeInternalToolsAsToolMessages;
-        var emitLegacyInternalToolReasoningSummaries = bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_EMIT_LEGACY_INTERNAL_TOOL_REASONING_SUMMARIES"),
-            out var parsedEmitLegacyInternalToolReasoningSummaries) && parsedEmitLegacyInternalToolReasoningSummaries;
-        var networkEnabled = !bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_NETWORK_ACCESS_ENABLED"),
-            out var parsedNetworkEnabled) || parsedNetworkEnabled;
-        var skipGitRepoCheck = !bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_SKIP_GIT_REPO_CHECK"),
-            out var parsedSkipGit) || parsedSkipGit;
-        var emitSyntheticUpdates = bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_EMIT_SYNTHETIC_MESSAGE_UPDATES"),
-            out var parsedEmitSyntheticUpdates) && parsedEmitSyntheticUpdates;
+        var exposeInternalToolsAsToolMessages =
+            !bool.TryParse(
+                Environment.GetEnvironmentVariable("CODEX_EXPOSE_INTERNAL_TOOLS_AS_TOOL_MESSAGES"),
+                out var parsedExposeInternalToolsAsToolMessages
+            ) || parsedExposeInternalToolsAsToolMessages;
+        var emitLegacyInternalToolReasoningSummaries =
+            bool.TryParse(
+                Environment.GetEnvironmentVariable("CODEX_EMIT_LEGACY_INTERNAL_TOOL_REASONING_SUMMARIES"),
+                out var parsedEmitLegacyInternalToolReasoningSummaries
+            ) && parsedEmitLegacyInternalToolReasoningSummaries;
+        var networkEnabled =
+            !bool.TryParse(
+                Environment.GetEnvironmentVariable("CODEX_NETWORK_ACCESS_ENABLED"),
+                out var parsedNetworkEnabled
+            ) || parsedNetworkEnabled;
+        var skipGitRepoCheck =
+            !bool.TryParse(Environment.GetEnvironmentVariable("CODEX_SKIP_GIT_REPO_CHECK"), out var parsedSkipGit)
+            || parsedSkipGit;
+        var emitSyntheticUpdates =
+            bool.TryParse(
+                Environment.GetEnvironmentVariable("CODEX_EMIT_SYNTHETIC_MESSAGE_UPDATES"),
+                out var parsedEmitSyntheticUpdates
+            ) && parsedEmitSyntheticUpdates;
         // Retained as a diagnostic-only compatibility knob; raw provider streaming remains default.
         var syntheticChunkSize = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_SYNTHETIC_MESSAGE_UPDATE_CHUNK_CHARS"),
-            out var parsedChunkSize)
+            out var parsedChunkSize
+        )
             ? parsedChunkSize
             : 28;
         var modelInstructionsThresholdChars = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_MODEL_INSTRUCTIONS_THRESHOLD_CHARS"),
-            out var parsedModelInstructionsThresholdChars)
+            out var parsedModelInstructionsThresholdChars
+        )
             ? parsedModelInstructionsThresholdChars
             : 8000;
         var appServerStartupTimeoutMs = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_APP_SERVER_STARTUP_TIMEOUT_MS"),
-            out var parsedAppServerStartupTimeoutMs)
+            out var parsedAppServerStartupTimeoutMs
+        )
             ? parsedAppServerStartupTimeoutMs
             : 30000;
         var turnCompletionTimeoutMs = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_TURN_COMPLETION_TIMEOUT_MS"),
-            out var parsedTurnCompletionTimeoutMs)
+            out var parsedTurnCompletionTimeoutMs
+        )
             ? parsedTurnCompletionTimeoutMs
             : 120000;
         var turnInterruptGracePeriodMs = int.TryParse(
             Environment.GetEnvironmentVariable("CODEX_TURN_INTERRUPT_GRACE_PERIOD_MS"),
-            out var parsedTurnInterruptGracePeriodMs)
+            out var parsedTurnInterruptGracePeriodMs
+        )
             ? parsedTurnInterruptGracePeriodMs
             : 5000;
-        var rpcTraceEnabledFromEnv = bool.TryParse(
-            Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_ENABLED"),
-            out var parsedRpcTraceEnabled)
+        var rpcTraceEnabledFromEnv =
+            bool.TryParse(Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_ENABLED"), out var parsedRpcTraceEnabled)
             && parsedRpcTraceEnabled;
         var rpcTraceFileFromEnv = Environment.GetEnvironmentVariable("CODEX_RPC_TRACE_FILE");
 
-        var toolBridgeMode = Enum.TryParse<CodexToolBridgeMode>(toolBridgeModeRaw, ignoreCase: true, out var parsedToolBridgeMode)
+        var toolBridgeMode = Enum.TryParse<CodexToolBridgeMode>(
+            toolBridgeModeRaw,
+            ignoreCase: true,
+            out var parsedToolBridgeMode
+        )
             ? parsedToolBridgeMode
             : CodexToolBridgeMode.Hybrid;
 
         var sessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
             ? Path.GetFileName(requestResponseDumpFileName)
             : $"{threadId}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}";
-        var traceFilePath = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
-            ? $"{requestResponseDumpFileName}.codex.rpc.jsonl"
-            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv)
-                ? null
-                : rpcTraceFileFromEnv;
+        var traceFilePath =
+            !string.IsNullOrWhiteSpace(requestResponseDumpFileName) ? $"{requestResponseDumpFileName}.codex.rpc.jsonl"
+            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv) ? null
+            : rpcTraceFileFromEnv;
         var enableRpcTrace = rpcTraceEnabledFromEnv || !string.IsNullOrWhiteSpace(requestResponseDumpFileName);
         if (enableRpcTrace && string.IsNullOrWhiteSpace(traceFilePath))
         {
@@ -874,6 +936,47 @@ public partial class Program
         };
     }
 
+    private static string ResolveCodexCliPath(string? configuredPath)
+    {
+        return ResolveCodexCliPath(
+            configuredPath,
+            OperatingSystem.IsWindows(),
+            Environment.GetEnvironmentVariable("PATH")
+        );
+    }
+
+    private static string ResolveCodexCliPath(string? configuredPath, bool isWindows, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return configuredPath;
+        }
+
+        if (!isWindows)
+        {
+            return "codex";
+        }
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "codex";
+        }
+
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var executableName in new[] { "codex.exe", "codex.cmd" })
+            {
+                var candidate = Path.Combine(directory, executableName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return "codex";
+    }
+
     private static string GetModelIdForProvider(string providerMode)
     {
         return providerMode.ToLowerInvariant() switch
@@ -903,9 +1006,11 @@ public partial class Program
 
     private static int ResolveCodexMcpPort()
     {
-        if (int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
+        if (
+            int.TryParse(Environment.GetEnvironmentVariable("CODEX_MCP_PORT"), out var port)
             && port > 0
-            && port <= 65535)
+            && port <= 65535
+        )
         {
             if (IsPortAvailable(port))
             {
@@ -916,7 +1021,8 @@ public partial class Program
             Log.Warning(
                 "Configured CODEX_MCP_PORT {ConfiguredPort} is already in use. Falling back to port {FallbackPort}.",
                 port,
-                fallbackPort);
+                fallbackPort
+            );
             return fallbackPort;
         }
 
@@ -930,7 +1036,8 @@ public partial class Program
         Log.Warning(
             "Default CODEX_MCP_PORT {DefaultPort} is already in use. Falling back to port {FallbackPort}.",
             defaultPort,
-            fallback);
+            fallback
+        );
         return fallback;
     }
 
@@ -964,8 +1071,10 @@ public partial class Program
     internal static bool IsRecordingEnabled(string? recordValue)
     {
         return recordValue is not null
-            && (string.Equals(recordValue, "1", StringComparison.Ordinal)
-                || string.Equals(recordValue, "true", StringComparison.OrdinalIgnoreCase));
+            && (
+                string.Equals(recordValue, "1", StringComparison.Ordinal)
+                || string.Equals(recordValue, "true", StringComparison.OrdinalIgnoreCase)
+            );
     }
 
     private static ClaudeAgentLoop CreateClaudeAgentLoop(
@@ -977,15 +1086,15 @@ public partial class Program
         string? llmQueryMcpBaseUrl,
         string? llmQueryMcpExamType,
         string? mockBaseUrlOverride = null,
-        string? mockAuthTokenOverride = null)
+        string? mockAuthTokenOverride = null
+    )
     {
         // Build AllowedTools from mode's enabled tools:
         // null = use defaults, empty = no built-in tools (MCP only), non-empty = specific tools
-        var allowedTools = mode.EnabledTools == null
-            ? "Read,WebSearch,WebFetch"
-            : mode.EnabledTools.Count > 0
-                ? string.Join(",", mode.EnabledTools)
-                : string.Empty;
+        var allowedTools =
+            mode.EnabledTools == null ? "Read,WebSearch,WebFetch"
+            : mode.EnabledTools.Count > 0 ? string.Join(",", mode.EnabledTools)
+            : string.Empty;
 
         // claude-agent-sdk CLI v0.1.55 does not recognize --no-checkpoints /
         // --no-session-persistence. Setting DisableCheckpoints / DisableSessionPersistence makes
@@ -1017,7 +1126,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
-            loggerFactory: loggerFactory);
+            loggerFactory: loggerFactory
+        );
     }
 
     private static CopilotAgentLoop CreateCopilotAgentLoop(
@@ -1028,7 +1138,8 @@ public partial class Program
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
         string? mockBaseUrlOverride = null,
-        string? mockApiKeyOverride = null)
+        string? mockApiKeyOverride = null
+    )
     {
         var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
         var copilotCliMinVersion = Environment.GetEnvironmentVariable("COPILOT_CLI_MIN_VERSION") ?? "0.0.410";
@@ -1037,23 +1148,26 @@ public partial class Program
         var baseUrl = Environment.GetEnvironmentVariable("COPILOT_BASE_URL");
         var workingDirectory = Environment.GetEnvironmentVariable("COPILOT_WORKING_DIRECTORY");
         var rpcTraceFileFromEnv = Environment.GetEnvironmentVariable("COPILOT_RPC_TRACE_FILE");
-        var rpcTraceEnabledFromEnv = bool.TryParse(
-            Environment.GetEnvironmentVariable("COPILOT_RPC_TRACE_ENABLED"),
-            out var parsedRpcTraceEnabled)
-            && parsedRpcTraceEnabled;
-        var modelAllowlistProbeEnabled = !bool.TryParse(
-            Environment.GetEnvironmentVariable("COPILOT_MODEL_ALLOWLIST_PROBE_ENABLED"),
-            out var parsedModelProbe) || parsedModelProbe;
-        var defaultPermissionDecision = Environment.GetEnvironmentVariable("COPILOT_DEFAULT_PERMISSION_DECISION") ?? "allow";
+        var rpcTraceEnabledFromEnv =
+            bool.TryParse(
+                Environment.GetEnvironmentVariable("COPILOT_RPC_TRACE_ENABLED"),
+                out var parsedRpcTraceEnabled
+            ) && parsedRpcTraceEnabled;
+        var modelAllowlistProbeEnabled =
+            !bool.TryParse(
+                Environment.GetEnvironmentVariable("COPILOT_MODEL_ALLOWLIST_PROBE_ENABLED"),
+                out var parsedModelProbe
+            ) || parsedModelProbe;
+        var defaultPermissionDecision =
+            Environment.GetEnvironmentVariable("COPILOT_DEFAULT_PERMISSION_DECISION") ?? "allow";
 
         var sessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
             ? Path.GetFileName(requestResponseDumpFileName)
             : $"{threadId}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}";
-        var traceFilePath = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
-            ? $"{requestResponseDumpFileName}.copilot.rpc.jsonl"
-            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv)
-                ? null
-                : rpcTraceFileFromEnv;
+        var traceFilePath =
+            !string.IsNullOrWhiteSpace(requestResponseDumpFileName) ? $"{requestResponseDumpFileName}.copilot.rpc.jsonl"
+            : string.IsNullOrWhiteSpace(rpcTraceFileFromEnv) ? null
+            : rpcTraceFileFromEnv;
         var enableRpcTrace = rpcTraceEnabledFromEnv || !string.IsNullOrWhiteSpace(requestResponseDumpFileName);
         if (enableRpcTrace && string.IsNullOrWhiteSpace(traceFilePath))
         {
@@ -1069,8 +1183,8 @@ public partial class Program
         var effectiveApiKey = string.IsNullOrWhiteSpace(mockApiKeyOverride) ? apiKey : mockApiKeyOverride;
         // The Copilot CLI's model allowlist probe phones home to GitHub before the first turn —
         // the mock host doesn't implement it, so disable the probe whenever a mock URL is set.
-        var effectiveModelAllowlistProbeEnabled = string.IsNullOrWhiteSpace(mockBaseUrlOverride)
-            && modelAllowlistProbeEnabled;
+        var effectiveModelAllowlistProbeEnabled =
+            string.IsNullOrWhiteSpace(mockBaseUrlOverride) && modelAllowlistProbeEnabled;
 
         var copilotOptions = new CopilotSdkOptions
         {
@@ -1104,7 +1218,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
-            loggerFactory: loggerFactory);
+            loggerFactory: loggerFactory
+        );
     }
 
     /// <summary>
@@ -1114,7 +1229,8 @@ public partial class Program
     private static Dictionary<string, McpServerConfig> BuildLlmQueryMcpServers(
         string conversationId,
         string? baseUrl,
-        string? examType)
+        string? examType
+    )
     {
         if (string.IsNullOrEmpty(baseUrl))
         {
@@ -1143,7 +1259,8 @@ public partial class Program
         string threadId,
         string baseUrl,
         string? examType,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory
+    )
     {
         var createdClients = new List<McpClient>();
         var logger = loggerFactory.CreateLogger<Program>();
@@ -1155,34 +1272,32 @@ public partial class Program
                 ["X-Session-Id"] = threadId,
             };
 
-            var booksTransport = new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Name = "books",
-                Endpoint = new Uri($"{baseUrl}/mcp/query"),
-                AdditionalHeaders = headers,
-            });
+            var booksTransport = new HttpClientTransport(
+                new HttpClientTransportOptions
+                {
+                    Name = "books",
+                    Endpoint = new Uri($"{baseUrl}/mcp/query"),
+                    AdditionalHeaders = headers,
+                }
+            );
 
             // Sync-over-async: acceptable in sample app (no SynchronizationContext)
             var booksClient = McpClient.CreateAsync(booksTransport).GetAwaiter().GetResult();
             createdClients.Add(booksClient);
 
-            var mcpClients = new Dictionary<string, McpClient>
-            {
-                ["books"] = booksClient,
-            };
+            var mcpClients = new Dictionary<string, McpClient> { ["books"] = booksClient };
 
             _ = registry.AddMcpClientsAsync(mcpClients, "LlmQuery").GetAwaiter().GetResult();
 
-            logger.LogInformation(
-                "Connected to LlmQuery book search MCP server for thread {ThreadId}",
-                threadId);
+            logger.LogInformation("Connected to LlmQuery book search MCP server for thread {ThreadId}", threadId);
         }
         catch (Exception ex)
         {
             logger.LogWarning(
                 ex,
                 "Failed to connect to LlmQuery MCP server at {BaseUrl} — continuing without MCP tools",
-                baseUrl);
+                baseUrl
+            );
         }
 
         return (registry, createdClients);
@@ -1216,9 +1331,11 @@ public partial class Program
                 return envTestPath;
             }
 
-            if (dir.GetFiles("*.sln").Length > 0
+            if (
+                dir.GetFiles("*.sln").Length > 0
                 || dir.GetDirectories(".git").Length > 0
-                || File.Exists(Path.Combine(dir.FullName, ".git")))
+                || File.Exists(Path.Combine(dir.FullName, ".git"))
+            )
             {
                 break;
             }

@@ -16,7 +16,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 ///     ResponsesByteIdentity tests rely on.
 ///     </para>
 ///     <para>
-///     v1 supports plain text streaming and function-call streaming. Server-side tools
+///     v1 supports reasoning items, plain text streaming, and function-call streaming. Server-side tools
 ///     (<c>web_search_call</c>, <c>codex.rate_limits</c>) are out of scope and produce no events;
 ///     the InstructionPlan items for those flow through unchanged so future expansion is local
 ///     to this writer.
@@ -58,7 +58,12 @@ public static class OpenAiResponsesEventStreamWriter
             {
                 Type = ResponseEventTypes.ResponseCreated,
                 SequenceNumber = seq++,
-                Response = BuildResponseSnapshot(effectiveResponseId, effectiveModel, status: "in_progress", usage: null),
+                Response = BuildResponseSnapshot(
+                    effectiveResponseId,
+                    effectiveModel,
+                    status: "in_progress",
+                    usage: null
+                ),
             }
         );
 
@@ -67,11 +72,23 @@ public static class OpenAiResponsesEventStreamWriter
             {
                 Type = ResponseEventTypes.ResponseInProgress,
                 SequenceNumber = seq++,
-                Response = BuildResponseSnapshot(effectiveResponseId, effectiveModel, status: "in_progress", usage: null),
+                Response = BuildResponseSnapshot(
+                    effectiveResponseId,
+                    effectiveModel,
+                    status: "in_progress",
+                    usage: null
+                ),
             }
         );
 
         var outputIndex = 0;
+        if (plan.ReasoningLength is int reasoningLength && reasoningLength > 0)
+        {
+            var reasoningText = string.Join(' ', GenerateLoremWords(reasoningLength));
+            AppendReasoningOutput(events, ref seq, outputIndex, reasoningText);
+            outputIndex++;
+        }
+
         foreach (var msg in plan.Messages)
         {
             if (msg.ToolCalls is { Count: > 0 } toolCalls)
@@ -117,6 +134,42 @@ public static class OpenAiResponsesEventStreamWriter
         return events;
     }
 
+    private static void AppendReasoningOutput(
+        List<ResponseEvent> events,
+        ref int seq,
+        int outputIndex,
+        string reasoningText
+    )
+    {
+        var itemId = $"rs_{Guid.NewGuid():N}";
+        var itemJson = new JsonObject
+        {
+            ["id"] = itemId,
+            ["type"] = "reasoning",
+            ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = reasoningText }),
+        };
+
+        events.Add(
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemAdded,
+                SequenceNumber = seq++,
+                OutputIndex = outputIndex,
+                Item = ToJsonElement(itemJson),
+            }
+        );
+
+        events.Add(
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemDone,
+                SequenceNumber = seq++,
+                OutputIndex = outputIndex,
+                Item = ToJsonElement(itemJson),
+            }
+        );
+    }
+
     private static void AppendTextOutput(
         List<ResponseEvent> events,
         ref int seq,
@@ -147,11 +200,7 @@ public static class OpenAiResponsesEventStreamWriter
             }
         );
 
-        var partAddedJson = new JsonObject
-        {
-            ["type"] = "output_text",
-            ["text"] = string.Empty,
-        };
+        var partAddedJson = new JsonObject { ["type"] = "output_text", ["text"] = string.Empty };
 
         events.Add(
             new ResponseContentPartEvent
@@ -192,11 +241,7 @@ public static class OpenAiResponsesEventStreamWriter
             }
         );
 
-        var partDoneJson = new JsonObject
-        {
-            ["type"] = "output_text",
-            ["text"] = text,
-        };
+        var partDoneJson = new JsonObject { ["type"] = "output_text", ["text"] = text };
 
         events.Add(
             new ResponseContentPartEvent
@@ -216,13 +261,7 @@ public static class OpenAiResponsesEventStreamWriter
             ["type"] = "message",
             ["status"] = "completed",
             ["role"] = "assistant",
-            ["content"] = new JsonArray(
-                new JsonObject
-                {
-                    ["type"] = "output_text",
-                    ["text"] = text,
-                }
-            ),
+            ["content"] = new JsonArray(new JsonObject { ["type"] = "output_text", ["text"] = text }),
         };
 
         events.Add(

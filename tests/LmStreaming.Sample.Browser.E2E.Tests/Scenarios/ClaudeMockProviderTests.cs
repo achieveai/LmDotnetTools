@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 
@@ -32,11 +33,9 @@ public sealed class ClaudeMockProviderTests
     public async Task Claude_mock_renders_assistant_text_in_chat_ui()
     {
         Skip.IfNot(
-            string.Equals(
-                Environment.GetEnvironmentVariable("LMDOTNET_RUN_CLAUDE_E2E"),
-                "1",
-                StringComparison.Ordinal),
-            "Set LMDOTNET_RUN_CLAUDE_E2E=1 to run claude-mock browser E2E tests.");
+            string.Equals(Environment.GetEnvironmentVariable("LMDOTNET_RUN_CLAUDE_E2E"), "1", StringComparison.Ordinal),
+            "Set LMDOTNET_RUN_CLAUDE_E2E=1 to run claude-mock browser E2E tests."
+        );
         Skip.IfNot(ClaudeCliIsAvailable(), "Claude CLI not found on PATH or via CLAUDE_CLI_PATH.");
 
         await using var factory = new BrowserWebAppFactory("claude-mock", builder: null);
@@ -45,6 +44,7 @@ public sealed class ClaudeMockProviderTests
 
         await page.GotoAsync(factory.ServerAddress);
         await page.Textarea().WaitForAsync();
+        await page.NewChatButton().ClickAsync();
 
         await page.SendMessageAsync("say hello");
         await page.WaitForStreamIdleAsync(timeoutMs: 60_000);
@@ -52,8 +52,118 @@ public sealed class ClaudeMockProviderTests
         await page.AssistantText().WaitForCountAtLeastAsync(1);
         var assistantTexts = await page.AssistantText().AllInnerTextsAsync();
         var combined = string.Join(" ", assistantTexts).Trim();
-        combined.Should().NotBeEmpty(
-            "issue #29: claude-mock previously completed silently with no rendered text");
+        combined.Should().NotBeEmpty("issue #29: claude-mock previously completed silently with no rendered text");
+    }
+
+    [SkippableFact]
+    public async Task Claude_mock_scenario_discovers_cli_tools_and_renders_tool_call_pills()
+    {
+        Skip.IfNot(
+            string.Equals(Environment.GetEnvironmentVariable("LMDOTNET_RUN_CLAUDE_E2E"), "1", StringComparison.Ordinal),
+            "Set LMDOTNET_RUN_CLAUDE_E2E=1 to run claude-mock browser E2E tests."
+        );
+        Skip.IfNot(ClaudeCliIsAvailable(), "Claude CLI not found on PATH or via CLAUDE_CLI_PATH.");
+
+        var fixturePath = Path.Combine(Path.GetTempPath(), $"claude-mock-read-{Guid.NewGuid():N}.txt");
+        var scenarioPath = Path.Combine(Path.GetTempPath(), $"claude-mock-tools-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(fixturePath, "Claude mock browser E2E fixture for the Read tool.");
+        await File.WriteAllTextAsync(scenarioPath, BuildClaudeToolScenario(fixturePath));
+
+        var previousScenario = Environment.GetEnvironmentVariable("LM_MOCK_SCENARIO");
+        Environment.SetEnvironmentVariable("LM_MOCK_SCENARIO", scenarioPath);
+
+        try
+        {
+            await using var factory = new BrowserWebAppFactory("claude-mock", builder: null);
+            await using var context = await _fixture.Browser.NewContextAsync();
+            var page = await context.NewPageAsync();
+
+            await page.GotoAsync(factory.ServerAddress);
+            await page.Textarea().WaitForAsync();
+            await page.NewChatButton().ClickAsync();
+
+            await page.SendMessageAsync("discover available tools, then read the fixture twice");
+            await page.WaitForStreamIdleAsync(timeoutMs: 120_000);
+
+            await page.ToolCallPills().WaitForCountAtLeastAsync(2, timeoutMs: 45_000);
+            var toolNames = await page.ToolCallNamesAsync();
+            toolNames
+                .Count(name => name.Contains("Read", StringComparison.OrdinalIgnoreCase))
+                .Should()
+                .BeGreaterThanOrEqualTo(2);
+
+            await page.AssistantText().WaitForCountAtLeastAsync(1, timeoutMs: 30_000);
+            var assistantTexts = await page.AssistantText().AllInnerTextsAsync();
+            var combined = string.Join(" ", assistantTexts);
+            combined.Should().Contain("BROWSER_CLAUDE_TOOLS_DISCOVERED");
+            combined.Should().Contain("Read");
+            combined.Should().Contain("WebFetch");
+            combined.Should().Contain("BROWSER_CLAUDE_TOOL_FLOW_COMPLETE");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LM_MOCK_SCENARIO", previousScenario);
+            File.Delete(scenarioPath);
+            File.Delete(fixturePath);
+        }
+    }
+
+    private static string BuildClaudeToolScenario(string fixturePath)
+    {
+        var scenario = new
+        {
+            roles = new object[]
+            {
+                new
+                {
+                    key = "claude-mock-tools-initial",
+                    match = new { type = "user_contains", value = "discover available tools" },
+                    turns = new[]
+                    {
+                        new
+                        {
+                            messages = new object[]
+                            {
+                                new
+                                {
+                                    kind = "text",
+                                    text = "BROWSER_CLAUDE_TOOLS_DISCOVERED: Read, WebSearch, WebFetch",
+                                },
+                                new
+                                {
+                                    kind = "tool_call",
+                                    name = "Read",
+                                    args = new { file_path = fixturePath },
+                                },
+                                new
+                                {
+                                    kind = "tool_call",
+                                    name = "Read",
+                                    args = new { file_path = fixturePath },
+                                },
+                            },
+                        },
+                    },
+                },
+                new
+                {
+                    key = "claude-mock-tools-final",
+                    match = new { type = "tool_result" },
+                    turns = new[]
+                    {
+                        new
+                        {
+                            messages = new object[]
+                            {
+                                new { kind = "text", text = "BROWSER_CLAUDE_TOOL_FLOW_COMPLETE" },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        return JsonSerializer.Serialize(scenario, new JsonSerializerOptions { WriteIndented = true });
     }
 
     private static bool ClaudeCliIsAvailable()
@@ -71,9 +181,7 @@ public sealed class ClaudeMockProviderTests
         }
 
         var separator = OperatingSystem.IsWindows() ? ';' : ':';
-        var exeNames = OperatingSystem.IsWindows()
-            ? new[] { "claude.exe", "claude.cmd", "claude.ps1" }
-            : ["claude"];
+        var exeNames = OperatingSystem.IsWindows() ? new[] { "claude.exe", "claude.cmd", "claude.ps1" } : ["claude"];
 
         foreach (var dir in pathEnv.Split(separator, StringSplitOptions.RemoveEmptyEntries))
         {
