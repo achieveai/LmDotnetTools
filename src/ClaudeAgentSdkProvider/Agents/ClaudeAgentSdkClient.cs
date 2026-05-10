@@ -923,17 +923,26 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         GC.SuppressFinalize(this);
     }
 
-    private string BuildCliArguments(ClaudeAgentSdkRequest request)
+    internal string BuildCliArguments(ClaudeAgentSdkRequest request)
     {
         var args = new List<string>
         {
             $"--output-format {request.OutputFormat}",
             $"--input-format {request.InputFormat}",
-            $"--model {request.ModelId}",
-            $"--max-turns {request.MaxTurns}",
-            $"--permission-mode {request.PermissionMode}",
-            $"--setting-sources \"{request.SettingSources}\"",
         };
+
+        // Only emit --model when a non-empty model id was supplied; otherwise
+        // let the CLI pick its default model. Emitting "--model " with no value
+        // causes the next flag (e.g. --max-turns) to be parsed as the model name,
+        // which the API then rejects with a 404 "model: --max-turns" error.
+        if (!string.IsNullOrWhiteSpace(request.ModelId))
+        {
+            args.Add($"--model {request.ModelId}");
+        }
+
+        args.Add($"--max-turns {request.MaxTurns}");
+        args.Add($"--permission-mode {request.PermissionMode}");
+        args.Add($"--setting-sources \"{request.SettingSources}\"");
 
         if (request.Verbose)
         {
