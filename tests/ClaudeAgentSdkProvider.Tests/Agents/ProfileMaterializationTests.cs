@@ -162,4 +162,140 @@ public class ProfileMaterializationTests
         Assert.Equal("node", result.McpServers["alpha"].Command);
         Assert.Equal("https://example.com", result.McpServers["beta"].Url);
     }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("foo/bar")]
+    [InlineData("foo\\bar")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Materialize_SkillWithMaliciousName_ThrowsArgumentException(string name)
+    {
+        var profile = new AgentRuntimeProfile
+        {
+            Skills = [new AgentSkill { Name = name, Source = new ContentSource.FromInline("body") }],
+        };
+
+        Assert.Throws<ArgumentException>(() => ProfileMaterializer.Materialize(profile));
+    }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("foo/bar")]
+    [InlineData("foo\\bar")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Materialize_SubAgentWithMaliciousName_ThrowsArgumentException(string name)
+    {
+        var profile = new AgentRuntimeProfile
+        {
+            SubAgents = [new SubAgentDefinition { Name = name, Source = new ContentSource.FromInline("body") }],
+        };
+
+        Assert.Throws<ArgumentException>(() => ProfileMaterializer.Materialize(profile));
+    }
+
+    [Fact]
+    public void Materialize_ValidateNameThrows_StagingDirectoryIsCleanedUp()
+    {
+        // First skill is valid, second one trips ValidateName so the throw happens
+        // mid-materialization after the staging dir has been created.
+        var profile = new AgentRuntimeProfile
+        {
+            Skills =
+            [
+                AgentSkill.Inline("good", "body"),
+                new AgentSkill { Name = "../escape", Source = new ContentSource.FromInline("body") },
+            ],
+        };
+
+        // Snapshot temp dir contents matching our prefix to detect leaks.
+        var tempRoot = Path.GetTempPath();
+        var before = new HashSet<string>(
+            Directory.EnumerateDirectories(tempRoot, "lm-claude-*"),
+            StringComparer.OrdinalIgnoreCase);
+
+        Assert.Throws<ArgumentException>(() => ProfileMaterializer.Materialize(profile));
+
+        var after = Directory.EnumerateDirectories(tempRoot, "lm-claude-*");
+        var leaked = after.Where(d => !before.Contains(d)).ToList();
+        Assert.Empty(leaked);
+    }
+
+    [Fact]
+    public void Materialize_PathSubAgentFromFile_CopiesToAgentsDir()
+    {
+        var srcFile = Path.Combine(Path.GetTempPath(), $"sub-agent-src-{Guid.NewGuid():N}.md");
+        File.WriteAllText(srcFile, "agent body from file");
+        try
+        {
+            var profile = new AgentRuntimeProfile
+            {
+                SubAgents = [SubAgentDefinition.FromPath("from-file", srcFile)],
+            };
+
+            using var result = ProfileMaterializer.Materialize(profile);
+            var dest = Path.Combine(result.StagingDirectory!, "agents", "from-file.md");
+
+            Assert.True(File.Exists(dest));
+            Assert.Equal("agent body from file", File.ReadAllText(dest));
+        }
+        finally
+        {
+            if (File.Exists(srcFile))
+            {
+                File.Delete(srcFile);
+            }
+        }
+    }
+
+    [Fact]
+    public void Materialize_PathSubAgentFromDirectory_FirstMdCopied()
+    {
+        var srcDir = Path.Combine(Path.GetTempPath(), $"sub-agent-dir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(srcDir);
+        // Two .md files; we just need to assert one of them is picked up. The exact
+        // ordering returned by Directory.EnumerateFiles is filesystem-specific, so
+        // we write the same body to both to keep the test deterministic.
+        File.WriteAllText(Path.Combine(srcDir, "alpha.md"), "agent body from dir");
+        File.WriteAllText(Path.Combine(srcDir, "beta.md"), "agent body from dir");
+        try
+        {
+            var profile = new AgentRuntimeProfile
+            {
+                SubAgents = [SubAgentDefinition.FromPath("from-dir", srcDir)],
+            };
+
+            using var result = ProfileMaterializer.Materialize(profile);
+            var dest = Path.Combine(result.StagingDirectory!, "agents", "from-dir.md");
+
+            Assert.True(File.Exists(dest));
+            Assert.Equal("agent body from dir", File.ReadAllText(dest));
+        }
+        finally
+        {
+            Directory.Delete(srcDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Materialize_PathSubAgentFromDirWithNoMd_ThrowsFileNotFound()
+    {
+        var srcDir = Path.Combine(Path.GetTempPath(), $"sub-agent-empty-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(srcDir);
+        File.WriteAllText(Path.Combine(srcDir, "not-markdown.txt"), "ignored");
+        try
+        {
+            var profile = new AgentRuntimeProfile
+            {
+                SubAgents = [SubAgentDefinition.FromPath("no-md", srcDir)],
+            };
+
+            Assert.Throws<FileNotFoundException>(() => ProfileMaterializer.Materialize(profile));
+        }
+        finally
+        {
+            Directory.Delete(srcDir, recursive: true);
+        }
+    }
 }

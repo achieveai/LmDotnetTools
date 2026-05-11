@@ -92,6 +92,35 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Profile_WithSkillsAndSubAgents_TriggersWarningOnce()
+    {
+        var fakeClient = new RecordingCopilotClient([PromptCompleted(), PromptCompleted()]);
+        var capture = new CapturingLogger<CopilotAgentLoop>();
+
+        await using var loop = new CopilotAgentLoop(
+            new CopilotSdkOptions
+            {
+                Profile = new AgentRuntimeProfile
+                {
+                    Skills = [AgentSkill.Inline("s", "body")],
+                    SubAgents = [SubAgentDefinition.Inline("a", "body")],
+                },
+            },
+            threadId: "thread-copilot-warning-skills-subagents",
+            clientFactory: (_, _) => fakeClient,
+            logger: capture);
+
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hi" }]);
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
+        await cts.CancelAsync();
+
+        capture.WarningCount("copilot.profile.unsupported").Should().Be(1);
+    }
+
+    [Fact]
     public async Task Profile_WithUnsupportedInputs_DoesNotCrash()
     {
         var fakeClient = new RecordingCopilotClient([PromptCompleted()]);

@@ -1,22 +1,31 @@
 namespace AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 
 /// <summary>
-///     Profile-supplied sub-agent that materializes into <c>.claude/agents/&lt;Name&gt;.md</c>
-///     for the Claude Agent SDK. Description, model, and tool list live in the
-///     <c>.md</c> frontmatter and are parsed by the consuming CLI.
+///     Provider-neutral sub-agent descriptor supplied via an
+///     <see cref="AgentRuntimeProfile"/>. Each consuming provider decides how (and
+///     whether) to surface sub-agents to the spawned agent. Description, model, and
+///     tool list typically live in the markdown frontmatter and are parsed by the
+///     consuming provider.
 /// </summary>
+/// <remarks>
+///     See the provider-specific materializer (e.g. <c>ProfileMaterializer</c> in
+///     <c>ClaudeAgentSdkProvider</c>) for details on how a sub-agent's <see cref="Name"/>
+///     and <see cref="Source"/> are mapped onto the underlying CLI's filesystem layout.
+/// </remarks>
 public sealed record SubAgentDefinition
 {
     /// <summary>
-    ///     File stem (without <c>.md</c>) under <c>.claude/agents/</c>. Must be unique
-    ///     within the profile.
+    ///     Stable identifier for the sub-agent. Must be unique within the profile and
+    ///     contain no path separators. Providers map this onto the per-provider
+    ///     filesystem layout (for example, a markdown file stem).
     /// </summary>
     public required string Name { get; init; }
 
     /// <summary>
     ///     Where to read the sub-agent definition from. Path forms copy a single
-    ///     <c>.md</c> file (or the first <c>.md</c> in a directory). Inline forms
-    ///     write a literal markdown body.
+    ///     markdown file (or the first markdown file in a directory). Inline forms
+    ///     supply a literal markdown body. The provider materializer is responsible
+    ///     for any I/O.
     /// </summary>
     public required ContentSource Source { get; init; }
 

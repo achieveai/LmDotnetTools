@@ -20,7 +20,7 @@ public record McpServerConfig
 
     [JsonPropertyName("args")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<string>? Args { get; init; }
+    public IReadOnlyList<string>? Args { get; init; }
 
     // For http type
     [JsonPropertyName("url")]
@@ -29,20 +29,20 @@ public record McpServerConfig
 
     [JsonPropertyName("headers")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public Dictionary<string, string>? Headers { get; init; }
+    public IReadOnlyDictionary<string, string>? Headers { get; init; }
 
     // Shared
     [JsonPropertyName("env")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public Dictionary<string, string>? Env { get; init; }
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
 
     /// <summary>
     ///     Creates a stdio-based MCP server configuration.
     /// </summary>
     public static McpServerConfig CreateStdio(
         string command,
-        List<string> args,
-        Dictionary<string, string>? env = null)
+        IReadOnlyList<string> args,
+        IReadOnlyDictionary<string, string>? env = null)
     {
         return new McpServerConfig { Type = "stdio", Command = command, Args = args, Env = env };
     }
@@ -52,7 +52,7 @@ public record McpServerConfig
     /// </summary>
     public static McpServerConfig CreateHttp(
         string url,
-        Dictionary<string, string>? headers = null)
+        IReadOnlyDictionary<string, string>? headers = null)
     {
         return new McpServerConfig { Type = "http", Url = url, Headers = headers };
     }

@@ -544,14 +544,10 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions)
             ? null
             : _options.BaseInstructions;
-        var profileSystemPrompt = _options.Profile?.SystemPrompt;
-        var developerInstructions = !string.IsNullOrWhiteSpace(profileSystemPrompt)
-            ? profileSystemPrompt
-            : !string.IsNullOrWhiteSpace(SystemPrompt)
-                ? SystemPrompt
-                : string.IsNullOrWhiteSpace(_options.DeveloperInstructions)
-                    ? null
-                    : _options.DeveloperInstructions;
+        var developerInstructions = ProfileSystemPromptResolver.Resolve(
+            _options.Profile,
+            SystemPrompt,
+            _options.DeveloperInstructions);
         var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
             ? null
             : _options.ModelInstructionsFile;
