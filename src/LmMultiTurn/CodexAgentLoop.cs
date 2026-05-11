@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using AchieveAi.LmDotnetTools.CodexSdkProvider.AgentRuntime;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
@@ -27,6 +28,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     private ICodexSdkClient? _client;
     private string? _codexThreadId;
     private string? _generatedModelInstructionsFile;
+    private bool _profileUnsupportedWarningLogged;
 
     public CodexAgentLoop(
         CodexSdkOptions options,
@@ -148,9 +150,10 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         var effectiveWebSearchMode = _toolPolicy.IsBuiltInAllowed("web_search")
             ? _options.WebSearchMode
             : "disabled";
-        var effectiveMcpServers = _options.ToolBridgeMode == CodexToolBridgeMode.Dynamic
-            ? new Dictionary<string, CodexMcpServerConfig>()
-            : _mcpServers;
+        var effectiveMcpServers = ApplyProfile(
+            _options.ToolBridgeMode == CodexToolBridgeMode.Dynamic
+                ? new Dictionary<string, CodexMcpServerConfig>()
+                : _mcpServers);
         var dynamicTools = _options.ToolBridgeMode == CodexToolBridgeMode.Mcp
             ? null
             : _dynamicToolBridge?.GetToolSpecs();
@@ -185,6 +188,49 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             _options.ProviderMode,
             ThreadId,
             _codexThreadId);
+    }
+
+    private IReadOnlyDictionary<string, CodexMcpServerConfig> ApplyProfile(
+        IReadOnlyDictionary<string, CodexMcpServerConfig> baseServers)
+    {
+        var profile = _options.Profile;
+        if (profile is null)
+        {
+            return baseServers;
+        }
+
+        if (!_profileUnsupportedWarningLogged
+            && (profile.Skills.Count > 0 || profile.SubAgents.Count > 0))
+        {
+            Logger.LogWarning(
+                "{event_type} {event_status} {provider} {provider_mode} {thread_id} {skill_count} {sub_agent_count}",
+                "codex.profile.unsupported",
+                "ignored",
+                _options.Provider,
+                _options.ProviderMode,
+                ThreadId,
+                profile.Skills.Count,
+                profile.SubAgents.Count);
+            _profileUnsupportedWarningLogged = true;
+        }
+
+        if (profile.McpServers.Count == 0)
+        {
+            return baseServers;
+        }
+
+        if (_options.ToolBridgeMode == CodexToolBridgeMode.Dynamic)
+        {
+            return baseServers;
+        }
+
+        var merged = new Dictionary<string, CodexMcpServerConfig>(baseServers, StringComparer.Ordinal);
+        foreach (var (name, config) in profile.McpServers)
+        {
+            merged[name] = config.ToCodexConfig();
+        }
+
+        return merged;
     }
 
     protected override async Task OnDisposeAsync()
@@ -498,11 +544,14 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions)
             ? null
             : _options.BaseInstructions;
-        var developerInstructions = !string.IsNullOrWhiteSpace(SystemPrompt)
-            ? SystemPrompt
-            : string.IsNullOrWhiteSpace(_options.DeveloperInstructions)
-                ? null
-                : _options.DeveloperInstructions;
+        var profileSystemPrompt = _options.Profile?.SystemPrompt;
+        var developerInstructions = !string.IsNullOrWhiteSpace(profileSystemPrompt)
+            ? profileSystemPrompt
+            : !string.IsNullOrWhiteSpace(SystemPrompt)
+                ? SystemPrompt
+                : string.IsNullOrWhiteSpace(_options.DeveloperInstructions)
+                    ? null
+                    : _options.DeveloperInstructions;
         var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
             ? null
             : _options.ModelInstructionsFile;

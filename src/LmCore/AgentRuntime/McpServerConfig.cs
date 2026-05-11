@@ -1,10 +1,12 @@
 using System.Text.Json.Serialization;
 
-namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
+namespace AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 
 /// <summary>
 ///     Configuration for an MCP (Model Context Protocol) server.
 ///     Supports both stdio (command-based) and http (URL-based) transports.
+///     Provider-neutral: consumed directly by Claude, projected to provider-specific
+///     shapes (e.g. <c>CodexMcpServerConfig</c>) for Codex.
 /// </summary>
 public record McpServerConfig
 {
@@ -56,11 +58,3 @@ public record McpServerConfig
     }
 }
 
-/// <summary>
-///     Root configuration object for MCP servers
-/// </summary>
-public record McpConfiguration
-{
-    [JsonPropertyName("mcpServers")]
-    public Dictionary<string, McpServerConfig> McpServers { get; init; } = [];
-}

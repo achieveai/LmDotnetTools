@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 
 /// <summary>
@@ -73,4 +75,13 @@ public record CopilotSdkOptions
     public bool EmitSyntheticMessageUpdates { get; init; } = false;
 
     public int SyntheticMessageUpdateChunkChars { get; init; } = 28;
+
+    /// <summary>
+    ///     Optional client-supplied runtime inputs (system prompt, MCP servers, etc.).
+    ///     Copilot consumes only <see cref="AgentRuntimeProfile.SystemPrompt"/> (overrides
+    ///     <see cref="DeveloperInstructions"/>). The Copilot ACP protocol does not expose
+    ///     MCP servers, skills, or sub-agents; their presence triggers a one-time
+    ///     warning log entry per loop and otherwise has no effect.
+    /// </summary>
+    public AgentRuntimeProfile? Profile { get; init; }
 }

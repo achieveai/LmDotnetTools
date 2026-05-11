@@ -5,7 +5,7 @@ using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
-using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;

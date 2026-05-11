@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 
 /// <summary>
@@ -67,12 +69,23 @@ public record ClaudeAgentSdkRequest
     public string PermissionMode { get; init; } = "bypassPermissions";
 
     /// <summary>
-    ///     Setting sources
+    ///     Comma-separated list of settings sources to load (e.g. "user,project,local").
+    ///     When null or empty, the flag is omitted and the CLI applies its own default
+    ///     (user,project,local). Pass an explicit value only when narrowing the set.
     /// </summary>
-    public string SettingSources { get; init; } = "";
+    public string? SettingSources { get; init; }
 
     /// <summary>
     ///     Reasoning effort level (low, medium, high, xhigh)
     /// </summary>
     public string? ReasoningEffort { get; init; }
+
+    /// <summary>
+    ///     Optional path to a directory the spawned CLI should treat as its
+    ///     <c>~/.claude/</c> root. Mapped to the <c>CLAUDE_CONFIG_DIR</c> environment
+    ///     variable on the child process. Used by <c>AgentRuntimeProfile</c>
+    ///     materialization to expose client-supplied skills, sub-agents, and MCP
+    ///     entries without polluting the host's real config.
+    /// </summary>
+    public string? StagingDirectory { get; init; }
 }
