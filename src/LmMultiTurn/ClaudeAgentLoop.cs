@@ -132,6 +132,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _mcpServers = mcpServers ?? [];
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
+        // MUST remain the last statement in this constructor: the returned MaterializedProfile
+        // owns a temp directory and is disposed by DisposeAsync. Any throw after this line would
+        // leak the staging dir.
         _materializedProfile = ProfileMaterializer.Materialize(claudeOptions.Profile);
     }
 
