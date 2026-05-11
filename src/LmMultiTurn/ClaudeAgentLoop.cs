@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -29,6 +30,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private readonly ILoggerFactory? _loggerFactory;
     private readonly Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? _clientFactory;
     private readonly SemaphoreSlim _restartLock = new(1, 1);
+    private readonly MaterializedProfile _materializedProfile;
 
     private IClaudeAgentSdkClient? _client;
 
@@ -130,6 +132,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _mcpServers = mcpServers ?? [];
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
+        // MUST remain the last statement in this constructor: the returned MaterializedProfile
+        // owns a temp directory and is disposed by DisposeAsync. Any throw after this line would
+        // leak the staging dir.
+        _materializedProfile = ProfileMaterializer.Materialize(claudeOptions.Profile);
     }
 
     /// <inheritdoc />
@@ -175,6 +181,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         Logger.LogDebug("Disposing ClaudeAgentLoop resources");
         await DisposeClientResourcesAsync();
         _restartLock.Dispose();
+        _materializedProfile.Dispose();
     }
 
     /// <inheritdoc />
@@ -955,7 +962,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// Build ClaudeAgentSdkRequest from current configuration and options.
     /// Moved from ClaudeAgentSdkAgent.
     /// </summary>
-    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
+    internal ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
     {
         var modelId = DefaultOptions.ModelId ?? "claude-sonnet-4-5-20250929";
         var maxTurns = _claudeOptions.MaxTurnsPerRun;
@@ -1005,6 +1012,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
+        // Profile-supplied MCP servers win on key collision (documented in
+        // ClaudeAgentSdkOptions.Profile XML doc).
+        if (_materializedProfile.McpServers.Count > 0)
+        {
+            mcpServers ??= [];
+            foreach (var (name, config) in _materializedProfile.McpServers)
+            {
+                mcpServers[name] = config;
+            }
+        }
+
         Logger.LogInformation(
             "Final MCP server configuration: {Count} servers configured",
             mcpServers?.Count ?? 0);
@@ -1019,11 +1037,50 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             MaxTurns = maxTurns,
             MaxThinkingTokens = maxThinkingTokens,
             SessionId = sessionId,
-            SystemPrompt = SystemPrompt,
+            SystemPrompt = _materializedProfile.SystemPrompt ?? SystemPrompt,
             AllowedTools = allowedTools,
             McpServers = mcpServers,
             Verbose = true,
             ReasoningEffort = _claudeOptions.ReasoningEffort,
+            SettingSources = BuildSettingSources(_claudeOptions),
+            StagingDirectory = _materializedProfile.StagingDirectory,
         };
+    }
+
+    // Maps the IncludeUser/Project/LocalSettings booleans to the CLI's
+    // --setting-sources value. Tri-state semantics:
+    //   all true  => null  (omit flag, CLI uses its own default of user,project,local)
+    //   all false => ""    (emit empty value, CLI loads nothing -> isolated agent)
+    //   mixed     => comma-joined list of the enabled sources
+    internal static string? BuildSettingSources(ClaudeAgentSdkOptions options)
+    {
+        var user = options.IncludeUserSettings;
+        var project = options.IncludeProjectSettings;
+        var local = options.IncludeLocalSettings;
+
+        if (user && project && local)
+        {
+            return null;
+        }
+
+        if (!user && !project && !local)
+        {
+            return string.Empty;
+        }
+
+        var parts = new List<string>(3);
+        if (user)
+        {
+            parts.Add("user");
+        }
+        if (project)
+        {
+            parts.Add("project");
+        }
+        if (local)
+        {
+            parts.Add("local");
+        }
+        return string.Join(',', parts);
     }
 }

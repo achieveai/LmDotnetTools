@@ -188,6 +188,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // these on the child process redirects the CLI away from the real Anthropic API.
             ApplyMockHostOverrides(startInfo.Environment, _options, _logger);
 
+            // Redirect the CLI's ~/.claude/ to the profile staging dir.
+            ApplyStagingDirectoryEnv(startInfo.Environment, request.StagingDirectory);
+
             // 6. Start process
             _process =
                 Process.Start(startInfo)
@@ -594,7 +597,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 }
 
                 return emitSystemInit
-                    ? [new SystemInitMessage { SessionId = systemInitEvent.SessionId, Model = systemInitEvent.Model }]
+                    ? [new SystemInitMessage
+                    {
+                        SessionId = systemInitEvent.SessionId,
+                        Model = systemInitEvent.Model,
+                    }]
                     : [];
 
             case StreamEvent streamEvent:
@@ -942,7 +949,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         args.Add($"--max-turns {request.MaxTurns}");
         args.Add($"--permission-mode {request.PermissionMode}");
-        args.Add($"--setting-sources \"{request.SettingSources}\"");
+        // Tri-state semantics for --setting-sources:
+        //   null         -> omit the flag; CLI applies its own default
+        //                   (user,project,local) which surfaces installed
+        //                   plugins, sub-agents, skills, and worktree .mcp.json.
+        //   "" (empty)   -> emit the flag with empty value to disable every
+        //                   source (isolated agent).
+        //   "user,..."   -> emit the explicit subset.
+        if (request.SettingSources is not null)
+        {
+            args.Add($"--setting-sources \"{request.SettingSources}\"");
+        }
 
         if (request.Verbose)
         {
@@ -1469,5 +1486,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         var first = TruncateForLog(textMessages[0].Text, maxLength);
         var last = textMessages.Count > 1 ? TruncateForLog(textMessages[^1].Text, maxLength) : null;
         return (first, last);
+    }
+
+    internal static void ApplyStagingDirectoryEnv(
+        IDictionary<string, string?> environment,
+        string? stagingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        if (string.IsNullOrEmpty(stagingDirectory))
+        {
+            return;
+        }
+        environment["CLAUDE_CONFIG_DIR"] = stagingDirectory;
     }
 }

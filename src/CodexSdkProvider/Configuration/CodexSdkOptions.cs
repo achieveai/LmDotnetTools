@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+
 namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 
 public enum CodexToolBridgeMode
@@ -84,4 +86,15 @@ public record CodexSdkOptions
 
     // Retained for compatibility with existing env/config shape; ignored in raw streaming mode.
     public int SyntheticMessageUpdateChunkChars { get; init; } = 28;
+
+    /// <summary>
+    ///     Optional client-supplied runtime inputs (system prompt, MCP servers, etc.).
+    ///     Codex consumes <see cref="AgentRuntimeProfile.SystemPrompt"/> (overrides
+    ///     <see cref="DeveloperInstructions"/>) and <see cref="AgentRuntimeProfile.McpServers"/>
+    ///     (merged with bridge-init MCP, profile entries win on key collision).
+    ///     <see cref="AgentRuntimeProfile.Skills"/> and <see cref="AgentRuntimeProfile.SubAgents"/>
+    ///     are not supported by Codex's CLI; their presence triggers a one-time
+    ///     warning log entry per loop and otherwise has no effect.
+    /// </summary>
+    public AgentRuntimeProfile? Profile { get; init; }
 }

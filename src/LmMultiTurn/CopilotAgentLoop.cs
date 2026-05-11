@@ -30,6 +30,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     private ICopilotSdkClient? _client;
     private string? _copilotSessionId;
     private string? _generatedModelInstructionsFile;
+    private bool _profileUnsupportedWarningLogged;
 
     public CopilotAgentLoop(
         CopilotSdkOptions options,
@@ -142,6 +143,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             _client.ConfigureDynamicToolExecutor(null);
         }
 
+        LogProfileUnsupportedOnce();
         var (baseInstructions, developerInstructions, modelInstructionsFile) = ResolveInstructions();
         var tools = _dynamicToolBridge?.GetToolSpecs();
 
@@ -391,14 +393,47 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         public int BridgeEventCount { get; set; }
     }
 
+    private void LogProfileUnsupportedOnce()
+    {
+        if (_profileUnsupportedWarningLogged)
+        {
+            return;
+        }
+
+        var profile = _options.Profile;
+        if (profile is null)
+        {
+            return;
+        }
+
+        var mcpCount = profile.McpServers.Count;
+        var skillCount = profile.Skills.Count;
+        var subAgentCount = profile.SubAgents.Count;
+        if (mcpCount == 0 && skillCount == 0 && subAgentCount == 0)
+        {
+            return;
+        }
+
+        Logger.LogWarning(
+            "{event_type} {event_status} {provider} {provider_mode} {thread_id} {mcp_count} {skill_count} {sub_agent_count}",
+            "copilot.profile.unsupported",
+            "ignored",
+            _options.Provider,
+            _options.ProviderMode,
+            ThreadId,
+            mcpCount,
+            skillCount,
+            subAgentCount);
+        _profileUnsupportedWarningLogged = true;
+    }
+
     private (string? BaseInstructions, string? DeveloperInstructions, string? ModelInstructionsFile) ResolveInstructions()
     {
         var baseInstructions = string.IsNullOrWhiteSpace(_options.BaseInstructions) ? null : _options.BaseInstructions;
-        var developerInstructions = !string.IsNullOrWhiteSpace(SystemPrompt)
-            ? SystemPrompt
-            : string.IsNullOrWhiteSpace(_options.DeveloperInstructions)
-                ? null
-                : _options.DeveloperInstructions;
+        var developerInstructions = ProfileSystemPromptResolver.Resolve(
+            _options.Profile,
+            SystemPrompt,
+            _options.DeveloperInstructions);
         var modelInstructionsFile = string.IsNullOrWhiteSpace(_options.ModelInstructionsFile)
             ? null
             : _options.ModelInstructionsFile;

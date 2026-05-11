@@ -41,4 +41,5 @@ public class ClaudeAgentSdkClientJsonlEventHandlingTests
         var text = Assert.Single(messages.OfType<TextMessage>());
         Assert.Equal("assistant survived stream event", text.Text);
     }
+
 }
