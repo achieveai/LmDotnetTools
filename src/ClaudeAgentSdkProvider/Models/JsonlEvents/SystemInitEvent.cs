@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
@@ -42,13 +43,13 @@ public record SystemInitEvent : JsonlEventBase
     public string? OutputStyle { get; init; }
 
     [JsonPropertyName("agents")]
-    public List<string>? Agents { get; init; }
+    public List<NamedRef>? Agents { get; init; }
 
     [JsonPropertyName("skills")]
-    public List<string>? Skills { get; init; }
+    public List<NamedRef>? Skills { get; init; }
 
     [JsonPropertyName("plugins")]
-    public List<PluginRef>? Plugins { get; init; }
+    public List<NamedRef>? Plugins { get; init; }
 
     [JsonPropertyName("uuid")]
     public string? Uuid { get; init; }
@@ -67,13 +68,27 @@ public record McpServerStatus
 }
 
 /// <summary>
-///     Plugin reference emitted by claude-agent-sdk CLI v2.0.55+ in <c>system.init.plugins</c>.
+///     Named reference emitted by claude-agent-sdk CLI for entries in
+///     <c>system.init.plugins</c>, <c>system.init.skills</c>, and
+///     <c>system.init.agents</c>. The CLI has historically alternated between
+///     <c>string</c> and <c>{name, ...}</c> shapes for these fields
+///     (see #42 / PR #43 for the plugin drift); <see cref="NamedRefJsonConverter"/>
+///     accepts either at deserialisation time and <see cref="Extra"/> captures any
+///     additional fields without forcing another schema chase.
 /// </summary>
-public record PluginRef
+[JsonConverter(typeof(NamedRefJsonConverter))]
+public record NamedRef
 {
     [JsonPropertyName("name")]
     public string? Name { get; init; }
 
     [JsonPropertyName("path")]
     public string? Path { get; init; }
+
+    // [JsonExtensionData] is deliberately omitted: the custom NamedRefJsonConverter
+    // takes full control of (de)serialisation, so STJ never consults the attribute.
+    // Unknown fields are captured into Extra by the converter's object-reader fallback
+    // and emitted back by its Write loop — relying on the converter, not the attribute,
+    // keeps the wiring explicit and the property's role unambiguous.
+    public Dictionary<string, JsonElement>? Extra { get; init; }
 }
