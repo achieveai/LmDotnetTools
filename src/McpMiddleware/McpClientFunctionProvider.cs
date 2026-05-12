@@ -689,11 +689,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         var imageIndex = 0;
         foreach (var content in response.Content.Where(c => c?.Type == "image"))
         {
-            if (content is ImageContentBlock imgBlock && !string.IsNullOrEmpty(imgBlock.Data))
+            if (content is ImageContentBlock imgBlock && !imgBlock.Data.IsEmpty)
             {
                 try
                 {
-                    var bytes = Convert.FromBase64String(imgBlock.Data);
+                    var bytes = imgBlock.Data.ToArray();
                     var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
 
                     if (detectedMimeType != imgBlock.MimeType)
@@ -719,7 +719,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     }
 
                     imageBlocks.Add(
-                        new ImageToolResultBlock { Data = imgBlock.Data, MimeType = detectedMimeType }
+                        new ImageToolResultBlock { Data = Convert.ToBase64String(bytes), MimeType = detectedMimeType }
                     );
                 }
                 catch (FormatException ex)
@@ -729,7 +729,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
                         toolName,
                         imageIndex,
-                        imgBlock.Data?.Length ?? 0
+                        imgBlock.Data.Length
                     );
                 }
                 catch (Exception ex)
