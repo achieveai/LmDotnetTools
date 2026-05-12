@@ -31,6 +31,12 @@ public static class UiHelpers
         return page.GetByTestId("clear-button");
     }
 
+    /// <summary>New-chat button in the sidebar.</summary>
+    public static ILocator NewChatButton(this IPage page)
+    {
+        return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "+ New Chat" });
+    }
+
     /// <summary>Error banner — rendered only when an error is present.</summary>
     public static ILocator ErrorBanner(this IPage page)
     {
@@ -77,6 +83,15 @@ public static class UiHelpers
     public static ILocator ToolCallPills(this IPage page)
     {
         return page.GetByTestId("tool-call-pill");
+    }
+
+    /// <summary>Returns rendered tool-call names from metadata pills.</summary>
+    public static Task<string[]> ToolCallNamesAsync(this IPage page)
+    {
+        return page.ToolCallPills()
+            .EvaluateAllAsync<string[]>(
+                "nodes => nodes.map(n => (n.getAttribute('data-tool-name') || n.textContent || '').trim())"
+            );
     }
 
     /// <summary>Mode selector button in the header.</summary>

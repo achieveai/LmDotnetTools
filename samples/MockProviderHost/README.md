@@ -3,11 +3,12 @@
 A standalone, runnable HTTP service that wraps `ScriptedSseResponder`
 (`src/LmTestUtils/TestMode/`) behind OpenAI- and Anthropic-compatible endpoints,
 so external CLI tools (Claude Agent SDK, Codex, Copilot CLI) can be redirected
-at the same scripted scenarios our unit tests use.
+at the same mock transports our unit tests use.
 
 This is a **thin transport wrapper**. The host adds no SSE framing; every byte
-streamed back to the client originates from `SseStreamHttpContent` /
-`AnthropicSseStreamHttpContent`, the same emitters used by the in-process tests.
+streamed back to the client originates from `SseStreamHttpContent`,
+`AnthropicSseStreamHttpContent`, or `OpenAiResponsesEventStreamWriter`, the same
+emitters used by the in-process tests.
 
 ## Endpoints
 
@@ -16,7 +17,7 @@ streamed back to the client originates from `SseStreamHttpContent` /
 | GET    | `/healthz`              | text/plain `ok`                   | Liveness probe.                                                      |
 | POST   | `/v1/chat/completions`  | OpenAI SSE                        | Streaming chat completion.                                           |
 | POST   | `/v1/messages`          | Anthropic SSE                     | Streaming Anthropic messages.                                        |
-| POST   | `/v1/responses`         | OpenAI Responses API SSE          | Streaming `response.create` events (text + function-call).           |
+| POST   | `/v1/responses`         | OpenAI Responses API SSE          | Streaming `response.create` events (reasoning + text + function-call). |
 | GET    | `/v1/responses` (Upgrade: websocket) | OpenAI Responses API JSON frames | WebSocket transport — accepts multiple `response.create` frames per socket. |
 
 `Authorization` and `x-api-key` headers are accepted and ignored — the inner
@@ -35,7 +36,7 @@ deliver byte-equal events at the JSON layer.
 Supported event types (server→client):
 
 - `response.created` / `response.in_progress` / `response.completed`
-- `response.output_item.added` / `response.output_item.done` (text and function_call items)
+- `response.output_item.added` / `response.output_item.done` (reasoning, text, and function_call items)
 - `response.content_part.added` / `response.content_part.done` (text parts)
 - `response.output_text.delta` / `response.output_text.done`
 - `response.function_call_arguments.delta` / `response.function_call_arguments.done`
@@ -62,8 +63,9 @@ dotnet run --project samples/MockProviderHost -- --port 5099 --scenario /path/to
 LM_MOCK_SCENARIO=demo dotnet run --project samples/MockProviderHost
 ```
 
-Scenario JSON schema (see `samples/MockProviderHost/scenarios/demo.json` for a full
-example). For programmatic scenarios in tests, build a `ScriptedSseResponder` directly via
+Scenario JSON schema for `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` (see
+`samples/MockProviderHost/scenarios/demo.json` for a full example). For
+programmatic scenarios in tests, build a `ScriptedSseResponder` directly via
 `ScriptedSseResponder.New()` and pass it to `MockProviderHostBuilder.Build(...)`.
 
 ```json
@@ -83,6 +85,11 @@ example). For programmatic scenarios in tests, build a `ScriptedSseResponder` di
 Match types: `always`, `system_contains` (with `value`), `user_contains` (with `value`),
 `tool` (with `name`). Message kinds: `text`, `text_len` (with `wordCount`), `tool_call`
 (with `name` and optional `args`).
+
+`/v1/responses` uses embedded instruction chains from the latest user input as an
+override. If no instruction chain is present, it consumes the same JSON scenario
+turn queue as `/v1/chat/completions` and `/v1/messages`; if no scenario matches,
+it emits the scripted fallback response.
 
 ## Embedded use (the common case)
 
@@ -111,8 +118,9 @@ var baseUrl = app.Urls.First();           // e.g., http://127.0.0.1:51234
 ## Authoring scenarios
 
 The instruction-chain script format and `ScriptedSseResponder` builder are
-documented inline at `src/LmTestUtils/TestMode/ScriptedSseResponder.cs` and
-`src/LmTestUtils/TestMode/InstructionChainParser.cs`.
+documented inline at `src/LmTestUtils/TestMode/InstructionChainParser.cs`,
+`src/LmTestUtils/TestMode/OpenAiResponsesInstructionPlanResolver.cs`, and
+`src/LmTestUtils/TestMode/ScriptedSseResponder.cs`.
 
 ## Out of scope (today)
 
@@ -204,12 +212,11 @@ remove the existing `COPILOT_BASE_URL` mapping.**
 |------------------------------------------|--------------------------------------|---------------------------------|
 | `COPILOT_PROVIDER_TYPE=openai`,<br>`COPILOT_PROVIDER_WIRE_API=completions` | `POST /v1/chat/completions` | Already implemented today.      |
 | `COPILOT_PROVIDER_TYPE=anthropic`        | `POST /v1/messages`                  | Already implemented today.      |
-| `COPILOT_PROVIDER_WIRE_API=responses`    | (none)                               | Out of scope — follow-up issue. |
+| `COPILOT_PROVIDER_WIRE_API=responses`    | `POST /v1/responses`                 | Implemented for text, reasoning, and function-call events. |
 
 Newer Copilot model paths (GPT-5 family) use `/v1/responses`. If the probe
-finds the CLI defaults to that route on the version under test, the
-follow-up E2E issue must add a `/v1/responses` route to
-`MockProviderHostBuilder` before E2E coverage is possible.
+finds the CLI defaults to that route on the version under test, use the
+implemented `/v1/responses` route in `MockProviderHostBuilder`.
 
 ### Probe matrix (the empirical step)
 

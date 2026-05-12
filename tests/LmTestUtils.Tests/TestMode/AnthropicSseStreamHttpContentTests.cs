@@ -6,6 +6,33 @@ namespace LmTestUtils.Tests.TestMode;
 public class AnthropicSseStreamHttpContentTests
 {
     [Fact]
+    public async Task ToolUseStream_StopsWithToolUseReason()
+    {
+        var plan = new InstructionPlan(
+            "tool-use-stop-reason-test",
+            reasoningLength: null,
+            messages:
+            [
+                InstructionMessage.ForExplicitText("I will read the file."),
+                InstructionMessage.ForToolCalls([new InstructionToolCall("Read", """{"file_path":"test.txt"}""")]),
+            ]
+        );
+        var content = new AnthropicSseStreamHttpContent(
+            plan,
+            model: "claude-sonnet-4-5-20250929",
+            wordsPerChunk: 4,
+            chunkDelayMs: 0
+        );
+
+        using var stream = new MemoryStream();
+        await content.CopyToAsync(stream);
+        var sse = Encoding.UTF8.GetString(stream.ToArray());
+
+        Assert.Contains("\"type\":\"tool_use\"", sse);
+        Assert.Contains("\"stop_reason\":\"tool_use\"", sse);
+    }
+
+    [Fact]
     public async Task ReasoningStream_EmitsThinkingAndSignatureDeltas()
     {
         var plan = new InstructionPlan(

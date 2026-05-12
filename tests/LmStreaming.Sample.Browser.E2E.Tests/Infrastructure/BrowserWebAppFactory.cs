@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -36,6 +37,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 {
     private readonly string _providerMode;
     private readonly ITestAgentBuilder? _builder;
+    private readonly string _conversationPath;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -63,13 +65,17 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         if (isScriptedMode && builder is null)
         {
-            throw new ArgumentNullException(
-                nameof(builder),
-                "Scripted provider modes require an ITestAgentBuilder.");
+            throw new ArgumentNullException(nameof(builder), "Scripted provider modes require an ITestAgentBuilder.");
         }
 
         _providerMode = providerMode;
         _builder = builder;
+        _conversationPath = Path.Combine(
+            Path.GetTempPath(),
+            "lm-streaming-browser-e2e",
+            Guid.NewGuid().ToString("N"),
+            "conversations"
+        );
 
         // Program.cs reads LM_PROVIDER_MODE at the top-level, well before any host-builder
         // callback fires. Set it here so the sample picks the right test-mode agent factory.
@@ -94,18 +100,21 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Production");
 
-        // ConfigureTestServices runs after Program.cs's default registrations, so
-        // AddSingleton + RemoveAll last-wins semantics guarantee our builder is resolved.
-        // For *-mock modes the builder is unused (real CLI drives the in-process mock host),
-        // so leave the default registration in place when none is supplied.
-        if (_builder is not null)
+        builder.ConfigureTestServices(services =>
         {
-            builder.ConfigureTestServices(services =>
+            services.RemoveAll<IConversationStore>();
+            services.AddSingleton<IConversationStore>(new FileConversationStore(_conversationPath));
+
+            // ConfigureTestServices runs after Program.cs's default registrations, so
+            // AddSingleton + RemoveAll last-wins semantics guarantee our builder is resolved.
+            // For *-mock modes the builder is unused (real CLI drives the in-process mock host),
+            // so leave the default registration in place when none is supplied.
+            if (_builder is not null)
             {
                 services.RemoveAll<ITestAgentBuilder>();
                 services.AddSingleton(_builder);
-            });
-        }
+            }
+        });
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
@@ -131,9 +140,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         var server = host.Services.GetRequiredService<IServer>();
         var addressesFeature =
             server.Features.Get<IServerAddressesFeature>()
-            ?? throw new InvalidOperationException(
-                "Kestrel did not expose IServerAddressesFeature."
-            );
+            ?? throw new InvalidOperationException("Kestrel did not expose IServerAddressesFeature.");
 
         _serverAddress =
             addressesFeature.Addresses.FirstOrDefault()
@@ -169,9 +176,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         if (_kestrelHost == null)
         {
-            throw new InvalidOperationException(
-                "Kestrel host was not captured — CreateHost override did not run."
-            );
+            throw new InvalidOperationException("Kestrel host was not captured — CreateHost override did not run.");
         }
     }
 
@@ -192,6 +197,12 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
                 _kestrelHost.Dispose();
                 _kestrelHost = null;
             }
+
+            var factoryTempDirectory = Directory.GetParent(_conversationPath)?.FullName;
+            if (!string.IsNullOrWhiteSpace(factoryTempDirectory) && Directory.Exists(factoryTempDirectory))
+            {
+                Directory.Delete(factoryTempDirectory, recursive: true);
+            }
         }
         finally
         {
@@ -205,5 +216,4 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             base.Dispose(disposing);
         }
     }
-
 }

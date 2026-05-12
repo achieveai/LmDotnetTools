@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -26,21 +28,32 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private readonly ClaudeAgentSdkOptions _claudeOptions;
     private readonly Dictionary<string, McpServerConfig> _mcpServers;
     private readonly ILoggerFactory? _loggerFactory;
-    private readonly Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? _clientFactory;
+    private readonly Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? _clientFactory;
     private readonly SemaphoreSlim _restartLock = new(1, 1);
+    private readonly MaterializedProfile _materializedProfile;
 
     private IClaudeAgentSdkClient? _client;
 
     /// <summary>
-    /// Tracks the session ID across process restarts (for OneShot mode session continuity).
+    /// The most recent session ID observed from the underlying claude-agent-sdk run.
+    /// Becomes non-null shortly after the first message is observed in a run, and
+    /// persists across runs so it can be passed as <c>--resume</c> on the next run.
+    /// Also written into <see cref="ThreadMetadata.SessionMappings"/> when a store
+    /// is configured. SDK metadata such as <c>SystemInitMessage</c> is intentionally
+    /// NOT published into the common message stream — read this property instead.
     /// </summary>
-    private string? _lastSessionId;
+    public string? CurrentSessionId { get; private set; }
 
     /// <summary>
     /// Tracks inputs sent to CLI, awaiting enqueue/dequeue confirmation.
     /// Used for correlating queue-operation events with original user inputs.
+    /// Concurrent because writers run on the run-loop thread (Enqueue) while
+    /// readers can run on Claude SDK event-handler threads (TryDequeue from
+    /// <see cref="OnDequeueDetectedAsync"/>) and on the run-loop thread again
+    /// (TryDequeue from <see cref="FlushPendingRunAssignmentsAsync"/>).
+    /// Internal for direct test coverage of the flush path.
     /// </summary>
-    private readonly Queue<(QueuedInput Input, RunAssignment Assignment)> _pendingCliInputs = new();
+    internal readonly ConcurrentQueue<(QueuedInput Input, RunAssignment Assignment)> _pendingCliInputs = new();
 
     /// <summary>
     /// The active subscription to stdout messages (Interactive mode).
@@ -50,8 +63,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <summary>
     /// Track if we're waiting for a dequeue (previous send not yet assigned).
     /// When true, new messages should be queued locally instead of sent to CLI.
+    /// Volatile because the field is read on Claude SDK event-handler threads
+    /// while the run-loop thread mutates it.
     /// </summary>
-    private bool _awaitingDequeue;
+    private volatile bool _awaitingDequeue;
     private string? _lastObservedGenerationId;
 
     /// <summary>
@@ -100,7 +115,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<ClaudeAgentSdkOptions, ILogger?, ClaudeAgentSdkClient>? clientFactory = null)
+        Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null)
         : base(
             threadId,
             systemPrompt,
@@ -117,6 +132,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _mcpServers = mcpServers ?? [];
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
+        // MUST remain the last statement in this constructor: the returned MaterializedProfile
+        // owns a temp directory and is disposed by DisposeAsync. Any throw after this line would
+        // leak the staging dir.
+        _materializedProfile = ProfileMaterializer.Materialize(claudeOptions.Profile);
     }
 
     /// <inheritdoc />
@@ -162,6 +181,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         Logger.LogDebug("Disposing ClaudeAgentLoop resources");
         await DisposeClientResourcesAsync();
         _restartLock.Dispose();
+        _materializedProfile.Dispose();
     }
 
     /// <inheritdoc />
@@ -174,6 +194,53 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             await DisposeClientResourcesAsync();
         }
         // In Interactive mode, keep client alive for next run
+    }
+
+    /// <summary>
+    /// Persist the latest Claude SDK session id into <see cref="ThreadMetadata.SessionMappings"/>
+    /// alongside the base metadata. The mapping uses the conventional
+    /// <c>"claude-sdk:{sessionId}"</c> key shape so it does not collide with mappings
+    /// from other providers.
+    /// </summary>
+    protected override async Task UpdateMetadataAsync(CancellationToken ct)
+    {
+        if (Store == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var latestRun = LatestRunId;
+            var existing = await Store.LoadMetadataAsync(ThreadId, ct);
+
+            // Merge claude-sdk session mapping into the existing dictionary.
+            var sessionMappings = existing?.SessionMappings;
+            if (!string.IsNullOrEmpty(CurrentSessionId) && !string.IsNullOrEmpty(latestRun))
+            {
+                var merged = sessionMappings == null
+                    ? []
+                    : new Dictionary<string, string>(sessionMappings);
+                merged[$"claude-sdk:{CurrentSessionId}"] = latestRun;
+                sessionMappings = merged;
+            }
+
+            var metadata = new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                CurrentRunId = null,
+                LatestRunId = latestRun,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Properties = existing?.Properties,
+                SessionMappings = sessionMappings,
+            };
+
+            await Store.SaveMetadataAsync(ThreadId, metadata, ct);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to update thread metadata");
+        }
     }
 
     /// <summary>
@@ -196,8 +263,42 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             _activeSubscription = null;
         }
 
+        // Snapshot session id from the client before tearing it down so
+        // OneShot mode (which disposes the client after every run) doesn't
+        // lose the session id assigned by the SDK during the run.
+        if (_client?.CurrentSession?.SessionId is { } sid)
+        {
+            CaptureSessionId(sid);
+        }
+
         (_client as IDisposable)?.Dispose();
         _client = null;
+    }
+
+    /// <summary>
+    /// Records the latest SDK-assigned session id. No-op for null/empty/duplicate
+    /// values. Logs at Debug on first capture and on change.
+    /// </summary>
+    private void CaptureSessionId(string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId) || sessionId == CurrentSessionId)
+        {
+            return;
+        }
+
+        var previous = CurrentSessionId;
+        CurrentSessionId = sessionId;
+        if (previous == null)
+        {
+            Logger.LogDebug("Captured Claude SDK SessionId: {SessionId}", sessionId);
+        }
+        else
+        {
+            Logger.LogDebug(
+                "Claude SDK SessionId changed: {Old} -> {New}",
+                previous,
+                sessionId);
+        }
     }
 
     /// <summary>
@@ -338,6 +439,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 }
                 finally
                 {
+                    // Safety net: if the dequeue heuristic never fired (e.g., CLI exited
+                    // without producing a recognizable signal, mock providers, or a
+                    // partial protocol response), the RunAssignmentMessage was never
+                    // published and consumers correlating completion to assignment via
+                    // receipt id would hang. Flush any still-pending inputs now so the
+                    // completion below can be matched.
+                    await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
                     // Pass pending message count so workflows know if more runs will follow
                     await CompleteRunAsync(
                         assignment.RunId,
@@ -405,10 +514,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 var msg = _activeSubscription.Current;
 
                 // HEURISTIC 1: If we get SystemInit (RunStarted), previous enqueue likely processed or reset
-                if (msg is SystemInitMessage)
+                if (msg is SystemInitMessage systemInit)
                 {
                     await OnDequeueDetectedAsync("SystemInitMessage", ct);
-                    // Don't publish this message to subscribers
+                    // Capture SessionId for --resume on later runs and for consumers
+                    // reading CurrentSessionId. SystemInitMessage is SDK metadata —
+                    // intentionally NOT published into the common message stream.
+                    CaptureSessionId(systemInit.SessionId);
                     continue;
                 }
 
@@ -694,6 +806,42 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
+    /// Drain any inputs whose RunAssignmentMessage hasn't yet been published for
+    /// <paramref name="runId"/> and publish them before run completion. This is a
+    /// safety net for cases where the dequeue heuristic in
+    /// <see cref="OnDequeueDetectedAsync"/> never fired — without it, consumers
+    /// correlating <see cref="RunCompletedMessage"/> to <see cref="RunAssignmentMessage"/>
+    /// would never see an assignment for this run.
+    /// </summary>
+    internal async Task FlushPendingRunAssignmentsAsync(string runId, CancellationToken ct)
+    {
+        // Only drain inputs belonging to this run; later runs' inputs stay queued.
+        while (_pendingCliInputs.TryPeek(out var peeked) &&
+               string.Equals(peeked.Assignment.RunId, runId, StringComparison.Ordinal))
+        {
+            if (!_pendingCliInputs.TryDequeue(out var pending))
+            {
+                break;
+            }
+
+            Logger.LogWarning(
+                "Publishing deferred RunAssignmentMessage at run completion (dequeue heuristic missed) - RunId: {RunId}, ReceiptId: {ReceiptId}",
+                pending.Assignment.RunId,
+                pending.Input.ReceiptId);
+
+            await PublishToAllAsync(new RunAssignmentMessage
+            {
+                Assignment = pending.Assignment,
+                ThreadId = ThreadId,
+            }, ct);
+        }
+
+        // We've published whatever we owed; clear awaiting flag so subsequent runs
+        // start clean.
+        _awaitingDequeue = false;
+    }
+
+    /// <summary>
     /// Extract first and last text messages from a collection for logging.
     /// </summary>
     private static (string? First, string? Last) GetFirstLastTextMessages(
@@ -751,6 +899,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             // Add to conversation history
             AddToHistory(msg);
+
+            // OneShot's SendMessagesAsync intentionally suppresses SystemInitMessage,
+            // but the underlying client still updates CurrentSession.SessionId when
+            // it parses the system init event. Poll it so CurrentSessionId becomes
+            // available without leaking SDK metadata into the public message stream.
+            CaptureSessionId(_client?.CurrentSession?.SessionId);
         }
 
         // OneShot: any inputs that arrived during run stay in queue for next iteration
@@ -769,11 +923,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         if (!_client.IsRunning)
         {
             // Preserve session ID from previous run (for session continuity)
-            if (_client.CurrentSession?.SessionId != null)
-            {
-                _lastSessionId = _client.CurrentSession.SessionId;
-                Logger.LogDebug("Preserved sessionId from previous run: {SessionId}", _lastSessionId);
-            }
+            CaptureSessionId(_client.CurrentSession?.SessionId);
 
             var request = BuildClaudeAgentSdkRequest();
             Logger.LogInformation(
@@ -812,7 +962,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// Build ClaudeAgentSdkRequest from current configuration and options.
     /// Moved from ClaudeAgentSdkAgent.
     /// </summary>
-    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
+    internal ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest()
     {
         var modelId = DefaultOptions.ModelId ?? "claude-sonnet-4-5-20250929";
         var maxTurns = _claudeOptions.MaxTurnsPerRun;
@@ -821,7 +971,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         var maxThinkingTokens = _claudeOptions.MaxThinkingTokens;
 
         // Extract session ID: use preserved from previous run if available
-        var sessionId = _lastSessionId;
+        var sessionId = CurrentSessionId;
 
         // Build MCP server configuration
         Dictionary<string, McpServerConfig>? mcpServers = null;
@@ -862,6 +1012,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
+        // Profile-supplied MCP servers win on key collision (documented in
+        // ClaudeAgentSdkOptions.Profile XML doc).
+        if (_materializedProfile.McpServers.Count > 0)
+        {
+            mcpServers ??= [];
+            foreach (var (name, config) in _materializedProfile.McpServers)
+            {
+                mcpServers[name] = config;
+            }
+        }
+
         Logger.LogInformation(
             "Final MCP server configuration: {Count} servers configured",
             mcpServers?.Count ?? 0);
@@ -876,11 +1037,50 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             MaxTurns = maxTurns,
             MaxThinkingTokens = maxThinkingTokens,
             SessionId = sessionId,
-            SystemPrompt = SystemPrompt,
+            SystemPrompt = _materializedProfile.SystemPrompt ?? SystemPrompt,
             AllowedTools = allowedTools,
             McpServers = mcpServers,
             Verbose = true,
             ReasoningEffort = _claudeOptions.ReasoningEffort,
+            SettingSources = BuildSettingSources(_claudeOptions),
+            StagingDirectory = _materializedProfile.StagingDirectory,
         };
+    }
+
+    // Maps the IncludeUser/Project/LocalSettings booleans to the CLI's
+    // --setting-sources value. Tri-state semantics:
+    //   all true  => null  (omit flag, CLI uses its own default of user,project,local)
+    //   all false => ""    (emit empty value, CLI loads nothing -> isolated agent)
+    //   mixed     => comma-joined list of the enabled sources
+    internal static string? BuildSettingSources(ClaudeAgentSdkOptions options)
+    {
+        var user = options.IncludeUserSettings;
+        var project = options.IncludeProjectSettings;
+        var local = options.IncludeLocalSettings;
+
+        if (user && project && local)
+        {
+            return null;
+        }
+
+        if (!user && !project && !local)
+        {
+            return string.Empty;
+        }
+
+        var parts = new List<string>(3);
+        if (user)
+        {
+            parts.Add("user");
+        }
+        if (project)
+        {
+            parts.Add("project");
+        }
+        if (local)
+        {
+            parts.Add("local");
+        }
+        return string.Join(',', parts);
     }
 }

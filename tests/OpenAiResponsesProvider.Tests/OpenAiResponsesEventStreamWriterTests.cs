@@ -14,26 +14,24 @@ public sealed class OpenAiResponsesEventStreamWriterTests
     [Fact]
     public void Plain_text_plan_emits_canonical_event_sequence()
     {
-        var plan = new InstructionPlan(
-            "single-text",
-            null,
-            [InstructionMessage.ForExplicitText("hello world")]
-        );
+        var plan = new InstructionPlan("single-text", null, [InstructionMessage.ForExplicitText("hello world")]);
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan, model: "gpt-test");
 
         var types = events.Select(e => e.Type).ToList();
-        types.Should().Equal(
-            ResponseEventTypes.ResponseCreated,
-            ResponseEventTypes.ResponseInProgress,
-            ResponseEventTypes.OutputItemAdded,
-            ResponseEventTypes.ContentPartAdded,
-            ResponseEventTypes.OutputTextDelta,
-            ResponseEventTypes.OutputTextDone,
-            ResponseEventTypes.ContentPartDone,
-            ResponseEventTypes.OutputItemDone,
-            ResponseEventTypes.ResponseCompleted
-        );
+        types
+            .Should()
+            .Equal(
+                ResponseEventTypes.ResponseCreated,
+                ResponseEventTypes.ResponseInProgress,
+                ResponseEventTypes.OutputItemAdded,
+                ResponseEventTypes.ContentPartAdded,
+                ResponseEventTypes.OutputTextDelta,
+                ResponseEventTypes.OutputTextDone,
+                ResponseEventTypes.ContentPartDone,
+                ResponseEventTypes.OutputItemDone,
+                ResponseEventTypes.ResponseCompleted
+            );
 
         // Sequence numbers are dense and monotonic.
         events.Select(e => e.SequenceNumber).Should().Equal(Enumerable.Range(0, events.Count).Cast<int?>());
@@ -50,8 +48,7 @@ public sealed class OpenAiResponsesEventStreamWriterTests
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan);
 
-        var fnAdded = events.OfType<ResponseOutputItemEvent>()
-            .First(e => e.Type == ResponseEventTypes.OutputItemAdded);
+        var fnAdded = events.OfType<ResponseOutputItemEvent>().First(e => e.Type == ResponseEventTypes.OutputItemAdded);
         fnAdded.Item.GetProperty("type").GetString().Should().Be("function_call");
         fnAdded.Item.GetProperty("name").GetString().Should().Be("get_weather");
 
@@ -59,6 +56,35 @@ public sealed class OpenAiResponsesEventStreamWriterTests
         argsDone.Arguments.Should().Be("""{"city":"Paris"}""");
 
         events.Last().Type.Should().Be(ResponseEventTypes.ResponseCompleted);
+    }
+
+    [Fact]
+    public void Reasoning_plan_emits_reasoning_item_before_text_items()
+    {
+        var plan = new InstructionPlan("thinking-then-text", 4, [InstructionMessage.ForExplicitText("final answer")]);
+
+        var events = OpenAiResponsesEventStreamWriter.Write(plan);
+
+        var itemEvents = events
+            .OfType<ResponseOutputItemEvent>()
+            .Where(e => e.Type == ResponseEventTypes.OutputItemAdded)
+            .ToList();
+
+        itemEvents.Should().HaveCount(2);
+        itemEvents[0].OutputIndex.Should().Be(0);
+        itemEvents[0].Item.GetProperty("type").GetString().Should().Be("reasoning");
+        itemEvents[0]
+            .Item.GetProperty("summary")
+            .EnumerateArray()
+            .Should()
+            .ContainSingle()
+            .Which.GetProperty("text")
+            .GetString()
+            .Should()
+            .NotBeNullOrWhiteSpace();
+
+        itemEvents[1].OutputIndex.Should().Be(1);
+        itemEvents[1].Item.GetProperty("type").GetString().Should().Be("message");
     }
 
     [Fact]
@@ -80,18 +106,14 @@ public sealed class OpenAiResponsesEventStreamWriterTests
     [Fact]
     public void Completed_lifecycle_carries_usage_block()
     {
-        var plan = new InstructionPlan(
-            "with-usage",
-            null,
-            [InstructionMessage.ForExplicitText("ok")]
-        );
+        var plan = new InstructionPlan("with-usage", null, [InstructionMessage.ForExplicitText("ok")]);
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan);
 
-        var completed = events.OfType<ResponseLifecycleEvent>()
+        var completed = events
+            .OfType<ResponseLifecycleEvent>()
             .Single(e => e.Type == ResponseEventTypes.ResponseCompleted);
-        completed.Response.GetProperty("usage").GetProperty("input_tokens").GetInt32()
-            .Should().BeGreaterThan(0);
+        completed.Response.GetProperty("usage").GetProperty("input_tokens").GetInt32().Should().BeGreaterThan(0);
     }
 
     [Fact]
@@ -100,15 +122,13 @@ public sealed class OpenAiResponsesEventStreamWriterTests
         var plan = new InstructionPlan(
             "multi",
             null,
-            [
-                InstructionMessage.ForExplicitText("first"),
-                InstructionMessage.ForExplicitText("second"),
-            ]
+            [InstructionMessage.ForExplicitText("first"), InstructionMessage.ForExplicitText("second")]
         );
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan);
 
-        var indexes = events.OfType<ResponseOutputItemEvent>()
+        var indexes = events
+            .OfType<ResponseOutputItemEvent>()
             .Where(e => e.Type == ResponseEventTypes.OutputItemAdded)
             .Select(e => e.OutputIndex)
             .ToList();
@@ -135,7 +155,8 @@ public sealed class OpenAiResponsesEventStreamWriterTests
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan, responseId: "resp_fixed");
 
-        var lifecycleIds = events.OfType<ResponseLifecycleEvent>()
+        var lifecycleIds = events
+            .OfType<ResponseLifecycleEvent>()
             .Select(e => e.Response.GetProperty("id").GetString())
             .Distinct();
         lifecycleIds.Should().ContainSingle().Which.Should().Be("resp_fixed");

@@ -79,7 +79,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             "StartAsync called. Current state: {State}, IsRunning: {IsRunning}, HasProcess: {HasProcess}",
             _state,
             IsRunning,
-            _process != null);
+            _process != null
+        );
 
         // Store the request for potential restart
         LastRequest = request;
@@ -99,20 +100,23 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                         "State desync detected: _state={State}, IsRunning={IsRunning}, HasExited={HasExited}. Resetting to allow restart.",
                         currentState,
                         IsRunning,
-                        _process?.HasExited);
+                        _process?.HasExited
+                    );
                     // Force state to Stopped, then try again
                     _ = Interlocked.Exchange(ref _state, 4);
                     currentState = Interlocked.CompareExchange(ref _state, 1, 4);
                     if (currentState != 4)
                     {
                         throw new InvalidOperationException(
-                            $"Cannot start after state reset: state is {currentState}.");
+                            $"Cannot start after state reset: state is {currentState}."
+                        );
                     }
                 }
                 else
                 {
                     throw new InvalidOperationException(
-                        $"Cannot start: invalid state {currentState}. Expected NotStarted(0) or Stopped(4).");
+                        $"Cannot start: invalid state {currentState}. Expected NotStarted(0) or Stopped(4)."
+                    );
                 }
             }
         }
@@ -168,28 +172,36 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 "medium" => "4096",
                 "high" => "8192",
                 "xhigh" => "16384",
-                _ => null
+                _ => null,
             };
             if (thinkingTokens != null)
             {
                 startInfo.Environment["MAX_THINKING_TOKENS"] = thinkingTokens;
                 _logger?.LogInformation(
                     "Reasoning effort '{Effort}' mapped to MAX_THINKING_TOKENS={Tokens}",
-                    request.ReasoningEffort, thinkingTokens);
+                    request.ReasoningEffort,
+                    thinkingTokens
+                );
             }
 
             // Optional overrides for E2E tests against a mock provider host. Setting any of
             // these on the child process redirects the CLI away from the real Anthropic API.
             ApplyMockHostOverrides(startInfo.Environment, _options, _logger);
 
+            // Redirect the CLI's ~/.claude/ to the profile staging dir.
+            ApplyStagingDirectoryEnv(startInfo.Environment, request.StagingDirectory);
+
             // 6. Start process
-            _process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start claude-agent-sdk process");
+            _process =
+                Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start claude-agent-sdk process");
 
             // Use UTF-8 WITHOUT BOM for writing to Node.js process
             // BOM would corrupt the first JSON line and cause parsing failures
             _stdinWriter = new StreamWriter(
                 _process.StandardInput.BaseStream,
-                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+            )
             {
                 AutoFlush = false, // We manually flush after writing
             };
@@ -247,14 +259,16 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             "SendMessagesAsync called. State: {State}, IsRunning: {IsRunning}, Mode: {Mode}",
             _state,
             IsRunning,
-            _options.Mode);
+            _options.Mode
+        );
 
         // In Interactive mode, throw to guide users to the new API
         if (_options.Mode == ClaudeAgentSdkMode.Interactive)
         {
             throw new InvalidOperationException(
-                "SendMessagesAsync is not supported in Interactive mode. " +
-                "Use SendAsync() to write messages and SubscribeToMessagesAsync() to read responses.");
+                "SendMessagesAsync is not supported in Interactive mode. "
+                    + "Use SendAsync() to write messages and SubscribeToMessagesAsync() to read responses."
+            );
         }
 
         if (!IsRunning)
@@ -290,7 +304,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
-                lastText ?? "(same as first)");
+                lastText ?? "(same as first)"
+            );
 
             await _stdinWriter.WriteLineAsync(jsonLine);
             await _stdinWriter.FlushAsync(cancellationToken);
@@ -319,82 +334,22 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent == null)
             {
-                _logger?.LogWarning("Failed to parse JSONL line (length={Length}): {Line}",
-                    line.Length, line.Length > 200 ? line[..200] + "..." : line);
+                _logger?.LogWarning(
+                    "Failed to parse JSONL line (length={Length}): {Line}",
+                    line.Length,
+                    line.Length > 200 ? line[..200] + "..." : line
+                );
                 continue;
             }
 
-            if (jsonlEvent is AssistantMessageEvent assistantEvent)
+            if (jsonlEvent is ResultEvent resultEvent)
             {
-                // Check for API errors (e.g., billing_error) before processing normal messages
-                if (assistantEvent.IsApiErrorMessage)
-                {
-                    var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
-                    _logger?.LogError(
-                        "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
-                        CurrentSession?.SessionId,
-                        assistantEvent.Error,
-                        errorText);
-
-                    throw new BillingErrorException(
-                        assistantEvent.Error,
-                        errorText,
-                        CurrentSession?.SessionId);
-                }
-
-                var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                 _logger?.LogTrace(
-                    "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
-                    assistantEvent.Message?.Id,
-                    assistantEvent.Message?.Content?.Count ?? 0,
-                    string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
-                foreach (var msg in eventMessages)
-                {
-                    isWorking = true;
-                    yield return msg;
-                }
-            }
-            // User messages contain tool results and other user inputs
-            else if (jsonlEvent is UserMessageEvent userEvent)
-            {
-                var eventMessages = _parser.ConvertToMessages(userEvent).ToList();
-                _logger?.LogTrace(
-                    "UserMessageEvent: Uuid={Uuid}, Role={Role}, Messages=[{Messages}]",
-                    userEvent.Uuid,
-                    userEvent.Message?.Role,
-                    string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
-                foreach (var msg in eventMessages)
-                {
-                    yield return msg;
-                }
-            }
-            // Summary events are informational, we can log them but don't emit as messages
-            else if (jsonlEvent is SummaryEvent summaryEvent)
-            {
-                _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
-            }
-            // System init events contain session info and available tools
-            else if (jsonlEvent is SystemInitEvent systemInitEvent)
-            {
-                _logger?.LogInformation(
-                    "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
-                    CurrentSession?.SessionId,
-                    systemInitEvent.Model,
-                    systemInitEvent.Tools?.Count ?? 0,
-                    string.Join(", ", systemInitEvent.McpServers?.Select(s => $"{s.Name}({s.Status})") ?? [])
+                    "Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
+                    resultEvent.IsError,
+                    resultEvent.NumTurns,
+                    resultEvent.SessionId
                 );
-
-                // Update current session with info from init event
-                if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
-                {
-                    CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
-                }
-            }
-            // Result events contain final execution summary with usage and cost info
-            else if (jsonlEvent is ResultEvent resultEvent)
-            {
-                _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
-                    resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
                 if (resultEvent.IsError)
                 {
                     if (isWorking && _stdinWriter != null)
@@ -413,15 +368,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                                 Message = new InputMessage
                                 {
                                     Role = "user",
-                                    Content =
-                                    [
-                                        new InputTextContentBlock
-                                        {
-                                            Text = "retry...."
-                                        }
-                                    ]
-                                }
-                            }, _jsonOptions);
+                                    Content = [new InputTextContentBlock { Text = "retry...." }],
+                                },
+                            },
+                            _jsonOptions
+                        );
 
                         _logger?.LogDebug(
                             "Sending JSONL message to claude-agent-sdk: {Message}",
@@ -446,10 +397,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 // ResultEvent signals the end of current turn in BOTH modes
                 // In OneShot mode: stdin is already closed, process will exit
                 // In Interactive mode: stdin remains open for next SendMessagesAsync call
-                _logger?.LogDebug(
-                    "{Mode} mode: ResultEvent received, ending current turn",
-                    _options.Mode
-                );
+                _logger?.LogDebug("{Mode} mode: ResultEvent received, ending current turn", _options.Mode);
 
                 // In OneShot mode, clean up BEFORE returning from the iterator
                 if (_options.Mode == ClaudeAgentSdkMode.OneShot)
@@ -459,17 +407,24 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
                 yield break;
             }
-            else
+
+            var eventMessages = ConvertNonTerminalJsonlEventToMessages(jsonlEvent, emitSystemInit: false);
+            foreach (var msg in eventMessages)
             {
-                _logger?.LogWarning("Unhandled JSONL event type: {EventType}. Line was not processed.",
-                    jsonlEvent.GetType().Name);
+                if (jsonlEvent is AssistantMessageEvent)
+                {
+                    isWorking = true;
+                }
+
+                yield return msg;
             }
         }
     }
 
     /// <inheritdoc />
     public async IAsyncEnumerable<IMessage> SubscribeToMessagesAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         if (!IsRunning)
         {
@@ -479,7 +434,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         if (_subscriptionActive)
         {
             throw new InvalidOperationException(
-                "A subscription is already active. Only one subscriber is allowed at a time.");
+                "A subscription is already active. Only one subscriber is allowed at a time."
+            );
         }
 
         _subscriptionActive = true;
@@ -501,94 +457,29 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     _logger?.LogWarning(
                         "Failed to parse JSONL line (length={Length}): {Line}",
                         line.Length,
-                        line.Length > 200 ? line[..200] + "..." : line);
+                        line.Length > 200 ? line[..200] + "..." : line
+                    );
                     continue;
                 }
 
-                if (jsonlEvent is AssistantMessageEvent assistantEvent)
+                if (jsonlEvent is ResultEvent resultEvent)
                 {
-                    // Check for API errors (e.g., billing_error) before processing normal messages
-                    if (assistantEvent.IsApiErrorMessage)
-                    {
-                        var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
-                        _logger?.LogError(
-                            "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
-                            CurrentSession?.SessionId,
-                            assistantEvent.Error,
-                            errorText);
-
-                        throw new BillingErrorException(
-                            assistantEvent.Error,
-                            errorText,
-                            CurrentSession?.SessionId);
-                    }
-
-                    var eventMessages = _parser.ConvertToMessages(assistantEvent).ToList();
                     _logger?.LogTrace(
-                        "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
-                        assistantEvent.Message?.Id,
-                        assistantEvent.Message?.Content?.Count ?? 0,
-                        string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
-
-                    foreach (var msg in eventMessages)
-                    {
-                        yield return msg;
-                    }
-                }
-                else if (jsonlEvent is UserMessageEvent userEvent)
-                {
-                    var eventMessages = _parser.ConvertToMessages(userEvent).ToList();
-                    _logger?.LogTrace(
-                        "UserMessageEvent: Uuid={Uuid}, Role={Role}, Messages=[{Messages}]",
-                        userEvent.Uuid,
-                        userEvent.Message?.Role,
-                        string.Join("; ", eventMessages.Select(m => FormatMessageForLog(m, 80))));
-
-                    foreach (var msg in eventMessages)
-                    {
-                        yield return msg;
-                    }
-                }
-                else if (jsonlEvent is SummaryEvent summaryEvent)
-                {
-                    _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
-                }
-                else if (jsonlEvent is SystemInitEvent systemInitEvent)
-                {
-                    _logger?.LogInformation(
-                        "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}",
-                        CurrentSession?.SessionId,
-                        systemInitEvent.Model,
-                        systemInitEvent.Tools?.Count ?? 0);
-
-                    if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
-                    {
-                        CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
-                    }
-
-                    // Yield SystemInitMessage to signal run start
-                    yield return new SystemInitMessage
-                    {
-                        SessionId = systemInitEvent.SessionId,
-                        Model = systemInitEvent.Model,
-                    };
-                }
-                else if (jsonlEvent is ResultEvent resultEvent)
-                {
-                    _logger?.LogTrace("Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
-                        resultEvent.IsError, resultEvent.NumTurns, resultEvent.SessionId);
+                        "Received ResultEvent: IsError={IsError}, NumTurns={NumTurns}, SessionId={SessionId}",
+                        resultEvent.IsError,
+                        resultEvent.NumTurns,
+                        resultEvent.SessionId
+                    );
 
                     // Yield a marker message so caller knows turn is complete
-                    yield return new ResultEventMessage
-                    {
-                        IsError = resultEvent.IsError,
-                        Result = resultEvent.Result,
-                    };
+                    yield return new ResultEventMessage { IsError = resultEvent.IsError, Result = resultEvent.Result };
                 }
                 else
                 {
-                    _logger?.LogWarning("Unhandled JSONL event type: {EventType}. Line was not processed.",
-                        jsonlEvent.GetType().Name);
+                    foreach (var msg in ConvertNonTerminalJsonlEventToMessages(jsonlEvent, emitSystemInit: true))
+                    {
+                        yield return msg;
+                    }
                 }
             }
         }
@@ -624,7 +515,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             _logger?.LogDebug(
                 "Sending JSONL message to claude-agent-sdk: {Message}",
-                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
+                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine
+            );
 
             var (firstText, lastText) = GetFirstLastTextMessages(userMessages);
             _logger?.LogInformation(
@@ -632,7 +524,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 CurrentSession?.SessionId,
                 userMessages.Count,
                 firstText ?? "(none)",
-                lastText ?? "(same as first)");
+                lastText ?? "(same as first)"
+            );
 
             await _stdinWriter.WriteLineAsync(jsonLine);
             await _stdinWriter.FlushAsync(cancellationToken);
@@ -640,6 +533,91 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         finally
         {
             _stdinSemaphore.Release();
+        }
+    }
+
+    internal IReadOnlyList<IMessage> ConvertNonTerminalJsonlEventToMessages(
+        JsonlEventBase jsonlEvent,
+        bool emitSystemInit
+    )
+    {
+        ArgumentNullException.ThrowIfNull(jsonlEvent);
+
+        switch (jsonlEvent)
+        {
+            case AssistantMessageEvent assistantEvent:
+                if (assistantEvent.IsApiErrorMessage)
+                {
+                    var errorText = assistantEvent.Message?.Content?.FirstOrDefault()?.Text;
+                    _logger?.LogError(
+                        "[Agent:{SessionId}] API error received: Type={ErrorType}, Message={ErrorMessage}. Agent must be recreated.",
+                        CurrentSession?.SessionId,
+                        assistantEvent.Error,
+                        errorText
+                    );
+
+                    throw new BillingErrorException(assistantEvent.Error, errorText, CurrentSession?.SessionId);
+                }
+
+                var assistantMessages = _parser.ConvertToMessages(assistantEvent).ToList();
+                _logger?.LogTrace(
+                    "AssistantMessageEvent: MessageId={MessageId}, BlockCount={BlockCount}, Messages=[{Messages}]",
+                    assistantEvent.Message?.Id,
+                    assistantEvent.Message?.Content?.Count ?? 0,
+                    string.Join("; ", assistantMessages.Select(m => FormatMessageForLog(m, 80)))
+                );
+                return assistantMessages;
+
+            case UserMessageEvent userEvent:
+                var userMessages = _parser.ConvertToMessages(userEvent).ToList();
+                _logger?.LogTrace(
+                    "UserMessageEvent: Uuid={Uuid}, Role={Role}, Messages=[{Messages}]",
+                    userEvent.Uuid,
+                    userEvent.Message?.Role,
+                    string.Join("; ", userMessages.Select(m => FormatMessageForLog(m, 80)))
+                );
+                return userMessages;
+
+            case SummaryEvent summaryEvent:
+                _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
+                return [];
+
+            case SystemInitEvent systemInitEvent:
+                _logger?.LogInformation(
+                    "[Agent:{SessionId}] System initialized - Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
+                    CurrentSession?.SessionId,
+                    systemInitEvent.Model,
+                    systemInitEvent.Tools?.Count ?? 0,
+                    string.Join(", ", systemInitEvent.McpServers?.Select(s => $"{s.Name}({s.Status})") ?? [])
+                );
+
+                if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
+                {
+                    CurrentSession = CurrentSession with { SessionId = systemInitEvent.SessionId };
+                }
+
+                return emitSystemInit
+                    ? [new SystemInitMessage
+                    {
+                        SessionId = systemInitEvent.SessionId,
+                        Model = systemInitEvent.Model,
+                    }]
+                    : [];
+
+            case StreamEvent streamEvent:
+                _logger?.LogTrace(
+                    "StreamEvent ignored: Type={StreamEventType}, Uuid={Uuid}",
+                    streamEvent.EventType,
+                    streamEvent.Uuid
+                );
+                return [];
+
+            default:
+                _logger?.LogWarning(
+                    "Unhandled JSONL event type: {EventType}. Line was not processed.",
+                    jsonlEvent.GetType().Name
+                );
+                return [];
         }
     }
 
@@ -670,7 +648,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             return;
         }
 
-        _logger?.LogDebug("[Agent:{SessionId}] Keepalive task started with interval: {Interval}", CurrentSession?.SessionId, _options.KeepAliveInterval);
+        _logger?.LogDebug(
+            "[Agent:{SessionId}] Keepalive task started with interval: {Interval}",
+            CurrentSession?.SessionId,
+            _options.KeepAliveInterval
+        );
 
         using var timer = new PeriodicTimer(_options.KeepAliveInterval);
 
@@ -776,11 +758,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             var exitMsg = new InputMessageWrapper
             {
                 Type = "user",
-                Message = new InputMessage
-                {
-                    Role = "user",
-                    Content = [new InputTextContentBlock { Text = "/exit" }],
-                },
+                Message = new InputMessage { Role = "user", Content = [new InputTextContentBlock { Text = "/exit" }] },
             };
 
             var json = JsonSerializer.Serialize(exitMsg, _jsonOptions);
@@ -952,21 +930,45 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         GC.SuppressFinalize(this);
     }
 
-    private string BuildCliArguments(ClaudeAgentSdkRequest request)
+    internal string BuildCliArguments(ClaudeAgentSdkRequest request)
     {
         var args = new List<string>
         {
             $"--output-format {request.OutputFormat}",
             $"--input-format {request.InputFormat}",
-            $"--model {request.ModelId}",
-            $"--max-turns {request.MaxTurns}",
-            $"--permission-mode {request.PermissionMode}",
-            $"--setting-sources \"{request.SettingSources}\"",
         };
+
+        // Only emit --model when a non-empty model id was supplied; otherwise
+        // let the CLI pick its default model. Emitting "--model " with no value
+        // causes the next flag (e.g. --max-turns) to be parsed as the model name,
+        // which the API then rejects with a 404 "model: --max-turns" error.
+        if (!string.IsNullOrWhiteSpace(request.ModelId))
+        {
+            args.Add($"--model {request.ModelId}");
+        }
+
+        args.Add($"--max-turns {request.MaxTurns}");
+        args.Add($"--permission-mode {request.PermissionMode}");
+        // Tri-state semantics for --setting-sources:
+        //   null         -> omit the flag; CLI applies its own default
+        //                   (user,project,local) which surfaces installed
+        //                   plugins, sub-agents, skills, and worktree .mcp.json.
+        //   "" (empty)   -> emit the flag with empty value to disable every
+        //                   source (isolated agent).
+        //   "user,..."   -> emit the explicit subset.
+        if (request.SettingSources is not null)
+        {
+            args.Add($"--setting-sources \"{request.SettingSources}\"");
+        }
 
         if (request.Verbose)
         {
             args.Add("--verbose");
+        }
+
+        if (string.Equals(request.OutputFormat, "stream-json", StringComparison.OrdinalIgnoreCase))
+        {
+            args.Add("--include-partial-messages");
         }
 
         if (!string.IsNullOrEmpty(request.AllowedTools))
@@ -1242,7 +1244,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         _logger?.LogDebug(
             "WaitForOneShotCompletionAsync: Cleaning up resources. ProcessId: {Pid}, HasExited: {HasExited}",
             _process?.Id,
-            _process?.HasExited);
+            _process?.HasExited
+        );
 
         _shutdownCts?.Dispose();
         _shutdownCts = null;
@@ -1277,7 +1280,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     internal static void ApplyMockHostOverrides(
         IDictionary<string, string?> environment,
         ClaudeAgentSdkOptions options,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         ArgumentNullException.ThrowIfNull(environment);
         ArgumentNullException.ThrowIfNull(options);
@@ -1289,11 +1293,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             {
                 logger?.LogWarning(
                     "ClaudeAgentSdkOptions.BaseUrl '{ConfiguredBaseUrl}' ends in '/v1'; the Anthropic SDK CLI "
-                    + "re-appends '/v1/messages', which would produce '/v1/v1/messages' (issue #29). "
-                    + "Stripping to '{NormalizedBaseUrl}' for ANTHROPIC_BASE_URL — please update the caller "
-                    + "to drop the '/v1' suffix.",
+                        + "re-appends '/v1/messages', which would produce '/v1/v1/messages' (issue #29). "
+                        + "Stripping to '{NormalizedBaseUrl}' for ANTHROPIC_BASE_URL — please update the caller "
+                        + "to drop the '/v1' suffix.",
                     options.BaseUrl,
-                    normalized);
+                    normalized
+                );
             }
             environment["ANTHROPIC_BASE_URL"] = normalized;
         }
@@ -1399,8 +1404,17 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             }
 
             // WebP: 52 49 46 46 ... 57 45 42 50
-            if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
-                bytes.Length >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            if (
+                bytes[0] == 0x52
+                && bytes[1] == 0x49
+                && bytes[2] == 0x46
+                && bytes[3] == 0x46
+                && bytes.Length >= 12
+                && bytes[8] == 0x57
+                && bytes[9] == 0x45
+                && bytes[10] == 0x42
+                && bytes[11] == 0x50
+            )
             {
                 return "image/webp";
             }
@@ -1418,12 +1432,18 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     {
         return msg switch
         {
-            TextMessage text => $"\n  [Text] ({text.Text?.Length ?? 0} chars)\n    {TruncateForLog(text.Text, maxContentLength)}",
-            ReasoningMessage reasoning => $"\n  [Thinking] ({reasoning.Reasoning?.Length ?? 0} chars)\n    {TruncateForLog(reasoning.Reasoning, maxContentLength)}",
-            ToolCallMessage toolCall => $"\n  [ToolCall] {toolCall.FunctionName}\n    args={TruncateForLog(toolCall.FunctionArgs, 80)}",
-            ToolCallResultMessage toolResult => $"\n  [ToolResult] id={toolResult.ToolCallId}\n    result={TruncateForLog(toolResult.Result, maxContentLength)}",
-            ImageMessage image => $"\n  [Image]\n    mediaType={image.ImageData.MediaType}\n    size={image.ImageData.ToMemory().Length} bytes",
-            UsageMessage usage => $"\n  [Usage] prompt={usage.Usage?.PromptTokens}, completion={usage.Usage?.CompletionTokens}, total={usage.Usage?.TotalTokens}, cacheRead={usage.Usage?.TotalCachedTokens}",
+            TextMessage text =>
+                $"\n  [Text] ({text.Text?.Length ?? 0} chars)\n    {TruncateForLog(text.Text, maxContentLength)}",
+            ReasoningMessage reasoning =>
+                $"\n  [Thinking] ({reasoning.Reasoning?.Length ?? 0} chars)\n    {TruncateForLog(reasoning.Reasoning, maxContentLength)}",
+            ToolCallMessage toolCall =>
+                $"\n  [ToolCall] {toolCall.FunctionName}\n    args={TruncateForLog(toolCall.FunctionArgs, 80)}",
+            ToolCallResultMessage toolResult =>
+                $"\n  [ToolResult] id={toolResult.ToolCallId}\n    result={TruncateForLog(toolResult.Result, maxContentLength)}",
+            ImageMessage image =>
+                $"\n  [Image]\n    mediaType={image.ImageData.MediaType}\n    size={image.ImageData.ToMemory().Length} bytes",
+            UsageMessage usage =>
+                $"\n  [Usage] prompt={usage.Usage?.PromptTokens}, completion={usage.Usage?.CompletionTokens}, total={usage.Usage?.TotalTokens}, cacheRead={usage.Usage?.TotalCachedTokens}",
             _ => $"\n  [{msg.GetType().Name}]",
         };
     }
@@ -1444,11 +1464,9 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Trim leading/trailing whitespace
         preview = preview.Trim();
 
-        return string.IsNullOrEmpty(preview)
-            ? "(whitespace only)"
-            : preview.Length <= maxLength
-                ? preview
-                : preview[..maxLength] + "...";
+        return string.IsNullOrEmpty(preview) ? "(whitespace only)"
+            : preview.Length <= maxLength ? preview
+            : preview[..maxLength] + "...";
     }
 
     /// <summary>
@@ -1456,7 +1474,8 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     /// </summary>
     private static (string? First, string? Last) GetFirstLastTextMessages(
         IEnumerable<IMessage> messages,
-        int maxLength = 100)
+        int maxLength = 100
+    )
     {
         var textMessages = messages.OfType<TextMessage>().ToList();
         if (textMessages.Count == 0)
@@ -1465,9 +1484,19 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
 
         var first = TruncateForLog(textMessages[0].Text, maxLength);
-        var last = textMessages.Count > 1
-            ? TruncateForLog(textMessages[^1].Text, maxLength)
-            : null;
+        var last = textMessages.Count > 1 ? TruncateForLog(textMessages[^1].Text, maxLength) : null;
         return (first, last);
+    }
+
+    internal static void ApplyStagingDirectoryEnv(
+        IDictionary<string, string?> environment,
+        string? stagingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        if (string.IsNullOrEmpty(stagingDirectory))
+        {
+            return;
+        }
+        environment["CLAUDE_CONFIG_DIR"] = stagingDirectory;
     }
 }

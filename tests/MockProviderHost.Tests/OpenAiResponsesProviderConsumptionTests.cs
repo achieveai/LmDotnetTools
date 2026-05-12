@@ -13,11 +13,12 @@ namespace AchieveAi.LmDotnetTools.MockProviderHost.Tests;
 public sealed class OpenAiResponsesProviderConsumptionTests
 {
     [Fact]
-    public async Task OpenAiResponsesClient_streams_scripted_text_through_HTTP_endpoint()
+    public async Task OpenAiResponsesClient_streams_instruction_chain_text_through_HTTP_endpoint()
     {
-        var responder = ScriptedSseResponder.New()
+        var responder = ScriptedSseResponder
+            .New()
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-                .Turn(t => t.Text("hello from the mock host"))
+            .Turn(t => t.Text("hello from the mock host"))
             .Build();
 
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
@@ -35,7 +36,20 @@ public sealed class OpenAiResponsesProviderConsumptionTests
                 {
                     Type = "message",
                     Role = "user",
-                    Content = [new ResponseInputContent { Type = "input_text", Text = "say hello" }],
+                    Content =
+                    [
+                        new ResponseInputContent
+                        {
+                            Type = "input_text",
+                            Text = """
+                                <|instruction_start|>
+                                {"instruction_chain":[
+                                    {"id":"http-chain","messages":[{"text":"hello from the instruction chain"}]}
+                                ]}
+                                <|instruction_end|>
+                                """,
+                        },
+                    ],
                 },
             ],
         };
@@ -50,16 +64,15 @@ public sealed class OpenAiResponsesProviderConsumptionTests
         events[^1].Type.Should().Be(ResponseEventTypes.ResponseCompleted);
 
         var text = string.Concat(events.OfType<ResponseOutputTextDeltaEvent>().Select(d => d.Delta));
-        text.Should().Contain("hello from the mock host");
-        responder.RemainingTurns["parent"].Should().Be(0);
+        text.Should().Contain("hello from the instruction chain");
+        text.Should().NotContain("hello from the mock host");
+        responder.RemainingTurns["parent"].Should().Be(1);
     }
 
     [Fact]
     public async Task HTTP_endpoint_propagates_responses_content_type()
     {
-        var responder = ScriptedSseResponder.New()
-            .ForRole("any", _ => true).Turn(t => t.Text("ok"))
-            .Build();
+        var responder = ScriptedSseResponder.New().ForRole("any", _ => true).Turn(t => t.Text("ok")).Build();
 
         await using var fixture = await EphemeralHostFixture.StartAsync(responder);
         using var http = new HttpClient { BaseAddress = new Uri(fixture.BaseUrl) };

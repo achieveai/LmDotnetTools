@@ -17,11 +17,9 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Unlike <see cref="TestSseMessageHandler"/> which extracts instruction chains embedded in user
-/// messages, <see cref="ScriptedSseResponder"/> classifies each request by its shape (system
-/// prompt, tool list) and pops the next plan from the matching role's queue. This lets parent
-/// and sub-agent scripts stay fully independent — useful for exercising the
-/// parent → <c>SubAgentManager</c> → sub-agent fan-out through <c>MultiTurnAgentPool</c>.
+/// OpenAI and Anthropic chat-style requests are classified by request shape (system prompt,
+/// tool list) and pop the next plan from the matching role's queue. OpenAI Responses requests
+/// use embedded instruction-chain tags instead, matching the Codex mock transport.
 /// </para>
 /// <para>
 /// The responder produces <see cref="HttpMessageHandler"/> instances for both OpenAI and
@@ -88,8 +86,13 @@ public sealed class ScriptedSseResponder
         ArgumentNullException.ThrowIfNull(socket);
         ArgumentNullException.ThrowIfNull(ctx);
 
-        var plan = TakeNextPlan(ctx)
-            ?? new InstructionPlan("scripted-fallback", null, [InstructionMessage.ForExplicitText("ok")]);
+        var plan =
+            ctx.Wire == ScriptedWireFormat.OpenAiResponses
+                ? OpenAiResponsesInstructionPlanResolver.TryResolvePlan(ctx.RequestBody, logger: _logger)
+                    ?? TakeNextPlan(ctx)
+                    ?? new InstructionPlan("scripted-fallback", null, [InstructionMessage.ForExplicitText("ok")])
+                : TakeNextPlan(ctx)
+                    ?? new InstructionPlan("scripted-fallback", null, [InstructionMessage.ForExplicitText("ok")]);
 
         var events = OpenAiResponsesEventStreamWriter.Write(plan, model);
         foreach (var ev in events)
@@ -98,12 +101,14 @@ public sealed class ScriptedSseResponder
 
             var json = ResponseEventParser.ToJsonObject(ev).ToJsonString();
             var bytes = Encoding.UTF8.GetBytes(json);
-            await socket.SendAsync(
-                new ArraySegment<byte>(bytes),
-                WebSocketMessageType.Text,
-                endOfMessage: true,
-                cancellationToken
-            ).ConfigureAwait(false);
+            await socket
+                .SendAsync(
+                    new ArraySegment<byte>(bytes),
+                    WebSocketMessageType.Text,
+                    endOfMessage: true,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
         }
     }
 
@@ -118,10 +123,7 @@ public sealed class ScriptedSseResponder
             if (role.Matches(ctx))
             {
                 var plan = role.TryDequeue();
-                _logger.LogDebug(
-                    "Matched role {Role}; plan={Plan}",
-                    role.Key,
-                    plan?.IdMessage ?? "<exhausted>");
+                _logger.LogDebug("Matched role {Role}; plan={Plan}", role.Key, plan?.IdMessage ?? "<exhausted>");
                 return plan;
             }
         }
@@ -131,8 +133,7 @@ public sealed class ScriptedSseResponder
     }
 
     /// <summary>Snapshot of remaining plan counts per role — useful for assertions.</summary>
-    public IReadOnlyDictionary<string, int> RemainingTurns =>
-        _roles.ToDictionary(r => r.Key, r => r.Remaining);
+    public IReadOnlyDictionary<string, int> RemainingTurns => _roles.ToDictionary(r => r.Key, r => r.Remaining);
 }
 
 /// <summary>Fluent builder for <see cref="ScriptedSseResponder"/>.</summary>
@@ -318,6 +319,9 @@ public sealed class ScriptedRequestContext
     /// <summary>Text of the most recent user message (may be null).</summary>
     public string? LatestUserMessage { get; init; }
 
+    /// <summary>True when the request includes at least one tool_result content block.</summary>
+    public bool HasToolResult { get; init; }
+
     /// <summary>Convenience: true if the request advertises a tool named <paramref name="name"/>.</summary>
     public bool HasTool(string name)
     {
@@ -327,8 +331,7 @@ public sealed class ScriptedRequestContext
     /// <summary>Convenience: true if the system prompt contains <paramref name="substring"/>.</summary>
     public bool SystemPromptContains(string substring)
     {
-        return !string.IsNullOrEmpty(substring)
-            && SystemPrompt.Contains(substring, StringComparison.OrdinalIgnoreCase);
+        return !string.IsNullOrEmpty(substring) && SystemPrompt.Contains(substring, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -397,14 +400,16 @@ internal sealed class ScriptedHandler : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (request.Method != HttpMethod.Post || request.RequestUri == null)
         {
             _logger.LogWarning(
                 "Rejecting non-POST/no-URI request: method={Method} uri={Uri}",
                 request.Method,
-                request.RequestUri);
+                request.RequestUri
+            );
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
@@ -420,13 +425,15 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 "Path {Path} does not end with expected suffix {Suffix} (wire={Wire})",
                 request.RequestUri.AbsolutePath,
                 expectedSuffix,
-                _wire);
+                _wire
+            );
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        var body = request.Content == null
-            ? string.Empty
-            : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var body =
+            request.Content == null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -447,7 +454,8 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 ex,
                 "Failed to parse scripted SSE request body as JSON (wire={Wire}): {ErrorMessage}",
                 _wire,
-                ex.Message);
+                ex.Message
+            );
             return new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
                 Content = new StringContent($"Invalid JSON: {ex.Message}"),
@@ -459,25 +467,27 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             var root = doc.RootElement;
             var ctx = BuildContext(root);
 
-            var plan = _responder.TakeNextPlan(ctx);
+            var plan =
+                _wire == ScriptedWireFormat.OpenAiResponses
+                    ? OpenAiResponsesInstructionPlanResolver.TryResolvePlan(root, logger: _logger)
+                        ?? _responder.TakeNextPlan(ctx)
+                    : _responder.TakeNextPlan(ctx);
             if (plan is null)
             {
                 // Fallback: simple "ok" text so the run can complete without blowing up.
                 _logger.LogWarning(
                     "No role matched or queue exhausted; emitting fallback text. Wire={Wire} SystemPrompt={SystemPromptPreview}",
                     _wire,
-                    Preview(ctx.SystemPrompt));
-                plan = new InstructionPlan(
-                    "scripted-fallback",
-                    null,
-                    [InstructionMessage.ForExplicitText("ok")]);
+                    Preview(ctx.SystemPrompt)
+                );
+                plan = new InstructionPlan("scripted-fallback", null, [InstructionMessage.ForExplicitText("ok")]);
             }
 
-            var stream = root.TryGetProperty("stream", out var streamProp)
-                && streamProp.ValueKind == JsonValueKind.True;
+            var stream =
+                root.TryGetProperty("stream", out var streamProp) && streamProp.ValueKind == JsonValueKind.True;
 
-            var model = root.TryGetProperty("model", out var modelProp)
-                && modelProp.ValueKind == JsonValueKind.String
+            var model =
+                root.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String
                     ? modelProp.GetString()
                     : null;
 
@@ -493,7 +503,12 @@ internal sealed class ScriptedHandler : HttpMessageHandler
 
             HttpContent content = _wire switch
             {
-                ScriptedWireFormat.OpenAi => new SseStreamHttpContent(plan, model, DefaultWordsPerChunk, DefaultChunkDelayMs),
+                ScriptedWireFormat.OpenAi => new SseStreamHttpContent(
+                    plan,
+                    model,
+                    DefaultWordsPerChunk,
+                    DefaultChunkDelayMs
+                ),
                 ScriptedWireFormat.OpenAiResponses => OpenAiResponsesSseStreamHttpContent.FromPlan(
                     plan,
                     model,
@@ -532,6 +547,8 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             SystemPrompt = systemPrompt,
             Tools = tools,
             LatestUserMessage = latestUser,
+            HasToolResult =
+                ContainsContentBlockType(root, "tool_result") || ContainsInputItemType(root, "function_call_output"),
         };
     }
 
@@ -544,8 +561,7 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         {
             foreach (var msg in messages.EnumerateArray())
             {
-                if (!msg.TryGetProperty("role", out var roleProp)
-                    || roleProp.ValueKind != JsonValueKind.String)
+                if (!msg.TryGetProperty("role", out var roleProp) || roleProp.ValueKind != JsonValueKind.String)
                 {
                     continue;
                 }
@@ -575,8 +591,8 @@ internal sealed class ScriptedHandler : HttpMessageHandler
     private static (string systemPrompt, string? latestUser) ExtractOpenAiResponses(JsonElement root)
     {
         // System prompt lives in `instructions` (string) on the Responses request.
-        var systemPrompt = root.TryGetProperty("instructions", out var instr)
-            && instr.ValueKind == JsonValueKind.String
+        var systemPrompt =
+            root.TryGetProperty("instructions", out var instr) && instr.ValueKind == JsonValueKind.String
                 ? instr.GetString() ?? string.Empty
                 : string.Empty;
 
@@ -594,11 +610,15 @@ internal sealed class ScriptedHandler : HttpMessageHandler
                 JsonValueKind.String => sysProp.GetString() ?? string.Empty,
                 JsonValueKind.Array => string.Join(
                     '\n',
-                    sysProp.EnumerateArray()
-                        .Where(e => e.ValueKind == JsonValueKind.Object
+                    sysProp
+                        .EnumerateArray()
+                        .Where(e =>
+                            e.ValueKind == JsonValueKind.Object
                             && e.TryGetProperty("text", out var t)
-                            && t.ValueKind == JsonValueKind.String)
-                        .Select(e => e.GetProperty("text").GetString() ?? string.Empty)),
+                            && t.ValueKind == JsonValueKind.String
+                        )
+                        .Select(e => e.GetProperty("text").GetString() ?? string.Empty)
+                ),
                 _ => string.Empty,
             };
         }
@@ -608,9 +628,11 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         {
             foreach (var msg in messages.EnumerateArray())
             {
-                if (!msg.TryGetProperty("role", out var roleProp)
+                if (
+                    !msg.TryGetProperty("role", out var roleProp)
                     || roleProp.ValueKind != JsonValueKind.String
-                    || !string.Equals(roleProp.GetString(), "user", StringComparison.OrdinalIgnoreCase))
+                    || !string.Equals(roleProp.GetString(), "user", StringComparison.OrdinalIgnoreCase)
+                )
                 {
                     continue;
                 }
@@ -639,12 +661,14 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             var sb = new StringBuilder();
             foreach (var item in content.EnumerateArray())
             {
-                if (item.ValueKind == JsonValueKind.Object
+                if (
+                    item.ValueKind == JsonValueKind.Object
                     && item.TryGetProperty("type", out var type)
                     && type.ValueKind == JsonValueKind.String
                     && type.GetString() == "text"
                     && item.TryGetProperty("text", out var textProp)
-                    && textProp.ValueKind == JsonValueKind.String)
+                    && textProp.ValueKind == JsonValueKind.String
+                )
                 {
                     if (sb.Length > 0)
                     {
@@ -677,10 +701,12 @@ internal sealed class ScriptedHandler : HttpMessageHandler
             }
 
             // OpenAI chat-completions shape: { type: "function", function: { name: "..." } }
-            if (tool.TryGetProperty("function", out var fn)
+            if (
+                tool.TryGetProperty("function", out var fn)
                 && fn.ValueKind == JsonValueKind.Object
                 && fn.TryGetProperty("name", out var fnName)
-                && fnName.ValueKind == JsonValueKind.String)
+                && fnName.ValueKind == JsonValueKind.String
+            )
             {
                 names.Add(fnName.GetString()!);
                 continue;
@@ -696,6 +722,60 @@ internal sealed class ScriptedHandler : HttpMessageHandler
         }
 
         return names;
+    }
+
+    private static bool ContainsContentBlockType(JsonElement root, string contentType)
+    {
+        if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var message in messages.EnumerateArray())
+        {
+            if (!message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in content.EnumerateArray())
+            {
+                if (
+                    item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("type", out var type)
+                    && type.ValueKind == JsonValueKind.String
+                    && string.Equals(type.GetString(), contentType, StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsInputItemType(JsonElement root, string itemType)
+    {
+        if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var item in input.EnumerateArray())
+        {
+            if (
+                item.ValueKind == JsonValueKind.Object
+                && item.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String
+                && string.Equals(type.GetString(), itemType, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string Preview(string s)

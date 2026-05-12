@@ -1,3 +1,4 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using FluentAssertions;
@@ -16,8 +17,7 @@ public sealed class JsonScenarioLoaderTests
         var responder = JsonScenarioLoader.Load("demo");
 
         // The shipped scenario has one role ("demo") with three turns.
-        responder.RemainingTurns.Should().ContainKey("demo")
-            .WhoseValue.Should().Be(3);
+        responder.RemainingTurns.Should().ContainKey("demo").WhoseValue.Should().Be(3);
     }
 
     [Fact]
@@ -43,6 +43,9 @@ public sealed class JsonScenarioLoaderTests
                 ]},
                 { "key": "delta", "match": { "type": "tool", "name": "echo" }, "turns": [
                     { "messages": [{ "kind": "text", "text": "d" }] }
+                ]},
+                { "key": "epsilon", "match": { "type": "tool_result" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "e" }] }
                 ]}
               ]
             }
@@ -50,7 +53,7 @@ public sealed class JsonScenarioLoaderTests
 
         var responder = JsonScenarioLoader.Parse(json);
 
-        responder.RemainingTurns.Keys.Should().BeEquivalentTo(["alpha", "beta", "gamma", "delta"]);
+        responder.RemainingTurns.Keys.Should().BeEquivalentTo(["alpha", "beta", "gamma", "delta", "epsilon"]);
     }
 
     [Fact]
@@ -80,8 +83,7 @@ public sealed class JsonScenarioLoaderTests
     {
         Action act = () => JsonScenarioLoader.Parse("""{ "roles": [] }""");
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*at least one role*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*at least one role*");
     }
 
     [Fact]
@@ -95,8 +97,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*non-empty 'key'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*non-empty 'key'*");
     }
 
     [Fact]
@@ -110,8 +111,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*weather*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*weather*");
     }
 
     [Fact]
@@ -125,8 +125,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*system_contains*'value'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*system_contains*'value'*");
     }
 
     [Fact]
@@ -140,8 +139,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*user_contains*'value'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*user_contains*'value'*");
     }
 
     [Fact]
@@ -155,8 +153,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*tool match*'name'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*tool match*'name'*");
     }
 
     [Fact]
@@ -170,8 +167,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*Text message*'text'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*Text message*'text'*");
     }
 
     [Fact]
@@ -185,8 +181,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*text_len*wordCount*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*text_len*wordCount*");
     }
 
     [Fact]
@@ -200,8 +195,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*tool_call*'name'*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*tool_call*'name'*");
     }
 
     [Fact]
@@ -215,8 +209,7 @@ public sealed class JsonScenarioLoaderTests
 
         Action act = () => JsonScenarioLoader.Parse(json);
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*image*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*image*");
     }
 
     [Fact]
@@ -224,19 +217,21 @@ public sealed class JsonScenarioLoaderTests
     {
         Action act = () => JsonScenarioLoader.Parse("not json");
 
-        act.Should().Throw<JsonScenarioFormatException>()
-            .WithMessage("*malformed*");
+        act.Should().Throw<JsonScenarioFormatException>().WithMessage("*malformed*");
     }
 
     [Fact]
     public void Load_reads_an_absolute_file_path()
     {
         var temp = Path.Combine(Path.GetTempPath(), $"scenario-{Guid.NewGuid():N}.json");
-        File.WriteAllText(temp, """
+        File.WriteAllText(
+            temp,
+            """
             { "roles": [{ "key": "from-disk", "match": { "type": "always" }, "turns": [
                 { "messages": [{ "kind": "text", "text": "from disk" }] }
             ]}]}
-            """);
+            """
+        );
 
         try
         {
@@ -299,18 +294,113 @@ public sealed class JsonScenarioLoaderTests
         responder.RemainingTurns["fallback"].Should().Be(1);
     }
 
+    [Fact]
+    public async Task Parse_tool_result_matcher_dispatches_on_anthropic_tool_result_request()
+    {
+        const string json = """
+            {
+              "roles": [
+                { "key": "after-tool", "match": { "type": "tool_result" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "after tool result" }] }
+                ]},
+                { "key": "fallback", "match": { "type": "always" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "fallback reply" }] }
+                ]}
+              ]
+            }
+            """;
+
+        var responder = JsonScenarioLoader.Parse(json);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
+        using var httpClient = new HttpClient();
+        var request = new StringContent(
+            """
+            {
+              "model": "claude-test",
+              "max_tokens": 1024,
+              "stream": true,
+              "messages": [
+                {
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "tool_result",
+                      "tool_use_id": "toolu_123",
+                      "content": "fixture output"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        using var response = await httpClient.PostAsync($"{fixture.BaseUrl}/v1/messages", request);
+        var sse = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        sse.Should().Contain("after tool result");
+        responder.RemainingTurns["after-tool"].Should().Be(0);
+        responder.RemainingTurns["fallback"].Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Parse_tool_result_matcher_dispatches_on_openai_responses_function_call_output_request()
+    {
+        const string json = """
+            {
+              "roles": [
+                { "key": "after-tool", "match": { "type": "tool_result" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "after responses tool output" }] }
+                ]},
+                { "key": "fallback", "match": { "type": "always" }, "turns": [
+                    { "messages": [{ "kind": "text", "text": "fallback reply" }] }
+                ]}
+              ]
+            }
+            """;
+
+        var responder = JsonScenarioLoader.Parse(json);
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
+        using var httpClient = new HttpClient();
+        var request = new StringContent(
+            """
+            {
+              "model": "gpt-test",
+              "stream": true,
+              "input": [
+                {
+                  "type": "function_call_output",
+                  "call_id": "call_123",
+                  "output": "fixture output"
+                }
+              ]
+            }
+            """,
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        using var response = await httpClient.PostAsync($"{fixture.BaseUrl}/v1/responses", request);
+        var sse = await response.Content.ReadAsStringAsync();
+
+        response.EnsureSuccessStatusCode();
+        sse.Should().Contain("after responses tool output");
+        responder.RemainingTurns["after-tool"].Should().Be(0);
+        responder.RemainingTurns["fallback"].Should().Be(1);
+    }
+
     private static async Task ConsumeAsync(OpenClient openClient, string userMessage)
     {
         var request = new ChatCompletionRequest(
             "gpt-test",
-            [
-                new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent(userMessage) },
-            ])
+            [new ChatMessage { Role = RoleEnum.User, Content = ChatMessage.CreateContent(userMessage) }]
+        )
         {
             Stream = true,
         };
-        await foreach (var _ in openClient.StreamingChatCompletionsAsync(request))
-        {
-        }
+        await foreach (var _ in openClient.StreamingChatCompletionsAsync(request)) { }
     }
 }

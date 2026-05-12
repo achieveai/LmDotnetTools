@@ -68,7 +68,8 @@ public class MultiTurnAgentPoolTests
             },
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = pool.GetOrCreateAgent("thread-x", mode, requestedProviderId: "openai", requestResponseDumpFileName: null);
@@ -85,14 +86,18 @@ public class MultiTurnAgentPoolTests
     {
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai", "anthropic"]);
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("thread-y", new ThreadMetadata
-        {
-            ThreadId = "thread-y",
-            LastUpdated = 1,
-            Properties = ImmutableDictionary<string, object>.Empty.SetItem(
-                MultiTurnAgentPool.ProviderPropertyKey,
-                "anthropic"),
-        });
+        await store.SaveMetadataAsync(
+            "thread-y",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-y",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    "anthropic"
+                ),
+            }
+        );
 
         var providerSeen = new List<string>();
         await using var pool = new MultiTurnAgentPool(
@@ -103,7 +108,8 @@ public class MultiTurnAgentPoolTests
             },
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = pool.GetOrCreateAgent("thread-y", mode, requestedProviderId: "openai", requestResponseDumpFileName: null);
@@ -112,30 +118,81 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task GetOrCreateAgent_PersistedJsonElementProviderWins_OverRequested()
+    {
+        var registry = new FakeProviderRegistry(
+            defaultProviderId: "test",
+            available: ["test", "codex-mock", "anthropic"]
+        );
+        var store = new InMemoryConversationStore();
+        using var providerDocument = JsonDocument.Parse("\"codex-mock\"");
+        var providerElement = providerDocument.RootElement.Clone();
+        await store.SaveMetadataAsync(
+            "thread-json",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-json",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    providerElement
+                ),
+            }
+        );
+
+        var providerSeen = new List<string>();
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, providerId, _) =>
+            {
+                providerSeen.Add(providerId);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId));
+            },
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-json",
+            mode,
+            requestedProviderId: "anthropic",
+            requestResponseDumpFileName: null
+        );
+
+        providerSeen.Should().ContainSingle().Which.Should().Be("codex-mock");
+    }
+
+    [Fact]
     public async Task GetOrCreateAgent_Throws_WhenPersistedProviderUnavailable()
     {
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("thread-z", new ThreadMetadata
-        {
-            ThreadId = "thread-z",
-            LastUpdated = 1,
-            Properties = ImmutableDictionary<string, object>.Empty.SetItem(
-                MultiTurnAgentPool.ProviderPropertyKey,
-                "openai"),
-        });
+        await store.SaveMetadataAsync(
+            "thread-z",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-z",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    "openai"
+                ),
+            }
+        );
 
         await using var pool = new MultiTurnAgentPool(
             (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        var act = () => pool.GetOrCreateAgent("thread-z", mode, requestedProviderId: null, requestResponseDumpFileName: null);
+        var act = () =>
+            pool.GetOrCreateAgent("thread-z", mode, requestedProviderId: null, requestResponseDumpFileName: null);
 
-        act.Should().Throw<ProviderUnavailableException>()
-            .Which.ProviderId.Should().Be("openai");
+        act.Should().Throw<ProviderUnavailableException>().Which.ProviderId.Should().Be("openai");
     }
 
     [Fact]
@@ -148,13 +205,14 @@ public class MultiTurnAgentPoolTests
             (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
-        var act = () => pool.GetOrCreateAgent("thread-q", mode, requestedProviderId: "openai", requestResponseDumpFileName: null);
+        var act = () =>
+            pool.GetOrCreateAgent("thread-q", mode, requestedProviderId: "openai", requestResponseDumpFileName: null);
 
-        act.Should().Throw<ProviderUnavailableException>()
-            .Which.ProviderId.Should().Be("openai");
+        act.Should().Throw<ProviderUnavailableException>().Which.ProviderId.Should().Be("openai");
     }
 
     [Fact]
@@ -172,7 +230,8 @@ public class MultiTurnAgentPoolTests
             },
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = pool.GetOrCreateAgent("thread-d", mode, requestedProviderId: null, requestResponseDumpFileName: null);
@@ -193,7 +252,8 @@ public class MultiTurnAgentPoolTests
                 providerSeen.Add("default-sentinel-observed");
                 return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId));
             },
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = pool.GetOrCreateAgent("thread-legacy", mode);
@@ -206,20 +266,25 @@ public class MultiTurnAgentPoolTests
     {
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync("thread-eff", new ThreadMetadata
-        {
-            ThreadId = "thread-eff",
-            LastUpdated = 1,
-            Properties = ImmutableDictionary<string, object>.Empty.SetItem(
-                MultiTurnAgentPool.ProviderPropertyKey,
-                "openai"),
-        });
+        await store.SaveMetadataAsync(
+            "thread-eff",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-eff",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    "openai"
+                ),
+            }
+        );
 
         await using var pool = new MultiTurnAgentPool(
             (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         pool.GetEffectiveProviderId("thread-eff", null).Should().Be("openai");
     }
@@ -234,7 +299,8 @@ public class MultiTurnAgentPoolTests
             (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             registry.ToReal(),
             store,
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 
         pool.GetEffectiveProviderId("thread-fresh", null).Should().Be("test");
     }
@@ -243,22 +309,26 @@ public class MultiTurnAgentPoolTests
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
-            NullLogger<MultiTurnAgentPool>.Instance);
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
     }
 
     private static async Task<string?> WaitForPersistedProviderAsync(
         IConversationStore store,
         string threadId,
-        int timeoutMs = 1000)
+        int timeoutMs = 1000
+    )
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
             var metadata = await store.LoadMetadataAsync(threadId);
-            if (metadata?.Properties != null
+            if (
+                metadata?.Properties != null
                 && metadata.Properties.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var raw)
                 && raw is string s
-                && !string.IsNullOrWhiteSpace(s))
+                && !string.IsNullOrWhiteSpace(s)
+            )
             {
                 return s;
             }
@@ -303,13 +373,15 @@ internal sealed class FakeProviderRegistry
         {
             Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", _defaultProviderId);
             Environment.SetEnvironmentVariable("OPENAI_API_KEY", _available.Contains("openai") ? "sk-fake" : null);
-            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", _available.Contains("anthropic") ? "sk-fake" : null);
+            Environment.SetEnvironmentVariable(
+                "ANTHROPIC_API_KEY",
+                _available.Contains("anthropic") ? "sk-fake" : null
+            );
             Environment.SetEnvironmentVariable("CLAUDE_CLI_PATH", null);
             Environment.SetEnvironmentVariable("COPILOT_CLI_PATH", null);
 
-            var probe = new FakeFileSystemProbe(
-                executablesOnPath: BuildCliList());
-            return new ProviderRegistry(probe);
+            var probe = new FakeFileSystemProbe(executablesOnPath: BuildCliList());
+            return new ProviderRegistry(probe, mockHostIsRunning: () => HasAvailableMockProvider());
         }
         finally
         {
@@ -322,13 +394,18 @@ internal sealed class FakeProviderRegistry
 
     private IEnumerable<string> BuildCliList()
     {
-        if (_available.Contains("claude"))
+        if (_available.Contains("claude") || _available.Contains("claude-mock"))
         {
             yield return "claude";
         }
-        if (_available.Contains("copilot"))
+        if (_available.Contains("copilot") || _available.Contains("copilot-mock"))
         {
             yield return "copilot";
         }
+    }
+
+    private bool HasAvailableMockProvider()
+    {
+        return _available.Any(providerId => providerId.EndsWith("-mock", StringComparison.OrdinalIgnoreCase));
     }
 }

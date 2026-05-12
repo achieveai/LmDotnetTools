@@ -80,6 +80,41 @@ public sealed class OpenAiResponsesAgentTests
     }
 
     [Fact]
+    public async Task Agent_emits_reasoning_message_for_response_reasoning_item()
+    {
+        await using var rig = TestRig.Create();
+        const string prompt = """
+            <|instruction_start|>
+            {"instruction_chain":[
+                {"reasoning":{"length":4},"messages":[{"text":"final answer"}]}
+            ]}
+            <|instruction_end|>
+            """;
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = prompt },
+        };
+
+        var stream = await rig.Agent.GenerateReplyStreamingAsync(messages);
+
+        var collected = new List<IMessage>();
+        await foreach (var m in stream)
+        {
+            collected.Add(m);
+        }
+
+        var reasoning = collected.OfType<ReasoningMessage>().Single();
+        reasoning.Role.Should().Be(Role.Assistant);
+        reasoning.Visibility.Should().Be(ReasoningVisibility.Plain);
+        reasoning.Reasoning.Should().NotBeNullOrWhiteSpace();
+        reasoning.MessageOrderIdx.Should().Be(0);
+
+        var finalText = collected.OfType<TextMessage>().Single();
+        finalText.Text.Should().Be("final answer");
+        finalText.MessageOrderIdx.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Agent_emits_usage_message_after_completed_lifecycle()
     {
         await using var rig = TestRig.Create();

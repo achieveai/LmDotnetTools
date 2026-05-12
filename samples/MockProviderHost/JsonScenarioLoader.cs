@@ -28,7 +28,7 @@ namespace AchieveAi.LmDotnetTools.MockProviderHost;
 /// }
 /// </code>
 /// Match types: <c>always</c>, <c>system_contains</c> (value), <c>tool</c> (name),
-/// <c>user_contains</c> (value).
+/// <c>user_contains</c> (value), <c>tool_result</c>.
 /// </para>
 /// </remarks>
 public static class JsonScenarioLoader
@@ -66,7 +66,8 @@ public static class JsonScenarioLoader
         ScenarioDocument document;
         try
         {
-            document = JsonSerializer.Deserialize<ScenarioDocument>(json, ParseOptions)
+            document =
+                JsonSerializer.Deserialize<ScenarioDocument>(json, ParseOptions)
                 ?? throw new JsonScenarioFormatException("Scenario JSON deserialised to null.");
         }
         catch (JsonException ex)
@@ -109,10 +110,7 @@ public static class JsonScenarioLoader
 
         // Try alongside the host binary first — `samples/MockProviderHost/scenarios/<name>.json`
         // is copied to the build output by the .csproj.
-        var sideloadPath = Path.Combine(
-            AppContext.BaseDirectory,
-            "scenarios",
-            EnsureJsonExtension(nameOrPath));
+        var sideloadPath = Path.Combine(AppContext.BaseDirectory, "scenarios", EnsureJsonExtension(nameOrPath));
         if (File.Exists(sideloadPath))
         {
             return File.ReadAllText(sideloadPath);
@@ -131,52 +129,63 @@ public static class JsonScenarioLoader
 
         throw new FileNotFoundException(
             $"Scenario '{nameOrPath}' was not found on disk or as an embedded resource.",
-            nameOrPath);
+            nameOrPath
+        );
     }
 
     private static string EnsureJsonExtension(string nameOrPath)
     {
-        return nameOrPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
-            ? nameOrPath
-            : nameOrPath + ".json";
+        return nameOrPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? nameOrPath : nameOrPath + ".json";
     }
 
     private static Func<ScriptedRequestContext, bool> BuildMatcher(string roleKey, ScenarioMatch? match)
     {
-        if (match is null || string.IsNullOrWhiteSpace(match.Type)
+        if (
+            match is null
+            || string.IsNullOrWhiteSpace(match.Type)
             || match.Type.Equals("always", StringComparison.OrdinalIgnoreCase)
-            || match.Type.Equals("any", StringComparison.OrdinalIgnoreCase))
+            || match.Type.Equals("any", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return _ => true;
         }
 
         if (match.Type.Equals("system_contains", StringComparison.OrdinalIgnoreCase))
         {
-            var value = match.Value
+            var value =
+                match.Value
                 ?? throw new JsonScenarioFormatException(
-                    $"Role '{roleKey}': system_contains match requires a 'value' field.");
+                    $"Role '{roleKey}': system_contains match requires a 'value' field."
+                );
             return ctx => ctx.SystemPromptContains(value);
         }
 
         if (match.Type.Equals("user_contains", StringComparison.OrdinalIgnoreCase))
         {
-            var value = match.Value
+            var value =
+                match.Value
                 ?? throw new JsonScenarioFormatException(
-                    $"Role '{roleKey}': user_contains match requires a 'value' field.");
-            return ctx => ctx.LatestUserMessage is not null
+                    $"Role '{roleKey}': user_contains match requires a 'value' field."
+                );
+            return ctx =>
+                ctx.LatestUserMessage is not null
                 && ctx.LatestUserMessage.Contains(value, StringComparison.OrdinalIgnoreCase);
         }
 
         if (match.Type.Equals("tool", StringComparison.OrdinalIgnoreCase))
         {
-            var name = match.Name
-                ?? throw new JsonScenarioFormatException(
-                    $"Role '{roleKey}': tool match requires a 'name' field.");
+            var name =
+                match.Name
+                ?? throw new JsonScenarioFormatException($"Role '{roleKey}': tool match requires a 'name' field.");
             return ctx => ctx.HasTool(name);
         }
 
-        throw new JsonScenarioFormatException(
-            $"Role '{roleKey}': unknown match type '{match.Type}'.");
+        if (match.Type.Equals("tool_result", StringComparison.OrdinalIgnoreCase))
+        {
+            return ctx => ctx.HasToolResult;
+        }
+
+        throw new JsonScenarioFormatException($"Role '{roleKey}': unknown match type '{match.Type}'.");
     }
 
     private static void ApplyTurn(InstructionPlanBuilder plan, ScenarioTurn turn)
@@ -212,8 +221,7 @@ public static class JsonScenarioLoader
         {
             if (message.WordCount is not { } wordCount || wordCount <= 0)
             {
-                throw new JsonScenarioFormatException(
-                    "text_len message requires a positive 'wordCount' field.");
+                throw new JsonScenarioFormatException("text_len message requires a positive 'wordCount' field.");
             }
 
             _ = plan.TextLen(wordCount);
@@ -240,10 +248,12 @@ public static class JsonScenarioLoader
     /// <summary>Returns the names of built-in scenarios shipped as embedded resources.</summary>
     public static IReadOnlyList<string> ListBuiltinScenarios()
     {
-        var names = typeof(JsonScenarioLoader).Assembly
-            .GetManifestResourceNames()
-            .Where(n => n.StartsWith(BuiltinScenarioPrefix, StringComparison.Ordinal)
-                && n.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        var names = typeof(JsonScenarioLoader)
+            .Assembly.GetManifestResourceNames()
+            .Where(n =>
+                n.StartsWith(BuiltinScenarioPrefix, StringComparison.Ordinal)
+                && n.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            )
             .Select(n => Path.GetFileNameWithoutExtension(n[BuiltinScenarioPrefix.Length..]))
             .ToArray();
 
@@ -291,7 +301,8 @@ public static class JsonScenarioLoader
 /// </summary>
 public sealed class JsonScenarioFormatException : Exception
 {
-    public JsonScenarioFormatException(string message) : base(message) { }
+    public JsonScenarioFormatException(string message)
+        : base(message) { }
 
     public JsonScenarioFormatException(string message, Exception innerException)
         : base(message, innerException) { }

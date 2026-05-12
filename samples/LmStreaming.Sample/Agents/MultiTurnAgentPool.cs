@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Models;
@@ -35,7 +36,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string? CurrentRunId,
         bool AgentIsRunning,
         bool RunTaskCompleted,
-        bool IsStale);
+        bool IsStale
+    );
 
     /// <summary>
     /// Result from the agent factory, including the agent and any owned resources
@@ -43,7 +45,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     public sealed record AgentCreationResult(
         IMultiTurnAgent Agent,
-        IReadOnlyList<IAsyncDisposable>? OwnedResources = null);
+        IReadOnlyList<IAsyncDisposable>? OwnedResources = null
+    );
 
     /// <summary>
     /// Wrapper to track agent and its background task.
@@ -114,7 +117,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         Func<string, ChatMode, string, string?, AgentCreationResult> agentFactory,
         ProviderRegistry? providerRegistry,
         IConversationStore? conversationStore,
-        ILogger<MultiTurnAgentPool> logger)
+        ILogger<MultiTurnAgentPool> logger
+    )
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
         _providerRegistry = providerRegistry;
@@ -129,17 +133,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     public MultiTurnAgentPool(
         Func<string, ChatMode, string?, AgentCreationResult> agentFactory,
-        ILogger<MultiTurnAgentPool> logger)
+        ILogger<MultiTurnAgentPool> logger
+    )
         : this(
             agentFactory: WrapLegacyFactory(agentFactory),
             providerRegistry: null,
             conversationStore: null,
-            logger: logger)
-    {
-    }
+            logger: logger
+        )
+    { }
 
     private static Func<string, ChatMode, string, string?, AgentCreationResult> WrapLegacyFactory(
-        Func<string, ChatMode, string?, AgentCreationResult> agentFactory)
+        Func<string, ChatMode, string?, AgentCreationResult> agentFactory
+    )
     {
         ArgumentNullException.ThrowIfNull(agentFactory);
         return (threadId, mode, _, dump) => agentFactory(threadId, mode, dump);
@@ -161,10 +167,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// If the agent doesn't exist, it's created and its RunAsync() is started.
     /// The provider id is resolved from persisted metadata (if any) or the registry default.
     /// </summary>
-    public IMultiTurnAgent GetOrCreateAgent(
-        string threadId,
-        ChatMode mode,
-        string? requestResponseDumpFileName = null)
+    public IMultiTurnAgent GetOrCreateAgent(string threadId, ChatMode mode, string? requestResponseDumpFileName = null)
     {
         return GetOrCreateAgent(threadId, mode, requestedProviderId: null, requestResponseDumpFileName);
     }
@@ -193,7 +196,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string threadId,
         ChatMode mode,
         string? requestedProviderId,
-        string? requestResponseDumpFileName)
+        string? requestResponseDumpFileName
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
@@ -233,17 +237,17 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             _ = PersistProviderIfNeededAsync(threadId, resolvedProviderId);
         }
 
-        if (!string.IsNullOrWhiteSpace(requestResponseDumpFileName)
-            && !string.Equals(
-                entry.RequestResponseDumpFileName,
-                requestResponseDumpFileName,
-                StringComparison.Ordinal))
+        if (
+            !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+            && !string.Equals(entry.RequestResponseDumpFileName, requestResponseDumpFileName, StringComparison.Ordinal)
+        )
         {
             _logger.LogWarning(
-                "Request/response recording was requested for thread {ThreadId}, but an existing agent is being reused. " +
-                "Recording dump file is fixed at agent creation time. Existing dump base: {ExistingDumpBase}",
+                "Request/response recording was requested for thread {ThreadId}, but an existing agent is being reused. "
+                    + "Recording dump file is fixed at agent creation time. Existing dump base: {ExistingDumpBase}",
                 threadId,
-                entry.RequestResponseDumpFileName ?? "(none)");
+                entry.RequestResponseDumpFileName ?? "(none)"
+            );
         }
 
         return entry.Agent;
@@ -328,22 +332,44 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             // The pool is already invoked from a request scope; making this whole code path
             // async would cascade through GetOrCreateAgent and break existing call sites.
             var metadata = _conversationStore.LoadMetadataAsync(threadId).GetAwaiter().GetResult();
-            if (metadata?.Properties != null
+            if (
+                metadata?.Properties != null
                 && metadata.Properties.TryGetValue(ProviderPropertyKey, out var raw)
-                && raw is string s
-                && !string.IsNullOrWhiteSpace(s))
+                && TryNormalizeProviderId(raw, out var providerId)
+            )
             {
-                return s.Trim().ToLowerInvariant();
+                return providerId;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
+            _logger.LogWarning(
+                ex,
                 "Failed to load persisted provider for thread {ThreadId}; falling back to default",
-                threadId);
+                threadId
+            );
         }
 
         return null;
+    }
+
+    private static bool TryNormalizeProviderId(object raw, out string providerId)
+    {
+        var value = raw switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            _ => null,
+        };
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            providerId = string.Empty;
+            return false;
+        }
+
+        providerId = value.Trim().ToLowerInvariant();
+        return true;
     }
 
     private async Task PersistProviderIfNeededAsync(string threadId, string providerId)
@@ -365,11 +391,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
             properties = properties.SetItem(ProviderPropertyKey, providerId);
 
-            var updated = (existing ?? new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            }) with
+            var updated = (
+                existing
+                ?? new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                }
+            ) with
             {
                 Properties = properties,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -377,17 +406,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
             await _conversationStore.SaveMetadataAsync(threadId, updated).ConfigureAwait(false);
 
-            _logger.LogInformation(
-                "Persisted provider {ProviderId} for thread {ThreadId}",
-                providerId,
-                threadId);
+            _logger.LogInformation("Persisted provider {ProviderId} for thread {ThreadId}", providerId, threadId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
+            _logger.LogWarning(
+                ex,
                 "Failed to persist provider {ProviderId} for thread {ThreadId}",
                 providerId,
-                threadId);
+                threadId
+            );
         }
     }
 
@@ -427,7 +455,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 CurrentRunId: null,
                 AgentIsRunning: false,
                 RunTaskCompleted: true,
-                IsStale: false);
+                IsStale: false
+            );
         }
 
         var currentRunId = entry.Agent.CurrentRunId;
@@ -441,7 +470,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             CurrentRunId: currentRunId,
             AgentIsRunning: agentIsRunning,
             RunTaskCompleted: runTaskCompleted,
-            IsStale: isStale);
+            IsStale: isStale
+        );
     }
 
     /// <summary>
@@ -478,7 +508,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             "Recreating agent for thread {ThreadId} with mode {ModeId} ({ModeName})",
             threadId,
             mode.Id,
-            mode.Name);
+            mode.Name
+        );
 
         // Resolve provider before re-entering the lock — the same persisted provider must
         // continue to be used after a mode-switch (mode-switch is not a provider switch).
@@ -509,7 +540,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string threadId,
         ChatMode mode,
         string providerId,
-        string? requestResponseDumpFileName)
+        string? requestResponseDumpFileName
+    )
     {
         _logger.LogInformation(
             "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName}) and provider {ProviderId}, dump recording enabled: {DumpEnabled}",
@@ -517,28 +549,32 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             mode.Id,
             mode.Name,
             providerId,
-            !string.IsNullOrWhiteSpace(requestResponseDumpFileName));
+            !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
+        );
 
         var result = _agentFactory(threadId, mode, providerId, requestResponseDumpFileName);
         var agent = result.Agent;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
         // Start the agent's background run loop
-        var runTask = Task.Run(async () =>
-        {
-            try
+        var runTask = Task.Run(
+            async () =>
             {
-                await agent.RunAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogDebug("Agent run loop cancelled for thread {ThreadId}", threadId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Agent run loop failed for thread {ThreadId}", threadId);
-            }
-        }, cts.Token);
+                try
+                {
+                    await agent.RunAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogDebug("Agent run loop cancelled for thread {ThreadId}", threadId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Agent run loop failed for thread {ThreadId}", threadId);
+                }
+            },
+            cts.Token
+        );
 
         return new AgentEntry
         {

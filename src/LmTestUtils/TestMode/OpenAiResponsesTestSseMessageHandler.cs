@@ -28,8 +28,7 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
     private readonly ILogger<OpenAiResponsesTestSseMessageHandler> _logger;
 
     public OpenAiResponsesTestSseMessageHandler()
-        : this(NullLogger<OpenAiResponsesTestSseMessageHandler>.Instance)
-    { }
+        : this(NullLogger<OpenAiResponsesTestSseMessageHandler>.Instance) { }
 
     public OpenAiResponsesTestSseMessageHandler(
         ILogger<OpenAiResponsesTestSseMessageHandler> logger,
@@ -37,8 +36,7 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
     )
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _chainParser =
-            chainParser ?? new InstructionChainParser(NullLogger<InstructionChainParser>.Instance);
+        _chainParser = chainParser ?? new InstructionChainParser(NullLogger<InstructionChainParser>.Instance);
     }
 
     public int WordsPerChunk { get; set; } = DefaultWordsPerChunk;
@@ -61,9 +59,10 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        var body = request.Content == null
-            ? string.Empty
-            : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var body =
+            request.Content == null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -107,8 +106,8 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
                 };
             }
 
-            var model = root.TryGetProperty("model", out var modelProp)
-                && modelProp.ValueKind == JsonValueKind.String
+            var model =
+                root.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String
                     ? modelProp.GetString()
                     : "gpt-mock-responses";
 
@@ -131,120 +130,6 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
     /// </summary>
     private InstructionPlan ResolvePlan(JsonElement root)
     {
-        var (chain, assistantCount) = FindInstructionChain(root);
-
-        if (chain != null)
-        {
-            if (assistantCount < chain.Length)
-            {
-                _logger.LogDebug(
-                    "Executing instruction {Index} of {Total} from chain",
-                    assistantCount + 1,
-                    chain.Length
-                );
-                return chain[assistantCount];
-            }
-
-            _logger.LogDebug("Instruction chain exhausted after {Count} executions; emitting completion", assistantCount);
-            return new InstructionPlan("completion", null, [InstructionMessage.ForText(5)]);
-        }
-
-        var latest = ResponsesInputReader.ExtractLatestUserText(root, concatenateAll: false) ?? string.Empty;
-        var (singlePlan, _) = TrySingleInstruction(latest);
-        if (singlePlan != null)
-        {
-            return singlePlan;
-        }
-
-        _logger.LogDebug("No instruction chain in /v1/responses request; using fallback");
-        return new InstructionPlan("fallback", null, [InstructionMessage.ForText(20)]);
-    }
-
-    private (InstructionPlan? plan, string fallback) TrySingleInstruction(string userMessage)
-    {
-        var plans = _chainParser.ExtractInstructionChain(userMessage);
-        if (plans is { Length: > 0 })
-        {
-            return (plans[0], userMessage);
-        }
-
-        return (null, userMessage);
-    }
-
-    private (InstructionPlan[]? chain, int assistantCount) FindInstructionChain(JsonElement root)
-    {
-        if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
-        {
-            return (null, 0);
-        }
-
-        var items = input.EnumerateArray().ToList();
-
-        // Walk newest → oldest looking for an instruction chain in any user item's input_text.
-        for (var i = items.Count - 1; i >= 0; i--)
-        {
-            var item = items[i];
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (!IsRole(item, "user"))
-            {
-                continue;
-            }
-
-            var text = ResponsesInputReader.ReadContentText(item, concatenateAll: false);
-            if (string.IsNullOrEmpty(text))
-            {
-                continue;
-            }
-
-            var chain = _chainParser.ExtractInstructionChain(text);
-            if (chain is { Length: > 0 })
-            {
-                var assistantCount = CountAssistantOutputsAfter(items, i);
-                return (chain, assistantCount);
-            }
-        }
-
-        return (null, 0);
-    }
-
-    private static int CountAssistantOutputsAfter(IReadOnlyList<JsonElement> items, int chainIndex)
-    {
-        var count = 0;
-        for (var i = chainIndex + 1; i < items.Count; i++)
-        {
-            var item = items[i];
-            if (item.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            // In the Responses input array, a "message" with role=assistant counts as one
-            // model turn. Function-call/function-call-output items belong to a turn but don't
-            // bump the response counter — they're internal mechanics of the same turn.
-            if (IsRole(item, "assistant") && IsType(item, "message"))
-            {
-                count++;
-            }
-        }
-
-        return count;
-    }
-
-    private static bool IsRole(JsonElement item, string role)
-    {
-        return item.TryGetProperty("role", out var r)
-            && r.ValueKind == JsonValueKind.String
-            && string.Equals(r.GetString(), role, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsType(JsonElement item, string type)
-    {
-        return item.TryGetProperty("type", out var t)
-            && t.ValueKind == JsonValueKind.String
-            && string.Equals(t.GetString(), type, StringComparison.OrdinalIgnoreCase);
+        return OpenAiResponsesInstructionPlanResolver.ResolvePlan(root, _chainParser, _logger);
     }
 }

@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 
 /// <summary>
@@ -98,6 +100,27 @@ public record ClaudeAgentSdkOptions
     public string? ReasoningEffort { get; init; }
 
     /// <summary>
+    ///     Include user/global settings (skills, sub-agents, MCP servers, plugins from
+    ///     <c>~/.claude/</c>). Default: <c>true</c>. Set to <c>false</c> to hide the
+    ///     host user's personal configuration from the spawned agent.
+    /// </summary>
+    public bool IncludeUserSettings { get; init; } = true;
+
+    /// <summary>
+    ///     Include project-level settings (<c>.claude/</c> directory and <c>.mcp.json</c>
+    ///     in the working directory). Default: <c>true</c>. Set to <c>false</c> when the
+    ///     project tree is untrusted (e.g. reviewing a PR worktree) so its settings
+    ///     don't influence the agent.
+    /// </summary>
+    public bool IncludeProjectSettings { get; init; } = true;
+
+    /// <summary>
+    ///     Include local (machine-scoped, git-ignored) settings — typically
+    ///     <c>.claude/settings.local.json</c>. Default: <c>true</c>.
+    /// </summary>
+    public bool IncludeLocalSettings { get; init; } = true;
+
+    /// <summary>
     ///     Override the Anthropic API base URL the spawned Claude Agent SDK CLI talks to.
     ///     Mapped to the <c>ANTHROPIC_BASE_URL</c> environment variable on the child process.
     ///     Used by E2E tests that point the CLI at a local mock provider host.
@@ -116,4 +139,15 @@ public record ClaudeAgentSdkOptions
     ///     features (e.g., experimental model headers) the mock host does not implement.
     /// </summary>
     public bool DisableExperimentalBetas { get; init; }
+
+    /// <summary>
+    ///     Optional client-supplied runtime inputs (system prompt, sub-agents, skills,
+    ///     MCP servers). When set, the profile is materialized into a staging directory
+    ///     and the child CLI's <c>CLAUDE_CONFIG_DIR</c> environment variable is pointed
+    ///     at it. Host-installed content under <c>~/.claude/</c> stays gated by the
+    ///     <see cref="IncludeUserSettings"/>/<see cref="IncludeProjectSettings"/>/<see cref="IncludeLocalSettings"/>
+    ///     flags and is independent of the profile. Profile MCP entries take precedence
+    ///     over host-loaded MCP entries on key collision.
+    /// </summary>
+    public AgentRuntimeProfile? Profile { get; init; }
 }

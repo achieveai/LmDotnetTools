@@ -17,6 +17,34 @@ public class JsonlStreamParserTests
     // }
 
     [Fact]
+    public void ParseLine_StreamEvent_ReturnsStreamEvent()
+    {
+        var json = """
+            {
+              "type": "stream_event",
+              "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                  "type": "tool_use",
+                  "id": "toolu_123",
+                  "name": "Read",
+                  "input": {}
+                }
+              },
+              "session_id": "session-123",
+              "parent_tool_use_id": null,
+              "uuid": "event-uuid-123"
+            }
+            """;
+
+        var parsed = _parser.ParseLine(json);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("StreamEvent", parsed.GetType().Name);
+    }
+
+    [Fact]
     public void ConvertToMessages_TextContent_CreatesTextMessage()
     {
         // Arrange
@@ -930,11 +958,7 @@ public class JsonlStreamParserTests
         {
             Uuid = "user-uuid-image",
             SessionId = "session-image",
-            Message = new UserMessage
-            {
-                Role = "user",
-                Content = JsonDocument.Parse(imageContentJson).RootElement,
-            },
+            Message = new UserMessage { Role = "user", Content = JsonDocument.Parse(imageContentJson).RootElement },
         };
 
         // Act

@@ -52,7 +52,9 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
     protected override Stream CreateContentReadStream(CancellationToken cancellationToken)
     {
         var pipe = new Pipe();
-        var logger = LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<AnthropicSseStreamHttpContent>();
+        var logger = LoggerFactory
+            .Create(builder => builder.AddConsole())
+            .CreateLogger<AnthropicSseStreamHttpContent>();
 
         _ = Task.Run(
             async () =>
@@ -209,13 +211,16 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             }
         }
 
+        var stopReason =
+            _instructionPlan?.Messages.Any(message => message.ToolCalls?.Count > 0) == true ? "tool_use" : "end_turn";
+
         // Write message_delta event with usage
         await WriteSseEventAsync(
             "message_delta",
             new
             {
                 type = "message_delta",
-                delta = new { stop_reason = "end_turn", stop_sequence = (string?)null },
+                delta = new { stop_reason = stopReason, stop_sequence = (string?)null },
                 usage = new { input_tokens = 100, output_tokens = 50 },
             }
         );
@@ -305,7 +310,8 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
             _ => $"{result.Name}_tool_result",
         };
 
-        var toolUseId = result.ToolUseId ?? (toolUseIds.TryGetValue(result.Name, out var id) ? id : $"srvtoolu_{Guid.NewGuid():N}");
+        var toolUseId =
+            result.ToolUseId ?? (toolUseIds.TryGetValue(result.Name, out var id) ? id : $"srvtoolu_{Guid.NewGuid():N}");
 
         object content;
         if (result.ErrorCode != null)
@@ -354,7 +360,8 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
         CancellationToken ct
     )
     {
-        var text = textWithCitations.Text
+        var text =
+            textWithCitations.Text
             ?? (
                 textWithCitations.Length is int len
                     ? string.Join(" ", GenerateLoremChunks(len, _wordsPerChunk))
@@ -364,8 +371,8 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
         object? citations = null;
         if (textWithCitations.Citations != null && textWithCitations.Citations.Count > 0)
         {
-            citations = textWithCitations.Citations
-                .Select(c => new
+            citations = textWithCitations
+                .Citations.Select(c => new
                 {
                     type = c.Type,
                     url = c.Url,
@@ -376,20 +383,26 @@ public sealed class AnthropicSseStreamHttpContent : HttpContent
         }
 
         // content_block_start with citations
-        var startEvent = citations != null
-            ? new
-            {
-                type = "content_block_start",
-                index = contentIndex,
-                content_block = new { type = "text", text = "", citations },
-            }
-            : (object)
-                new
+        var startEvent =
+            citations != null
+                ? new
                 {
                     type = "content_block_start",
                     index = contentIndex,
-                    content_block = new { type = "text", text = "" },
-                };
+                    content_block = new
+                    {
+                        type = "text",
+                        text = "",
+                        citations,
+                    },
+                }
+                : (object)
+                    new
+                    {
+                        type = "content_block_start",
+                        index = contentIndex,
+                        content_block = new { type = "text", text = "" },
+                    };
 
         await writer.WriteAsync("event: content_block_start\n");
         await writer.WriteAsync($"data: {JsonSerializer.Serialize(startEvent)}\n\n");
