@@ -693,8 +693,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 try
                 {
-                    var bytes = imgBlock.Data.ToArray();
-                    var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
+                    var dataSpan = imgBlock.Data.Span;
+                    var detectedMimeType = DetectImageMimeType(dataSpan, imgBlock.MimeType, logger);
 
                     if (detectedMimeType != imgBlock.MimeType)
                     {
@@ -704,7 +704,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             imageIndex,
                             imgBlock.MimeType,
                             detectedMimeType,
-                            bytes.Length
+                            dataSpan.Length
                         );
                     }
                     else
@@ -714,12 +714,12 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             toolName,
                             imageIndex,
                             detectedMimeType,
-                            bytes.Length
+                            dataSpan.Length
                         );
                     }
 
                     imageBlocks.Add(
-                        new ImageToolResultBlock { Data = Convert.ToBase64String(bytes), MimeType = detectedMimeType }
+                        new ImageToolResultBlock { Data = Convert.ToBase64String(dataSpan), MimeType = detectedMimeType }
                     );
                 }
                 catch (Exception ex)
@@ -778,7 +778,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Detects the MIME type of an image from its byte content.
     ///     Uses magic bytes to identify common image formats.
     /// </summary>
-    private static string DetectImageMimeType(byte[] bytes, string fallbackMimeType, ILogger logger)
+    private static string DetectImageMimeType(ReadOnlySpan<byte> bytes, string fallbackMimeType, ILogger logger)
     {
         if (bytes.Length >= 8)
         {
