@@ -722,16 +722,6 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         new ImageToolResultBlock { Data = Convert.ToBase64String(bytes), MimeType = detectedMimeType }
                     );
                 }
-                catch (FormatException ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
-                        toolName,
-                        imageIndex,
-                        imgBlock.Data.Length
-                    );
-                }
                 catch (Exception ex)
                 {
                     logger.LogWarning(
