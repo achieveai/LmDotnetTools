@@ -689,12 +689,12 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         var imageIndex = 0;
         foreach (var content in response.Content.Where(c => c?.Type == "image"))
         {
-            if (content is ImageContentBlock imgBlock && !string.IsNullOrEmpty(imgBlock.Data))
+            if (content is ImageContentBlock imgBlock && !imgBlock.Data.IsEmpty)
             {
                 try
                 {
-                    var bytes = Convert.FromBase64String(imgBlock.Data);
-                    var detectedMimeType = DetectImageMimeType(bytes, imgBlock.MimeType, logger);
+                    var dataSpan = imgBlock.Data.Span;
+                    var detectedMimeType = DetectImageMimeType(dataSpan, imgBlock.MimeType, logger);
 
                     if (detectedMimeType != imgBlock.MimeType)
                     {
@@ -704,7 +704,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             imageIndex,
                             imgBlock.MimeType,
                             detectedMimeType,
-                            bytes.Length
+                            dataSpan.Length
                         );
                     }
                     else
@@ -714,22 +714,12 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             toolName,
                             imageIndex,
                             detectedMimeType,
-                            bytes.Length
+                            dataSpan.Length
                         );
                     }
 
                     imageBlocks.Add(
-                        new ImageToolResultBlock { Data = imgBlock.Data, MimeType = detectedMimeType }
-                    );
-                }
-                catch (FormatException ex)
-                {
-                    logger.LogWarning(
-                        ex,
-                        "Invalid base64 data in MCP image response: ToolName={ToolName}, ImageIndex={ImageIndex}, DataLength={DataLength}",
-                        toolName,
-                        imageIndex,
-                        imgBlock.Data?.Length ?? 0
+                        new ImageToolResultBlock { Data = Convert.ToBase64String(dataSpan), MimeType = detectedMimeType }
                     );
                 }
                 catch (Exception ex)
@@ -788,7 +778,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Detects the MIME type of an image from its byte content.
     ///     Uses magic bytes to identify common image formats.
     /// </summary>
-    private static string DetectImageMimeType(byte[] bytes, string fallbackMimeType, ILogger logger)
+    private static string DetectImageMimeType(ReadOnlySpan<byte> bytes, string fallbackMimeType, ILogger logger)
     {
         if (bytes.Length >= 8)
         {
