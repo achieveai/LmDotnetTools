@@ -501,7 +501,7 @@ public class JsonlStreamParserTests
         Assert.Equal("sess-abc-123", initEvent.SessionId);
         Assert.Equal("claude-sonnet-4-5", initEvent.Model);
         Assert.NotNull(initEvent.Plugins);
-        Assert.Equal(2, initEvent.Plugins!.Count);
+        Assert.Equal(2, initEvent.Plugins.Count);
         Assert.Equal("code-search", initEvent.Plugins[0].Name);
         Assert.Equal("/plugins/code-search", initEvent.Plugins[0].Path);
         Assert.Equal("shell-runner", initEvent.Plugins[1].Name);
@@ -526,7 +526,7 @@ public class JsonlStreamParserTests
         var initEvent = Assert.IsType<SystemInitEvent>(evt);
         Assert.Equal("sess-empty", initEvent.SessionId);
         Assert.NotNull(initEvent.Plugins);
-        Assert.Empty(initEvent.Plugins!);
+        Assert.Empty(initEvent.Plugins);
     }
 
     [Fact]
@@ -550,6 +550,253 @@ public class JsonlStreamParserTests
 
         var initEvent = Assert.IsType<SystemInitEvent>(evt);
         Assert.Equal(expectedSessionId, initEvent.SessionId);
+    }
+
+    // ---- #44 schema-drift tolerance for skills/agents (mirrors PR #43 plugin coverage) ----
+
+    [Fact]
+    public void ParseLine_SystemInitWithStringSkills_DeserializesSkillsAndSessionId()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-skills-strings",
+                "model": "claude-sonnet-4-5",
+                "skills": ["code-review", "summarize"]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-skills-strings", initEvent.SessionId);
+        Assert.NotNull(initEvent.Skills);
+        Assert.Equal(2, initEvent.Skills.Count);
+        Assert.Equal("code-review", initEvent.Skills[0].Name);
+        Assert.Null(initEvent.Skills[0].Path);
+        Assert.Equal("summarize", initEvent.Skills[1].Name);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithObjectSkills_DeserializesAndPreservesSessionId()
+    {
+        // Drift simulation: CLI evolves skills from string[] to [{name, ...}]
+        // (mirrors the #42 plugins drift). SessionId must still survive.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-skills-objects",
+                "model": "claude-sonnet-4-5",
+                "skills": [
+                    { "name": "code-review", "path": "/skills/code-review" },
+                    { "name": "summarize", "path": "/skills/summarize" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-skills-objects", initEvent.SessionId);
+        Assert.Equal("claude-sonnet-4-5", initEvent.Model);
+        Assert.NotNull(initEvent.Skills);
+        Assert.Equal(2, initEvent.Skills.Count);
+        Assert.Equal("code-review", initEvent.Skills[0].Name);
+        Assert.Equal("/skills/code-review", initEvent.Skills[0].Path);
+        Assert.Equal("summarize", initEvent.Skills[1].Name);
+        Assert.Equal("/skills/summarize", initEvent.Skills[1].Path);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithMixedSkills_DeserializesBothShapes()
+    {
+        // Item-level (not list-level) tolerance: one string, one object.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-skills-mixed",
+                "skills": [
+                    "code-review",
+                    { "name": "summarize", "path": "/skills/summarize" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.NotNull(initEvent.Skills);
+        Assert.Equal(2, initEvent.Skills.Count);
+        Assert.Equal("code-review", initEvent.Skills[0].Name);
+        Assert.Null(initEvent.Skills[0].Path);
+        Assert.Equal("summarize", initEvent.Skills[1].Name);
+        Assert.Equal("/skills/summarize", initEvent.Skills[1].Path);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithEmptySkills_DeserializesSuccessfully()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-skills-empty",
+                "skills": []
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-skills-empty", initEvent.SessionId);
+        Assert.NotNull(initEvent.Skills);
+        Assert.Empty(initEvent.Skills);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithStringAgents_DeserializesAgentsAndSessionId()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-agents-strings",
+                "agents": ["planner", "executor"]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-agents-strings", initEvent.SessionId);
+        Assert.NotNull(initEvent.Agents);
+        Assert.Equal(2, initEvent.Agents.Count);
+        Assert.Equal("planner", initEvent.Agents[0].Name);
+        Assert.Equal("executor", initEvent.Agents[1].Name);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithObjectAgents_DeserializesAndPreservesSessionId()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-agents-objects",
+                "model": "claude-sonnet-4-5",
+                "agents": [
+                    { "name": "planner", "path": "/agents/planner" },
+                    { "name": "executor", "path": "/agents/executor" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-agents-objects", initEvent.SessionId);
+        Assert.Equal("claude-sonnet-4-5", initEvent.Model);
+        Assert.NotNull(initEvent.Agents);
+        Assert.Equal(2, initEvent.Agents.Count);
+        Assert.Equal("planner", initEvent.Agents[0].Name);
+        Assert.Equal("/agents/planner", initEvent.Agents[0].Path);
+        Assert.Equal("executor", initEvent.Agents[1].Name);
+        Assert.Equal("/agents/executor", initEvent.Agents[1].Path);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithMixedAgents_DeserializesBothShapes()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-agents-mixed",
+                "agents": [
+                    "planner",
+                    { "name": "executor", "path": "/agents/executor" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.NotNull(initEvent.Agents);
+        Assert.Equal(2, initEvent.Agents.Count);
+        Assert.Equal("planner", initEvent.Agents[0].Name);
+        Assert.Null(initEvent.Agents[0].Path);
+        Assert.Equal("executor", initEvent.Agents[1].Name);
+        Assert.Equal("/agents/executor", initEvent.Agents[1].Path);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithEmptyAgents_DeserializesSuccessfully()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-agents-empty",
+                "agents": []
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-agents-empty", initEvent.SessionId);
+        Assert.NotNull(initEvent.Agents);
+        Assert.Empty(initEvent.Agents);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithObjectSkills_CapturesUnknownFieldsInExtra()
+    {
+        // Pins [JsonExtensionData] behaviour: future drift past `name`/`path`
+        // (e.g. `version`, `source`) is observably non-lossy.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-extra",
+                "skills": [
+                    { "name": "code-review", "version": "1.2.3", "source": "marketplace" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.NotNull(initEvent.Skills);
+        var skill = Assert.Single(initEvent.Skills);
+        Assert.Equal("code-review", skill.Name);
+        Assert.NotNull(skill.Extra);
+        Assert.Equal("1.2.3", skill.Extra["version"].GetString());
+        Assert.Equal("marketplace", skill.Extra["source"].GetString());
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithMalformedSkillItem_FailsLoudly()
+    {
+        // Drift outside the tolerated envelope (number, not string/object) must
+        // surface as a parse failure rather than silently passing.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-malformed",
+                "skills": [123]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        Assert.Null(evt);
     }
 
     [Fact]
