@@ -16,20 +16,30 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 ///         <item><see cref="JsonTokenType.String"/> → <c>new NamedRef { Name = value }</c>.</item>
 ///         <item><see cref="JsonTokenType.StartObject"/> → deserialize as <see cref="NamedRef"/>
 ///             (including <see cref="NamedRef.Extra"/> overflow).</item>
-///         <item>Anything else → throw <see cref="JsonException"/>. <c>ParseLine</c>
-///             catches this and logs a warning, surfacing drift outside the tolerated
-///             envelope rather than silently swallowing it.</item>
+///         <item>Anything else, including a literal JSON <c>null</c> element, → throw
+///             <see cref="JsonException"/>. <c>ParseLine</c> catches this and logs a
+///             warning, surfacing drift outside the tolerated envelope rather than
+///             silently passing an element into a non-nullable list slot.</item>
 ///     </list>
 /// </summary>
 public sealed class NamedRefJsonConverter : JsonConverter<NamedRef>
 {
+    // Force STJ to route literal JSON `null` array elements through Read() instead
+    // of short-circuiting and inserting a raw null into List<NamedRef>; the Read()
+    // null-token branch then throws JsonException, matching the rest of the
+    // out-of-envelope handling.
+    public override bool HandleNull => true;
+
     public override NamedRef Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         return reader.TokenType switch
         {
             JsonTokenType.String => new NamedRef { Name = reader.GetString() },
             JsonTokenType.StartObject => ReadObject(ref reader),
-            JsonTokenType.Null => null!,
+            // Explicitly reject null array elements: List<NamedRef> declares a
+            // non-nullable element type, and silently letting null sneak into
+            // the list would reintroduce the same NRE-shaped failure mode this
+            // converter exists to prevent (consumers iterating `.Name` on null).
             _ => throw new JsonException(
                 $"Unexpected token '{reader.TokenType}' when reading NamedRef; expected String or StartObject."),
         };
@@ -87,7 +97,11 @@ public sealed class NamedRefJsonConverter : JsonConverter<NamedRef>
             }
 
             var propertyName = reader.GetString();
-            _ = reader.Read();
+            if (!reader.Read())
+            {
+                throw new JsonException(
+                    $"Unexpected end of JSON after property '{propertyName}' inside NamedRef object.");
+            }
 
             switch (propertyName)
             {

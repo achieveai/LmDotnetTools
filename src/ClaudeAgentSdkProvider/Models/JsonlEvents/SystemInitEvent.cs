@@ -85,6 +85,10 @@ public record NamedRef
     [JsonPropertyName("path")]
     public string? Path { get; init; }
 
-    [JsonExtensionData]
+    // [JsonExtensionData] is deliberately omitted: the custom NamedRefJsonConverter
+    // takes full control of (de)serialisation, so STJ never consults the attribute.
+    // Unknown fields are captured into Extra by the converter's object-reader fallback
+    // and emitted back by its Write loop — relying on the converter, not the attribute,
+    // keeps the wiring explicit and the property's role unambiguous.
     public Dictionary<string, JsonElement>? Extra { get; init; }
 }

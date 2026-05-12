@@ -781,6 +781,113 @@ public class JsonlStreamParserTests
     }
 
     [Fact]
+    public void ParseLine_SystemInitWithStringPlugins_DeserializesPluginsAndSessionId()
+    {
+        // Symmetry with skills/agents string-form tests: plugins was re-typed from
+        // List<PluginRef> to List<NamedRef> in this PR, so the string-form path is
+        // now reachable through the same converter and deserves explicit coverage.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-plugins-strings",
+                "plugins": ["code-search", "shell-runner"]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-plugins-strings", initEvent.SessionId);
+        Assert.NotNull(initEvent.Plugins);
+        Assert.Equal(2, initEvent.Plugins.Count);
+        Assert.Equal("code-search", initEvent.Plugins[0].Name);
+        Assert.Null(initEvent.Plugins[0].Path);
+        Assert.Equal("shell-runner", initEvent.Plugins[1].Name);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithNullSkillItem_FailsLoudly()
+    {
+        // List<NamedRef> declares a non-nullable element type; a literal JSON null
+        // must surface as a parse failure rather than sneaking a null reference
+        // into the list (which would re-introduce the very NRE failure mode the
+        // tolerant converter exists to prevent).
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-null-element",
+                "skills": ["valid", null]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        Assert.Null(evt);
+    }
+
+    [Fact]
+    public void NamedRefJsonConverter_WritesObjectShape_WithNameAndPath()
+    {
+        var namedRef = new NamedRef { Name = "code-review", Path = "/skills/code-review" };
+
+        var json = JsonSerializer.Serialize(namedRef);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal(JsonValueKind.Object, root.ValueKind);
+        Assert.Equal("code-review", root.GetProperty("name").GetString());
+        Assert.Equal("/skills/code-review", root.GetProperty("path").GetString());
+    }
+
+    [Fact]
+    public void NamedRefJsonConverter_WritesExtraFieldsAlongsideNameAndPath()
+    {
+        var namedRef = new NamedRef
+        {
+            Name = "code-review",
+            Extra = new Dictionary<string, JsonElement>
+            {
+                ["version"] = JsonDocument.Parse("\"1.2.3\"").RootElement.Clone(),
+                ["source"] = JsonDocument.Parse("\"marketplace\"").RootElement.Clone(),
+            },
+        };
+
+        var json = JsonSerializer.Serialize(namedRef);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal("code-review", root.GetProperty("name").GetString());
+        Assert.False(root.TryGetProperty("path", out _), "path should be omitted when null");
+        Assert.Equal("1.2.3", root.GetProperty("version").GetString());
+        Assert.Equal("marketplace", root.GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public void NamedRefJsonConverter_RoundTrip_PreservesNamePathAndExtra()
+    {
+        var original = new NamedRef
+        {
+            Name = "summarize",
+            Path = "/skills/summarize",
+            Extra = new Dictionary<string, JsonElement>
+            {
+                ["version"] = JsonDocument.Parse("\"2.0\"").RootElement.Clone(),
+            },
+        };
+
+        var json = JsonSerializer.Serialize(original);
+        var roundTripped = JsonSerializer.Deserialize<NamedRef>(json);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal("summarize", roundTripped.Name);
+        Assert.Equal("/skills/summarize", roundTripped.Path);
+        Assert.NotNull(roundTripped.Extra);
+        Assert.Equal("2.0", roundTripped.Extra["version"].GetString());
+    }
+
+    [Fact]
     public void ParseLine_SystemInitWithMalformedSkillItem_FailsLoudly()
     {
         // Drift outside the tolerated envelope (number, not string/object) must
