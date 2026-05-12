@@ -48,7 +48,7 @@ public record SystemInitEvent : JsonlEventBase
     public List<string>? Skills { get; init; }
 
     [JsonPropertyName("plugins")]
-    public List<string>? Plugins { get; init; }
+    public List<PluginRef>? Plugins { get; init; }
 
     [JsonPropertyName("uuid")]
     public string? Uuid { get; init; }
@@ -64,4 +64,16 @@ public record McpServerStatus
 
     [JsonPropertyName("status")]
     public string? Status { get; init; }
+}
+
+/// <summary>
+///     Plugin reference emitted by claude-agent-sdk CLI v2.0.55+ in <c>system.init.plugins</c>.
+/// </summary>
+public record PluginRef
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("path")]
+    public string? Path { get; init; }
 }

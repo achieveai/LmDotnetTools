@@ -476,6 +476,83 @@ public class JsonlStreamParserTests
     }
 
     [Fact]
+    public void ParseLine_SystemInitWithPluginObjects_DeserializesPluginsAndSessionId()
+    {
+        // Regression for issue #42: claude-agent-sdk CLI v2.0.55+ emits `plugins`
+        // as an array of {name, path} objects rather than strings, which previously
+        // caused the entire system.init frame (including session_id) to be dropped.
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-abc-123",
+                "model": "claude-sonnet-4-5",
+                "cwd": "/tmp/work",
+                "plugins": [
+                    { "name": "code-search", "path": "/plugins/code-search" },
+                    { "name": "shell-runner", "path": "/plugins/shell-runner" }
+                ]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-abc-123", initEvent.SessionId);
+        Assert.Equal("claude-sonnet-4-5", initEvent.Model);
+        Assert.NotNull(initEvent.Plugins);
+        Assert.Equal(2, initEvent.Plugins!.Count);
+        Assert.Equal("code-search", initEvent.Plugins[0].Name);
+        Assert.Equal("/plugins/code-search", initEvent.Plugins[0].Path);
+        Assert.Equal("shell-runner", initEvent.Plugins[1].Name);
+        Assert.Equal("/plugins/shell-runner", initEvent.Plugins[1].Path);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithEmptyPlugins_DeserializesSuccessfully()
+    {
+        var systemInitJson = """
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "sess-empty",
+                "model": "claude-sonnet-4-5",
+                "plugins": []
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal("sess-empty", initEvent.SessionId);
+        Assert.NotNull(initEvent.Plugins);
+        Assert.Empty(initEvent.Plugins!);
+    }
+
+    [Fact]
+    public void ParseLine_SystemInitWithPluginObjects_PreservesSessionIdForResume()
+    {
+        // Locks the resume path: SessionId from system.init must survive parsing
+        // so callers can persist it and pass it back via ClaudeAgentSdkRequest.SessionId.
+        const string expectedSessionId = "resume-session-xyz";
+        var systemInitJson = $$"""
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "{{expectedSessionId}}",
+                "model": "claude-sonnet-4-5",
+                "tools": ["bash", "read"],
+                "plugins": [{ "name": "p1", "path": "/p1" }]
+            }
+            """;
+
+        var evt = _parser.ParseLine(systemInitJson);
+
+        var initEvent = Assert.IsType<SystemInitEvent>(evt);
+        Assert.Equal(expectedSessionId, initEvent.SessionId);
+    }
+
+    [Fact]
     public void ConvertToMessages_UserMessageWithImageContent_CreatesImageMessage()
     {
         // Arrange - User message containing an image content block
