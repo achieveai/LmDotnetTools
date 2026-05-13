@@ -305,6 +305,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
+                        wasForked: isExplicitFork,
+                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         isError: true,
                         errorMessage: ex.Message,
                         ct: CancellationToken.None);

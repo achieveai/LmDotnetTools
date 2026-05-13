@@ -381,6 +381,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 await CompleteRunAsync(
                     assignment.RunId,
                     assignment.GenerationId,
+                    wasForked: isExplicitFork,
+                    forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     isError: true,
                     errorMessage: ex.Message,
                     ct: ct);

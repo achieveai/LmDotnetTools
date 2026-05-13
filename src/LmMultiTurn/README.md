@@ -79,6 +79,9 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         await InputReader.WaitToReadAsync(ct);
         TryDrainInputs(out var batch);
 
+        // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
+        // Resolve BEFORE StartRun so the assignment's ParentRunId reflects the caller fork.
+        var (parent, isForked) = ResolveBatchParent(batch);
         var assignment = StartRun(batch);
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
@@ -97,8 +100,9 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         }
         finally
         {
-            // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
-            var (parent, isForked) = ResolveBatchParent(batch);
+            // wasForked/forkedToRunId mirror the resolution captured above —
+            // also forwarded from error paths so a failing forked run still
+            // surfaces the fork signal to consumers.
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
@@ -121,6 +125,8 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         await InputReader.WaitToReadAsync(ct);
         TryDrainInputs(out var batch);
 
+        // Resolve caller fork intent BEFORE StartRun so RunAssignment.ParentRunId reflects it.
+        var (parent, isForked) = ResolveBatchParent(batch);
         var assignment = StartRun(batch);
         await PublishToAllAsync(new RunAssignmentMessage { ... }, ct);
 
@@ -129,7 +135,6 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         var agentTask = ExecuteAgentAsync(ct);
 
         await Task.WhenAll(watchTask, agentTask);
-        var (parent, isForked) = ResolveBatchParent(batch);
         await CompleteRunAsync(
             assignment.RunId,
             assignment.GenerationId,

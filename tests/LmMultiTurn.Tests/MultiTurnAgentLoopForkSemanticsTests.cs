@@ -98,6 +98,55 @@ public class MultiTurnAgentLoopForkSemanticsTests
         await cts.CancelAsync();
     }
 
+    [Fact]
+    public async Task ExecuteRunAsync_WithParentRunId_OnError_StillPublishesForkedCompletion()
+    {
+        var agent = new Mock<IStreamingAgent>();
+        agent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ThrowingAsync<IMessage>(new InvalidOperationException("boom"))));
+
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            agent.Object,
+            registry,
+            threadId: "raw-fork-error-test");
+
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput(
+            [new TextMessage { Text = "hi", Role = Role.User }],
+            ParentRunId: "raw-parent-err");
+
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        var completed = messages.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
+        completed.IsError.Should().BeTrue();
+        completed.WasForked.Should().BeTrue();
+        completed.ForkedToRunId.Should().Be(completed.CompletedRunId);
+
+        await cts.CancelAsync();
+    }
+
+    private static async IAsyncEnumerable<T> ThrowingAsync<T>(
+        Exception ex,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await Task.Yield();
+        throw ex;
+#pragma warning disable CS0162
+        yield break;
+#pragma warning restore CS0162
+    }
+
     private static async IAsyncEnumerable<IMessage> ToAsync(
         IReadOnlyList<IMessage> messages,
         [EnumeratorCancellation] CancellationToken ct = default)
