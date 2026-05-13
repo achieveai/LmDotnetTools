@@ -82,7 +82,7 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
         // Resolve BEFORE StartRun so the assignment's ParentRunId reflects the caller fork.
         var (parent, isForked) = ResolveBatchParent(batch);
-        var assignment = StartRun(batch);
+        var assignment = StartRun(batch, parent);
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
         try
@@ -127,7 +127,7 @@ protected override async Task RunLoopAsync(CancellationToken ct)
 
         // Resolve caller fork intent BEFORE StartRun so RunAssignment.ParentRunId reflects it.
         var (parent, isForked) = ResolveBatchParent(batch);
-        var assignment = StartRun(batch);
+        var assignment = StartRun(batch, parent);
         await PublishToAllAsync(new RunAssignmentMessage { ... }, ct);
 
         // Watch for new inputs concurrently while agent processes
