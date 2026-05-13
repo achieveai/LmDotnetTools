@@ -943,6 +943,63 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #region Run Lifecycle Helpers
 
     /// <summary>
+    /// Resolves the explicit fork parent for a batch of inputs.
+    /// Returns the first non-null/non-empty <see cref="UserInput.ParentRunId"/> in the batch and
+    /// whether the resolution came from caller input (an explicit fork) vs. no fork at all.
+    /// Empty strings are treated as null per the contract on <see cref="UserInput.ParentRunId"/>.
+    /// </summary>
+    /// <remarks>
+    /// When a batch contains more than one distinct non-null <c>ParentRunId</c> (an extremely
+    /// rare cross-caller race), the first-encountered value wins and the divergent set is logged
+    /// at warning level. Mixed batches still mark <c>IsExplicitFork = true</c> so the
+    /// signal is not silently dropped.
+    /// </remarks>
+    /// <param name="inputs">The queued inputs from the batch.</param>
+    /// <returns>
+    /// A tuple of (parent run id from caller input or null, whether caller explicitly forked).
+    /// </returns>
+    protected (string? ParentRunId, bool IsExplicitFork) ResolveBatchParent(
+        IReadOnlyList<QueuedInput> inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+
+        string? first = null;
+        HashSet<string>? distinct = null;
+
+        foreach (var q in inputs)
+        {
+            var p = q.Input.ParentRunId;
+            if (string.IsNullOrEmpty(p))
+            {
+                continue;
+            }
+
+            if (first == null)
+            {
+                first = p;
+                continue;
+            }
+
+            if (!string.Equals(p, first, StringComparison.Ordinal))
+            {
+                distinct ??= new HashSet<string>(StringComparer.Ordinal) { first };
+                _ = distinct.Add(p);
+            }
+        }
+
+        if (distinct != null && distinct.Count > 1)
+        {
+            Logger.LogWarning(
+                "Mixed ParentRunId values in batch ({Count} distinct: {Parents}); using first-encountered '{First}'.",
+                distinct.Count,
+                string.Join(",", distinct),
+                first);
+        }
+
+        return (first, first != null);
+    }
+
+    /// <summary>
     /// Start a new run for the given inputs. Call this from RunLoopAsync when ready to process.
     /// </summary>
     /// <param name="inputs">The queued inputs to process in this run</param>

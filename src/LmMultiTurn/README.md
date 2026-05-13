@@ -97,7 +97,14 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         }
         finally
         {
-            await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, ct);
+            // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
+            var (parent, isForked) = ResolveBatchParent(batch);
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: isForked,
+                forkedToRunId: isForked ? assignment.RunId : null,
+                ct: ct);
         }
     }
 }
@@ -122,10 +129,42 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         var agentTask = ExecuteAgentAsync(ct);
 
         await Task.WhenAll(watchTask, agentTask);
-        await CompleteRunAsync(...);
+        var (parent, isForked) = ResolveBatchParent(batch);
+        await CompleteRunAsync(
+            assignment.RunId,
+            assignment.GenerationId,
+            wasForked: isForked,
+            forkedToRunId: isForked ? assignment.RunId : null,
+            ct: ct);
     }
 }
 ```
+
+### Fork Semantics
+
+A run is **forked** when the caller threads an explicit parent via `SendAsync(..., parentRunId: ...)`.
+The signal is preserved end-to-end:
+
+```
+SendAsync(parentRunId) → UserInput.ParentRunId → QueuedInput.Input.ParentRunId
+                       → ResolveBatchParent(batch) at run start
+                       → RunAssignment.ParentRunId + RunCompletedMessage.WasForked
+```
+
+Rules implemented by `ResolveBatchParent` and all loops:
+
+1. `RunAssignment.ParentRunId` = first non-null/non-empty `Input.ParentRunId` in the batch.
+   When the batch carries no caller-supplied parent, the assignment falls back to `_latestRunId`
+   (today's continuation default).
+2. `RunCompletedMessage.WasForked` = `true` iff at least one batch input carried a caller-supplied
+   `ParentRunId`. When `WasForked` is `true`, `ForkedToRunId` is set to the new run's id; otherwise
+   it is `null`.
+3. Empty `ParentRunId` strings are treated as `null` (no fork).
+4. Mixed-parent batches (rare; two callers racing with different parents): first-encountered wins
+   and the divergent set is logged at warning. The batch still marks `WasForked = true`.
+5. Fork semantics is a **message-layer signal**: downstream subscribers can act on it (e.g., branch
+   a UI thread) without changes to provider invocation. No `--resume`/transcript-replay is wired
+   in by this contract.
 
 ### Lifecycle Management
 

@@ -177,8 +177,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 
                 // Start run with the available inputs (use real if any, otherwise sentinels
                 // — StartRun records receipt IDs for telemetry but doesn't otherwise care).
+                // Fork signal sourced from caller input only — resume sentinels never carry
+                // a caller-explicit ParentRunId, so the assignment naturally falls through
+                // to _latestRunId continuation when realInputs is empty.
                 var inputsForAssignment = realInputs.Count > 0 ? realInputs : resumeSentinels;
-                var assignment = StartRun(inputsForAssignment);
+                var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
+                var assignment = StartRun(inputsForAssignment, batchParent);
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
                     Assignment = assignment,
@@ -210,8 +214,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
-                        wasForked: false,
-                        forkedToRunId: null,
+                        wasForked: isExplicitFork,
+                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: 0,
                         ct: ct);
                 }
