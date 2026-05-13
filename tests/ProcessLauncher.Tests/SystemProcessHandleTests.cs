@@ -51,15 +51,17 @@ public class SystemProcessHandleTests
     [Fact]
     public async Task Kill_TerminatesRunningProcess()
     {
-        // Long-running benign child: dotnet --help paginates on some shells but
-        // exits quickly. We instead use a sleep equivalent via dotnet test runner-
-        // safe approach: invoke an infinite tail via 'sh' (Linux) or 'cmd' (Windows).
+        // Long-running benign child. We avoid `cmd /c pause` on Windows because
+        // its console-mode read interacts unpredictably with the redirected
+        // stdin pipe (can hang or exit immediately depending on runner image).
+        // `timeout /t 30 /nobreak` is a stable 30-second sleep that does not
+        // read stdin, so the pipe redirection does not affect it.
         IReadOnlyList<string> args;
         string fileName;
         if (OperatingSystem.IsWindows())
         {
             fileName = "cmd";
-            args = ["/c", "pause"];
+            args = ["/c", "timeout", "/t", "30", "/nobreak"];
         }
         else
         {
