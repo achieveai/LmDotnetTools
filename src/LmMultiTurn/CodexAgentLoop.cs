@@ -269,7 +269,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 continue;
             }
 
-            var assignment = StartRun(batch);
+            var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
+            var assignment = StartRun(batch, batchParent);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {
@@ -318,8 +319,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 await CompleteRunAsync(
                     assignment.RunId,
                     assignment.GenerationId,
-                    wasForked: false,
-                    forkedToRunId: null,
+                    wasForked: isExplicitFork,
+                    forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     pendingMessageCount: 0,
                     isError: false,
                     ct: ct);
@@ -380,6 +381,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 await CompleteRunAsync(
                     assignment.RunId,
                     assignment.GenerationId,
+                    wasForked: isExplicitFork,
+                    forkedToRunId: isExplicitFork ? assignment.RunId : null,
                     isError: true,
                     errorMessage: ex.Message,
                     ct: ct);

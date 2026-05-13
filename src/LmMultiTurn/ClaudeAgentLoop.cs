@@ -466,8 +466,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     continue;
                 }
 
-                // Start run and track for correlation with queue-operation events
-                var assignment = StartRun(batch);
+                // Start run and track for correlation with queue-operation events.
+                // ParentRunId / WasForked is sourced from explicit caller fork signal
+                // (UserInput.ParentRunId); absence falls back to _latestRunId continuation.
+                var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
+                var assignment = StartRun(batch, batchParent);
 
                 // Track each input for correlation with enqueue/dequeue events
                 foreach (var input in batch)
@@ -515,8 +518,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
-                        wasForked: false,
-                        forkedToRunId: null,
+                        wasForked: isExplicitFork,
+                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: _localMessageQueue.Count,
                         ct: ct);
                 }
@@ -770,8 +773,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             mergedMessages.Count,
             mergedInputs.Count);
 
-        // Start a SINGLE run for ALL merged inputs
-        var assignment = StartRun(mergedInputs);
+        // Start a SINGLE run for ALL merged inputs. Caller-supplied ParentRunId on
+        // any merged input promotes this to an explicit fork.
+        var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
+        var assignment = StartRun(mergedInputs, mergedParent);
 
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)
@@ -799,8 +804,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
-                wasForked: false,
-                forkedToRunId: null,
+                wasForked: isExplicitFork,
+                forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: 0,
                 ct: ct);
         }
