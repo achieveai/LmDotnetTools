@@ -30,6 +30,14 @@ public interface IProcessLauncher
     /// default implementation blocks on the async call; sync-native launchers
     /// may override this to avoid the extra Task allocation.
     /// </summary>
+    /// <remarks>
+    /// ⚠️ Implementations whose <see cref="LaunchAsync"/> performs real async
+    /// I/O (image pull, pod scheduling, SSH handshake) MUST override this
+    /// method with a sync-native or sync-over-async-without-context impl.
+    /// The default body uses <c>GetAwaiter().GetResult()</c>, which can
+    /// deadlock when called from a captured <see cref="SynchronizationContext"/>
+    /// (UI / classic ASP.NET) and starves thread-pool threads under load.
+    /// </remarks>
     IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
         => LaunchAsync(request, cancellationToken).GetAwaiter().GetResult();
 }

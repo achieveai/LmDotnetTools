@@ -266,6 +266,32 @@ public class ClaudeAgentSdkClientCliArgumentsTests
     }
 
     [Fact]
+    public void BuildCliArgumentTokens_EmitsToolsToken_WhenAllowedToolsSet()
+    {
+        var client = new ClaudeAgentSdkClient(new ClaudeAgentSdkOptions());
+        var request = new ClaudeAgentSdkRequest
+        {
+            ModelId = "claude-sonnet-4-6",
+            AllowedTools = "Read,Write,Bash",
+        };
+
+        var tokens = client.BuildCliArgumentTokens(request);
+
+        AssertContainsPair(tokens, "--tools", "Read,Write,Bash");
+    }
+
+    [Fact]
+    public void BuildCliArgumentTokens_OmitsToolsToken_WhenAllowedToolsIsNull()
+    {
+        var client = new ClaudeAgentSdkClient(new ClaudeAgentSdkOptions());
+        var request = new ClaudeAgentSdkRequest { ModelId = "claude-sonnet-4-6" };
+
+        var tokens = client.BuildCliArgumentTokens(request);
+
+        Assert.DoesNotContain("--tools", tokens);
+    }
+
+    [Fact]
     public void BuildCliArgumentTokens_EmitsResumeToken_WhenSessionIdSet()
     {
         var client = new ClaudeAgentSdkClient(new ClaudeAgentSdkOptions());

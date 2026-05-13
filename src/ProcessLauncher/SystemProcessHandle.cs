@@ -72,10 +72,14 @@ internal sealed class SystemProcessHandle : IProcessHandle
 
     public bool WaitForExit(TimeSpan timeout)
     {
-        // Process.WaitForExit(TimeSpan) blocks the calling thread but defers
-        // to the OS — no busy-wait. Negative timeouts mean "wait indefinitely"
-        // per the BCL contract.
-        return _process.WaitForExit((int)Math.Min(int.MaxValue, Math.Max(0, timeout.TotalMilliseconds)));
+        // Process.WaitForExit(int) blocks the calling thread but defers to the
+        // OS — no busy-wait. Honour the BCL convention: a negative TimeSpan
+        // (e.g. Timeout.InfiniteTimeSpan) maps to Timeout.Infinite (-1), which
+        // waits indefinitely.
+        int ms = timeout < TimeSpan.Zero
+            ? Timeout.Infinite
+            : (int)Math.Min(int.MaxValue, timeout.TotalMilliseconds);
+        return _process.WaitForExit(ms);
     }
 
     public void Kill(bool entireProcessTree = true)
