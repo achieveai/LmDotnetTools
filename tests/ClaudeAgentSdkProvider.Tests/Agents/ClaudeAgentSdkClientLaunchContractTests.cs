@@ -15,7 +15,7 @@ public class ClaudeAgentSdkClientLaunchContractTests
     {
         public ProcessLaunchRequest? LastRequest { get; private set; }
 
-        public IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
         {
             LastRequest = request;
             throw new ProcessLauncherException("recording launcher: never spawns");

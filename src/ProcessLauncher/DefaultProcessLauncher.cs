@@ -14,6 +14,13 @@ public sealed class DefaultProcessLauncher : IProcessLauncher
     /// <summary>Shared singleton; the launcher carries no per-call state.</summary>
     public static IProcessLauncher Instance { get; } = new DefaultProcessLauncher();
 
+    public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+    {
+        // Direct in-proc Process.Start is sync today — wrap the result so the
+        // primary async contract is satisfied without an extra thread hop.
+        return Task.FromResult(Launch(request, cancellationToken));
+    }
+
     public IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);

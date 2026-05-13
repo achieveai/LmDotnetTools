@@ -201,7 +201,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             };
 
             // 5. Hand off to the (possibly user-supplied) launcher.
-            _process = _options.ProcessLauncher.Launch(launchRequest, cancellationToken);
+            _process = await _options.ProcessLauncher.LaunchAsync(launchRequest, cancellationToken).ConfigureAwait(false);
 
             // Use UTF-8 WITHOUT BOM for writing to Node.js process
             // BOM would corrupt the first JSON line and cause parsing failures
@@ -698,14 +698,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Close stdin to signal process to exit gracefully
             _stdinWriter?.Close();
 
-            // Give process time to exit gracefully (best-effort; brief poll).
-            if (_process != null)
+            // Give process time to exit gracefully (best-effort, OS-managed wait).
+            if (_process != null && !_process.HasExited)
             {
-                var deadline = DateTime.UtcNow.AddMilliseconds(5000);
-                while (!_process.HasExited && DateTime.UtcNow < deadline)
-                {
-                    Thread.Sleep(50);
-                }
+                _process.WaitForExit(TimeSpan.FromMilliseconds(5000));
             }
 
             // Force kill if still running

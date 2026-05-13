@@ -70,6 +70,14 @@ internal sealed class SystemProcessHandle : IProcessHandle
         return _process.ExitCode;
     }
 
+    public bool WaitForExit(TimeSpan timeout)
+    {
+        // Process.WaitForExit(TimeSpan) blocks the calling thread but defers
+        // to the OS — no busy-wait. Negative timeouts mean "wait indefinitely"
+        // per the BCL contract.
+        return _process.WaitForExit((int)Math.Min(int.MaxValue, Math.Max(0, timeout.TotalMilliseconds)));
+    }
+
     public void Kill(bool entireProcessTree = true)
     {
         if (_process.HasExited)
@@ -77,7 +85,14 @@ internal sealed class SystemProcessHandle : IProcessHandle
             return;
         }
 
-        _process.Kill(entireProcessTree);
+        try
+        {
+            _process.Kill(entireProcessTree);
+        }
+        catch (InvalidOperationException)
+        {
+            // Process exited between the HasExited check and Kill — safe to ignore.
+        }
     }
 
     public void Dispose()
@@ -91,9 +106,13 @@ internal sealed class SystemProcessHandle : IProcessHandle
         {
             _process.Exited -= OnProcessExited;
         }
-        catch
+        catch (ObjectDisposedException)
         {
-            // Process may already be disposed; safe to ignore.
+            // Process already disposed; safe to ignore.
+        }
+        catch (InvalidOperationException)
+        {
+            // Process never started; safe to ignore.
         }
 
         _process.Dispose();

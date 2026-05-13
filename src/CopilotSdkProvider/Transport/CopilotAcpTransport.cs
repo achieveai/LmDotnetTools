@@ -112,7 +112,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
             try
             {
-                _process = _options.ProcessLauncher.Launch(launchRequest, ct);
+                _process = await _options.ProcessLauncher.LaunchAsync(launchRequest, ct).ConfigureAwait(false);
             }
             catch (ProcessLauncherException ex)
             {

@@ -30,6 +30,12 @@ public interface IProcessHandle : IAsyncDisposable, IDisposable
     /// <c>0</c>.</summary>
     Task<int> WaitForExitAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>Synchronously waits up to <paramref name="timeout"/> for the
+    /// process to exit. Returns <c>true</c> if the process exited within the
+    /// timeout, <c>false</c> otherwise. Used by sync <c>Dispose</c> paths that
+    /// cannot await — avoids busy-wait polling on the calling thread.</summary>
+    bool WaitForExit(TimeSpan timeout);
+
     /// <summary>Raised once when <see cref="HasExited"/> first transitions to
     /// true. Subscribers MUST tolerate being invoked from arbitrary threads.</summary>
     event EventHandler? Exited;

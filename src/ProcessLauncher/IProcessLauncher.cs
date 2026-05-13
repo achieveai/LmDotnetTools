@@ -9,6 +9,11 @@ namespace AchieveAi.LmDotnetTools.ProcessLauncher;
 /// Custom implementations can route the launch through Docker, Kubernetes, SSH,
 /// a sandboxed VM, or any other host without provider involvement — the
 /// provider only ever talks to the returned <see cref="IProcessHandle"/>.
+///
+/// <see cref="LaunchAsync"/> is the primary contract; remote / containerised
+/// launchers can perform async I/O (image pull, pod scheduling, SSH handshake)
+/// without blocking the caller. <see cref="Launch"/> remains as a default
+/// interface method for simple in-proc impls and sync call sites.
 /// </remarks>
 public interface IProcessLauncher
 {
@@ -18,5 +23,13 @@ public interface IProcessLauncher
     /// Implementations should throw <see cref="ProcessLauncherException"/>
     /// (wrapping the underlying cause) when the launch fails.
     /// </summary>
-    IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default);
+    Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Synchronous convenience wrapper around <see cref="LaunchAsync"/>. The
+    /// default implementation blocks on the async call; sync-native launchers
+    /// may override this to avoid the extra Task allocation.
+    /// </summary>
+    IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+        => LaunchAsync(request, cancellationToken).GetAwaiter().GetResult();
 }

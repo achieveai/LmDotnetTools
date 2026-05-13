@@ -13,14 +13,14 @@ public sealed class RecordingProcessLauncher : IProcessLauncher
 
     public Func<ProcessLaunchRequest, IProcessHandle>? HandleFactory { get; init; }
 
-    public IProcessHandle Launch(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
+    public Task<IProcessHandle> LaunchAsync(ProcessLaunchRequest request, CancellationToken cancellationToken = default)
     {
         LastRequest = request;
         Requests.Add(request);
 
         if (HandleFactory != null)
         {
-            return HandleFactory(request);
+            return Task.FromResult(HandleFactory(request));
         }
 
         throw new InvalidOperationException(
