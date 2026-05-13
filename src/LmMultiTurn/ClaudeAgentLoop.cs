@@ -41,6 +41,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// Also written into <see cref="ThreadMetadata.SessionMappings"/> when a store
     /// is configured. SDK metadata such as <c>SystemInitMessage</c> is intentionally
     /// NOT published into the common message stream — read this property instead.
+    ///
+    /// May also be pre-populated via the <c>initialSessionId</c> constructor
+    /// parameter so callers driving session resumption can have the first
+    /// underlying run pass <c>--resume &lt;SessionId&gt;</c> before any
+    /// <c>SystemInitMessage</c> has been observed.
     /// </summary>
     public string? CurrentSessionId { get; private set; }
 
@@ -104,6 +109,19 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <param name="logger">Optional logger</param>
     /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
     /// <param name="clientFactory">Optional factory for creating ClaudeAgentSdkClient (for testing/mocking)</param>
+    /// <param name="initialSessionId">
+    /// Optional Claude SDK session id to seed <see cref="CurrentSessionId"/> with before
+    /// the first run starts. When non-empty, the first <see cref="BuildClaudeAgentSdkRequest"/>
+    /// call will emit <c>--resume &lt;SessionId&gt;</c>, letting callers drive resumption of
+    /// a previously persisted Claude SDK session. <c>null</c> or empty leaves
+    /// <see cref="CurrentSessionId"/> unset. If the SDK later assigns a different id via
+    /// <see cref="SystemInitMessage"/> or <see cref="IClaudeAgentSdkClient.CurrentSession"/>,
+    /// that live value replaces the seed (the transition is logged at Warning level).
+    /// Note: when <see cref="ClaudeAgentSdkOptions.DisableSessionPersistence"/> is also true,
+    /// the CLI is likely to reject the resume because no session is persisted on disk —
+    /// the seed is preserved regardless so callers managing persistence externally are not
+    /// silently overridden, and a Warning is logged on each request build.
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -115,7 +133,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null)
+        Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
+        string? initialSessionId = null)
         : base(
             threadId,
             systemPrompt,
@@ -132,6 +151,15 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         _mcpServers = mcpServers ?? [];
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
+
+        // Seed CurrentSessionId via the same mutation path used by live SDK
+        // events so there is a single source of truth for session-id state
+        // transitions. CaptureSessionId itself no-ops on null/empty/duplicate.
+        if (!string.IsNullOrEmpty(initialSessionId))
+        {
+            CaptureSessionId(initialSessionId, isSeed: true);
+        }
+
         // MUST remain the last statement in this constructor: the returned MaterializedProfile
         // owns a temp directory and is disposed by DisposeAsync. Any throw after this line would
         // leak the staging dir.
@@ -276,10 +304,31 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
-    /// Records the latest SDK-assigned session id. No-op for null/empty/duplicate
-    /// values. Logs at Debug on first capture and on change.
+    /// Tracks whether the current <see cref="CurrentSessionId"/> originated from the
+    /// <c>initialSessionId</c> constructor parameter (i.e. caller-seeded for
+    /// <c>--resume</c>) rather than from a live SDK event. Used by
+    /// <see cref="CaptureSessionId"/> to escalate the log level when a seeded id is
+    /// later replaced by a live one — that transition is a correctness signal for
+    /// callers driving resume workflows.
     /// </summary>
-    private void CaptureSessionId(string? sessionId)
+    private bool _sessionIdWasSeeded;
+
+    /// <summary>
+    /// Records a Claude SDK session id. No-op for null/empty/duplicate values.
+    /// Logging escalates with semantic importance:
+    /// <list type="bullet">
+    ///   <item><description>Information on first capture (whether from a live SDK event or a constructor seed).</description></item>
+    ///   <item><description>Information when a live SDK event replaces another live value.</description></item>
+    ///   <item><description>Warning when a live SDK event replaces a previously seeded value — surfaces resume mismatches.</description></item>
+    /// </list>
+    /// </summary>
+    /// <param name="sessionId">The session id to record.</param>
+    /// <param name="isSeed">
+    /// True when the source is the constructor's <c>initialSessionId</c> parameter; false
+    /// when the source is the live SDK (<see cref="SystemInitMessage"/> or
+    /// <see cref="IClaudeAgentSdkClient.CurrentSession"/>).
+    /// </param>
+    private void CaptureSessionId(string? sessionId, bool isSeed = false)
     {
         if (string.IsNullOrEmpty(sessionId) || sessionId == CurrentSessionId)
         {
@@ -287,14 +336,29 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         }
 
         var previous = CurrentSessionId;
+        var previousWasSeeded = _sessionIdWasSeeded;
         CurrentSessionId = sessionId;
+        _sessionIdWasSeeded = isSeed;
+
         if (previous == null)
         {
-            Logger.LogDebug("Captured Claude SDK SessionId: {SessionId}", sessionId);
+            Logger.LogInformation(
+                "Captured Claude SDK SessionId: {SessionId} (seeded: {Seeded})",
+                sessionId,
+                isSeed);
+        }
+        else if (previousWasSeeded && !isSeed)
+        {
+            // Live SDK overrode a caller-seeded id — important enough to bump
+            // to Warning so callers driving --resume can audit the mismatch.
+            Logger.LogWarning(
+                "Claude SDK SessionId replaced caller-seeded value: {Seeded} -> {Live}",
+                previous,
+                sessionId);
         }
         else
         {
-            Logger.LogDebug(
+            Logger.LogInformation(
                 "Claude SDK SessionId changed: {Old} -> {New}",
                 previous,
                 sessionId);
@@ -970,8 +1034,23 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Max thinking tokens from options
         var maxThinkingTokens = _claudeOptions.MaxThinkingTokens;
 
-        // Extract session ID: use preserved from previous run if available
+        // Extract session ID: use preserved from previous run if available.
+        // A non-null value here may originate from a live SDK event OR from the
+        // caller-supplied initialSessionId constructor parameter (see _sessionIdWasSeeded).
         var sessionId = CurrentSessionId;
+
+        if (_sessionIdWasSeeded
+            && !string.IsNullOrEmpty(sessionId)
+            && _claudeOptions.DisableSessionPersistence)
+        {
+            // The CLI is unlikely to find the seeded session on disk when the
+            // SDK is told to skip session persistence. We preserve the value
+            // because the caller may know better (e.g. manages persistence
+            // externally), but surface the conflict.
+            Logger.LogWarning(
+                "Seeded Claude SDK SessionId {SessionId} is being emitted to --resume even though DisableSessionPersistence=true; the CLI may reject the resume if the session is not persisted on disk",
+                sessionId);
+        }
 
         // Build MCP server configuration
         Dictionary<string, McpServerConfig>? mcpServers = null;
