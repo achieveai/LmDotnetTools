@@ -98,10 +98,10 @@ internal sealed class CopilotEventTranslator
                 // Plans are informational; surface as a summary reasoning message.
                 return ConvertPlan(update, runId, generationId);
             default:
-                _logger?.LogDebug(
+                _logger?.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {session_update_kind}",
                     "copilot.session_update.unmapped",
-                    "ignored",
+                    "dropped",
                     _options.Provider,
                     _options.ProviderMode,
                     kind);
