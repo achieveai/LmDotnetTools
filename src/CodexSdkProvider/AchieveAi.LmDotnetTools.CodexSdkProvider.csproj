@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\ProcessLauncher\AchieveAi.LmDotnetTools.ProcessLauncher.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="CodexSdkProvider.Tests" />

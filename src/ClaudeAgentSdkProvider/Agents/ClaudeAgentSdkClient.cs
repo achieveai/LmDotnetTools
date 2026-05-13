@@ -1,6 +1,5 @@
-using System.Diagnostics;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
@@ -11,6 +10,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.ProcessLauncher;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
@@ -33,7 +33,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     private bool _disposed;
 
     // Process and stream management
-    private Process? _process;
+    private IProcessHandle? _process;
     private StreamReader? _stderrReader;
     private StreamWriter? _stdinWriter;
     private StreamReader? _stdoutReader;
@@ -125,15 +125,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             _logger?.LogInformation("Starting claude-agent-sdk CLI process with model {Model}", request.ModelId);
 
-            // 1. Locate Node.js
-            var nodePath = _options.NodeJsPath ?? FindNodeJs();
-            _logger?.LogDebug("Using Node.js at: {NodePath}", nodePath);
-
-            // 2. Locate CLI
-            var cliPath = _options.CliPath ?? FindClaudeAgentSdkCli();
-            _logger?.LogDebug("Using claude-agent-sdk CLI at: {CliPath}", cliPath);
-
-            // 3. Create system prompt temp file if provided
+            // 1. Create system prompt temp file if provided
             if (!string.IsNullOrEmpty(request.SystemPrompt))
             {
                 _systemPromptTempFile = Path.GetTempFileName();
@@ -141,28 +133,15 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 _logger?.LogDebug("Created system prompt temp file: {File}", _systemPromptTempFile);
             }
 
-            // 4. Build CLI arguments
-            var args = BuildCliArguments(request);
-            _logger?.LogDebug("CLI arguments: node \"{CliPath}\" {Args}", cliPath, args);
+            // 2. Build CLI argument tokens
+            var argTokens = BuildCliArgumentTokens(request);
+            _logger?.LogDebug("CLI argument tokens ({Count}): {Args}", argTokens.Count, string.Join(' ', argTokens));
 
-            // 5. Configure process
-            var startInfo = new ProcessStartInfo
+            // 3. Build environment overrides
+            var envOverrides = new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                FileName = nodePath,
-                Arguments = $"\"{cliPath}\" {args}",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory(),
-                // Use UTF-8 encoding for reading from Node.js process
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8,
+                ["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300",
             };
-
-            // Set environment variable for stream close timeout (in seconds)
-            startInfo.Environment["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300";
 
             // Map reasoning effort to MAX_THINKING_TOKENS env var
             // (CLI doesn't support --reasoning-effort flag as of v0.1.55)
@@ -176,7 +155,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             };
             if (thinkingTokens != null)
             {
-                startInfo.Environment["MAX_THINKING_TOKENS"] = thinkingTokens;
+                envOverrides["MAX_THINKING_TOKENS"] = thinkingTokens;
                 _logger?.LogInformation(
                     "Reasoning effort '{Effort}' mapped to MAX_THINKING_TOKENS={Tokens}",
                     request.ReasoningEffort,
@@ -184,17 +163,45 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 );
             }
 
-            // Optional overrides for E2E tests against a mock provider host. Setting any of
-            // these on the child process redirects the CLI away from the real Anthropic API.
-            ApplyMockHostOverrides(startInfo.Environment, _options, _logger);
+            // Optional overrides for E2E tests against a mock provider host.
+            ApplyMockHostOverrides(envOverrides, _options, _logger);
 
             // Redirect the CLI's ~/.claude/ to the profile staging dir.
-            ApplyStagingDirectoryEnv(startInfo.Environment, request.StagingDirectory);
+            ApplyStagingDirectoryEnv(envOverrides, request.StagingDirectory);
 
-            // 6. Start process
-            _process =
-                Process.Start(startInfo)
-                ?? throw new InvalidOperationException("Failed to start claude-agent-sdk process");
+            // 4. Surface host paths so a non-local launcher (e.g., Docker) can mount/translate them.
+            var workingDirectory = _options.ProjectRoot ?? Directory.GetCurrentDirectory();
+            var hostPaths = ImmutableArray.CreateBuilder<HostPathReference>();
+            hostPaths.Add(new HostPathReference(workingDirectory, HostPathKind.WorkingDirectory));
+            if (_systemPromptTempFile != null)
+            {
+                hostPaths.Add(new HostPathReference(_systemPromptTempFile, HostPathKind.SystemPromptFile));
+            }
+            if (!string.IsNullOrEmpty(request.StagingDirectory))
+            {
+                hostPaths.Add(new HostPathReference(request.StagingDirectory, HostPathKind.StagingDirectory));
+            }
+            if (!string.IsNullOrEmpty(_options.McpConfigPath))
+            {
+                hostPaths.Add(new HostPathReference(_options.McpConfigPath, HostPathKind.McpConfigFile));
+            }
+
+            var launchRequest = new ProcessLaunchRequest
+            {
+                Agent = CliAgentKind.Claude,
+                ExecutableHint = "cli.js",
+                ExecutableOverride = _options.CliPath,
+                NodeJsPath = _options.NodeJsPath,
+                Arguments = argTokens,
+                WorkingDirectory = workingDirectory,
+                EnvironmentOverrides = envOverrides,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
+                HostPaths = hostPaths.ToImmutable(),
+            };
+
+            // 5. Hand off to the (possibly user-supplied) launcher.
+            _process = _options.ProcessLauncher.Launch(launchRequest, cancellationToken);
 
             // Use UTF-8 WITHOUT BOM for writing to Node.js process
             // BOM would corrupt the first JSON line and cause parsing failures
@@ -230,7 +237,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             _logger?.LogInformation(
                 "[Agent:{SessionId}] claude-agent-sdk CLI started successfully. PID: {ProcessId}",
                 CurrentSession?.SessionId,
-                _process.Id
+                _process.ProcessId ?? -1
             );
 
             // Transition to Running state
@@ -691,13 +698,20 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             // Close stdin to signal process to exit gracefully
             _stdinWriter?.Close();
 
-            // Give process time to exit gracefully
-            var exited = _process?.WaitForExit(5000) ?? true;
+            // Give process time to exit gracefully (best-effort; brief poll).
+            if (_process != null)
+            {
+                var deadline = DateTime.UtcNow.AddMilliseconds(5000);
+                while (!_process.HasExited && DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(50);
+                }
+            }
 
             // Force kill if still running
             if (_process != null && !_process.HasExited)
             {
-                _logger?.LogWarning("Force killing claude-agent-sdk process (PID: {ProcessId})", _process.Id);
+                _logger?.LogWarning("Force killing claude-agent-sdk process (PID: {ProcessId})", _process.ProcessId ?? -1);
                 _process.Kill(true);
             }
 
@@ -930,6 +944,13 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         GC.SuppressFinalize(this);
     }
 
+    /// <summary>
+    ///     Builds the CLI argument list as a single concatenated command-line
+    ///     string (host-style quoting). Retained for diagnostics and the
+    ///     <c>BuildCliArguments_*</c> unit tests; the runtime spawn path uses
+    ///     <see cref="BuildCliArgumentTokens"/> which returns pre-tokenized args
+    ///     that the <see cref="IProcessLauncher"/> never has to re-quote.
+    /// </summary>
     internal string BuildCliArguments(ClaudeAgentSdkRequest request)
     {
         var args = new List<string>
@@ -938,10 +959,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             $"--input-format {request.InputFormat}",
         };
 
-        // Only emit --model when a non-empty model id was supplied; otherwise
-        // let the CLI pick its default model. Emitting "--model " with no value
-        // causes the next flag (e.g. --max-turns) to be parsed as the model name,
-        // which the API then rejects with a 404 "model: --max-turns" error.
         if (!string.IsNullOrWhiteSpace(request.ModelId))
         {
             args.Add($"--model {request.ModelId}");
@@ -949,13 +966,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         args.Add($"--max-turns {request.MaxTurns}");
         args.Add($"--permission-mode {request.PermissionMode}");
-        // Tri-state semantics for --setting-sources:
-        //   null         -> omit the flag; CLI applies its own default
-        //                   (user,project,local) which surfaces installed
-        //                   plugins, sub-agents, skills, and worktree .mcp.json.
-        //   "" (empty)   -> emit the flag with empty value to disable every
-        //                   source (isolated agent).
-        //   "user,..."   -> emit the explicit subset.
         if (request.SettingSources is not null)
         {
             args.Add($"--setting-sources \"{request.SettingSources}\"");
@@ -973,8 +983,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
         if (!string.IsNullOrEmpty(request.AllowedTools))
         {
-            // Use --tools to restrict which built-in tools are available to the model.
-            // Note: --allowedTools only controls permission bypass, not tool availability.
             args.Add($"--tools \"{request.AllowedTools}\"");
         }
 
@@ -982,7 +990,6 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             var mcpConfig = new { mcpServers = request.McpServers };
             var mcpJson = JsonSerializer.Serialize(mcpConfig);
-            // Escape for Windows command line
             var escapedJson = mcpJson.Replace("\"", "\\\"");
             args.Add($"--mcp-config \"{escapedJson}\"");
         }
@@ -997,84 +1004,100 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             args.Add($"--system-prompt-file \"{_systemPromptTempFile}\"");
         }
 
-        // Disable checkpoints/snapshots if configured
         if (_options.DisableCheckpoints)
         {
             args.Add("--no-checkpoints");
         }
 
-        // Disable session persistence if configured
         if (_options.DisableSessionPersistence)
         {
             args.Add("--no-session-persistence");
         }
 
-        // NOTE: Reasoning effort is passed via MAX_THINKING_TOKENS env var in StartAsync,
-        // not as a CLI flag (--reasoning-effort is not supported as of v0.1.55).
-
         return string.Join(" ", args);
     }
 
     /// <summary>
-    ///     Returns the Node.js executable name. The OS will resolve it via PATH.
-    ///     If Node.js is not in PATH, Process.Start will throw a clear error.
+    ///     Builds the CLI arguments as a pre-tokenized list. Each flag and value
+    ///     is a separate element so the launcher hands them straight to the
+    ///     OS process argument list — no string-level quoting for the consumer
+    ///     to worry about. Tri-state semantics for
+    ///     <c>--setting-sources</c> match <see cref="BuildCliArguments"/>:
+    ///     <c>null</c> omits the flag, <c>""</c> emits the flag with an empty
+    ///     value (isolated agent), any other value emits the explicit subset.
     /// </summary>
-    private static string FindNodeJs()
+    internal IReadOnlyList<string> BuildCliArgumentTokens(ClaudeAgentSdkRequest request)
     {
-        // Just return "node" and let the OS resolve it via PATH.
-        // On Windows, both "node" and "node.exe" work when the OS searches PATH.
-        // This is simpler and more reliable than manually searching directories.
-        return "node";
-    }
-
-    private static string FindClaudeAgentSdkCli()
-    {
-        // Try to find in global npm modules
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        var tokens = new List<string>
         {
-            // Windows: AppData\Roaming\npm\node_modules
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var npmGlobalPath = Path.Combine(
-                appData,
-                "npm",
-                "node_modules",
-                "@anthropic-ai",
-                "claude-agent-sdk",
-                "cli.js"
-            );
-            if (File.Exists(npmGlobalPath))
-            {
-                return npmGlobalPath;
-            }
+            "--output-format", request.OutputFormat,
+            "--input-format", request.InputFormat,
+        };
 
-            // Also check ProgramFiles for system-wide installations
-            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            var systemPath = Path.Combine(
-                programFiles,
-                "nodejs",
-                "node_modules",
-                "@anthropic-ai",
-                "claude-agent-sdk",
-                "cli.js"
-            );
-            if (File.Exists(systemPath))
-            {
-                return systemPath;
-            }
-        }
-        else
+        if (!string.IsNullOrWhiteSpace(request.ModelId))
         {
-            // Unix-like: /usr/local/lib/node_modules
-            var globalPath = "/usr/local/lib/node_modules/@anthropic-ai/claude-agent-sdk/cli.js";
-            if (File.Exists(globalPath))
-            {
-                return globalPath;
-            }
+            tokens.Add("--model");
+            tokens.Add(request.ModelId);
         }
 
-        throw new FileNotFoundException(
-            "claude-agent-sdk CLI not found. Please install: npm install -g @anthropic-ai/claude-agent-sdk"
-        );
+        tokens.Add("--max-turns");
+        tokens.Add(request.MaxTurns.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        tokens.Add("--permission-mode");
+        tokens.Add(request.PermissionMode);
+
+        if (request.SettingSources is not null)
+        {
+            tokens.Add("--setting-sources");
+            tokens.Add(request.SettingSources);
+        }
+
+        if (request.Verbose)
+        {
+            tokens.Add("--verbose");
+        }
+
+        if (string.Equals(request.OutputFormat, "stream-json", StringComparison.OrdinalIgnoreCase))
+        {
+            tokens.Add("--include-partial-messages");
+        }
+
+        if (!string.IsNullOrEmpty(request.AllowedTools))
+        {
+            tokens.Add("--tools");
+            tokens.Add(request.AllowedTools);
+        }
+
+        if (request.McpServers != null && request.McpServers.Count > 0)
+        {
+            var mcpConfig = new { mcpServers = request.McpServers };
+            var mcpJson = JsonSerializer.Serialize(mcpConfig);
+            tokens.Add("--mcp-config");
+            tokens.Add(mcpJson);
+        }
+
+        if (!string.IsNullOrEmpty(request.SessionId))
+        {
+            tokens.Add("--resume");
+            tokens.Add(request.SessionId);
+        }
+
+        if (_systemPromptTempFile != null)
+        {
+            tokens.Add("--system-prompt-file");
+            tokens.Add(_systemPromptTempFile);
+        }
+
+        if (_options.DisableCheckpoints)
+        {
+            tokens.Add("--no-checkpoints");
+        }
+
+        if (_options.DisableSessionPersistence)
+        {
+            tokens.Add("--no-session-persistence");
+        }
+
+        return tokens;
     }
 
     private async IAsyncEnumerable<string> ReadStdoutLinesAsync(
@@ -1243,7 +1266,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         // Reset all resource fields to allow clean restart
         _logger?.LogDebug(
             "WaitForOneShotCompletionAsync: Cleaning up resources. ProcessId: {Pid}, HasExited: {HasExited}",
-            _process?.Id,
+            _process?.ProcessId,
             _process?.HasExited
         );
 

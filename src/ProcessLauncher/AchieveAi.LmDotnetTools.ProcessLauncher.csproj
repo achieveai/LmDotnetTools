@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>AchieveAi.LmDotnetTools.ProcessLauncher</PackageId>
+    <Description>Pluggable process-launch abstraction (IProcessLauncher / IProcessHandle) shared by the Claude / Codex / Copilot CLI providers. Lets callers redirect spawn to Docker, Kubernetes, SSH, or any other host without touching provider internals.</Description>
+    <PackageTags>$(PackageTags);process;launcher;docker;sandbox;agent-sdk</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.ProcessLauncher.Tests" />
+    <InternalsVisibleTo Include="ClaudeAgentSdkProvider.Tests" />
+    <InternalsVisibleTo Include="CodexSdkProvider.Tests" />
+    <InternalsVisibleTo Include="CopilotSdkProvider.Tests" />
+  </ItemGroup>
+</Project>

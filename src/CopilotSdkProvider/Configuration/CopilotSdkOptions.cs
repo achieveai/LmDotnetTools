@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+using AchieveAi.LmDotnetTools.ProcessLauncher;
 
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 
@@ -84,4 +85,12 @@ public record CopilotSdkOptions
     ///     warning log entry per loop and otherwise has no effect.
     /// </summary>
     public AgentRuntimeProfile? Profile { get; init; }
+
+    /// <summary>
+    ///     Pluggable launcher used to spawn the Copilot CLI process. Defaults to
+    ///     <see cref="DefaultProcessLauncher.Instance"/> which executes the CLI
+    ///     directly on the host. Inject a custom <see cref="IProcessLauncher"/>
+    ///     to redirect spawn (Docker, SSH, etc.) without touching provider internals.
+    /// </summary>
+    public IProcessLauncher ProcessLauncher { get; init; } = DefaultProcessLauncher.Instance;
 }

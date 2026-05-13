@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ProcessLauncher;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Transport;
@@ -24,7 +24,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private Process? _process;
+    private IProcessHandle? _process;
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private StreamReader? _stderr;
@@ -86,42 +86,44 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                     _options.RpcTraceFilePath);
             }
 
-            var resolvedCliPath = Agents.CopilotCliPathResolver.Resolve(_options.CopilotCliPath);
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = resolvedCliPath,
-                Arguments = "--acp --stdio",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = workingDirectory,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-
+            var envOverrides = new Dictionary<string, string?>(StringComparer.Ordinal);
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                psi.Environment["COPILOT_API_KEY"] = apiKey;
-                psi.Environment["GITHUB_TOKEN"] = apiKey;
+                envOverrides["COPILOT_API_KEY"] = apiKey;
+                envOverrides["GITHUB_TOKEN"] = apiKey;
             }
 
             if (!string.IsNullOrWhiteSpace(baseUrl))
             {
-                psi.Environment["COPILOT_BASE_URL"] = baseUrl;
+                envOverrides["COPILOT_BASE_URL"] = baseUrl;
             }
+
+            var launchRequest = new ProcessLaunchRequest
+            {
+                Agent = CliAgentKind.Copilot,
+                ExecutableHint = _options.CopilotCliPath,
+                Arguments = ["--acp", "--stdio"],
+                WorkingDirectory = workingDirectory,
+                EnvironmentOverrides = envOverrides,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+                HostPaths = [new HostPathReference(workingDirectory, HostPathKind.WorkingDirectory)],
+            };
 
             try
             {
-                _process = Process.Start(psi)
-                    ?? throw new InvalidOperationException("Failed to start Copilot ACP process.");
+                _process = _options.ProcessLauncher.Launch(launchRequest, ct);
+            }
+            catch (ProcessLauncherException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
+                    ex);
             }
             catch (Exception ex)
             {
                 throw new InvalidOperationException(
-                    $"Failed to start Copilot CLI '{resolvedCliPath}' (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
+                    $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
                     ex);
             }
 
@@ -252,7 +254,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 timeoutCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
                 try
                 {
-                    await process.WaitForExitAsync(timeoutCts.Token);
+                    _ = await process.WaitForExitAsync(timeoutCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
