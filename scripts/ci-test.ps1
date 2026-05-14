@@ -64,12 +64,16 @@ Invoke-CiStep "build solution" {
     dotnet build $solution --no-restore /p:UseSharedCompilation=false
 }
 
+# --blame-hang-timeout fires a process dump (and names the hung test) if any
+# single test exceeds the timeout. Without it, an infinite hang would just
+# eat the workflow's outer timeout-minutes budget and report "cancelled"
+# instead of pointing at the offending test.
 Invoke-CiStep "test solution" {
-    dotnet test $solution --no-build --verbosity minimal
+    dotnet test $solution --no-build --verbosity minimal --blame-hang --blame-hang-timeout 4m
 }
 
 foreach ($project in $extraTestProjects) {
     Invoke-CiStep "test $project" {
-        dotnet test $project --no-restore --verbosity minimal /p:UseSharedCompilation=false
+        dotnet test $project --no-restore --verbosity minimal /p:UseSharedCompilation=false --blame-hang --blame-hang-timeout 4m
     }
 }

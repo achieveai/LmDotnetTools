@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+using AchieveAi.LmDotnetTools.ProcessLauncher;
 
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 
@@ -150,4 +151,16 @@ public record ClaudeAgentSdkOptions
     ///     over host-loaded MCP entries on key collision.
     /// </summary>
     public AgentRuntimeProfile? Profile { get; init; }
+
+    /// <summary>
+    ///     Pluggable launcher used to spawn the underlying CLI process. Defaults to
+    ///     <see cref="DefaultProcessLauncher.Instance"/> which executes the CLI
+    ///     directly on the host. Inject a custom <see cref="IProcessLauncher"/>
+    ///     (e.g., a Docker-backed launcher) to redirect spawn without touching
+    ///     provider internals. The launcher receives an explicit list of host
+    ///     paths (system-prompt temp file, MCP config file, working directory,
+    ///     staging directory) so a non-local launcher can mount or translate
+    ///     them without re-parsing CLI arguments.
+    /// </summary>
+    public IProcessLauncher ProcessLauncher { get; init; } = DefaultProcessLauncher.Instance;
 }

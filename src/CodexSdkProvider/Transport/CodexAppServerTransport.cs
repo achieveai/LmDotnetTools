@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.ProcessLauncher;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.CodexSdkProvider.Transport;
@@ -19,7 +19,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private Process? _process;
+    private IProcessHandle? _process;
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private StreamReader? _stderr;
@@ -81,34 +81,38 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
                     _options.RpcTraceFilePath);
             }
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = _options.CodexCliPath,
-                Arguments = "app-server --listen stdio://",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = workingDirectory,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-
+            var envOverrides = new Dictionary<string, string?>(StringComparer.Ordinal);
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                psi.Environment["OPENAI_API_KEY"] = apiKey;
+                envOverrides["OPENAI_API_KEY"] = apiKey;
             }
 
             if (!string.IsNullOrWhiteSpace(baseUrl))
             {
-                psi.Environment["OPENAI_BASE_URL"] = baseUrl;
+                envOverrides["OPENAI_BASE_URL"] = baseUrl;
             }
+
+            var launchRequest = new ProcessLaunchRequest
+            {
+                Agent = CliAgentKind.Codex,
+                ExecutableHint = _options.CodexCliPath,
+                Arguments = ["app-server", "--listen", "stdio://"],
+                WorkingDirectory = workingDirectory,
+                EnvironmentOverrides = envOverrides,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+                HostPaths = [new HostPathReference(workingDirectory, HostPathKind.WorkingDirectory)],
+            };
 
             try
             {
-                _process = Process.Start(psi)
-                    ?? throw new InvalidOperationException("Failed to start Codex app-server process.");
+                _process = await _options.ProcessLauncher.LaunchAsync(launchRequest, ct).ConfigureAwait(false);
+            }
+            catch (ProcessLauncherException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to start Codex CLI '{_options.CodexCliPath}'. Ensure Codex CLI is installed and accessible.",
+                    ex);
             }
             catch (Exception ex)
             {
@@ -244,7 +248,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
                 timeoutCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
                 try
                 {
-                    await process.WaitForExitAsync(timeoutCts.Token);
+                    _ = await process.WaitForExitAsync(timeoutCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
