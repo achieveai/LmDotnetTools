@@ -70,6 +70,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
 
             if (_options.EnableRpcTrace && !string.IsNullOrWhiteSpace(_options.RpcTraceFilePath))
             {
+#pragma warning disable CS0618 // CodexSessionId is trace-only by design; the obsolete attribute signals to consumers, not internal trace writers.
                 _rpcTraceWriter = new CodexRpcTraceWriter(_options.RpcTraceFilePath, _options.CodexSessionId, _logger);
                 _logger?.LogInformation(
                     "{event_type} {event_status} {provider} {provider_mode} {codex_session_id} {trace_file}",
@@ -79,6 +80,7 @@ internal sealed class CodexAppServerTransport : IAsyncDisposable
                     _options.ProviderMode,
                     _options.CodexSessionId ?? string.Empty,
                     _options.RpcTraceFilePath);
+#pragma warning restore CS0618
             }
 
             var envOverrides = new Dictionary<string, string?>(StringComparer.Ordinal);

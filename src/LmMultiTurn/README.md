@@ -171,6 +171,27 @@ Rules implemented by `ResolveBatchParent` and all loops:
    a UI thread) without changes to provider invocation. No `--resume`/transcript-replay is wired
    in by this contract.
 
+#### What forking does NOT do (intentional non-goal)
+
+`WasForked = true` is a **surface flag only**. The new run starts from a **fresh provider context**:
+
+- The underlying agent process is started normally — no transcript from the parent run is
+  replayed into the model's working memory.
+- Any tool results, file reads, or reasoning the parent run accumulated are **not** re-shown.
+- Callers that need context continuity in a forked run must restate the relevant inputs in the
+  prompt themselves.
+
+This is distinct from per-provider **session resume** (`--resume <id>` on Claude,
+`session/load` on Copilot, `thread/resume` on Codex), which attaches a NEW run to an EXISTING
+provider-side session. Resume threads through `initialSessionId`/`AssignSessionId` on the loop;
+fork threads through `SendAsync(parentRunId: ...)` on individual inputs. They compose:
+a forked run can also resume, but the two are independently controlled signals.
+
+A cross-provider `TranscriptReplay` primitive (seed the fresh context with a summarized parent
+transcript) is intentionally **not implemented**. Callers needing this today open a fresh loop
+with a self-contained prompt; that trade-off is preferred over baking a one-size-fits-all replay
+policy into the base loop. See issue #55 §4 for the rationale.
+
 ### Lifecycle Management
 
 The multi-turn agents support a complete lifecycle with graceful shutdown and restart capabilities:

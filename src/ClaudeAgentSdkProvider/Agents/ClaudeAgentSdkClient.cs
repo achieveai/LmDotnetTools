@@ -994,6 +994,10 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             args.Add($"--resume {request.SessionId}");
         }
+        else if (!string.IsNullOrEmpty(request.AssignedSessionId))
+        {
+            args.Add($"--session-id {request.AssignedSessionId}");
+        }
 
         if (_systemPromptTempFile != null)
         {
@@ -1075,6 +1079,11 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             tokens.Add("--resume");
             tokens.Add(request.SessionId);
+        }
+        else if (!string.IsNullOrEmpty(request.AssignedSessionId))
+        {
+            tokens.Add("--session-id");
+            tokens.Add(request.AssignedSessionId);
         }
 
         if (_systemPromptTempFile != null)

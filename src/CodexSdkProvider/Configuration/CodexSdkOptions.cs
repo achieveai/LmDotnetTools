@@ -68,7 +68,31 @@ public record CodexSdkOptions
 
     public string? RpcTraceFilePath { get; init; }
 
+    /// <summary>
+    /// Trace-only label forwarded to <c>CodexRpcTraceWriter</c>. Does NOT drive
+    /// conversation resume on the Codex app-server — Codex uses
+    /// <c>thread/resume</c> against <c>codex_thread_id</c> persisted by
+    /// <c>AchieveAi.LmDotnetTools.LmMultiTurn.CodexAgentLoop</c>.
+    /// </summary>
+    /// <remarks>
+    /// Use <see cref="InitialThreadId"/> to seed the first-run thread id when no
+    /// metadata is persisted yet.
+    /// </remarks>
+    [Obsolete("CodexSessionId is a trace-only label and does not control session lifetime. Use " + nameof(InitialThreadId) + " to drive cross-run thread resume.")]
     public string? CodexSessionId { get; init; }
+
+    /// <summary>
+    /// Optional first-run Codex thread id. Acts as a fallback when
+    /// <c>AchieveAi.LmDotnetTools.LmMultiTurn.CodexAgentLoop</c> has no
+    /// persisted <c>codex_thread_id</c> in <c>ThreadMetadata.Properties</c>
+    /// (i.e. on cold restarts where the store is empty). When non-empty AND
+    /// the metadata lookup misses, the value seeds <c>_codexThreadId</c> so the
+    /// first Codex app-server call goes through <c>thread/resume</c> instead of
+    /// <c>thread/start</c>. After the SDK reports its own thread id, the
+    /// captured value wins. Persisted metadata always wins over this seed —
+    /// the option only fills the void when nothing is stored.
+    /// </summary>
+    public string? InitialThreadId { get; init; }
 
     public bool ExposeCodexInternalToolsAsToolMessages { get; init; } = true;
 
