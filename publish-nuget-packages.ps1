@@ -90,7 +90,8 @@ $projects = @(
     "src/McpSampleServer/AchieveAi.LmDotnetTools.McpSampleServer.csproj",
     "src/Misc/AchieveAi.LmDotnetTools.Misc.csproj",
     "src/ClaudeAgentSdkProvider/AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj",
-    "src/LmMultiTurn/AchieveAi.LmDotnetTools.LmMultiTurn.csproj"
+    "src/LmMultiTurn/AchieveAi.LmDotnetTools.LmMultiTurn.csproj",
+    "src/ProcessLauncher/AchieveAi.LmDotnetTools.ProcessLauncher.csproj"
 )
 
 # Get current version from Directory.Build.props
