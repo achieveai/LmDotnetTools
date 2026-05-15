@@ -9,7 +9,28 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 public record RunCompletedMessage : IMessage
 {
     public required string CompletedRunId { get; init; }
+
+    /// <summary>
+    /// Surface flag — <c>true</c> when this run was initiated via
+    /// <c>SendAsync(parentRunId: …)</c> (i.e. the batch carried at least one
+    /// caller-supplied <c>ParentRunId</c>). The flag reflects caller INTENT to
+    /// fork. It does NOT imply that the new run inherits the parent's provider
+    /// context: the underlying agent process starts from a fresh model context,
+    /// and any grounding the parent run accumulated (tool results, file reads,
+    /// reasoning) is not re-shown to the model. Callers needing context
+    /// continuity must restate the relevant inputs in the next prompt.
+    /// </summary>
+    /// <remarks>
+    /// A cross-provider <c>TranscriptReplay</c> primitive that would seed the
+    /// fresh provider context with the parent run's transcript is tracked
+    /// separately (see <c>src/LmMultiTurn/README.md</c> §"Fork semantics"). The
+    /// per-provider Claude/Copilot/Codex session-resume paths
+    /// (<c>--resume</c> / <c>session/load</c> / <c>thread/resume</c>) are
+    /// distinct from forking — resume attaches to an existing session, fork
+    /// branches into a new run id without re-attaching.
+    /// </remarks>
     public bool WasForked { get; init; }
+
     public string? ForkedToRunId { get; init; }
 
     /// <summary>

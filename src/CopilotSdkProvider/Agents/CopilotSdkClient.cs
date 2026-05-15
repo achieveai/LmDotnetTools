@@ -29,6 +29,15 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     private Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? _dynamicToolExecutor;
     private int _isShuttingDown;
     private int _disposed;
+    private bool _loadSessionUnsupportedWarned;
+
+    /// <summary>
+    /// True when the Copilot CLI advertised <c>agentCapabilities.sessions.load=true</c>
+    /// on the most recent <c>initialize</c> exchange. Exposed for diagnostics and tests;
+    /// drives <c>session/load</c> vs <c>session/new</c> routing in
+    /// <see cref="StartOrResumeSessionAsync"/>.
+    /// </summary>
+    public bool SupportsLoadSession { get; private set; }
 
     public bool IsRunning => Volatile.Read(ref _transport) is { IsRunning: true };
 
@@ -122,11 +131,13 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 EnsureModelAllowed(initializeResponse, effectiveOptions.Model);
             }
 
-            var sessionResponse = await transport.SendRequestAsync(
-                "session/new",
-                BuildSessionNewParams(effectiveOptions),
-                ct,
-                startupTimeout);
+            SupportsLoadSession = CopilotEventParser.ExtractSupportsLoadSession(initializeResponse);
+
+            var sessionResponse = await TryLoadOrCreateSessionAsync(
+                transport,
+                effectiveOptions,
+                startupTimeout,
+                ct);
 
             CurrentCopilotSessionId = CopilotEventParser.ExtractSessionId(sessionResponse) ?? effectiveOptions.SessionId;
             DependencyState = "ready";
@@ -660,6 +671,92 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
             BaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl) ? _options.BaseUrl : options.BaseUrl,
             ApiKey = string.IsNullOrWhiteSpace(options.ApiKey) ? _options.ApiKey : options.ApiKey,
             SessionId = string.IsNullOrWhiteSpace(options.SessionId) ? _options.CopilotSessionId : options.SessionId,
+        };
+    }
+
+    private async Task<JsonElement> TryLoadOrCreateSessionAsync(
+        CopilotAcpTransport transport,
+        CopilotBridgeInitOptions options,
+        TimeSpan startupTimeout,
+        CancellationToken ct)
+    {
+        if (SupportsLoadSession && !string.IsNullOrWhiteSpace(options.SessionId))
+        {
+            try
+            {
+                _logger?.LogInformation(
+                    "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id}",
+                    "copilot.session.load",
+                    "started",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    options.SessionId);
+                var loaded = await transport.SendRequestAsync(
+                    "session/load",
+                    BuildSessionLoadParams(options),
+                    ct,
+                    startupTimeout);
+                _logger?.LogInformation(
+                    "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id}",
+                    "copilot.session.load",
+                    "completed",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    options.SessionId);
+                return loaded;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Common cases: server doesn't recognise the id (cold restart, id
+                // expired), or returns "method not found" for an older CLI build that
+                // mis-advertised the capability. Fall back to session/new so first-run
+                // semantics still hold.
+                _logger?.LogWarning(
+                    ex,
+                    "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id} {error_kind}",
+                    "copilot.session.load",
+                    "failed_fallback_session_new",
+                    _options.Provider,
+                    _options.ProviderMode,
+                    options.SessionId,
+                    ex.GetType().Name);
+            }
+        }
+        else if (!SupportsLoadSession
+            && !string.IsNullOrWhiteSpace(options.SessionId)
+            && !_loadSessionUnsupportedWarned)
+        {
+            _loadSessionUnsupportedWarned = true;
+            _logger?.LogInformation(
+                "{event_type} {event_status} {provider} {provider_mode} {copilot_session_id}",
+                "copilot.session.load.unsupported",
+                "skipped",
+                _options.Provider,
+                _options.ProviderMode,
+                options.SessionId);
+        }
+
+        return await transport.SendRequestAsync(
+            "session/new",
+            BuildSessionNewParams(options),
+            ct,
+            startupTimeout);
+    }
+
+    private static object BuildSessionLoadParams(CopilotBridgeInitOptions options)
+    {
+        // ACP session/load shape mirrors session/new: cwd, mcpServers, sessionId.
+        // We deliberately do NOT send model/instructions on load — the server is
+        // expected to restore them from the persisted session record.
+        var cwd = !string.IsNullOrWhiteSpace(options.WorkingDirectory)
+            ? options.WorkingDirectory
+            : Environment.CurrentDirectory;
+
+        return new Dictionary<string, object?>
+        {
+            ["sessionId"] = options.SessionId,
+            ["cwd"] = cwd,
+            ["mcpServers"] = Array.Empty<object>(),
         };
     }
 

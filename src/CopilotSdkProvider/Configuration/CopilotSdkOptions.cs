@@ -46,6 +46,16 @@ public record CopilotSdkOptions
 
     public string? RpcTraceFilePath { get; init; }
 
+    /// <summary>
+    /// Best-effort Copilot ACP session id used to drive cross-run session reuse.
+    /// When the Copilot CLI advertises <c>agentCapabilities.sessions.load=true</c>
+    /// on the <c>initialize</c> response, the client calls <c>session/load</c> with
+    /// this id and falls back to <c>session/new</c> on any RPC error (the id is
+    /// also forwarded into <c>session/new</c> params, where the server is
+    /// authoritative on whether the id is honoured). When the CLI does not
+    /// advertise <c>sessions.load</c> the client goes straight to <c>session/new</c>
+    /// and emits a one-time <c>copilot.session.load.unsupported</c> log entry.
+    /// </summary>
     public string? CopilotSessionId { get; init; }
 
     public int ProcessTimeoutMs { get; init; } = 600_000;

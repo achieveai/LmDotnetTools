@@ -175,4 +175,82 @@ public class CopilotEventParserTests
     {
         CopilotEventParser.Truncate(input!).Should().Be(string.Empty);
     }
+
+    // -- ExtractSupportsLoadSession (issue #55) --
+    //
+    // ACP initialize response surfaces the capability either nested under
+    // agentCapabilities.sessions.load (current spec) or flat under
+    // agentCapabilities.loadSession (older Copilot CLI builds). The parser
+    // MUST default to false when absent or wrong-typed so we never call
+    // session/load against an agent that did not advertise it.
+
+    [Fact]
+    public void ExtractSupportsLoadSession_NestedSessionsLoadTrue_ReturnsTrue()
+    {
+        var el = Parse("""{"agentCapabilities": {"sessions": {"load": true}}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_NestedSessionsLoadFalse_ReturnsFalse()
+    {
+        var el = Parse("""{"agentCapabilities": {"sessions": {"load": false}}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_FlatLoadSessionTrue_ReturnsTrue()
+    {
+        // Legacy Copilot CLI flattens the capability.
+        var el = Parse("""{"agentCapabilities": {"loadSession": true}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_FlatLoadSessionFalse_ReturnsFalse()
+    {
+        var el = Parse("""{"agentCapabilities": {"loadSession": false}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_MissingAgentCapabilities_ReturnsFalse()
+    {
+        var el = Parse("""{"other": {}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_EmptyAgentCapabilities_ReturnsFalse()
+    {
+        var el = Parse("""{"agentCapabilities": {}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_NestedSessionsWithoutLoad_ReturnsFalse()
+    {
+        var el = Parse("""{"agentCapabilities": {"sessions": {"new": true}}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_LoadAsNonBoolean_ReturnsFalse()
+    {
+        var el = Parse("""{"agentCapabilities": {"sessions": {"load": "yes"}}}""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_NullRoot_ReturnsFalse()
+    {
+        CopilotEventParser.ExtractSupportsLoadSession(null).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ExtractSupportsLoadSession_NonObjectRoot_ReturnsFalse()
+    {
+        var el = Parse("""[]""");
+        CopilotEventParser.ExtractSupportsLoadSession(el).Should().BeFalse();
+    }
 }

@@ -27,7 +27,9 @@ public class ProgramCodexOptionsTests
             var options = (CodexSdkOptions)result!;
             options.EnableRpcTrace.Should().BeTrue();
             options.RpcTraceFilePath.Should().Be($"{dumpBase}.codex.rpc.jsonl");
+#pragma warning disable CS0618 // CodexSessionId remains a trace-only label by design.
             options.CodexSessionId.Should().Be("thread_20260217T120000.llm");
+#pragma warning restore CS0618
         }
         finally
         {

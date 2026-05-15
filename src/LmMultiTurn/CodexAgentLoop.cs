@@ -88,6 +88,15 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         _loggerFactory = loggerFactory;
         _clientFactory = clientFactory;
 
+        // Seed _codexThreadId with the host-supplied InitialThreadId so the first
+        // call to OnBeforeRunAsync goes through thread/resume. RecoverAsync later
+        // OVERRIDES this with the persisted thread id when ThreadMetadata exists,
+        // matching the documented precedence: store > options.InitialThreadId.
+        if (!string.IsNullOrWhiteSpace(_options.InitialThreadId))
+        {
+            _codexThreadId = _options.InitialThreadId;
+        }
+
         IReadOnlyList<FunctionContract> dynamicContracts = [];
         IDictionary<string, Func<string, Task<string>>> dynamicHandlers = new Dictionary<string, Func<string, Task<string>>>(StringComparer.OrdinalIgnoreCase);
         if (functionRegistry != null && _options.ToolBridgeMode is CodexToolBridgeMode.Dynamic or CodexToolBridgeMode.Hybrid)

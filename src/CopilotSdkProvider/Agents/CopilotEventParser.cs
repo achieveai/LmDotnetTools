@@ -26,6 +26,37 @@ internal static class CopilotEventParser
             : null;
     }
 
+    /// <summary>
+    /// Inspects an ACP <c>initialize</c> response for the
+    /// <c>agentCapabilities.sessions.load</c> boolean. Returns <c>true</c> only when
+    /// the agent explicitly advertises support; missing fields imply the agent does
+    /// not support <c>session/load</c> (per ACP spec — sessions.load defaults false).
+    /// </summary>
+    public static bool ExtractSupportsLoadSession(JsonElement? root)
+    {
+        if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!root.Value.TryGetProperty("agentCapabilities", out var capabilities)
+            || capabilities.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!capabilities.TryGetProperty("sessions", out var sessions)
+            || sessions.ValueKind != JsonValueKind.Object)
+        {
+            // Older Copilot CLI flattens the capability as agentCapabilities.loadSession.
+            return capabilities.TryGetProperty("loadSession", out var loadFlag)
+                && (loadFlag.ValueKind == JsonValueKind.True);
+        }
+
+        return sessions.TryGetProperty("load", out var loadProp)
+            && loadProp.ValueKind == JsonValueKind.True;
+    }
+
     public static string? ExtractErrorMessage(JsonElement payload)
     {
         if (TryGetProperty(payload, "error", out var error))

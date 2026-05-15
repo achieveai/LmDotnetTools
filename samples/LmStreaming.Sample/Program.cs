@@ -930,7 +930,9 @@ public partial class Program
             SyntheticMessageUpdateChunkChars = syntheticChunkSize,
             EnableRpcTrace = enableRpcTrace,
             RpcTraceFilePath = traceFilePath,
+#pragma warning disable CS0618 // Trace-only label; explicitly forwarded for RPC dump correlation.
             CodexSessionId = sessionId,
+#pragma warning restore CS0618
             ProviderMode = "codex",
             Provider = "codex",
         };

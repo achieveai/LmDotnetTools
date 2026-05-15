@@ -153,6 +153,27 @@ public record ClaudeAgentSdkOptions
     public AgentRuntimeProfile? Profile { get; init; }
 
     /// <summary>
+    ///     Host-chosen Claude SDK session id to assign on the FIRST run. When set,
+    ///     the spawned CLI is invoked with <c>--session-id &lt;guid&gt;</c> on the first
+    ///     run, which seeds the on-disk session under the supplied id. Subsequent
+    ///     runs use <c>--resume</c> against the captured id automatically. Mutually
+    ///     exclusive with the <c>initialSessionId</c> constructor parameter on
+    ///     <c>AchieveAi.LmDotnetTools.LmMultiTurn.ClaudeAgentLoop</c>:
+    ///     <c>--resume</c> attaches to an existing on-disk session, while
+    ///     <c>--session-id</c> creates a new one under the caller's id, so the two
+    ///     paths cannot run together. Use this to drive cross-run session reuse
+    ///     (e.g. PR review followed by re-review on the same persisted session)
+    ///     when there is no prior session on disk yet.
+    /// </summary>
+    /// <remarks>
+    ///     When combined with <see cref="DisableSessionPersistence"/> the assigned
+    ///     id is ephemeral — the SDK still accepts the flag but no session is
+    ///     persisted on disk, so subsequent <c>--resume</c> attempts will fail.
+    ///     The loop emits a one-time Warning per request build in that case.
+    /// </remarks>
+    public string? AssignSessionId { get; init; }
+
+    /// <summary>
     ///     Pluggable launcher used to spawn the underlying CLI process. Defaults to
     ///     <see cref="DefaultProcessLauncher.Instance"/> which executes the CLI
     ///     directly on the host. Inject a custom <see cref="IProcessLauncher"/>

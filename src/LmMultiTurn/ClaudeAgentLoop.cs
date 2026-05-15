@@ -121,6 +121,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// the CLI is likely to reject the resume because no session is persisted on disk —
     /// the seed is preserved regardless so callers managing persistence externally are not
     /// silently overridden, and a Warning is logged on each request build.
+    /// Mutually exclusive with <see cref="ClaudeAgentSdkOptions.AssignSessionId"/>; passing
+    /// both throws <see cref="ArgumentException"/>.
     /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
@@ -146,6 +148,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             logger)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
+
+        if (!string.IsNullOrEmpty(initialSessionId)
+            && !string.IsNullOrEmpty(claudeOptions.AssignSessionId))
+        {
+            throw new ArgumentException(
+                "initialSessionId drives --resume against an existing on-disk session, while "
+                + nameof(ClaudeAgentSdkOptions.AssignSessionId)
+                + " drives --session-id to create a new session under a host-chosen id. "
+                + "Set at most one.",
+                nameof(initialSessionId));
+        }
 
         _claudeOptions = claudeOptions;
         _mcpServers = mcpServers ?? [];
@@ -1044,6 +1057,23 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // caller-supplied initialSessionId constructor parameter (see _sessionIdWasSeeded).
         var sessionId = CurrentSessionId;
 
+        // Host-chosen first-run session id (--session-id). Mutually exclusive
+        // with --resume: only emitted when no live or seeded session id is
+        // captured yet, so the first run materialises the chosen id and
+        // subsequent runs flip back to --resume automatically.
+        string? assignedSessionId = null;
+        if (string.IsNullOrEmpty(sessionId)
+            && !string.IsNullOrEmpty(_claudeOptions.AssignSessionId))
+        {
+            assignedSessionId = _claudeOptions.AssignSessionId;
+            if (_claudeOptions.DisableSessionPersistence)
+            {
+                Logger.LogWarning(
+                    "AssignSessionId {SessionId} is being emitted to --session-id even though DisableSessionPersistence=true; the assigned session will not be persisted to disk so subsequent --resume attempts will fail",
+                    assignedSessionId);
+            }
+        }
+
         if (_sessionIdWasSeeded
             && !string.IsNullOrEmpty(sessionId)
             && _claudeOptions.DisableSessionPersistence)
@@ -1121,6 +1151,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             MaxTurns = maxTurns,
             MaxThinkingTokens = maxThinkingTokens,
             SessionId = sessionId,
+            AssignedSessionId = assignedSessionId,
             SystemPrompt = _materializedProfile.SystemPrompt ?? SystemPrompt,
             AllowedTools = allowedTools,
             McpServers = mcpServers,

@@ -28,9 +28,21 @@ public record ClaudeAgentSdkRequest
     public int MaxThinkingTokens { get; init; } = 0;
 
     /// <summary>
-    ///     Session ID for resuming existing session (null for new session)
+    ///     Session ID for resuming existing session (null for new session).
+    ///     Emits <c>--resume &lt;id&gt;</c>. Mutually exclusive with
+    ///     <see cref="AssignedSessionId"/>; if both are set, <c>SessionId</c>
+    ///     wins (the captured live id takes precedence over the host-chosen
+    ///     seed). Callers in the multi-turn loop must populate at most one.
     /// </summary>
     public string? SessionId { get; init; }
+
+    /// <summary>
+    ///     Host-chosen session id for a first run. Emits <c>--session-id &lt;guid&gt;</c>,
+    ///     which directs the SDK to create a new on-disk session under the supplied id.
+    ///     Mutually exclusive with <see cref="SessionId"/> (the resume flag); see
+    ///     <see cref="SessionId"/> remarks for precedence.
+    /// </summary>
+    public string? AssignedSessionId { get; init; }
 
     /// <summary>
     ///     Comma-separated list of built-in tools available to the agent.
