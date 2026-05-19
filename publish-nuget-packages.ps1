@@ -91,7 +91,14 @@ $projects = @(
     "src/Misc/AchieveAi.LmDotnetTools.Misc.csproj",
     "src/ClaudeAgentSdkProvider/AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj",
     "src/LmMultiTurn/AchieveAi.LmDotnetTools.LmMultiTurn.csproj",
-    "src/ProcessLauncher/AchieveAi.LmDotnetTools.ProcessLauncher.csproj"
+    "src/ProcessLauncher/AchieveAi.LmDotnetTools.ProcessLauncher.csproj",
+    "src/OpenAiResponsesProvider/AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj",
+    "src/LmStreaming.AspNetCore/AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.csproj",
+    "src/McpServer.AspNetCore/AchieveAi.LmDotnetTools.McpServer.AspNetCore.csproj",
+    "src/CopilotSdkProvider/AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj",
+    "src/CodexSdkProvider/AchieveAi.LmDotnetTools.CodexSdkProvider.csproj",
+    "src/LmTestUtils/LmTestUtils.csproj",
+    "samples/MockProviderHost/MockProviderHost.csproj"
 )
 
 # Get current version from Directory.Build.props

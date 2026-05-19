@@ -3,8 +3,12 @@
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
     <IsTestProject>false</IsTestProject>
+    <RootNamespace>AchieveAi.LmDotnetTools.LmTestUtils</RootNamespace>
+    <AssemblyName>AchieveAi.LmDotnetTools.LmTestUtils</AssemblyName>
+    <PackageId>AchieveAi.LmDotnetTools.LmTestUtils</PackageId>
+    <Description>Test utilities for LmDotnetTools: fake HTTP message handlers, scripted SSE responders, provider test data generators, and Serilog/xUnit logging helpers. Use to mock OpenAI/Anthropic/OpenAI-Responses providers in unit and integration tests.</Description>
+    <PackageTags>$(PackageTags);testing;mocks;http-mocks;xunit;sse</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
