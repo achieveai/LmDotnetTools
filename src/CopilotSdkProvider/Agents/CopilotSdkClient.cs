@@ -654,10 +654,10 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
 
     private CopilotBridgeInitOptions ResolveEffectiveOptions(CopilotBridgeInitOptions options)
     {
-        // Per-call McpServers wins over the constructor default; null/empty falls
-        // back to whatever the SDK options carry. We never merge: a caller asking
-        // for "no MCP" must pass an empty dictionary explicitly, matching the
-        // semantics of the other override fields here.
+        // McpServers follows the same fallback semantics as the IsNullOrWhiteSpace
+        // siblings below: a non-empty per-call dictionary overrides; null or empty
+        // falls back to the SDK options. To disable MCP entirely, leave both
+        // CopilotSdkOptions.McpServers and the per-call dictionary empty.
         var mcpServers = options.McpServers is { Count: > 0 }
             ? options.McpServers
             : _options.McpServers;
