@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
 
@@ -39,6 +40,16 @@ public sealed record CopilotBridgeInitOptions
 
     [JsonPropertyName("sessionId")]
     public string? SessionId { get; init; }
+
+    /// <summary>
+    /// External MCP servers to advertise to the Copilot CLI on <c>session/new</c>.
+    /// The Copilot ACP server validates <c>mcpServers</c> as a required array, so
+    /// the SDK client always emits the field (empty when unset); non-null entries
+    /// here are projected to the ACP array shape with name + transport-specific
+    /// fields.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, McpServerConfig>? McpServers { get; init; }
 }
 
 /// <summary>

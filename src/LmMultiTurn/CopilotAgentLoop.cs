@@ -159,6 +159,11 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 BaseUrl = _options.BaseUrl,
                 ApiKey = _options.ApiKey,
                 SessionId = _copilotSessionId,
+                // Forward MCP servers explicitly even though ResolveEffectiveOptions
+                // falls back to _options.McpServers — keeping the wiring visible at
+                // the call site means future per-turn overrides have a single edit
+                // point and tests can stub the client without surprise behavior.
+                McpServers = _options.McpServers,
             });
 
         Logger.LogInformation(
@@ -409,6 +414,10 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             return;
         }
 
+        // Profile.McpServers is the legacy/profile-driven knob; callers should
+        // route MCP via CopilotSdkOptions.McpServers instead so the single
+        // explicit field controls what reaches the ACP `session/new` array.
+        // The warning still counts profile entries so misuse is observable.
         var mcpCount = profile.McpServers.Count;
         var skillCount = profile.Skills.Count;
         var subAgentCount = profile.SubAgents.Count;

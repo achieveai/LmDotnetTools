@@ -121,6 +121,34 @@ public class CopilotAgentLoopProfileTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SdkOptions_McpServers_PassedThroughToBridgeInitOptions()
+    {
+        // Pins the wiring at CopilotAgentLoop.OnBeforeRunAsync that forwards
+        // CopilotSdkOptions.McpServers into CopilotBridgeInitOptions.McpServers.
+        // A silent regression on this line would cause configured MCP servers
+        // to be quietly dropped from the session/new ACP request.
+        var fakeClient = new RecordingCopilotClient([PromptCompleted()]);
+        var mcp = new Dictionary<string, McpServerConfig>
+        {
+            ["github"] = McpServerConfig.CreateStdio("npx", ["-y", "@github/mcp"]),
+        };
+
+        await using var loop = new CopilotAgentLoop(
+            new CopilotSdkOptions
+            {
+                McpServers = mcp,
+            },
+            threadId: "thread-copilot-mcp-passthrough",
+            clientFactory: (_, _) => fakeClient,
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+
+        await RunOneTurnAsync(loop);
+
+        fakeClient.LastStartOptions.Should().NotBeNull();
+        fakeClient.LastStartOptions!.McpServers.Should().BeSameAs(mcp);
+    }
+
+    [Fact]
     public async Task Profile_WithUnsupportedInputs_DoesNotCrash()
     {
         var fakeClient = new RecordingCopilotClient([PromptCompleted()]);

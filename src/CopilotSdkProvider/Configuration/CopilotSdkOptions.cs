@@ -1,11 +1,13 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.ProcessLauncher;
 
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 
 /// <summary>
-/// Extensibility enum for Copilot tool bridging. Currently only the direct ACP
-/// dynamic tool bridge is supported (no MCP path).
+/// Extensibility enum for Copilot tool bridging. The dynamic ACP tool bridge
+/// hosts client-side tool implementations; orthogonally, external MCP servers
+/// can be advertised to the Copilot CLI via <see cref="CopilotSdkOptions.McpServers"/>.
 /// </summary>
 public enum CopilotToolBridgeMode
 {
@@ -89,12 +91,26 @@ public record CopilotSdkOptions
 
     /// <summary>
     ///     Optional client-supplied runtime inputs (system prompt, MCP servers, etc.).
-    ///     Copilot consumes only <see cref="AgentRuntimeProfile.SystemPrompt"/> (overrides
-    ///     <see cref="DeveloperInstructions"/>). The Copilot ACP protocol does not expose
-    ///     MCP servers, skills, or sub-agents; their presence triggers a one-time
-    ///     warning log entry per loop and otherwise has no effect.
+    ///     Copilot consumes <see cref="AgentRuntimeProfile.SystemPrompt"/> (overrides
+    ///     <see cref="DeveloperInstructions"/>). External MCP servers are taken from
+    ///     <see cref="McpServers"/> rather than the profile; profile-level
+    ///     <see cref="AgentRuntimeProfile.McpServers"/> are ignored (with a one-time
+    ///     warning) so callers have a single, explicit knob. Profile <c>Skills</c>
+    ///     and <c>SubAgents</c> remain unsupported by the Copilot ACP protocol.
     /// </summary>
     public AgentRuntimeProfile? Profile { get; init; }
+
+    /// <summary>
+    ///     External MCP servers to advertise to the Copilot CLI in the
+    ///     <c>session/new</c> ACP request, keyed by server name. Empty (the
+    ///     default) means the agent runs with no external MCP-served tools and
+    ///     the wire field is emitted as <c>[]</c>. Stdio-typed entries are
+    ///     forwarded in full; HTTP-typed entries are forwarded best-effort
+    ///     (raw ACP <c>session/new</c> is stdio-centric) and may be dropped or
+    ///     rejected by older Copilot CLI builds.
+    /// </summary>
+    public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; }
+        = ImmutableDictionary<string, McpServerConfig>.Empty;
 
     /// <summary>
     ///     Pluggable launcher used to spawn the Copilot CLI process. Defaults to

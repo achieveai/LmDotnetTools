@@ -5,6 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AchieveAi.LmDotnetTools.MockProviderHost</RootNamespace>
     <AssemblyName>AchieveAi.LmDotnetTools.MockProviderHost</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>AchieveAi.LmDotnetTools.MockProviderHost</PackageId>
+    <Description>In-process ASP.NET Core mock provider host that exposes OpenAI- and Anthropic-compatible SSE/WebSocket endpoints over a real TCP socket. Drives external CLIs (Claude Agent SDK, Codex, Copilot) in end-to-end tests by wrapping a ScriptedSseResponder.</Description>
+    <PackageTags>$(PackageTags);testing;mocks;aspnetcore;sse;e2e</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
