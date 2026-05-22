@@ -42,11 +42,11 @@ public sealed record CopilotBridgeInitOptions
     public string? SessionId { get; init; }
 
     /// <summary>
-    /// External MCP servers to advertise to the Copilot CLI on <c>session/new</c>.
-    /// The Copilot ACP server validates <c>mcpServers</c> as a required array, so
-    /// the SDK client always emits the field (empty when unset); non-null entries
-    /// here are projected to the ACP array shape with name + transport-specific
-    /// fields.
+    /// External MCP servers to advertise to the Copilot CLI. Non-null/non-empty
+    /// values are written to a per-session JSON config file and passed via
+    /// <c>--additional-mcp-config=@&lt;path&gt;</c> on the CLI command line. The
+    /// ACP <c>session/new</c> request always carries an empty <c>mcpServers</c>
+    /// array (it rejects stdio entries) — this dictionary fully replaces it.
     /// </summary>
     [JsonIgnore]
     public IReadOnlyDictionary<string, McpServerConfig>? McpServers { get; init; }

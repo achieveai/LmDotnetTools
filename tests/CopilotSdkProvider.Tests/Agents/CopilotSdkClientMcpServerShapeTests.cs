@@ -7,18 +7,15 @@ using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Tests.Agents;
 
 /// <summary>
-/// Pins the ACP <c>session/new</c> <c>mcpServers</c> wire shape so the
-/// Copilot CLI's Zod validator keeps accepting it. The wire shape is an
-/// array (NOT a map) of <c>{ name, command, args, env: [{name,value}] }</c>
-/// entries for stdio transport, and <c>{ name, type, url, headers }</c> for
-/// http/sse transports. Reflection is used so the shape contract can be
-/// exercised without exposing <c>BuildSessionNewParams</c> publicly.
+/// Pins the ACP <c>session/new</c> <c>mcpServers</c> wire shape. The Copilot CLI's
+/// <c>session/new</c> Zod schema validates <c>mcpServers</c> as a required array and
+/// silently rejects stdio entries placed there — external MCP servers are routed
+/// through <c>--additional-mcp-config=@&lt;file&gt;</c> (see
+/// <c>CopilotAcpTransportLaunchContractTests</c> + <c>CopilotAcpTransportMcpConfigFileTests</c>)
+/// instead. <c>session/new</c> must therefore always carry an empty array.
 /// </summary>
 public sealed class CopilotSdkClientMcpServerShapeTests
 {
-    /// <summary>
-    /// Hand-rolled options for the unit (no real transport spun up).
-    /// </summary>
     private static CopilotSdkOptions NewOptions(
         IReadOnlyDictionary<string, McpServerConfig>? mcpServers = null)
     {
@@ -29,11 +26,6 @@ public sealed class CopilotSdkClientMcpServerShapeTests
         };
     }
 
-    /// <summary>
-    /// Invoke the private <c>BuildSessionNewParams</c> method through reflection
-    /// and return the resulting parameter dictionary so tests can assert on the
-    /// exact wire keys/values.
-    /// </summary>
     private static IDictionary<string, object?> InvokeBuildSessionNewParams(
         CopilotSdkClient client,
         CopilotBridgeInitOptions options)
@@ -42,10 +34,10 @@ public sealed class CopilotSdkClientMcpServerShapeTests
             "BuildSessionNewParams",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        var result = method!.Invoke(client, [options]);
+        var result = method.Invoke(client, [options]);
         Assert.NotNull(result);
         Assert.IsAssignableFrom<IDictionary<string, object?>>(result);
-        return (IDictionary<string, object?>)result!;
+        return (IDictionary<string, object?>)result;
     }
 
     private static IList<object> McpServerArray(IDictionary<string, object?> parameters)
@@ -53,16 +45,6 @@ public sealed class CopilotSdkClientMcpServerShapeTests
         Assert.True(parameters.ContainsKey("mcpServers"));
         var raw = parameters["mcpServers"];
         Assert.NotNull(raw);
-        return Materialize(raw!);
-    }
-
-    /// <summary>
-    /// Materialize a non-generic <see cref="System.Collections.IEnumerable"/> to a
-    /// <see cref="List{Object}"/> without using LINQ — analyzer IDE0305 fires on
-    /// <c>.Cast&lt;object&gt;().ToList()</c> in tests.
-    /// </summary>
-    private static IList<object> Materialize(object raw)
-    {
         var enumerable = Assert.IsAssignableFrom<System.Collections.IEnumerable>(raw);
         var list = new List<object>();
         foreach (var item in enumerable)
@@ -70,12 +52,6 @@ public sealed class CopilotSdkClientMcpServerShapeTests
             list.Add(item);
         }
         return list;
-    }
-
-    private static IDictionary<string, object?> AsEntry(object entry)
-    {
-        Assert.IsAssignableFrom<IDictionary<string, object?>>(entry);
-        return (IDictionary<string, object?>)entry;
     }
 
     [Fact]
@@ -90,8 +66,12 @@ public sealed class CopilotSdkClientMcpServerShapeTests
     }
 
     [Fact]
-    public void Stdio_entry_is_projected_to_acp_shape()
+    public void Stdio_entries_are_NOT_projected_into_session_new()
     {
+        // External MCP servers flow through --additional-mcp-config=@<file>, not
+        // through session/new. The wire array must remain empty regardless of the
+        // configured McpServers dictionary so the Copilot CLI Zod validator does
+        // not see (and reject) a stdio entry on the ACP request.
         var mcp = new Dictionary<string, McpServerConfig>
         {
             ["github"] = McpServerConfig.CreateStdio(
@@ -108,31 +88,16 @@ public sealed class CopilotSdkClientMcpServerShapeTests
         };
 
         var parameters = InvokeBuildSessionNewParams(client, options);
-        var list = McpServerArray(parameters);
 
-        Assert.Single(list);
-        var entry = AsEntry(list[0]);
-        Assert.Equal("github", entry["name"]);
-        Assert.Equal("npx", entry["command"]);
-
-        var args = Assert.IsType<string[]>(entry["args"]);
-        Assert.Equal(["-y", "@github/mcp"], args);
-
-        // env is an array of {name, value} objects, not a plain map
-        var envList = Materialize(entry["env"]!);
-        Assert.Single(envList);
-        var envEntry = AsEntry(envList[0]);
-        Assert.Equal("TOKEN", envEntry["name"]);
-        Assert.Equal("abc", envEntry["value"]);
-
-        // No URL or explicit type field on stdio entries
-        Assert.False(entry.ContainsKey("url"));
-        Assert.False(entry.ContainsKey("type"));
+        Assert.Empty(McpServerArray(parameters));
     }
 
     [Fact]
-    public void Http_entry_is_projected_with_url_and_headers()
+    public void Http_entries_are_NOT_projected_into_session_new()
     {
+        // Same as stdio: even though the ACP schema historically accepted http
+        // entries, the consolidated routing (single source of truth) is the
+        // --additional-mcp-config file.
         var mcp = new Dictionary<string, McpServerConfig>
         {
             ["remote"] = McpServerConfig.CreateHttp(
@@ -148,28 +113,20 @@ public sealed class CopilotSdkClientMcpServerShapeTests
         };
 
         var parameters = InvokeBuildSessionNewParams(client, options);
-        var list = McpServerArray(parameters);
 
-        Assert.Single(list);
-        var entry = AsEntry(list[0]);
-        Assert.Equal("remote", entry["name"]);
-        Assert.Equal("http", entry["type"]);
-        Assert.Equal("https://example.com/mcp", entry["url"]);
-
-        var headers = Materialize(entry["headers"]!);
-        Assert.Single(headers);
-        var headerEntry = AsEntry(headers[0]);
-        Assert.Equal("X-Auth", headerEntry["name"]);
-        Assert.Equal("bearer", headerEntry["value"]);
+        Assert.Empty(McpServerArray(parameters));
     }
 
     [Fact]
-    public void Bridge_options_McpServers_override_sdk_options()
+    public void Bridge_options_McpServers_override_sdk_options_via_resolver()
     {
         // Per-call dictionary on CopilotBridgeInitOptions wins over the
         // CopilotSdkClient's ctor-supplied McpServers (mirrors how Model,
-        // WorkingDirectory, etc. resolve). This guards the override path
-        // used by CopilotAgentLoop in OnBeforeRunAsync.
+        // WorkingDirectory, etc. resolve). This guards the override path used by
+        // CopilotAgentLoop in OnBeforeRunAsync — even though McpServers no longer
+        // appears in session/new, the resolver still needs to surface the
+        // per-call value so the transport's --additional-mcp-config file picks
+        // up the override.
         var ctorDict = new Dictionary<string, McpServerConfig>
         {
             ["ctor"] = McpServerConfig.CreateStdio("cmd-a", ["x"]),
@@ -186,45 +143,15 @@ public sealed class CopilotSdkClientMcpServerShapeTests
             McpServers = perCallDict,
         };
 
-        // Need to also run options through the private resolver since
-        // BuildSessionNewParams takes the resolved options. Re-invoke the
-        // same logic by calling ResolveEffectiveOptions reflectively.
         var resolveMethod = typeof(CopilotSdkClient).GetMethod(
             "ResolveEffectiveOptions",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(resolveMethod);
-        var resolved = (CopilotBridgeInitOptions)resolveMethod!.Invoke(client, [options])!;
+        var resolved = (CopilotBridgeInitOptions)resolveMethod.Invoke(client, [options])!;
 
-        var parameters = InvokeBuildSessionNewParams(client, resolved);
-        var list = McpServerArray(parameters);
-        Assert.Single(list);
-        var entry = AsEntry(list[0]);
-        Assert.Equal("override", entry["name"]);
-        Assert.Equal("cmd-b", entry["command"]);
-    }
-
-    [Fact]
-    public void Stdio_entry_without_command_is_skipped()
-    {
-        // Guards against shipping a malformed entry to Copilot — the Zod
-        // validator would reject the whole session/new request.
-        var mcp = new Dictionary<string, McpServerConfig>
-        {
-            ["broken"] = new McpServerConfig { Type = "stdio", Command = null },
-            ["good"] = McpServerConfig.CreateStdio("cmd", ["ok"]),
-        };
-        var client = new CopilotSdkClient(NewOptions(mcp));
-        var options = new CopilotBridgeInitOptions
-        {
-            Model = "m",
-            WorkingDirectory = "/tmp",
-            McpServers = mcp,
-        };
-
-        var parameters = InvokeBuildSessionNewParams(client, options);
-        var list = McpServerArray(parameters);
-        Assert.Single(list);
-        var entry = AsEntry(list[0]);
-        Assert.Equal("good", entry["name"]);
+        Assert.NotNull(resolved.McpServers);
+        Assert.Single(resolved.McpServers);
+        Assert.True(resolved.McpServers.ContainsKey("override"));
+        Assert.Equal("cmd-b", resolved.McpServers["override"].Command);
     }
 }

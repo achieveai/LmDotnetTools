@@ -101,13 +101,14 @@ public record CopilotSdkOptions
     public AgentRuntimeProfile? Profile { get; init; }
 
     /// <summary>
-    ///     External MCP servers to advertise to the Copilot CLI in the
-    ///     <c>session/new</c> ACP request, keyed by server name. Empty (the
-    ///     default) means the agent runs with no external MCP-served tools and
-    ///     the wire field is emitted as <c>[]</c>. Stdio-typed entries are
-    ///     forwarded in full; HTTP-typed entries are forwarded best-effort
-    ///     (raw ACP <c>session/new</c> is stdio-centric) and may be dropped or
-    ///     rejected by older Copilot CLI builds.
+    ///     External MCP servers to advertise to the Copilot CLI, keyed by server name.
+    ///     Empty (the default) means the agent runs with no external MCP-served tools.
+    ///     Non-empty values are written to a per-session JSON config file and passed
+    ///     via <c>--additional-mcp-config=@&lt;path&gt;</c> on the CLI command line so
+    ///     stdio entries are accepted (the ACP <c>session/new</c> <c>mcpServers</c>
+    ///     array is HTTP/SSE-only and silently rejects stdio servers). HTTP and SSE
+    ///     entries also flow through the same file. The temp file is created at
+    ///     transport startup and deleted on shutdown.
     /// </summary>
     public IReadOnlyDictionary<string, McpServerConfig> McpServers { get; init; }
         = ImmutableDictionary<string, McpServerConfig>.Empty;
