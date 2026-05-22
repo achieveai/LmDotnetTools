@@ -123,7 +123,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             // external MCP servers are configured (Copilot CLI's ACP session/new
             // wire shape is stdio-hostile, so all MCP routing flows through the
             // CLI's own config-file loader instead).
-            var arguments = new List<string> { "--acp", "--stdio" };
+            var arguments = BuildCliArguments(_options);
             var hostPaths = new List<HostPathReference>
             {
                 new(workingDirectory, HostPathKind.WorkingDirectory),
@@ -713,6 +713,33 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 pending.TrySetException(ex);
             }
         }
+    }
+
+    private static List<string> BuildCliArguments(CopilotSdkOptions options)
+    {
+        var args = new List<string>(capacity: 4) { "--acp", "--stdio" };
+
+        var disabled = options.DisabledMcpServers;
+        if (disabled != null)
+        {
+            foreach (var name in disabled)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                args.Add("--disable-mcp-server");
+                args.Add(name.Trim());
+            }
+        }
+
+        if (options.DisableBuiltinMcps)
+        {
+            args.Add("--disable-builtin-mcps");
+        }
+
+        return args;
     }
 
     /// <summary>

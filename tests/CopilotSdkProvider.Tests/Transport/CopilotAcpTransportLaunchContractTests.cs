@@ -65,4 +65,149 @@ public class CopilotAcpTransportLaunchContractTests
         request.HostPaths.Should().ContainSingle()
             .Which.Should().BeEquivalentTo(new HostPathReference(workingDir, HostPathKind.WorkingDirectory));
     }
+
+    [Fact]
+    public async Task StartAsync_DefaultOptions_DoesNotEmitDisableMcpFlags()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+        });
+
+        request.Arguments.Should().Equal("--acp", "--stdio");
+    }
+
+    [Fact]
+    public async Task StartAsync_SingleDisabledMcpServer_EmitsOneDisableMcpServerFlag()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["playwright"],
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright");
+    }
+
+    [Fact]
+    public async Task StartAsync_MultipleDisabledMcpServers_EmitsRepeatedFlagsInOrder()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["playwright", "memory", "github"],
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright",
+            "--disable-mcp-server",
+            "memory",
+            "--disable-mcp-server",
+            "github");
+    }
+
+    [Fact]
+    public async Task StartAsync_NullOrWhitespaceServerName_IsSkipped()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["playwright", "  ", null!, string.Empty, "memory"],
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright",
+            "--disable-mcp-server",
+            "memory");
+    }
+
+    [Fact]
+    public async Task StartAsync_DisabledServerName_IsTrimmed()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["  playwright  ", "\tmemory\n"],
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright",
+            "--disable-mcp-server",
+            "memory");
+    }
+
+    [Fact]
+    public async Task StartAsync_DisableBuiltinMcps_EmitsBuiltinFlag()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisableBuiltinMcps = true,
+        });
+
+        request.Arguments.Should().Equal("--acp", "--stdio", "--disable-builtin-mcps");
+    }
+
+    [Fact]
+    public async Task StartAsync_BothDisableFlags_EmitsDisabledServersBeforeBuiltinFlag()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["playwright", "memory"],
+            DisableBuiltinMcps = true,
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright",
+            "--disable-mcp-server",
+            "memory",
+            "--disable-builtin-mcps");
+    }
+
+    private static async Task<ProcessLaunchRequest> CaptureLaunchRequestAsync(CopilotSdkOptions baseOptions)
+    {
+        var recorder = new RecordingLauncher();
+        var options = baseOptions with { ProcessLauncher = recorder };
+
+        await using var transport = new CopilotAcpTransport(options);
+
+        var workingDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(workingDir);
+        try
+        {
+            var act = async () => await transport.StartAsync(
+                workingDir,
+                apiKey: null,
+                baseUrl: null,
+                requestHandler: (_, _, _) => Task.FromResult(default(JsonElement)),
+                notificationHandler: (_, _) => { },
+                ct: CancellationToken.None);
+
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+        finally
+        {
+            Directory.Delete(workingDir, recursive: true);
+        }
+
+        recorder.LastRequest.Should().NotBeNull();
+        return recorder.LastRequest!;
+    }
 }
