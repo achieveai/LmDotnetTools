@@ -132,6 +132,24 @@ public class CopilotAcpTransportLaunchContractTests
     }
 
     [Fact]
+    public async Task StartAsync_DisabledServerName_IsTrimmed()
+    {
+        var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions
+        {
+            CopilotCliPath = "copilot-cli-mock",
+            DisabledMcpServers = ["  playwright  ", "\tmemory\n"],
+        });
+
+        request.Arguments.Should().Equal(
+            "--acp",
+            "--stdio",
+            "--disable-mcp-server",
+            "playwright",
+            "--disable-mcp-server",
+            "memory");
+    }
+
+    [Fact]
     public async Task StartAsync_DisableBuiltinMcps_EmitsBuiltinFlag()
     {
         var request = await CaptureLaunchRequestAsync(new CopilotSdkOptions

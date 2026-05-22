@@ -687,7 +687,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 }
 
                 args.Add("--disable-mcp-server");
-                args.Add(name);
+                args.Add(name.Trim());
             }
         }
 
