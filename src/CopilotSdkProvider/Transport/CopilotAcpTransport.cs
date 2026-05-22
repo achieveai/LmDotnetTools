@@ -102,7 +102,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             {
                 Agent = CliAgentKind.Copilot,
                 ExecutableHint = _options.CopilotCliPath,
-                Arguments = ["--acp", "--stdio"],
+                Arguments = BuildCliArguments(_options),
                 WorkingDirectory = workingDirectory,
                 EnvironmentOverrides = envOverrides,
                 StandardOutputEncoding = Encoding.UTF8,
@@ -670,6 +670,33 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 pending.TrySetException(ex);
             }
         }
+    }
+
+    private static IReadOnlyList<string> BuildCliArguments(CopilotSdkOptions options)
+    {
+        var args = new List<string>(capacity: 4) { "--acp", "--stdio" };
+
+        var disabled = options.DisabledMcpServers;
+        if (disabled != null)
+        {
+            foreach (var name in disabled)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                args.Add("--disable-mcp-server");
+                args.Add(name);
+            }
+        }
+
+        if (options.DisableBuiltinMcps)
+        {
+            args.Add("--disable-builtin-mcps");
+        }
+
+        return args;
     }
 
     private static void WriteArbitraryValue(Utf8JsonWriter writer, object value, JsonSerializerOptions jsonOptions)

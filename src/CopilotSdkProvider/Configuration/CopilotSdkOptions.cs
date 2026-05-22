@@ -113,6 +113,20 @@ public record CopilotSdkOptions
         = ImmutableDictionary<string, McpServerConfig>.Empty;
 
     /// <summary>
+    ///     Names of MCP servers the Copilot CLI should be told to disable. Each
+    ///     non-empty entry projects to one <c>--disable-mcp-server &lt;name&gt;</c>
+    ///     argument on the spawned CLI process. Null or whitespace entries are
+    ///     skipped silently. Order is preserved.
+    /// </summary>
+    public IReadOnlyList<string> DisabledMcpServers { get; init; } = [];
+
+    /// <summary>
+    ///     When true, the Copilot CLI is launched with <c>--disable-builtin-mcps</c>,
+    ///     suppressing the CLI's bundled built-in MCP servers. Default <c>false</c>.
+    /// </summary>
+    public bool DisableBuiltinMcps { get; init; }
+
+    /// <summary>
     ///     Pluggable launcher used to spawn the Copilot CLI process. Defaults to
     ///     <see cref="DefaultProcessLauncher.Instance"/> which executes the CLI
     ///     directly on the host. Inject a custom <see cref="IProcessLauncher"/>
