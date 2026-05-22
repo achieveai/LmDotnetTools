@@ -5,7 +5,6 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Transport;
-using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents;
@@ -16,8 +15,10 @@ namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents;
 /// and per-turn <c>session/prompt</c> streaming. Intentionally leaner than the Codex
 /// client: no internal-tool span tracking and no feature-flag routing. External MCP
 /// servers (when supplied via <see cref="CopilotBridgeInitOptions.McpServers"/> or
-/// the equivalent <see cref="CopilotSdkOptions.McpServers"/>) are projected to the
-/// ACP <c>mcpServers</c> array on <c>session/new</c>.
+/// the equivalent <see cref="CopilotSdkOptions.McpServers"/>) are NOT routed through
+/// the ACP <c>session/new</c> <c>mcpServers</c> array (which rejects stdio entries);
+/// instead the transport writes them to a per-session temp file and passes
+/// <c>--additional-mcp-config=@&lt;path&gt;</c> on the CLI command line.
 /// </summary>
 public sealed class CopilotSdkClient : ICopilotSdkClient
 {
@@ -103,6 +104,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
                 workingDirectory,
                 effectiveOptions.ApiKey,
                 effectiveOptions.BaseUrl,
+                effectiveOptions.McpServers,
                 HandleServerRequestAsync,
                 HandleServerNotification,
                 ct);
@@ -777,8 +779,11 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
     {
         // Copilot CLI 1.0.x validates session/new params with Zod: `cwd` must be a non-null string
         // and `mcpServers` must be an array (even when empty). Default cwd to the current process
-        // directory when the caller did not specify one, and project any caller-provided
-        // McpServers dictionary to the ACP array shape (empty when unset).
+        // directory when the caller did not specify one. External MCP servers are NOT routed
+        // through this array — the ACP session/new schema rejects stdio entries and is
+        // unreliable for http/sse, so the provider projects them onto the CLI's
+        // `--additional-mcp-config=@<file>` flag (see CopilotAcpTransport). Always emit
+        // an empty array here so the Zod validator is satisfied.
         var cwd = !string.IsNullOrWhiteSpace(options.WorkingDirectory)
             ? options.WorkingDirectory
             : Environment.CurrentDirectory;
@@ -787,7 +792,7 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         {
             ["model"] = options.Model,
             ["cwd"] = cwd,
-            ["mcpServers"] = BuildMcpServerArray(options.McpServers),
+            ["mcpServers"] = Array.Empty<object>(),
         };
 
         if (!string.IsNullOrWhiteSpace(options.SessionId))
@@ -831,111 +836,6 @@ public sealed class CopilotSdkClient : ICopilotSdkClient
         }
 
         return parameters;
-    }
-
-    /// <summary>
-    /// Project a neutral <see cref="McpServerConfig"/> dictionary onto the ACP
-    /// <c>mcpServers</c> array shape Copilot's <c>session/new</c> Zod schema
-    /// validates. Each entry becomes <c>{ name, command, args, env: [{ name, value }] }</c>
-    /// for stdio transport. HTTP entries are forwarded best-effort with
-    /// <c>{ name, type: "http", url, headers: [{ name, value }] }</c>; older
-    /// Copilot CLI builds may reject these because raw ACP <c>session/new</c>
-    /// is stdio-centric. Entries missing required fields are skipped after a
-    /// warning so a single misconfigured server cannot block the whole session.
-    /// </summary>
-    private IReadOnlyList<object> BuildMcpServerArray(IReadOnlyDictionary<string, McpServerConfig>? mcpServers)
-    {
-        if (mcpServers is null || mcpServers.Count == 0)
-        {
-            return [];
-        }
-
-        var result = new List<object>(mcpServers.Count);
-        foreach (var (name, config) in mcpServers)
-        {
-            if (string.IsNullOrWhiteSpace(name) || config is null)
-            {
-                _logger?.LogWarning(
-                    "{event_type} {event_status} {server_name} {reason}",
-                    "copilot.mcp.server.skip",
-                    "skipped",
-                    name ?? "<null>",
-                    "name_or_config_null");
-                continue;
-            }
-
-            var entry = new Dictionary<string, object?> { ["name"] = name };
-
-            var transport = string.IsNullOrWhiteSpace(config.Type) ? "stdio" : config.Type;
-            if (string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(transport, "sse", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(config.Url))
-                {
-                    _logger?.LogWarning(
-                        "{event_type} {event_status} {server_name} {reason}",
-                        "copilot.mcp.server.skip",
-                        "skipped",
-                        name,
-                        "http_missing_url");
-                    continue;
-                }
-
-                entry["type"] = transport;
-                entry["url"] = config.Url;
-                if (config.Headers is { Count: > 0 })
-                {
-                    entry["headers"] = ToAcpNameValuePairs(config.Headers);
-                }
-            }
-            else
-            {
-                if (string.IsNullOrWhiteSpace(config.Command))
-                {
-                    _logger?.LogWarning(
-                        "{event_type} {event_status} {server_name} {reason}",
-                        "copilot.mcp.server.skip",
-                        "skipped",
-                        name,
-                        "stdio_missing_command");
-                    continue;
-                }
-
-                entry["command"] = config.Command;
-                // ACP `args` is a required string array; emit `[]` rather than omit
-                // so the wire shape matches the Zod schema even for argument-less
-                // commands (e.g. `npx some-mcp`).
-                string[] args = config.Args is null ? [] : [.. config.Args];
-                entry["args"] = args;
-                if (config.Env is { Count: > 0 })
-                {
-                    entry["env"] = ToAcpNameValuePairs(config.Env);
-                }
-            }
-
-            result.Add(entry);
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// ACP encodes env/headers as an array of <c>{ name, value }</c> objects rather
-    /// than a plain object so order and duplicate keys are preserved over the wire.
-    /// </summary>
-    private static IReadOnlyList<object> ToAcpNameValuePairs(IReadOnlyDictionary<string, string> source)
-    {
-        var pairs = new List<object>(source.Count);
-        foreach (var (key, value) in source)
-        {
-            pairs.Add(new Dictionary<string, object?>
-            {
-                ["name"] = key,
-                ["value"] = value,
-            });
-        }
-
-        return pairs;
     }
 
     private static object BuildSessionPromptParams(string sessionId, string input)

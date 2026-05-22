@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.ProcessLauncher;
 using Microsoft.Extensions.Logging;
 
@@ -34,6 +35,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
     private Func<string, JsonElement?, CancellationToken, Task<JsonElement>>? _requestHandler;
     private Action<string, JsonElement?>? _notificationHandler;
     private CopilotRpcTraceWriter? _rpcTraceWriter;
+    private string? _mcpConfigTempFilePath;
     private long _nextRpcId;
     private int _closeSignalSent;
     private int _disposed;
@@ -48,10 +50,29 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
 
     public event Action<Exception?>? Closed;
 
+    public Task StartAsync(
+        string workingDirectory,
+        string? apiKey,
+        string? baseUrl,
+        Func<string, JsonElement?, CancellationToken, Task<JsonElement>> requestHandler,
+        Action<string, JsonElement?> notificationHandler,
+        CancellationToken ct)
+    {
+        return StartAsync(
+            workingDirectory,
+            apiKey,
+            baseUrl,
+            mcpServers: null,
+            requestHandler,
+            notificationHandler,
+            ct);
+    }
+
     public async Task StartAsync(
         string workingDirectory,
         string? apiKey,
         string? baseUrl,
+        IReadOnlyDictionary<string, McpServerConfig>? mcpServers,
         Func<string, JsonElement?, CancellationToken, Task<JsonElement>> requestHandler,
         Action<string, JsonElement?> notificationHandler,
         CancellationToken ct)
@@ -98,16 +119,34 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 envOverrides["COPILOT_BASE_URL"] = baseUrl;
             }
 
+            // Default args; appended with --additional-mcp-config=@<file> when
+            // external MCP servers are configured (Copilot CLI's ACP session/new
+            // wire shape is stdio-hostile, so all MCP routing flows through the
+            // CLI's own config-file loader instead).
+            var arguments = BuildCliArguments(_options);
+            var hostPaths = new List<HostPathReference>
+            {
+                new(workingDirectory, HostPathKind.WorkingDirectory),
+            };
+
+            var mcpConfigPath = TryWriteMcpConfigFile(mcpServers);
+            if (mcpConfigPath != null)
+            {
+                _mcpConfigTempFilePath = mcpConfigPath;
+                arguments.Add($"--additional-mcp-config=@{mcpConfigPath}");
+                hostPaths.Add(new HostPathReference(mcpConfigPath, HostPathKind.McpConfigFile));
+            }
+
             var launchRequest = new ProcessLaunchRequest
             {
                 Agent = CliAgentKind.Copilot,
                 ExecutableHint = _options.CopilotCliPath,
-                Arguments = BuildCliArguments(_options),
+                Arguments = arguments,
                 WorkingDirectory = workingDirectory,
                 EnvironmentOverrides = envOverrides,
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
-                HostPaths = [new HostPathReference(workingDirectory, HostPathKind.WorkingDirectory)],
+                HostPaths = hostPaths,
             };
 
             try
@@ -116,12 +155,14 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             }
             catch (ProcessLauncherException ex)
             {
+                CleanupMcpConfigTempFile();
                 throw new InvalidOperationException(
                     $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
                     ex);
             }
             catch (Exception ex)
             {
+                CleanupMcpConfigTempFile();
                 throw new InvalidOperationException(
                     $"Failed to start Copilot CLI (configured as '{_options.CopilotCliPath}'). Ensure Copilot CLI is installed and accessible.",
                     ex);
@@ -302,6 +343,8 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             {
                 await _rpcTraceWriter.DisposeAsync();
             }
+
+            CleanupMcpConfigTempFile();
 
             _processCts = null;
             _stdin = null;
@@ -672,7 +715,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         }
     }
 
-    private static IReadOnlyList<string> BuildCliArguments(CopilotSdkOptions options)
+    private static List<string> BuildCliArguments(CopilotSdkOptions options)
     {
         var args = new List<string>(capacity: 4) { "--acp", "--stdio" };
 
@@ -697,6 +740,156 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
         }
 
         return args;
+    }
+
+    /// <summary>
+    /// Serialise external MCP servers to a per-session JSON config file and return the
+    /// host-side path. The Copilot CLI consumes this via <c>--additional-mcp-config=@&lt;path&gt;</c>
+    /// and accepts stdio entries there (unlike the ACP <c>session/new</c> mcpServers
+    /// array, which is HTTP/SSE-only). Returns <c>null</c> when the map is empty or
+    /// every entry is invalid — callers should NOT emit the flag in that case so
+    /// session-startup behaviour is unchanged from before this feature.
+    /// </summary>
+    internal string? TryWriteMcpConfigFile(IReadOnlyDictionary<string, McpServerConfig>? mcpServers)
+    {
+        var json = BuildMcpConfigFileContent(mcpServers);
+        if (json == null)
+        {
+            return null;
+        }
+
+        var path = Path.Combine(Path.GetTempPath(), $"copilot-mcp-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        _logger?.LogInformation(
+            "{event_type} {event_status} {provider} {provider_mode} {server_count} {path}",
+            "copilot.mcp.config_file.write",
+            "completed",
+            _options.Provider,
+            _options.ProviderMode,
+            mcpServers?.Count ?? 0,
+            path);
+
+        return path;
+    }
+
+    /// <summary>
+    /// Build the JSON document Copilot CLI expects at <c>--additional-mcp-config</c>.
+    /// Schema: <c>{ "mcpServers": { "&lt;name&gt;": { "type", "command", "args", "env": { K: V } } } }</c>
+    /// for stdio entries, with <c>"type", "url", "headers": { K: V }</c> for http/sse.
+    /// Returns <c>null</c> when no valid entries remain (so callers can short-circuit
+    /// the flag/file emission).
+    /// </summary>
+    internal string? BuildMcpConfigFileContent(IReadOnlyDictionary<string, McpServerConfig>? mcpServers)
+    {
+        if (mcpServers is null || mcpServers.Count == 0)
+        {
+            return null;
+        }
+
+        var entries = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (name, config) in mcpServers)
+        {
+            if (string.IsNullOrWhiteSpace(name) || config is null)
+            {
+                _logger?.LogWarning(
+                    "{event_type} {event_status} {server_name} {reason}",
+                    "copilot.mcp.server.skip",
+                    "skipped",
+                    name ?? "<null>",
+                    "name_or_config_null");
+                continue;
+            }
+
+            var transport = string.IsNullOrWhiteSpace(config.Type) ? "stdio" : config.Type;
+            var entry = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["type"] = transport,
+            };
+
+            if (string.Equals(transport, "http", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(transport, "sse", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(config.Url))
+                {
+                    _logger?.LogWarning(
+                        "{event_type} {event_status} {server_name} {reason}",
+                        "copilot.mcp.server.skip",
+                        "skipped",
+                        name,
+                        "http_missing_url");
+                    continue;
+                }
+
+                entry["url"] = config.Url;
+                if (config.Headers is { Count: > 0 })
+                {
+                    entry["headers"] = config.Headers;
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(config.Command))
+                {
+                    _logger?.LogWarning(
+                        "{event_type} {event_status} {server_name} {reason}",
+                        "copilot.mcp.server.skip",
+                        "skipped",
+                        name,
+                        "stdio_missing_command");
+                    continue;
+                }
+
+                entry["command"] = config.Command;
+                entry["args"] = config.Args ?? [];
+                if (config.Env is { Count: > 0 })
+                {
+                    entry["env"] = config.Env;
+                }
+            }
+
+            entries[name] = entry;
+        }
+
+        if (entries.Count == 0)
+        {
+            return null;
+        }
+
+        var document = new Dictionary<string, object> { ["mcpServers"] = entries };
+        return JsonSerializer.Serialize(document, _json);
+    }
+
+    private void CleanupMcpConfigTempFile()
+    {
+        var path = _mcpConfigTempFilePath;
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        _mcpConfigTempFilePath = null;
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Cleanup is best-effort: stale files in the OS temp directory are
+            // recovered by the OS on reboot/cleanup sweeps. Log and continue so
+            // shutdown isn't blocked by an I/O error.
+            _logger?.LogWarning(
+                ex,
+                "{event_type} {event_status} {provider} {provider_mode} {path}",
+                "copilot.mcp.config_file.cleanup",
+                "failed",
+                _options.Provider,
+                _options.ProviderMode,
+                path);
+        }
     }
 
     private static void WriteArbitraryValue(Utf8JsonWriter writer, object value, JsonSerializerOptions jsonOptions)
