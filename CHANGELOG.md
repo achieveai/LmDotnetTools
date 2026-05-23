@@ -5,6 +5,19 @@ All notable changes to the LmDotnetTools project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.33] - 2026-05-23
+
+### Added
+
+- Copilot CLI: project `--disable-mcp-server` / `--disable-builtin-mcps` from `CopilotSdkOptions` (#60)
+
+### Fixed
+
+- Copilot CLI: route MCP servers via `--additional-mcp-config` file instead of inline args (#61)
+- Copilot CLI: trim disabled MCP server names in `BuildCliArguments`
+
+---
+
 ## [1.0.0] - 2025-08-01
 
 ### Added
