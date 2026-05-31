@@ -6,6 +6,8 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
@@ -184,6 +186,10 @@ try
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
+                "sonnet" => CreateCopilotAnthropicAgent("Sonnet", loggerFactory),
+                "haiku" => CreateCopilotAnthropicAgent("Haiku", loggerFactory),
+                "gpt-5.5" => CreateCopilotResponsesAgent("GPT-5.5", loggerFactory),
+                "gpt-5.5-mini" => CreateCopilotResponsesAgent("GPT-5.5 mini", loggerFactory),
                 "test-anthropic" => CreateAnthropicTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
                 "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
                 _ => throw new ProviderUnavailableException(
@@ -714,6 +720,44 @@ public partial class Program
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
+    // Shared across the GitHub Copilot-backed agents: one token (resolved from the Copilot/gh CLI
+    // login) and one client-session id for the process lifetime.
+    private static readonly Lazy<ICopilotTokenProvider> s_copilotTokenProvider =
+        new(() => new CliCredentialCopilotTokenProvider());
+
+    private static readonly Lazy<CopilotSessionContext> s_copilotSession = new(() => new CopilotSessionContext());
+
+    /// <summary>
+    ///     Creates an Anthropic Messages agent (Sonnet/Haiku) routed through the GitHub Copilot
+    ///     backend. The model id is supplied per-thread by <see cref="GetModelIdForProvider"/>.
+    /// </summary>
+    private static IStreamingAgent CreateCopilotAnthropicAgent(string name, ILoggerFactory loggerFactory)
+    {
+        Log.Information("Creating Copilot-backed Anthropic agent: {Name}", name);
+        return CopilotAnthropicAgentFactory.Create(
+            name,
+            s_copilotTokenProvider.Value,
+            s_copilotSession.Value,
+            logger: loggerFactory.CreateLogger<AnthropicAgent>()
+        );
+    }
+
+    /// <summary>
+    ///     Creates an OpenAI Responses agent (GPT-5.5 / GPT-5.5 mini) routed through the GitHub Copilot
+    ///     backend over SSE (stateless per turn — the multi-turn loop resends full history each turn).
+    /// </summary>
+    private static IStreamingAgent CreateCopilotResponsesAgent(string name, ILoggerFactory loggerFactory)
+    {
+        Log.Information("Creating Copilot-backed OpenAI Responses agent: {Name}", name);
+        return CopilotResponsesAgentFactory.Create(
+            name,
+            s_copilotTokenProvider.Value,
+            CopilotResponsesTransport.Sse,
+            s_copilotSession.Value,
+            logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>()
+        );
+    }
+
     /// <summary>
     ///     Gets the model ID based on the provider mode and env vars.
     /// </summary>
@@ -989,6 +1033,10 @@ public partial class Program
             "claude" or "claude-mock" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
             "codex" or "codex-mock" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
             "copilot" or "copilot-mock" => Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5",
+            "sonnet" => Environment.GetEnvironmentVariable("SONNET_MODEL") ?? "claude-sonnet-4.5",
+            "haiku" => Environment.GetEnvironmentVariable("HAIKU_MODEL") ?? "claude-haiku-4.5",
+            "gpt-5.5" => Environment.GetEnvironmentVariable("GPT55_MODEL") ?? "gpt-5.5",
+            "gpt-5.5-mini" => Environment.GetEnvironmentVariable("GPT55_MINI_MODEL") ?? "gpt-5-mini",
             _ => "test-model",
         };
     }

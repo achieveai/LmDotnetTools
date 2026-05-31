@@ -47,6 +47,42 @@ public sealed record ResponseCreateRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Include { get; init; }
 
+    /// <summary>
+    ///     Reasoning configuration (e.g. <c>{ "effort": "high" }</c>). Used by reasoning-capable
+    ///     models surfaced through the Copilot Responses transport.
+    /// </summary>
+    [JsonPropertyName("reasoning")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ResponseReasoningOptions? Reasoning { get; init; }
+
+    /// <summary>
+    ///     Text output configuration (e.g. <c>{ "verbosity": "low" }</c>).
+    /// </summary>
+    [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ResponseTextOptions? Text { get; init; }
+
+    /// <summary>
+    ///     Whether the server should persist response state. The Copilot CLI sends <c>false</c> and
+    ///     carries reasoning across turns via <c>include: ["reasoning.encrypted_content"]</c>.
+    /// </summary>
+    [JsonPropertyName("store")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Store { get; init; }
+
+    /// <summary>Whether the model may emit tool calls in parallel.</summary>
+    [JsonPropertyName("parallel_tool_calls")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ParallelToolCalls { get; init; }
+
+    /// <summary>
+    ///     Who initiated this turn (<c>user</c> or <c>agent</c>). Carried in the WebSocket
+    ///     <c>response.create</c> frame.
+    /// </summary>
+    [JsonPropertyName("initiator")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Initiator { get; init; }
+
     [JsonPropertyName("metadata")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonNode? Metadata { get; init; }
@@ -74,6 +110,30 @@ public sealed record ResponseCreateRequest
 }
 
 /// <summary>
+///     Reasoning configuration for a <c>response.create</c> request.
+/// </summary>
+public sealed record ResponseReasoningOptions
+{
+    [JsonPropertyName("effort")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Effort { get; init; }
+
+    [JsonPropertyName("summary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Summary { get; init; }
+}
+
+/// <summary>
+///     Text output configuration for a <c>response.create</c> request.
+/// </summary>
+public sealed record ResponseTextOptions
+{
+    [JsonPropertyName("verbosity")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Verbosity { get; init; }
+}
+
+/// <summary>
 ///     Item in the <c>input</c> array of a <c>response.create</c> request.
 ///     Models user/assistant message inputs and function-call outputs that come back
 ///     in subsequent turns.
@@ -92,12 +152,29 @@ public sealed record ResponseInputItem
     public IReadOnlyList<ResponseInputContent>? Content { get; init; }
 
     /// <summary>
-    ///     For <c>type = "function_call_output"</c>: the call ID returned by a prior
+    ///     For <c>type = "function_call"</c> and <c>type = "function_call_output"</c>: the call ID
+    ///     correlating the model's tool call with its result. Echoed verbatim from the
     ///     <c>response.output_item.added</c> function_call event.
     /// </summary>
     [JsonPropertyName("call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CallId { get; init; }
+
+    /// <summary>
+    ///     For <c>type = "function_call"</c>: the tool name. Required by the Responses API when a
+    ///     prior assistant turn's tool call is replayed as conversation history.
+    /// </summary>
+    [JsonPropertyName("name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+
+    /// <summary>
+    ///     For <c>type = "function_call"</c>: the JSON-encoded arguments string the model produced.
+    ///     Required alongside <see cref="Name"/> — omitting it makes the API reject the input item.
+    /// </summary>
+    [JsonPropertyName("arguments")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Arguments { get; init; }
 
     /// <summary>
     ///     For <c>type = "function_call_output"</c>: the textual result of the local tool

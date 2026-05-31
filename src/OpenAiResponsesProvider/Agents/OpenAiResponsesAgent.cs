@@ -113,9 +113,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
         var request = MessageMapper.BuildRequest(messages, options);
         _logger.LogDebug(
-            "OpenAiResponsesAgent.GenerateReplyStreamingAsync model={Model} inputItems={Count} tools={ToolCount}",
+            "OpenAiResponsesAgent.GenerateReplyStreamingAsync model={Model} inputItems={Count} inputTypes=[{InputTypes}] tools={ToolCount}",
             request.Model,
             request.Input.Count,
+            string.Join(",", request.Input.Select(i => i.Type)),
             request.Tools?.Count ?? 0
         );
 
@@ -132,6 +133,9 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         var generationId = Guid.NewGuid().ToString("N");
         var pendingFunctionCalls = new Dictionary<string, PendingFunctionCall>(StringComparer.Ordinal);
         var textBuffers = new Dictionary<int, StringBuilder>();
+        // Tool calls already surfaced, keyed by call_id, so the delta-correlated path and the
+        // output_item.done fallback don't double-emit the same call.
+        var emittedToolCallIds = new HashSet<string>(StringComparer.Ordinal);
 
         await foreach (var ev in events.ConfigureAwait(false))
         {
@@ -239,6 +243,8 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                         var argsJson = string.IsNullOrEmpty(argsDone.Arguments)
                             ? completed.ArgsBuilder.ToString()
                             : argsDone.Arguments;
+                        var callId = completed.CallId ?? completed.ItemId;
+                        _ = emittedToolCallIds.Add(callId);
 
                         yield return new ToolsCallMessage
                         {
@@ -248,7 +254,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                                 {
                                     FunctionName = completed.Name,
                                     FunctionArgs = argsJson,
-                                    ToolCallId = completed.CallId ?? completed.ItemId,
+                                    ToolCallId = callId,
                                     Index = completed.OutputIndex,
                                 },
                             ],
@@ -256,6 +262,42 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                             FromAgent = fromAgent,
                             GenerationId = generationId,
                             MessageOrderIdx = completed.OutputIndex,
+                        };
+                    }
+
+                    break;
+
+                // Fallback / primary path for backends (e.g. GitHub Copilot) that rotate the
+                // per-event item_id so the delta-correlated path above can't match. The terminal
+                // output_item.done carries the complete function_call item (name, call_id, arguments),
+                // which is all we need. Deduped by call_id against the delta path.
+                case ResponseOutputItemEvent fnDone
+                    when fnDone.Type == ResponseEventTypes.OutputItemDone
+                        && TryReadString(fnDone.Item, "type", out var fnDoneType)
+                        && fnDoneType == "function_call":
+                    var doneCallId = TryReadString(fnDone.Item, "call_id", out var doneCid)
+                        ? doneCid
+                        : TryReadString(fnDone.Item, "id", out var doneIid)
+                            ? doneIid
+                            : null;
+                    if (doneCallId is not null && emittedToolCallIds.Add(doneCallId))
+                    {
+                        yield return new ToolsCallMessage
+                        {
+                            ToolCalls =
+                            [
+                                new ToolCall
+                                {
+                                    FunctionName = TryReadString(fnDone.Item, "name", out var doneName) ? doneName : string.Empty,
+                                    FunctionArgs = TryReadString(fnDone.Item, "arguments", out var doneArgs) ? doneArgs : "{}",
+                                    ToolCallId = doneCallId,
+                                    Index = fnDone.OutputIndex,
+                                },
+                            ],
+                            Role = Role.Assistant,
+                            FromAgent = fromAgent,
+                            GenerationId = generationId,
+                            MessageOrderIdx = fnDone.OutputIndex,
                         };
                     }
 

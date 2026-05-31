@@ -183,7 +183,8 @@ public class ProviderRegistryTests
         catalog.Select(p => p.Id).Should().BeEquivalentTo(
             [
                 "anthropic", "claude", "claude-mock", "codex", "codex-mock",
-                "copilot", "copilot-mock", "openai", "test", "test-anthropic",
+                "copilot", "copilot-mock", "gpt-5.5", "gpt-5.5-mini", "haiku",
+                "openai", "sonnet", "test", "test-anthropic",
             ],
             options => options.WithStrictOrdering());
     }
