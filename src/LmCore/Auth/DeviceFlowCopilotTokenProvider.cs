@@ -53,8 +53,8 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
     )
     {
         _http = httpClient ?? new HttpClient();
-        _clientId = string.IsNullOrWhiteSpace(clientId) ? DefaultClientId : clientId!;
-        _scope = string.IsNullOrWhiteSpace(scope) ? "read:user" : scope!;
+        _clientId = string.IsNullOrWhiteSpace(clientId) ? DefaultClientId : clientId;
+        _scope = string.IsNullOrWhiteSpace(scope) ? "read:user" : scope;
         _present = present ?? DefaultPresent;
         _logger = logger ?? NullLogger.Instance;
         _cacheFilePath = cacheToDisk ? ResolveCacheFilePath() : null;
@@ -80,7 +80,7 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
             if (!string.IsNullOrWhiteSpace(fromDisk))
             {
                 _cachedToken = fromDisk;
-                return fromDisk!;
+                return fromDisk;
             }
 
             var token = await RunDeviceFlowAsync(cancellationToken).ConfigureAwait(false);
@@ -110,7 +110,7 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
             var poll = await PollAccessTokenAsync(device.DeviceCode, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(poll.AccessToken))
             {
-                return poll.AccessToken!;
+                return poll.AccessToken;
             }
 
             switch (poll.Error)

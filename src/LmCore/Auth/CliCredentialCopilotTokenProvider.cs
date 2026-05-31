@@ -96,7 +96,7 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
         var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         if (!string.IsNullOrWhiteSpace(xdg))
         {
-            yield return xdg!;
+            yield return xdg;
         }
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -180,7 +180,7 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
                     var token = tokenEl.GetString();
                     if (!string.IsNullOrWhiteSpace(token))
                     {
-                        return token!.Trim();
+                        return token.Trim();
                     }
                 }
             }

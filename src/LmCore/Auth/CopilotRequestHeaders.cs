@@ -31,7 +31,7 @@ public static class CopilotRequestHeaders
 
         if (!string.IsNullOrEmpty(options.DefaultInteractionType))
         {
-            yield return new KeyValuePair<string, string>("x-interaction-type", options.DefaultInteractionType!);
+            yield return new KeyValuePair<string, string>("x-interaction-type", options.DefaultInteractionType);
         }
 
         if (options.ExtraHeaders is not null)

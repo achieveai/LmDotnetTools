@@ -28,8 +28,8 @@ public sealed class CopilotSessionContext
     /// </summary>
     public CopilotSessionContext(string? machineId = null, string? clientSessionId = null)
     {
-        MachineId = !string.IsNullOrWhiteSpace(machineId) ? machineId! : LoadOrCreateMachineId();
-        ClientSessionId = !string.IsNullOrWhiteSpace(clientSessionId) ? clientSessionId! : Guid.NewGuid().ToString();
+        MachineId = !string.IsNullOrWhiteSpace(machineId) ? machineId : LoadOrCreateMachineId();
+        ClientSessionId = !string.IsNullOrWhiteSpace(clientSessionId) ? clientSessionId : Guid.NewGuid().ToString();
     }
 
     /// <summary>Stable, machine-scoped identifier (<c>x-client-machine-id</c>).</summary>
