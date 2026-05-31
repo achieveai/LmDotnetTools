@@ -52,7 +52,7 @@ public sealed class CompositeCopilotTokenProvider : ICopilotTokenProvider
                 return _cachedToken;
             }
 
-            Exception? last = null;
+            var failures = new List<Exception>();
             foreach (var provider in _providers)
             {
                 try
@@ -66,13 +66,15 @@ public sealed class CompositeCopilotTokenProvider : ICopilotTokenProvider
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    last = ex;
+                    // Preserve every failure — the first provider's error is often the most
+                    // informative, so don't let a later one overwrite it.
+                    failures.Add(ex);
                 }
             }
 
             throw new InvalidOperationException(
                 "No GitHub Copilot token could be resolved from any configured provider.",
-                last
+                failures.Count > 0 ? new AggregateException(failures) : null
             );
         }
         finally

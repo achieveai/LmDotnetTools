@@ -18,19 +18,24 @@ public static class CopilotHttpClientFactory
     /// <param name="session">Shared client/machine tracking ids.</param>
     /// <param name="options">Copilot header options (integration id, version, extra headers).</param>
     /// <param name="timeout">Optional timeout (defaults to <see cref="HttpClientFactory.DefaultTimeout"/>).</param>
+    /// <param name="innerHandler">
+    ///     Optional transport handler to wrap (for tests, Polly resilience, or IHttpClientFactory
+    ///     integration). Defaults to a new <see cref="HttpClientHandler"/>.
+    /// </param>
     public static HttpClient Create(
         string baseAddress,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext session,
         CopilotOptions? options = null,
-        TimeSpan? timeout = null
+        TimeSpan? timeout = null,
+        HttpMessageHandler? innerHandler = null
     )
     {
         ArgumentNullException.ThrowIfNull(baseAddress);
         ArgumentNullException.ThrowIfNull(tokenProvider);
         ArgumentNullException.ThrowIfNull(session);
 
-        var handler = new CopilotHeadersHandler(tokenProvider, session, options, new HttpClientHandler());
+        var handler = new CopilotHeadersHandler(tokenProvider, session, options, innerHandler ?? new HttpClientHandler());
 
         return new HttpClient(handler)
         {

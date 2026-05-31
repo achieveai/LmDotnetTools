@@ -22,7 +22,7 @@ namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 ///     <see cref="ResponseEventParser"/>, so the same <see cref="OpenAiResponsesAgent"/> mapping is
 ///     reused as for the SSE transport.
 /// </remarks>
-public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient
+public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions s_serializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -176,6 +176,28 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient
         return null;
     }
 
+    /// <summary>Asynchronously closes the socket and releases the turn gate. Preferred over <see cref="Dispose"/>.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        try
+        {
+            if (_socket is not null)
+            {
+                await _socket.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _turnGate.Dispose();
+        }
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {
@@ -185,8 +207,20 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient
         }
 
         _disposed = true;
-        _socket?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _turnGate.Dispose();
+        try
+        {
+            // Bounded best-effort close — never block the disposing thread indefinitely on the
+            // socket's network round-trip. The turn gate is always released in the finally.
+            _ = _socket?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception ex) when (ex is AggregateException or WebSocketException or OperationCanceledException)
+        {
+            // Best-effort: the close raced, timed out, or the socket was already faulted.
+        }
+        finally
+        {
+            _turnGate.Dispose();
+        }
     }
 }
 
