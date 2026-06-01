@@ -399,32 +399,6 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(0, textUpdate3.ChunkIdx);
     }
 
-    [Fact]
-    public async Task Downstream_FinalizingReasoningMessage_SharesOrderIdx_WithPrecedingReasoningUpdateStream()
-    {
-        // Same rule as text: a finalizing ReasoningMessage consolidates its ReasoningUpdateMessage
-        // deltas and must share their messageOrderIdx so consumers merge instead of duplicating.
-        // Arrange
-        var middleware = new MessageTransformationMiddleware();
-        var agent = new MockAgent(
-            new ReasoningUpdateMessage { Reasoning = "Think", GenerationId = "gen1" },
-            new ReasoningUpdateMessage { Reasoning = "ing", GenerationId = "gen1" },
-            new ReasoningMessage { Reasoning = "Thinking", GenerationId = "gen1" }
-        );
-        var context = new MiddlewareContext(Messages: [], Options: null);
-        // Act
-        var result = await middleware.InvokeAsync(context, agent);
-        var messages = result.ToList();
-        // Assert
-        Assert.Equal(3, messages.Count);
-        var reasoningUpdate1 = Assert.IsType<ReasoningUpdateMessage>(messages[0]);
-        var reasoningUpdate2 = Assert.IsType<ReasoningUpdateMessage>(messages[1]);
-        var reasoningMessage = Assert.IsType<ReasoningMessage>(messages[2]);
-        Assert.Equal(0, reasoningUpdate1.MessageOrderIdx);
-        Assert.Equal(0, reasoningUpdate2.MessageOrderIdx);
-        // The finalizing ReasoningMessage shares the stream's orderIdx (0), not a bumped one.
-        Assert.Equal(0, reasoningMessage.MessageOrderIdx);
-    }
     #endregion
     #region Plural to Singular Conversion Tests
     [Fact]
@@ -748,26 +722,25 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(0, reasoningUpdate1.ChunkIdx);
         Assert.Equal(0, reasoningUpdate2.MessageOrderIdx);
         Assert.Equal(1, reasoningUpdate2.ChunkIdx);
-        // Complete reasoning shares its reasoning_update stream's orderIdx (0), not a bumped one,
-        // so consumers merge it onto the streamed reasoning instead of duplicating it.
+        // Complete reasoning: orderIdx=1 (reasoning finalization starts its own message)
         var reasoning = Assert.IsType<ReasoningMessage>(messages[2]);
-        Assert.Equal(0, reasoning.MessageOrderIdx);
-        // Tool call: orderIdx=1
+        Assert.Equal(1, reasoning.MessageOrderIdx);
+        // Tool call: orderIdx=2
         var toolCall = Assert.IsType<ToolCallMessage>(messages[3]);
-        Assert.Equal(1, toolCall.MessageOrderIdx);
-        // Tool result: orderIdx=2
+        Assert.Equal(2, toolCall.MessageOrderIdx);
+        // Tool result: orderIdx=3
         var toolResult = Assert.IsType<ToolCallResultMessage>(messages[4]);
-        Assert.Equal(2, toolResult.MessageOrderIdx);
-        // Text updates: orderIdx=3, chunkIdx increments
+        Assert.Equal(3, toolResult.MessageOrderIdx);
+        // Text updates: orderIdx=4, chunkIdx increments
         var textUpdate1 = Assert.IsType<TextUpdateMessage>(messages[5]);
         var textUpdate2 = Assert.IsType<TextUpdateMessage>(messages[6]);
-        Assert.Equal(3, textUpdate1.MessageOrderIdx);
+        Assert.Equal(4, textUpdate1.MessageOrderIdx);
         Assert.Equal(0, textUpdate1.ChunkIdx);
-        Assert.Equal(3, textUpdate2.MessageOrderIdx);
+        Assert.Equal(4, textUpdate2.MessageOrderIdx);
         Assert.Equal(1, textUpdate2.ChunkIdx);
-        // Usage: orderIdx=4
+        // Usage: orderIdx=5
         var usage = Assert.IsType<UsageMessage>(messages[7]);
-        Assert.Equal(4, usage.MessageOrderIdx);
+        Assert.Equal(5, usage.MessageOrderIdx);
     }
     [Fact]
     public async Task Downstream_HandlesMultipleGenerations_Independently()

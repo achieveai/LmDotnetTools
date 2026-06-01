@@ -240,27 +240,14 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 break;
 
             case ReasoningMessage m:
-                // Mirror the TextMessage rule: a finalizing ReasoningMessage consolidates its
-                // preceding ReasoningUpdateMessage stream and must share that stream's
-                // messageOrderIdx so consumers merge instead of duplicating.
-                if (state.CurrentMessageIdentity[generationId] == "reasoning_update")
-                {
-                    var (finalizedReasoningOrderIdx, _) = GetCurrentIndices();
-                    state.CurrentMessageIdentity[generationId] = null;
-                    logger.LogDebug(
-                        "Finalizing ReasoningMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its reasoning_update stream rather than creating a duplicate)",
-                        finalizedReasoningOrderIdx,
-                        generationId
-                    );
-                    yield return m with { MessageOrderIdx = finalizedReasoningOrderIdx };
-                }
-                else
-                {
-                    StartNewMessage();
-                    var (reasoningOrderIdx, _) = GetCurrentIndices();
-                    yield return m with { MessageOrderIdx = reasoningOrderIdx };
-                }
-
+                // Reasoning finalization is intentionally NOT merged onto its update stream here.
+                // The OpenAI Responses reasoning item carries its content differently from the
+                // streamed deltas, and merging caused thinking blocks to stop rendering. Reasoning
+                // duplicate-display is already handled client-side, so a finalizing ReasoningMessage
+                // starts its own message (original behavior).
+                StartNewMessage();
+                var (reasoningOrderIdx, _) = GetCurrentIndices();
+                yield return m with { MessageOrderIdx = reasoningOrderIdx };
                 break;
 
             case ReasoningUpdateMessage m:

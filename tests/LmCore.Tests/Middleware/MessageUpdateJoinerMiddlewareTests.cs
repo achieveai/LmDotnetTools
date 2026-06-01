@@ -239,45 +239,6 @@ public class MessageUpdateJoinerMiddlewareTests
     }
 
     [Fact]
-    public async Task InvokeStreamingAsync_ReasoningDeltasFollowedByFinalizingReasoningMessage_YieldsSingleReasoningMessage()
-    {
-        // Same dedup rule for reasoning: streamed ReasoningUpdateMessage deltas followed by the
-        // provider's finalizing ReasoningMessage must collapse to a single ReasoningMessage.
-        // Arrange
-        var middleware = new MessageUpdateJoinerMiddleware();
-        var stream = new List<IMessage>
-        {
-            new ReasoningUpdateMessage { Reasoning = "Think", Role = Role.Assistant, GenerationId = "gen1" },
-            new ReasoningUpdateMessage { Reasoning = "ing", Role = Role.Assistant, GenerationId = "gen1" },
-            new ReasoningMessage { Reasoning = "Thinking", Role = Role.Assistant, GenerationId = "gen1" },
-        };
-        var mockStreamingAgent = new Mock<IStreamingAgent>();
-        _ = mockStreamingAgent
-            .Setup(a =>
-                a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()
-                )
-            )
-            .ReturnsAsync(stream.ToAsyncEnumerable());
-        var context = new MiddlewareContext([], new GenerateReplyOptions());
-
-        // Act
-        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
-        var results = new List<IMessage>();
-        await foreach (var message in resultStream)
-        {
-            results.Add(message);
-        }
-
-        // Assert — exactly ONE reasoning message.
-        var reasoningMessages = results.OfType<ReasoningMessage>().ToList();
-        _ = Assert.Single(reasoningMessages);
-        Assert.Equal("Thinking", reasoningMessages[0].Reasoning);
-    }
-
-    [Fact]
     public async Task InvokeStreamingAsync_TextDeltasFollowedByDifferentKindComplete_StillEmitsBuiltText()
     {
         // Guard against over-suppression: when text deltas are followed by a complete message of a

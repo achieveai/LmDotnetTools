@@ -97,16 +97,18 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // Check if we're switching message types and need to complete current builder
             if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
-                // When the provider follows a streamed delta sequence with its OWN finalized complete
-                // message of the same kind (TextUpdateMessage… → TextMessage, or
-                // ReasoningUpdateMessage… → ReasoningMessage), that finalized message already IS the
-                // joined result. Emitting the builder's synthesized copy as well would forward/persist
-                // the same logical message twice (duplicate assistant bubble + duplicate history that
-                // also bloats the next turn's prompt). Discard the synthesized copy and let the
-                // incoming finalized message be the single representation.
+                // When the provider follows a streamed text-delta sequence with its OWN finalized
+                // TextMessage, that finalized message already IS the joined result. Emitting the
+                // builder's synthesized copy as well would forward/persist the same logical message
+                // twice (duplicate assistant bubble + duplicate history that also bloats the next
+                // turn's prompt). Discard the synthesized copy and let the incoming finalized message
+                // be the single representation.
+                //
+                // NOTE: This applies to text only. Reasoning is intentionally excluded — the OpenAI
+                // Responses reasoning item carries its content differently from the streamed reasoning
+                // deltas, so suppressing the built reasoning here stops thinking blocks from rendering.
                 var incomingFinalizesActiveBuilder =
-                    (message is TextMessage && activeBuilder is TextMessageBuilder)
-                    || (message is ReasoningMessage && activeBuilder is ReasoningMessageBuilder);
+                    message is TextMessage && activeBuilder is TextMessageBuilder;
 
                 if (incomingFinalizesActiveBuilder)
                 {
