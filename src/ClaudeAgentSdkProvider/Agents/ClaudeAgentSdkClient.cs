@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -619,12 +620,63 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 );
                 return [];
 
+            // Rate-limit advisories from claude-code 2.x. Surface them per-status so a throttled
+            // or denied request is visible, instead of falling through to the "Unhandled JSONL
+            // event type" warning below — the CLI emits one of these every turn, which otherwise
+            // floods the logs. Informational only, so no IMessage is produced.
+            case RateLimitEvent rateLimitEvent:
+                LogRateLimit(rateLimitEvent);
+                return [];
+
             default:
                 _logger?.LogWarning(
                     "Unhandled JSONL event type: {EventType}. Line was not processed.",
                     jsonlEvent.GetType().Name
                 );
                 return [];
+        }
+    }
+
+    /// <summary>
+    ///     Surface a rate-limit advisory from the CLI. Logs at INFO when the request was
+    ///     allowed (informational), at WARN when not — overage rejection or throttling are
+    ///     things the operator wants to know about. Falls back to DEBUG when the payload
+    ///     is missing the fields we'd need to make a better decision.
+    /// </summary>
+    private void LogRateLimit(RateLimitEvent ev)
+    {
+        var info = ev.RateLimitInfo;
+        if (info == null)
+        {
+            _logger?.LogDebug("[Agent:{SessionId}] rate_limit_event with no rate_limit_info payload", ev.SessionId);
+            return;
+        }
+
+        var allowed = string.Equals(info.Status, "allowed", StringComparison.Ordinal);
+        var resetsAtIso = info.ResetsAt is long resets
+            ? DateTimeOffset.FromUnixTimeSeconds(resets).ToString("O", CultureInfo.InvariantCulture)
+            : "(unknown)";
+
+        if (allowed)
+        {
+            _logger?.LogInformation(
+                "[Agent:{SessionId}] Rate-limit OK: window={Window}, resetsAt={ResetsAt}, usingOverage={UsingOverage}",
+                ev.SessionId,
+                info.RateLimitType,
+                resetsAtIso,
+                info.IsUsingOverage);
+        }
+        else
+        {
+            _logger?.LogWarning(
+                "[Agent:{SessionId}] Rate-limit NOT allowed: status={Status}, window={Window}, " +
+                "resetsAt={ResetsAt}, overageStatus={OverageStatus}, overageDisabledReason={OverageReason}",
+                ev.SessionId,
+                info.Status,
+                info.RateLimitType,
+                resetsAtIso,
+                info.OverageStatus,
+                info.OverageDisabledReason);
         }
     }
 
