@@ -13,6 +13,13 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 ///     This enables the new simplified message flow while maintaining backward compatibility
 ///     with provider transformations that expect aggregated messages.
 /// </summary>
+/// <remarks>
+///     Composition order matters on the response path: this middleware MUST run before
+///     <see cref="MessageUpdateJoinerMiddleware" /> (Transformation → Joiner). Transformation assigns
+///     the messageOrderIdx that lets a finalizing TextMessage merge onto its streamed deltas; the
+///     Joiner then suppresses the synthesized duplicate for history. Omitting or reordering these
+///     two middlewares reintroduces duplicate assistant messages.
+/// </remarks>
 public class MessageTransformationMiddleware : IStreamingMiddleware
 {
     private readonly ILogger<MessageTransformationMiddleware> _logger;
@@ -215,11 +222,15 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                     var (finalizedTextOrderIdx, _) = GetCurrentIndices();
                     // Close the stream so a subsequent message (even another TextMessage) starts fresh.
                     state.CurrentMessageIdentity[generationId] = null;
-                    logger.LogDebug(
-                        "Finalizing TextMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its text_update stream rather than creating a duplicate)",
-                        finalizedTextOrderIdx,
-                        generationId
-                    );
+                    if (logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug(
+                            "Finalizing TextMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its text_update stream rather than creating a duplicate)",
+                            finalizedTextOrderIdx,
+                            generationId
+                        );
+                    }
+
                     yield return m with { MessageOrderIdx = finalizedTextOrderIdx };
                 }
                 else

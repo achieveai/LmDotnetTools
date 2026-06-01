@@ -387,6 +387,47 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Contains("Finalizing TextMessage reuses streamed messageOrderIdx", logText);
     }
 
+    [Fact]
+    public async Task InvokeStreamingAsync_FinalizingTextFromDifferentGeneration_DoesNotSuppressBuiltText()
+    {
+        // Guard for the generationId match: a finalizing TextMessage from a DIFFERENT generation must
+        // NOT suppress the active builder's accumulated text (otherwise interleaved generations cause
+        // silent data loss). Both texts must survive.
+        // Arrange
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var stream = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "gen1 ", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage { Text = "text", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextMessage { Text = "gen2 complete", Role = Role.Assistant, GenerationId = "gen2" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(stream.ToAsyncEnumerable());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
+
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert — gen1's built accumulation AND gen2's finalizing message both survive.
+        var textMessages = results.OfType<TextMessage>().ToList();
+        Assert.Equal(2, textMessages.Count);
+        Assert.Contains(textMessages, t => ((ICanGetText)t).GetText() == "gen1 text");
+        Assert.Contains(textMessages, t => ((ICanGetText)t).GetText() == "gen2 complete");
+    }
+
     #region Helper Methods
 
     // Helper method to split string on spaces while including spaces in the parts

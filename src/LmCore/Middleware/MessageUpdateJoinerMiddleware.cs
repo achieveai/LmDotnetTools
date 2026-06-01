@@ -10,6 +10,12 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// <summary>
 ///     Middleware that joins update messages into larger messages for more efficient processing.
 /// </summary>
+/// <remarks>
+///     Composition order matters on the response path: this middleware MUST run after
+///     <see cref="MessageTransformationMiddleware" /> (Transformation → Joiner) so that finalizing
+///     text messages already carry their assigned messageOrderIdx. Reordering or omitting either
+///     middleware reintroduces duplicate assistant messages.
+/// </remarks>
 public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 {
     private readonly ILogger _logger;
@@ -107,16 +113,25 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 // NOTE: This applies to text only. Reasoning is intentionally excluded — the OpenAI
                 // Responses reasoning item carries its content differently from the streamed reasoning
                 // deltas, so suppressing the built reasoning here stops thinking blocks from rendering.
+                // Also require a matching GenerationId: a finalizing TextMessage may only supersede
+                // the builder it actually finalizes. Without this, an interleaved generation
+                // (gen1: TextUpdate…, gen2: TextMessage) could silently drop gen1's accumulated text.
                 var incomingFinalizesActiveBuilder =
-                    message is TextMessage && activeBuilder is TextMessageBuilder;
+                    message is TextMessage
+                    && activeBuilder is TextMessageBuilder textBuilder
+                    && textBuilder.GenerationId == message.GenerationId;
 
                 if (incomingFinalizesActiveBuilder)
                 {
-                    logger.LogDebug(
-                        "Joiner suppressed synthesized {MessageType} duplicate for generation {GenerationId}; provider supplied a finalizing complete message",
-                        message.GetType().Name,
-                        message.GenerationId
-                    );
+                    if (logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug(
+                            "Joiner suppressed synthesized {MessageType} duplicate for generation {GenerationId}; provider supplied a finalizing complete message",
+                            message.GetType().Name,
+                            message.GenerationId
+                        );
+                    }
+
                     activeBuilder = null;
                     activeBuilderType = null;
                 }
