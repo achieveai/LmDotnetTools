@@ -79,8 +79,8 @@ public sealed class MessageMapperTests
             {
                 ToolCalls =
                 [
-                    new ToolCall { FunctionName = "lookup", FunctionArgs = "{}", ToolCallId = "call-1" },
-                    new ToolCall { FunctionName = "fetch", FunctionArgs = "{}", ToolCallId = "call-2" },
+                    new ToolCall { FunctionName = "lookup", FunctionArgs = "{\"q\":\"x\"}", ToolCallId = "call-1" },
+                    new ToolCall { FunctionName = "fetch", FunctionArgs = "", ToolCallId = "call-2" },
                 ],
                 Role = Role.Assistant,
             },
@@ -91,6 +91,9 @@ public sealed class MessageMapperTests
         request.Input.Should().HaveCount(2);
         request.Input.Select(i => i.Type).Should().AllBe("function_call");
         request.Input.Select(i => i.CallId).Should().Equal("call-1", "call-2");
+        // A replayed function_call MUST carry name + arguments or the API 400s. Empty args default to "{}".
+        request.Input.Select(i => i.Name).Should().Equal("lookup", "fetch");
+        request.Input.Select(i => i.Arguments).Should().Equal("{\"q\":\"x\"}", "{}");
         request.Input.Should().OnlyContain(i => i.Content == null);
     }
 
@@ -145,7 +148,84 @@ public sealed class MessageMapperTests
         tool.Type.Should().Be("function");
         tool.Name.Should().Be("search");
         tool.Description.Should().Be("search the web");
+
+        // parameters MUST be a JSON Schema object, not the raw parameter list (which serializes to an
+        // array). The Responses API rejects an array with "expected an object, but got an array".
         tool.Parameters.Should().NotBeNull();
+        tool.Parameters.Should().BeOfType<System.Text.Json.Nodes.JsonObject>();
+        var parameters = tool.Parameters!.AsObject();
+        parameters["type"]!.GetValue<string>().Should().Be("object");
+        parameters["properties"].Should().NotBeNull();
+        parameters["properties"]!.AsObject().Should().ContainKey("q");
+        parameters["properties"]!["q"]!["description"]!.GetValue<string>().Should().Be("query");
+        parameters["required"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("q");
+    }
+
+    [Fact]
+    public void Singular_ToolCallMessage_and_result_round_trip_as_function_call_items()
+    {
+        // The multi-turn loop replays history as SINGULAR ToolCallMessage / ToolCallResultMessage.
+        // These must map to function_call + function_call_output (with matching call_id) or the model
+        // never sees the tool result and loops, re-calling the tool forever.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "add 17 and 25" },
+            new ToolCallMessage
+            {
+                FunctionName = "add",
+                FunctionArgs = "{\"a\":17,\"b\":25}",
+                ToolCallId = "call_abc",
+                Role = Role.Assistant,
+            },
+            new ToolCallResultMessage { ToolCallId = "call_abc", Result = "42", Role = Role.Tool },
+        };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Should().HaveCount(3);
+        request.Input[1].Type.Should().Be("function_call");
+        request.Input[1].CallId.Should().Be("call_abc");
+        request.Input[1].Name.Should().Be("add");
+        request.Input[1].Arguments.Should().Be("{\"a\":17,\"b\":25}");
+        request.Input[2].Type.Should().Be("function_call_output");
+        request.Input[2].CallId.Should().Be("call_abc");
+        request.Input[2].Output.Should().Be("42");
+    }
+
+    [Fact]
+    public void CompositeMessage_wrapping_aggregate_tool_call_round_trips()
+    {
+        // This is the ACTUAL shape the multi-turn loop replays: an assistant turn grouped into a
+        // CompositeMessage that contains a ToolsCallAggregateMessage (tool call + its result).
+        // The mapper must unwrap both, or the model never sees the result and loops forever.
+        var toolCall = new ToolsCallMessage
+        {
+            ToolCalls = [new ToolCall { FunctionName = "calculate", FunctionArgs = "{\"a\":17,\"b\":25}", ToolCallId = "call_xyz" }],
+            Role = Role.Assistant,
+        };
+        var toolResult = new ToolsCallResultMessage
+        {
+            ToolCallResults = [new ToolCallResult("call_xyz", "42")],
+            Role = Role.Tool,
+        };
+        var composite = new CompositeMessage
+        {
+            Messages = [new ToolsCallAggregateMessage(toolCall, toolResult)],
+            Role = Role.Assistant,
+        };
+
+        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = "add 17 and 25" }, composite };
+
+        var request = MessageMapper.BuildRequest(messages, options: null);
+
+        request.Input.Select(i => i.Type).Should().Equal("message", "function_call", "function_call_output");
+        var call = request.Input[1];
+        call.CallId.Should().Be("call_xyz");
+        call.Name.Should().Be("calculate");
+        call.Arguments.Should().Be("{\"a\":17,\"b\":25}");
+        var output = request.Input[2];
+        output.CallId.Should().Be("call_xyz");
+        output.Output.Should().Be("42");
     }
 
     [Fact]

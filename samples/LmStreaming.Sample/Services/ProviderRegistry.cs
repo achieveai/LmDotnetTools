@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Auth;
 
 namespace LmStreaming.Sample.Services;
 
@@ -25,6 +26,10 @@ public sealed class ProviderRegistry
             new("claude", "Claude (CLI)"),
             new("codex", "Codex"),
             new("copilot", "Copilot (CLI)"),
+            new("sonnet", "Sonnet (Copilot)"),
+            new("haiku", "Haiku (Copilot)"),
+            new("gpt-5.5", "GPT-5.5 (Copilot)"),
+            new("gpt-5.5-mini", "GPT-5.5 mini (Copilot)"),
             new("claude-mock", "Claude (CLI, Mock)"),
             new("codex-mock", "Codex (Mock)"),
             new("copilot-mock", "Copilot (CLI, Mock)"),
@@ -63,6 +68,9 @@ public sealed class ProviderRegistry
         var hasCopilotCli = HasCliPath("COPILOT_CLI_PATH", "copilot", probe);
         var hasOpenAiKey = HasEnvVar("OPENAI_API_KEY");
         var hasAnthropicKey = HasEnvVar("ANTHROPIC_API_KEY");
+        // Copilot-backed providers route through the Copilot API using the developer's existing
+        // Copilot/gh login, so they are available whenever a token can be resolved.
+        var hasCopilotToken = new CliCredentialCopilotTokenProvider().ResolveToken() is not null;
 
         foreach (var entry in CatalogEntries)
         {
@@ -75,6 +83,7 @@ public sealed class ProviderRegistry
                 "anthropic" => hasAnthropicKey,
                 "claude" => hasClaudeCli,
                 "copilot" => hasCopilotCli,
+                "sonnet" or "haiku" or "gpt-5.5" or "gpt-5.5-mini" => hasCopilotToken,
                 // *-mock providers need both their CLI prerequisite and the running mock host;
                 // codex-mock has no CLI prerequisite (codex availability is unconditional).
                 "claude-mock" => hasClaudeCli,

@@ -21,7 +21,8 @@ namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 /// </remarks>
 public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
 {
-    private const string ResponsesPath = "/v1/responses";
+    /// <summary>Default Responses API path (OpenAI). The GitHub Copilot host uses <c>/responses</c>.</summary>
+    public const string DefaultResponsesPath = "/v1/responses";
 
     private static readonly JsonSerializerOptions s_serializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -30,16 +31,19 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
 
     private readonly HttpClient _http;
     private readonly bool _disposeClient;
+    private readonly string _responsesPath;
     private readonly ILogger<OpenAiResponsesClient> _logger;
 
     public OpenAiResponsesClient(
         HttpClient httpClient,
         bool disposeClient = false,
-        ILogger<OpenAiResponsesClient>? logger = null
+        ILogger<OpenAiResponsesClient>? logger = null,
+        string? responsesPath = null
     )
     {
         _http = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _disposeClient = disposeClient;
+        _responsesPath = string.IsNullOrWhiteSpace(responsesPath) ? DefaultResponsesPath : responsesPath!;
         _logger = logger ?? NullLogger<OpenAiResponsesClient>.Instance;
     }
 
@@ -51,7 +55,8 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
     public static OpenAiResponsesClient Create(
         Uri baseAddress,
         string? apiKey = null,
-        ILogger<OpenAiResponsesClient>? logger = null
+        ILogger<OpenAiResponsesClient>? logger = null,
+        string? responsesPath = null
     )
     {
         ArgumentNullException.ThrowIfNull(baseAddress);
@@ -61,7 +66,7 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
-        return new OpenAiResponsesClient(client, disposeClient: true, logger);
+        return new OpenAiResponsesClient(client, disposeClient: true, logger, responsesPath);
     }
 
     /// <inheritdoc />
@@ -77,7 +82,7 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         // diagnostic close to the call site.
         var streamingRequest = request.Stream is true ? request : request with { Stream = true };
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, ResponsesPath)
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
         {
             Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
         };
@@ -85,7 +90,7 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
 
         _logger.LogDebug(
             "POST {Path} model={Model} inputItemCount={InputCount} stream=true",
-            ResponsesPath,
+            _responsesPath,
             streamingRequest.Model,
             streamingRequest.Input.Count
         );

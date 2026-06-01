@@ -37,6 +37,13 @@ public static class AnthropicJsonSerializerOptionsFactory
         // SSE streaming disposes the per-line JsonDocument after each event.
         options.Converters.Add(new StableJsonElementConverter());
 
+#if NET9_0_OR_GREATER
+        // Some Anthropic-compatible backends (e.g. GitHub Copilot's /v1/messages) emit the
+        // polymorphic "type" discriminator AFTER other properties, e.g. {"text":"hi","type":"text"}.
+        // System.Text.Json is order-sensitive about discriminators by default; allow them anywhere.
+        options.AllowOutOfOrderMetadataProperties = true;
+#endif
+
         return options;
     }
 
