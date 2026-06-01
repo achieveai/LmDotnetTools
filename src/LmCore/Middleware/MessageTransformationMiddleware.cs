@@ -65,7 +65,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to replies
-        var orderedReplies = AssignMessageOrdering(replies);
+        var orderedReplies = AssignMessageOrdering(replies, _logger);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -113,7 +113,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return AssignMessageOrderingStreaming(streamingResponse);
+        return AssignMessageOrderingStreaming(streamingResponse, _logger);
     }
 
     #region Downstream: Assign Message Ordering
@@ -138,7 +138,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// </summary>
     private static IEnumerable<IMessage> ProcessMessageForOrdering(
         IMessage message,
-        OrderingState state
+        OrderingState state,
+        ILogger logger
     )
     {
         // Only assign ordering to messages with a GenerationId
@@ -203,9 +204,31 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 break;
 
             case TextMessage m:
-                StartNewMessage();
-                var (textOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = textOrderIdx };
+                // A finalizing TextMessage consolidates the immediately-preceding TextUpdateMessage
+                // stream for this generation, so it must reuse that stream's messageOrderIdx — same
+                // as the TextWithCitationsMessage case above. Otherwise a consumer that merges by
+                // (generationId, messageOrderIdx) cannot merge it onto the streamed message and
+                // renders a duplicate text bubble. A standalone complete TextMessage (no open
+                // text_update stream) still starts a new message.
+                if (state.CurrentMessageIdentity[generationId] == "text_update")
+                {
+                    var (finalizedTextOrderIdx, _) = GetCurrentIndices();
+                    // Close the stream so a subsequent message (even another TextMessage) starts fresh.
+                    state.CurrentMessageIdentity[generationId] = null;
+                    logger.LogDebug(
+                        "Finalizing TextMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its text_update stream rather than creating a duplicate)",
+                        finalizedTextOrderIdx,
+                        generationId
+                    );
+                    yield return m with { MessageOrderIdx = finalizedTextOrderIdx };
+                }
+                else
+                {
+                    StartNewMessage();
+                    var (textOrderIdx, _) = GetCurrentIndices();
+                    yield return m with { MessageOrderIdx = textOrderIdx };
+                }
+
                 break;
 
             case TextUpdateMessage m:
@@ -217,9 +240,27 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 break;
 
             case ReasoningMessage m:
-                StartNewMessage();
-                var (reasoningOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = reasoningOrderIdx };
+                // Mirror the TextMessage rule: a finalizing ReasoningMessage consolidates its
+                // preceding ReasoningUpdateMessage stream and must share that stream's
+                // messageOrderIdx so consumers merge instead of duplicating.
+                if (state.CurrentMessageIdentity[generationId] == "reasoning_update")
+                {
+                    var (finalizedReasoningOrderIdx, _) = GetCurrentIndices();
+                    state.CurrentMessageIdentity[generationId] = null;
+                    logger.LogDebug(
+                        "Finalizing ReasoningMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its reasoning_update stream rather than creating a duplicate)",
+                        finalizedReasoningOrderIdx,
+                        generationId
+                    );
+                    yield return m with { MessageOrderIdx = finalizedReasoningOrderIdx };
+                }
+                else
+                {
+                    StartNewMessage();
+                    var (reasoningOrderIdx, _) = GetCurrentIndices();
+                    yield return m with { MessageOrderIdx = reasoningOrderIdx };
+                }
+
                 break;
 
             case ReasoningUpdateMessage m:
@@ -386,13 +427,13 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx and chunkIdx to messages with the same GenerationId
     /// </summary>
-    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages, ILogger logger)
     {
         var state = new OrderingState();
 
         foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
             {
                 yield return processedMessage;
             }
@@ -403,14 +444,15 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// Assigns messageOrderIdx and chunkIdx to streaming messages on the fly
     /// </summary>
     private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
-        IAsyncEnumerable<IMessage> messages
+        IAsyncEnumerable<IMessage> messages,
+        ILogger logger
     )
     {
         var state = new OrderingState();
 
         await foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
             {
                 yield return processedMessage;
             }

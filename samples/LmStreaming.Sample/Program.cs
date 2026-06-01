@@ -465,7 +465,8 @@ try
                         },
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
-                        subAgentOptions: subAgentOptions
+                        subAgentOptions: subAgentOptions,
+                        loggerFactory: loggerFactory
                     );
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);

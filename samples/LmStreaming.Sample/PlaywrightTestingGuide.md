@@ -475,3 +475,82 @@ page.locator('.mode-name').textContent()    // Returns e.g. "General Assistant"
 | Thinking pills missing | Mode doesn't use thinking model | Switch to Medical Knowledge or test-anthropic mode |
 | Second turn fails with error | ReasoningMessage lost in history | Check MessageTransformationMiddleware fix is applied |
 | Recording files not created | Dump disabled for thread | Check `RequestResponseDumpFileName` in options |
+
+---
+
+## Rationalization & Fastest Browser Control
+
+We have **two** Playwright surfaces. They must stay aligned on selectors and waiting strategy.
+
+| Surface | Where | Purpose | Backend |
+|---------|-------|---------|---------|
+| **Automated regression (authoritative)** | `tests/LmStreaming.Sample.Browser.E2E.Tests/` (.NET, `Microsoft.Playwright`, headless Chromium) | CI regression; the source of truth for "what the UI must do" | **Scripted SSE, no real LLM** (`BrowserWebAppFactory` + `OpenAiResponsesTestSseMessageHandler`) |
+| **Manual / exploratory (this guide)** | Claude MCP `mcp__playwright__browser_*` | Ad-hoc checks, new-scenario spikes, debugging a live provider | Whatever provider is selected (incl. real Copilot) |
+
+**Rule of thumb:** prototype a flow here with MCP, then promote the keeper checks into a
+`Scenarios/*.cs` test so they run in CI. Don't let the two drift.
+
+### Selector contract — prefer `data-testid` (used by the automated suite)
+
+The automated suite resolves everything via `data-testid` (see
+`tests/LmStreaming.Sample.Browser.E2E.Tests/Infrastructure/UiHelpers.cs`). The older class-based
+selectors in the scripts above still work, but **new scripts should use the `data-testid` contract**
+so manual and automated tests target identical elements.
+
+| Element | `data-testid` (authoritative) | Legacy CSS class (this guide's older scripts) |
+|---------|-------------------------------|-----------------------------------------------|
+| Message textarea | `chat-input-textarea` | `.chat-input textarea` |
+| Send button | `send-button` | `.chat-input button` |
+| Stop button (stream active) | `stop-button` | — |
+| Assistant answer bubble | `assistant-text` | `.text-bubble` (same element) |
+| Assistant group | `assistant-message-group` | `.assistant-message-wrapper` |
+| User group | `user-message-group` | `.user-message-wrapper` |
+| Tool-call pill (`data-tool-name`) | `tool-call-pill` | `.pill-item` (tool) |
+| Thinking pill | `thinking-pill` | `.pill-item:has-text("Thinking:")` |
+| Mode selector / option | `mode-selector-button` / `mode-option-{id}` | `.selector-btn` / `.menu-item` |
+| Provider selector / option | `provider-selector-button` / `provider-option-{id}` | (none — newer control) |
+| Error banner | `error-banner` | — |
+| Message list | `message-list` | `.message-list` |
+
+### Fastest MCP browser-control patterns
+
+1. **Bulk-read the DOM in ONE `browser_evaluate`** instead of many snapshot/locator round-trips.
+   The canonical "duplicate bubble" check (count answer bubbles):
+   ```js
+   () => [...document.querySelectorAll('[data-testid="assistant-text"]')].map(n => n.textContent.trim())
+   ```
+   Each answer string should appear exactly once.
+2. **Wait on state, not time** — never sleep. Stream finished = `stop-button` hidden and
+   `send-button` visible/enabled (mirrors `DomAssertions.WaitForStreamIdleAsync`). MCP:
+   `browser_wait_for` on the `send-button` becoming enabled.
+3. **Select provider before the first send.** A new chat resets the provider, and the thread locks
+   to the provider active when the first message is sent. Click `provider-selector-button` →
+   `provider-option-<id>`, verify the header, THEN send.
+
+### Canonical exploratory script: GPT-5.5 (Copilot) duplicate-bubble check
+
+This is the exact MCP flow used to find/verify the duplicate-assistant-bubble bug — reuse it for
+any "does each answer render once?" spike (live **and** after reload):
+
+```
+Navigate http://localhost:5173/?record=1
+Click [data-testid=provider-selector-button]; click [data-testid=provider-option-gpt-5.5]; confirm header
+# Turn 1 (plain text)
+Fill [data-testid=chat-input-textarea] "What is the capital of France? Answer in one sentence."
+Click [data-testid=send-button]; wait until send-button enabled again
+Evaluate the bubble-count snippet  -> expect the answer exactly once
+# Turn 2 (tool call) — expect 1 [data-testid=tool-call-pill] and the answer once
+Fill "Use the calculator tool to compute 1234 * 5678, then tell me the result." ; Send ; wait idle ; evaluate
+# Turn 3 (multi-turn) — context retained, answer once
+Fill "What was the previous result divided by 2?" ; Send ; wait idle ; evaluate
+# CRITICAL: reload regression (persisted/reconciled render)
+Navigate http://localhost:5173/?record=1 (reopen the thread) ; wait ; evaluate
+  -> each of the 3 answers must still appear EXACTLY once
+```
+
+The automated equivalent (scripted SSE, CI-safe) belongs in
+`tests/LmStreaming.Sample.Browser.E2E.Tests/Scenarios/` using `page.AssistantText().CountAsync()`
++ `WaitForStreamIdleAsync()`. Lower, faster regressions for this specific bug already live in
+`LmCore.Tests` (`MessageTransformationMiddlewareTests`, `MessageUpdateJoinerMiddlewareTests`) and
+`OpenAiResponsesProvider.Tests` (`OpenAiResponsesAgentTests` — drives the mock OpenAI `/responses`
+SSE through the real middleware pipeline).

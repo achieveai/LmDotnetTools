@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using FluentAssertions;
@@ -152,6 +153,82 @@ public sealed class OpenAiResponsesAgentTests
         var result = await rig.Agent.GenerateReplyAsync(messages);
 
         result.OfType<TextMessage>().Should().NotBeEmpty();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Regression: GPT-5.5 / Copilot Responses "duplicate assistant bubble" bug.
+    // The provider emits text deltas followed by its OWN finalizing TextMessage. Two layers must
+    // treat that as ONE logical message:
+    //   1) MessageTransformationMiddleware must give the finalizing TextMessage the SAME
+    //      messageOrderIdx as the deltas (so the live UI merges them by generationId+messageOrderIdx).
+    //   2) MessageUpdateJoinerMiddleware must not ALSO emit a synthesized "built" copy alongside the
+    //      provider's finalizing message (so history/persistence/reload store it once).
+    // Both are driven here through the real mock OpenAI /responses SSE stream.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Agent_throughMessageTransformation_finalizedText_sharesOrderIdx_withTextDeltas()
+    {
+        await using var rig = TestRig.Create();
+        const string prompt = """
+            <|instruction_start|>
+            {"instruction_chain":[
+                {"messages":[{"text_message":{"length":5}}]}
+            ]}
+            <|instruction_end|>
+            """;
+        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = prompt } };
+
+        var pipeline = rig.Agent.WithMessageTransformation();
+
+        var collected = new List<IMessage>();
+        await foreach (var m in await pipeline.GenerateReplyStreamingAsync(messages))
+        {
+            collected.Add(m);
+        }
+
+        var deltas = collected.OfType<TextUpdateMessage>().ToList();
+        var finalText = collected.OfType<TextMessage>().Single();
+        deltas.Should().NotBeEmpty();
+        var deltaOrderIdxs = deltas.Select(d => d.MessageOrderIdx).Distinct().ToList();
+        deltaOrderIdxs.Should().ContainSingle("all text deltas of one answer share one messageOrderIdx");
+        finalText.MessageOrderIdx.Should().Be(
+            deltaOrderIdxs[0],
+            "the finalizing TextMessage must reuse the delta stream's messageOrderIdx so the client merges them into one bubble"
+        );
+    }
+
+    [Fact]
+    public async Task Agent_throughTransformationAndJoiner_yields_single_finalized_text_message()
+    {
+        await using var rig = TestRig.Create();
+        const string prompt = """
+            <|instruction_start|>
+            {"instruction_chain":[
+                {"messages":[{"text_message":{"length":6}}]}
+            ]}
+            <|instruction_end|>
+            """;
+        var messages = new IMessage[] { new TextMessage { Role = Role.User, Text = prompt } };
+
+        // The same downstream "for history" pipeline the MultiTurnAgentLoop assembles:
+        //   provider -> MessageTransformation (assigns messageOrderIdx) -> MessageUpdateJoiner.
+        var pipeline = rig.Agent
+            .WithMessageTransformation()
+            .WithMiddleware(new MessageUpdateJoinerMiddleware());
+
+        var collected = new List<IMessage>();
+        await foreach (var m in await pipeline.GenerateReplyStreamingAsync(messages))
+        {
+            collected.Add(m);
+        }
+
+        var textMessages = collected.OfType<TextMessage>().ToList();
+        textMessages.Should().ContainSingle(
+            "the joiner must not emit both a synthesized built copy and the provider's finalizing TextMessage"
+        );
+        textMessages[0].Role.Should().Be(Role.Assistant);
+        textMessages[0].Text.Trim().Split(' ').Should().HaveCount(6);
     }
 
     private sealed class TestRig : IAsyncDisposable

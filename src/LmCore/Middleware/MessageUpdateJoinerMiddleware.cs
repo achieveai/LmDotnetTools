@@ -2,6 +2,8 @@ using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -10,13 +12,17 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 {
+    private readonly ILogger _logger;
+
     /// <summary>
     ///     Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware" /> class.
     /// </summary>
     /// <param name="name">Optional name for the middleware.</param>
-    public MessageUpdateJoinerMiddleware(string? name = null)
+    /// <param name="logger">Optional logger; de-dup decisions are logged at Debug level.</param>
+    public MessageUpdateJoinerMiddleware(string? name = null, ILogger<MessageUpdateJoinerMiddleware>? logger = null)
     {
         Name = name ?? nameof(MessageUpdateJoinerMiddleware);
+        _logger = logger ?? NullLogger<MessageUpdateJoinerMiddleware>.Instance;
     }
 
     /// <summary>
@@ -53,11 +59,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             context.Options,
             cancellationToken
         );
-        return TransformStreamWithBuilder(sourceStream, cancellationToken);
+        return TransformStreamWithBuilder(sourceStream, _logger, cancellationToken);
     }
 
     private static async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
+        ILogger logger,
         [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
@@ -90,17 +97,41 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // Check if we're switching message types and need to complete current builder
             if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
-                // Track if we're completing a tool call builder
-                if (activeBuilder is ToolCallMessageBuilder)
-                {
-                    completedToolCallCount++;
-                }
+                // When the provider follows a streamed delta sequence with its OWN finalized complete
+                // message of the same kind (TextUpdateMessage… → TextMessage, or
+                // ReasoningUpdateMessage… → ReasoningMessage), that finalized message already IS the
+                // joined result. Emitting the builder's synthesized copy as well would forward/persist
+                // the same logical message twice (duplicate assistant bubble + duplicate history that
+                // also bloats the next turn's prompt). Discard the synthesized copy and let the
+                // incoming finalized message be the single representation.
+                var incomingFinalizesActiveBuilder =
+                    (message is TextMessage && activeBuilder is TextMessageBuilder)
+                    || (message is ReasoningMessage && activeBuilder is ReasoningMessageBuilder);
 
-                // Complete the previous builder before processing the new message
-                var builtMessage = activeBuilder.Build();
-                activeBuilder = null;
-                activeBuilderType = null;
-                yield return builtMessage;
+                if (incomingFinalizesActiveBuilder)
+                {
+                    logger.LogDebug(
+                        "Joiner suppressed synthesized {MessageType} duplicate for generation {GenerationId}; provider supplied a finalizing complete message",
+                        message.GetType().Name,
+                        message.GenerationId
+                    );
+                    activeBuilder = null;
+                    activeBuilderType = null;
+                }
+                else
+                {
+                    // Track if we're completing a tool call builder
+                    if (activeBuilder is ToolCallMessageBuilder)
+                    {
+                        completedToolCallCount++;
+                    }
+
+                    // Complete the previous builder before processing the new message
+                    var builtMessage = activeBuilder.Build();
+                    activeBuilder = null;
+                    activeBuilderType = null;
+                    yield return builtMessage;
+                }
             }
 
             // Check if tool call ID/Index changed for singular ToolCallUpdateMessage

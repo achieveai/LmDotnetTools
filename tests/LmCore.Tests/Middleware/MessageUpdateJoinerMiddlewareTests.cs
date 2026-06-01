@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Logging;
+using Serilog;
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageUpdateJoinerMiddlewareTests
@@ -193,6 +195,235 @@ public class MessageUpdateJoinerMiddlewareTests
                 ),
             Times.Once
         );
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_TextDeltasFollowedByFinalizingTextMessage_YieldsSingleTextMessage()
+    {
+        // Regression (GPT-5.5 / Copilot Responses duplicate bubble): a provider streams text deltas and
+        // then emits its OWN finalizing complete TextMessage. The joiner must NOT also emit the
+        // synthesized "built" copy — otherwise the same answer is persisted/forwarded twice, which
+        // renders as two identical assistant bubbles and bloats the next turn's prompt.
+        // Arrange
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var stream = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "Hello", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage { Text = " World", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextMessage { Text = "Hello World", Role = Role.Assistant, GenerationId = "gen1" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(stream.ToAsyncEnumerable());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
+
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert — exactly ONE text message (the provider's finalizing message), not two.
+        var textMessages = results.OfType<TextMessage>().ToList();
+        _ = Assert.Single(textMessages);
+        Assert.Equal("Hello World", ((ICanGetText)textMessages[0]).GetText());
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_ReasoningDeltasFollowedByFinalizingReasoningMessage_YieldsSingleReasoningMessage()
+    {
+        // Same dedup rule for reasoning: streamed ReasoningUpdateMessage deltas followed by the
+        // provider's finalizing ReasoningMessage must collapse to a single ReasoningMessage.
+        // Arrange
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var stream = new List<IMessage>
+        {
+            new ReasoningUpdateMessage { Reasoning = "Think", Role = Role.Assistant, GenerationId = "gen1" },
+            new ReasoningUpdateMessage { Reasoning = "ing", Role = Role.Assistant, GenerationId = "gen1" },
+            new ReasoningMessage { Reasoning = "Thinking", Role = Role.Assistant, GenerationId = "gen1" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(stream.ToAsyncEnumerable());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
+
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert — exactly ONE reasoning message.
+        var reasoningMessages = results.OfType<ReasoningMessage>().ToList();
+        _ = Assert.Single(reasoningMessages);
+        Assert.Equal("Thinking", reasoningMessages[0].Reasoning);
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_TextDeltasFollowedByDifferentKindComplete_StillEmitsBuiltText()
+    {
+        // Guard against over-suppression: when text deltas are followed by a complete message of a
+        // DIFFERENT kind, the joiner must still emit the built TextMessage — the deltas were not
+        // superseded by a same-kind finalizer, so dropping them would lose the streamed text.
+        // Arrange
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var stream = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "Hello", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage { Text = " World", Role = Role.Assistant, GenerationId = "gen1" },
+            new ReasoningMessage { Reasoning = "afterthought", Role = Role.Assistant, GenerationId = "gen1" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(stream.ToAsyncEnumerable());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
+
+        // Act
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert — the built text message is preserved, alongside the reasoning message.
+        var textMessages = results.OfType<TextMessage>().ToList();
+        _ = Assert.Single(textMessages);
+        Assert.Equal("Hello World", ((ICanGetText)textMessages[0]).GetText());
+        _ = Assert.Single(results.OfType<ReasoningMessage>());
+    }
+
+    [Fact]
+    public async Task DuplicateBubbleRegression_DeltasPlusFinalizingText_ThroughTransformationAndJoiner_YieldsSingleMergedText()
+    {
+        // Simplest end-to-end-at-unit-level reproduction of the GPT-5.5 / Copilot "duplicate assistant
+        // bubble" bug. A provider streams text deltas and then its OWN finalizing TextMessage (same
+        // generationId). Run that through the real downstream "for history" pipeline the app assembles
+        // — MessageTransformation (assigns messageOrderIdx) then MessageUpdateJoiner — and the result
+        // MUST be exactly ONE TextMessage whose messageOrderIdx equals the deltas' (so the live UI
+        // merges them by generationId+messageOrderIdx, and history persists the answer once).
+        //
+        // Before the fix this produced TWO TextMessages: a joiner-built copy AND the finalizing copy,
+        // with mismatched messageOrderIdx (0 vs 1). The single assertion below catches both fixes:
+        //   - Assert.Single  -> guards MessageUpdateJoinerMiddleware (no synthesized duplicate)
+        //   - MessageOrderIdx -> guards MessageTransformationMiddleware (finalizer shares deltas' idx)
+        // Arrange
+        var agentMessages = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "The capital of France ", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage { Text = "is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextMessage { Text = "The capital of France is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(agentMessages.ToAsyncEnumerable());
+
+        // The same downstream history pipeline MultiTurnAgentLoop assembles.
+        var pipeline = mockStreamingAgent.Object
+            .WithMessageTransformation()
+            .WithMiddleware(new MessageUpdateJoinerMiddleware());
+
+        // Act
+        var resultStream = await pipeline.GenerateReplyStreamingAsync([], new GenerateReplyOptions());
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert — exactly one assistant text representation, carrying the deltas' messageOrderIdx (0).
+        var textMessages = results.OfType<TextMessage>().ToList();
+        _ = Assert.Single(textMessages);
+        Assert.Equal("The capital of France is Paris.", ((ICanGetText)textMessages[0]).GetText());
+        Assert.Equal(0, textMessages[0].MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task DuplicateBubbleRegression_PipelineEmitsServerSideDedupDecisionLogs()
+    {
+        // Closes the server-side log-visibility gap: the middleware that prevents the duplicate now
+        // LOGS its decision. Drive the repro through the pipeline with real loggers writing
+        // DuckDB-queryable CompactJson JSONL, then assert (a) the behavior (one TextMessage) and
+        // (b) that both decision logs are present — so a future regression is debuggable from logs,
+        // not just from code-reading.
+        // Arrange
+        var logPath = Path.Combine(AppContext.BaseDirectory, "logs", $"dup-bubble-decisions-{Guid.NewGuid():N}.jsonl");
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+        var serilog = new Serilog.LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .WriteTo.File(new Serilog.Formatting.Compact.CompactJsonFormatter(), logPath)
+            .CreateLogger();
+        using var loggerFactory = new Serilog.Extensions.Logging.SerilogLoggerFactory(serilog, dispose: false);
+
+        var agentMessages = new List<IMessage>
+        {
+            new TextUpdateMessage { Text = "The capital of France ", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextUpdateMessage { Text = "is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+            new TextMessage { Text = "The capital of France is Paris.", Role = Role.Assistant, GenerationId = "gen1" },
+        };
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(agentMessages.ToAsyncEnumerable());
+
+        var pipeline = mockStreamingAgent.Object
+            .WithMessageTransformation(loggerFactory.CreateLogger<MessageTransformationMiddleware>())
+            .WithMiddleware(new MessageUpdateJoinerMiddleware(logger: loggerFactory.CreateLogger<MessageUpdateJoinerMiddleware>()));
+
+        // Act
+        var resultStream = await pipeline.GenerateReplyStreamingAsync([], new GenerateReplyOptions());
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+        serilog.Dispose(); // flush the JSONL to disk
+
+        // Assert — behavior: a single merged text message.
+        _ = Assert.Single(results.OfType<TextMessage>());
+
+        // Assert — the de-dup decisions are now visible in the structured logs (DuckDB-queryable).
+        var logText = await File.ReadAllTextAsync(logPath);
+        Assert.Contains("Joiner suppressed synthesized", logText);
+        Assert.Contains("Finalizing TextMessage reuses streamed messageOrderIdx", logText);
     }
 
     #region Helper Methods
