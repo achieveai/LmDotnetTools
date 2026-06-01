@@ -351,6 +351,19 @@ public record AnthropicRequest
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
         }
+        else if (message is ImageMessage imageMsg)
+        {
+            anthropicMessage.Content.Add(new AnthropicContent
+            {
+                Type = "image",
+                Source = new ImageSource
+                {
+                    Type = "base64",
+                    MediaType = imageMsg.ImageData.MediaType ?? "image/jpeg",
+                    Data = Convert.ToBase64String(imageMsg.ImageData.ToArray()),
+                },
+            });
+        }
         else if (message is ReasoningMessage reasoningMsg)
         {
             if (reasoningMsg.Visibility == ReasoningVisibility.Encrypted)

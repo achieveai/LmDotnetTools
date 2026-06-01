@@ -7,13 +7,21 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 [JsonConverter(typeof(CompositeMessageJsonConverter))]
 public class CompositeMessage : IMessage
 {
+    [JsonPropertyName("messages")]
     public ImmutableList<IMessage> Messages { get; init; } = [];
+
+    [JsonPropertyName("role")]
     public Role Role { get; init; }
 
+    [JsonPropertyName("fromAgent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; }
 
+    [JsonPropertyName("generationId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; }
 
+    [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     [JsonPropertyName("threadId")]

@@ -258,6 +258,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "text_with_citations";
         }
 
+        if (type == typeof(CompositeMessage))
+        {
+            return "composite";
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -395,6 +400,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "server_tool_use" => typeof(ToolCallMessage),
             "server_tool_result" => typeof(ToolCallResultMessage),
             "text_with_citations" => typeof(TextWithCitationsMessage),
+            "composite" => typeof(CompositeMessage),
             _ => null,
         };
     }
