@@ -13,6 +13,13 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 ///     This enables the new simplified message flow while maintaining backward compatibility
 ///     with provider transformations that expect aggregated messages.
 /// </summary>
+/// <remarks>
+///     Composition order matters on the response path: this middleware MUST run before
+///     <see cref="MessageUpdateJoinerMiddleware" /> (Transformation → Joiner). Transformation assigns
+///     the messageOrderIdx that lets a finalizing TextMessage merge onto its streamed deltas; the
+///     Joiner then suppresses the synthesized duplicate for history. Omitting or reordering these
+///     two middlewares reintroduces duplicate assistant messages.
+/// </remarks>
 public class MessageTransformationMiddleware : IStreamingMiddleware
 {
     private readonly ILogger<MessageTransformationMiddleware> _logger;
@@ -65,7 +72,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to replies
-        var orderedReplies = AssignMessageOrdering(replies);
+        var orderedReplies = AssignMessageOrdering(replies, _logger);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -113,7 +120,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return AssignMessageOrderingStreaming(streamingResponse);
+        return AssignMessageOrderingStreaming(streamingResponse, _logger);
     }
 
     #region Downstream: Assign Message Ordering
@@ -138,7 +145,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// </summary>
     private static IEnumerable<IMessage> ProcessMessageForOrdering(
         IMessage message,
-        OrderingState state
+        OrderingState state,
+        ILogger logger
     )
     {
         // Only assign ordering to messages with a GenerationId
@@ -203,9 +211,35 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 break;
 
             case TextMessage m:
-                StartNewMessage();
-                var (textOrderIdx, _) = GetCurrentIndices();
-                yield return m with { MessageOrderIdx = textOrderIdx };
+                // A finalizing TextMessage consolidates the immediately-preceding TextUpdateMessage
+                // stream for this generation, so it must reuse that stream's messageOrderIdx — same
+                // as the TextWithCitationsMessage case above. Otherwise a consumer that merges by
+                // (generationId, messageOrderIdx) cannot merge it onto the streamed message and
+                // renders a duplicate text bubble. A standalone complete TextMessage (no open
+                // text_update stream) still starts a new message.
+                if (state.CurrentMessageIdentity[generationId] == "text_update")
+                {
+                    var (finalizedTextOrderIdx, _) = GetCurrentIndices();
+                    // Close the stream so a subsequent message (even another TextMessage) starts fresh.
+                    state.CurrentMessageIdentity[generationId] = null;
+                    if (logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug(
+                            "Finalizing TextMessage reuses streamed messageOrderIdx {MessageOrderIdx} for generation {GenerationId} (merged with its text_update stream rather than creating a duplicate)",
+                            finalizedTextOrderIdx,
+                            generationId
+                        );
+                    }
+
+                    yield return m with { MessageOrderIdx = finalizedTextOrderIdx };
+                }
+                else
+                {
+                    StartNewMessage();
+                    var (textOrderIdx, _) = GetCurrentIndices();
+                    yield return m with { MessageOrderIdx = textOrderIdx };
+                }
+
                 break;
 
             case TextUpdateMessage m:
@@ -217,6 +251,11 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
                 break;
 
             case ReasoningMessage m:
+                // Reasoning finalization is intentionally NOT merged onto its update stream here.
+                // The OpenAI Responses reasoning item carries its content differently from the
+                // streamed deltas, and merging caused thinking blocks to stop rendering. Reasoning
+                // duplicate-display is already handled client-side, so a finalizing ReasoningMessage
+                // starts its own message (original behavior).
                 StartNewMessage();
                 var (reasoningOrderIdx, _) = GetCurrentIndices();
                 yield return m with { MessageOrderIdx = reasoningOrderIdx };
@@ -386,13 +425,13 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx and chunkIdx to messages with the same GenerationId
     /// </summary>
-    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages, ILogger logger)
     {
         var state = new OrderingState();
 
         foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
             {
                 yield return processedMessage;
             }
@@ -403,14 +442,15 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// Assigns messageOrderIdx and chunkIdx to streaming messages on the fly
     /// </summary>
     private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
-        IAsyncEnumerable<IMessage> messages
+        IAsyncEnumerable<IMessage> messages,
+        ILogger logger
     )
     {
         var state = new OrderingState();
 
         await foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
             {
                 yield return processedMessage;
             }

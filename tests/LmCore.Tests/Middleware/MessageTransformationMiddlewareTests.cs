@@ -335,14 +335,47 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(1, reasoningUpdate2.ChunkIdx);
     }
     [Fact]
-    public async Task Downstream_ResetsChunkIdx_WhenCompleteMessageInterrupts()
+    public async Task Downstream_FinalizingTextMessage_SharesOrderIdx_WithPrecedingTextUpdateStream()
     {
+        // A finalizing TextMessage consolidates the just-streamed TextUpdateMessage deltas for the
+        // same generation, so it MUST share that stream's messageOrderIdx. Otherwise a consumer that
+        // merges by (generationId, messageOrderIdx) cannot merge it onto the streamed message and
+        // renders a duplicate text bubble (regression: GPT-5.5/Copilot Responses double-render).
         // Arrange
         var middleware = new MessageTransformationMiddleware();
         var agent = new MockAgent(
             new TextUpdateMessage { Text = "Hello", GenerationId = "gen1" },
             new TextUpdateMessage { Text = " ", GenerationId = "gen1" },
-            new TextMessage { Text = "Complete message", GenerationId = "gen1" },
+            new TextMessage { Text = "Hello World", GenerationId = "gen1" }
+        );
+        var context = new MiddlewareContext(Messages: [], Options: null);
+        // Act
+        var result = await middleware.InvokeAsync(context, agent);
+        var messages = result.ToList();
+        // Assert
+        Assert.Equal(3, messages.Count);
+        var textUpdate1 = Assert.IsType<TextUpdateMessage>(messages[0]);
+        var textUpdate2 = Assert.IsType<TextUpdateMessage>(messages[1]);
+        var textMessage = Assert.IsType<TextMessage>(messages[2]);
+        Assert.Equal(0, textUpdate1.MessageOrderIdx);
+        Assert.Equal(0, textUpdate1.ChunkIdx);
+        Assert.Equal(0, textUpdate2.MessageOrderIdx);
+        Assert.Equal(1, textUpdate2.ChunkIdx);
+        // The finalizing TextMessage shares the stream's orderIdx (0), not a bumped one.
+        Assert.Equal(0, textMessage.MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Downstream_TextUpdateStreamAfterFinalization_StartsNewMessage()
+    {
+        // Once a finalizing TextMessage closes a text stream, a subsequent TextUpdate stream for the
+        // same generation is a NEW logical message and must get the next orderIdx with chunkIdx reset.
+        // Arrange
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new TextUpdateMessage { Text = "Hello", GenerationId = "gen1" },
+            new TextUpdateMessage { Text = " ", GenerationId = "gen1" },
+            new TextMessage { Text = "Hello ", GenerationId = "gen1" },
             new TextUpdateMessage { Text = "World", GenerationId = "gen1" }
         );
         var context = new MiddlewareContext(Messages: [], Options: null);
@@ -351,21 +384,21 @@ public class MessageTransformationMiddlewareTests
         var messages = result.ToList();
         // Assert
         Assert.Equal(4, messages.Count);
-        // First two TextUpdateMessages
         var textUpdate1 = Assert.IsType<TextUpdateMessage>(messages[0]);
         var textUpdate2 = Assert.IsType<TextUpdateMessage>(messages[1]);
+        var textMessage = Assert.IsType<TextMessage>(messages[2]);
+        var textUpdate3 = Assert.IsType<TextUpdateMessage>(messages[3]);
         Assert.Equal(0, textUpdate1.MessageOrderIdx);
         Assert.Equal(0, textUpdate1.ChunkIdx);
         Assert.Equal(0, textUpdate2.MessageOrderIdx);
         Assert.Equal(1, textUpdate2.ChunkIdx);
-        // Complete message gets new orderIdx
-        var textMessage = Assert.IsType<TextMessage>(messages[2]);
-        Assert.Equal(1, textMessage.MessageOrderIdx);
-        // Next TextUpdateMessage starts new message with reset chunkIdx
-        var textUpdate3 = Assert.IsType<TextUpdateMessage>(messages[3]);
-        Assert.Equal(2, textUpdate3.MessageOrderIdx);
-        Assert.Equal(0, textUpdate3.ChunkIdx); // Reset to 0
+        // Finalizing TextMessage shares the first stream's orderIdx (0)...
+        Assert.Equal(0, textMessage.MessageOrderIdx);
+        // ...and the next delta stream starts a new message (orderIdx 1, chunkIdx reset to 0).
+        Assert.Equal(1, textUpdate3.MessageOrderIdx);
+        Assert.Equal(0, textUpdate3.ChunkIdx);
     }
+
     #endregion
     #region Plural to Singular Conversion Tests
     [Fact]
@@ -689,7 +722,7 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(0, reasoningUpdate1.ChunkIdx);
         Assert.Equal(0, reasoningUpdate2.MessageOrderIdx);
         Assert.Equal(1, reasoningUpdate2.ChunkIdx);
-        // Complete reasoning: orderIdx=1
+        // Complete reasoning: orderIdx=1 (reasoning finalization starts its own message)
         var reasoning = Assert.IsType<ReasoningMessage>(messages[2]);
         Assert.Equal(1, reasoning.MessageOrderIdx);
         // Tool call: orderIdx=2

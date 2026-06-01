@@ -65,6 +65,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
     /// <param name="subAgentOptions">Optional sub-agent orchestration configuration</param>
+    /// <param name="loggerFactory">
+    ///     Optional logger factory used to give the internal message pipeline middlewares
+    ///     (MessageTransformation, MessageUpdateJoiner) their own category loggers so their
+    ///     ordering/de-dup decisions are visible in structured logs. When null they stay silent.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -76,7 +81,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         int outputChannelCapacity = 1000,
         IConversationStore? store = null,
         ILogger<MultiTurnAgentLoop>? logger = null,
-        SubAgentOptions? subAgentOptions = null)
+        SubAgentOptions? subAgentOptions = null,
+        ILoggerFactory? loggerFactory = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
@@ -116,10 +122,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         // Build the complete middleware stack (loop owns the pipeline)
         // Response path order: Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall
         _agent = providerAgent
-            .WithMessageTransformation()
+            .WithMessageTransformation(loggerFactory?.CreateLogger<MessageTransformationMiddleware>())
             .WithMiddleware(new JsonFragmentUpdateMiddleware())
             .WithMiddleware(publishingMiddleware)
-            .WithMiddleware(new MessageUpdateJoinerMiddleware(name: "MessageJoiner"))
+            .WithMiddleware(new MessageUpdateJoinerMiddleware(
+                name: "MessageJoiner",
+                logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()))
             .WithMiddleware(toolCallMiddleware);
     }
 
