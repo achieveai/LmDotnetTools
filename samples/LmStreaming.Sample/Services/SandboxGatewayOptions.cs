@@ -56,4 +56,15 @@ public sealed class SandboxGatewayOptions
     /// <c>';'</c>-separated values on Windows).
     /// </summary>
     public string? SkillsDir { get; set; }
+
+    /// <summary>
+    /// Claude-plugin marketplace directories to load, as one or more comma-separated
+    /// <c>alias=path</c> entries (e.g. <c>"claude_plugins=B:\sources\claude_plugins"</c>).
+    /// Becomes <c>PLUGINS_DIRS</c> when the gateway is spawned. Each directory may hold a
+    /// <c>.claude-plugin/marketplace.json</c> catalog (or be scanned for plugin subdirectories
+    /// containing <c>.claude-plugin/plugin.json</c>, <c>.mcp.json</c>, <c>SKILL.md</c>, or a
+    /// <c>skills/</c> subdir); the gateway surfaces each plugin's skills and <c>.mcp.json</c>
+    /// MCP servers to the sandbox.
+    /// </summary>
+    public string? PluginsDirs { get; set; }
 }

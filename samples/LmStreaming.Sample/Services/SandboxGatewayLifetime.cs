@@ -297,6 +297,13 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             psi.Environment["SKILLS_DIRS"] = _options.SkillsDir;
         }
 
+        // Claude-plugin marketplace directories (alias=path entries). The gateway loads each
+        // plugin's skills + .mcp.json MCP servers and surfaces them to the sandbox.
+        if (!string.IsNullOrWhiteSpace(_options.PluginsDirs))
+        {
+            psi.Environment["PLUGINS_DIRS"] = _options.PluginsDirs;
+        }
+
         return psi;
     }
 
