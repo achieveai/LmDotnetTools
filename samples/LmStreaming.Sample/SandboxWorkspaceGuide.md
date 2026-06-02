@@ -72,7 +72,8 @@ Workspace Agent mode is configured through the **`SandboxGateway`** section of
 | `AutoSpawn` | `true` | If a healthy gateway is already running at `BaseUrl`, adopt it; otherwise spawn `GatewayExePath`. |
 | `GatewayExePath` | — | Absolute path to the built `mcp-gateway.exe`, used for auto-spawn. |
 | `AgentCliPath` | — | Absolute path to the built `agent-cli.exe` (becomes `LOCAL_AGENT_CLI_PATH` when the gateway is spawned). |
-| `SkillsDir` | — | Directory whose `<skill>/SKILL.md` files become the gateway's `Skill` tool (becomes `SKILLS_DIRS`). The repo ships `sandbox-skills/repo-explorer`. |
+| `SkillsDir` | — | Directory whose `<skill>/SKILL.md` files become the gateway's `Skill` tool (becomes `SKILLS_DIRS`). The repo ships `sandbox-skills/repo-explorer` and `sandbox-skills/workspace-summary`. |
+| `PluginsDirs` | — | One or more comma-separated `alias=path` entries pointing at Claude-plugin **marketplace** directories (becomes `PLUGINS_DIRS`). The gateway loads each plugin's skills + `.mcp.json` MCP servers. See [Plugins](#plugins-claude-plugin-marketplaces). |
 
 Example (`appsettings.Development.json`):
 
@@ -80,47 +81,84 @@ Example (`appsettings.Development.json`):
 {
   "SandboxGateway": {
     "BaseUrl": "http://localhost:3000",
-    "Workspace": "LmDotnetTools",
-    "WorkspaceBasePath": "B:\\sources",
+    "Workspace": "demo",
+    "WorkspaceBasePath": "B:\\sandbox-workspaces",
     "AppId": "lmstreaming-sample",
     "AutoSpawn": true,
     "GatewayExePath": "B:\\sources\\SandboxedOstoolsMcpServer\\target\\release\\mcp-gateway.exe",
     "AgentCliPath": "B:\\sources\\SandboxedOstoolsMcpServer\\target\\release\\agent-cli.exe",
-    "SkillsDir": "B:\\sources\\LmDotnetTools\\samples\\LmStreaming.Sample\\sandbox-skills"
+    "SkillsDir": "B:\\sources\\LmDotnetTools\\samples\\LmStreaming.Sample\\sandbox-skills",
+    "PluginsDirs": "claude_plugins=B:\\sources\\claude_plugins"
   }
 }
 ```
 
 With the example above, the mounted workspace is `WorkspaceBasePath` + `Workspace` =
-`B:\sources\LmDotnetTools`.
+`B:\sandbox-workspaces\demo` (the gateway **creates the directory if it does not exist**).
+Point `Workspace`/`WorkspaceBasePath` at a **dedicated** folder rather than a real source repo —
+the local backend runs unsandboxed, so the agent has read/write access to whatever you mount.
 
 > **Startup is non-fatal.** If the gateway is not configured or not reachable, the app still
 > boots and runs all other chat modes. The error only surfaces when **Workspace Agent mode is
 > actually used** (i.e. when the first sandbox session is created).
 
+## Skills (`SkillsDir`)
+
+A **skill** is a folder under `SkillsDir` containing a `SKILL.md` with YAML frontmatter
+(`name`, `description`) followed by a markdown procedure. The gateway parses each one at startup
+and exposes the `Skill` tool; the model invokes it as `Skill { skill: "<name>" }`. The
+`description` is what the model matches on, so make it state *when* to use the skill.
+
+The repo ships two:
+
+- **`repo-explorer`** — maps a code repository into a structured JSON manifest.
+- **`workspace-summary`** — inventories any workspace (file counts/sizes by extension,
+  largest/recent files, top-level layout).
+
+Add your own by creating `<SkillsDir>/<my-skill>/SKILL.md`. Skills are read when the **gateway
+starts**, so restart the backend (which respawns the gateway) after adding or editing one.
+
+## Plugins (Claude-plugin marketplaces)
+
+`PluginsDirs` points the gateway at one or more **Claude-plugin marketplace** directories using
+comma-separated `alias=path` entries (e.g. `claude_plugins=B:\sources\claude_plugins`). For each
+directory the gateway:
+
+1. reads a catalog — `marketplace.json` or `.claude-plugin/marketplace.json` — if present; or
+2. otherwise scans immediate subdirectories, treating any that contain
+   `.claude-plugin/plugin.json`, `.mcp.json`, `SKILL.md`, or a `skills/` subdir as a plugin.
+
+Each discovered plugin's **skills** (its `skills/<name>/SKILL.md`) and **MCP servers** (its
+`.mcp.json`) are surfaced to the sandbox. Multiple marketplaces:
+`PluginsDirs = "a=B:\\one,b=B:\\two"`. Startup logs `Discovered plugins in marketplace, alias=…`.
+
+> **`.mcp.json` strictness.** The gateway requires each server entry to declare a `type`. Plugins
+> whose `.mcp.json` omits it are loaded **skills-only** with a warning
+> (`Failed to parse .mcp.json — using empty mcp_servers`); their skills still work.
+
 ## Running
 
-1. **Start the backend** (serves the API + `/ws` on `http://localhost:5000`):
+The backend auto-launches the Vite client (via `Vite.AspNetCore`) **and** auto-spawns the gateway
+— but **only in the Development environment**, which is also where the gateway/workspace/plugins
+config above lives (`appsettings.Development.json`). There is no `launchSettings.json`, so set the
+environment explicitly:
 
-   ```bash
+1. **Start everything with one command** (API + `/ws` on `http://localhost:5000`, Vite on
+   `:5173`, and the auto-spawned gateway on `:3000`):
+
+   ```powershell
+   $env:ASPNETCORE_ENVIRONMENT = "Development"
    dotnet run --project samples/LmStreaming.Sample
    ```
 
-   On boot the app adopts a healthy gateway already listening at `BaseUrl`, or spawns one
-   (local/Windows backend).
+   On boot the app adopts a healthy gateway already listening at `BaseUrl`, or spawns
+   `GatewayExePath` (local/Windows backend). Open **http://localhost:5000**.
 
-2. **Start the client** (Vite dev server on `http://localhost:5173`):
-
-   ```bash
-   npm --prefix samples/LmStreaming.Sample/ClientApp install
-   npm --prefix samples/LmStreaming.Sample/ClientApp run dev
-   ```
-
-3. **In the UI:**
+2. **In the UI:**
    - Pick a **provider** — Anthropic or OpenAI for the true-sandbox demo, or Copilot for the
      key-free path.
    - Select the **Workspace Agent** mode.
-   - Start chatting.
+   - Start chatting (e.g. *"Use the workspace-summary skill to inventory this workspace."*).
 
 ## How it works (brief)
 
