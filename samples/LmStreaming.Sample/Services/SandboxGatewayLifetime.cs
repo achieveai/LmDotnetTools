@@ -41,6 +41,10 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
     // True only when this process spawned the gateway; gates whether StopAsync kills it.
     private bool _ownsProcess;
     private Process? _process;
+
+    // The egress proxy (token injection). Owned only when we spawned it (vs. adopting a running one).
+    private bool _ownsProxy;
+    private Process? _proxyProcess;
     private bool _disposed;
 
     // True once the gateway has been observed healthy (adopted or spawned); lets EnsureReadyAsync
@@ -169,13 +173,17 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
     /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        // Adopted gateways are left running; only kill what we spawned.
-        if (!_ownsProcess || _process is null)
+        // Adopted processes are left running; only kill what we spawned.
+        if (_ownsProxy && _proxyProcess is not null)
         {
-            return Task.CompletedTask;
+            TryKillProxy();
         }
 
-        TryKillProcess();
+        if (_ownsProcess && _process is not null)
+        {
+            TryKillProcess();
+        }
+
         return Task.CompletedTask;
     }
 
@@ -188,6 +196,14 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         }
 
         _disposed = true;
+
+        if (_ownsProxy)
+        {
+            TryKillProxy();
+        }
+
+        _proxyProcess?.Dispose();
+        _proxyProcess = null;
 
         if (_ownsProcess)
         {
@@ -213,6 +229,10 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             "gateway executable"
         );
         var agentCliPath = RequireFile(_options.AgentCliPath, nameof(SandboxGatewayOptions.AgentCliPath), "agent CLI");
+
+        // Bring up the egress proxy first (non-fatal) so it is listening before the gateway tells
+        // sandboxes to route through it. Without it, sandbox calls to GitHub/ADO connection-refuse.
+        await EnsureEgressProxyAsync(cancellationToken).ConfigureAwait(false);
 
         // Dispose any process object left over from a prior failed spawn attempt before replacing it.
         _process?.Dispose();
@@ -304,7 +324,207 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             psi.Environment["PLUGINS_DIRS"] = _options.PluginsDirs;
         }
 
+        // Egress proxy: when configured, tell the gateway where the proxy listens (it injects this as
+        // HTTP(S)_PROXY into sandboxes) and where the MITM CA lives (exported to sandboxes as
+        // CURL_CA_BUNDLE/SSL_CERT_FILE so their HTTPS clients trust the proxy). Set explicitly so the
+        // app controls these rather than depending on a stray .env beside the gateway binary.
+        if (EgressProxyConfigured)
+        {
+            psi.Environment["EGRESS_PROXY_URL"] = $"http://{_options.EgressProxyListen}";
+            psi.Environment["CA_CERT_HOST_PATH"] = _options.CaCertPath!;
+        }
+
         return psi;
+    }
+
+    /// <summary>True when an egress proxy exe + CA cert/key are all configured.</summary>
+    private bool EgressProxyConfigured =>
+        !string.IsNullOrWhiteSpace(_options.EgressProxyExePath)
+        && !string.IsNullOrWhiteSpace(_options.CaCertPath)
+        && !string.IsNullOrWhiteSpace(_options.CaKeyPath);
+
+    /// <summary>
+    /// Adopt-or-spawns the egress proxy so sandbox outbound traffic is policy-enforced and OAuth tokens
+    /// can be injected. Best-effort/non-fatal: if it is not configured, files are missing, or it fails to
+    /// start, the app still runs — only external-service token injection (GitHub/ADO) is unavailable.
+    /// </summary>
+    private async Task EnsureEgressProxyAsync(CancellationToken ct)
+    {
+        if (!EgressProxyConfigured)
+        {
+            _logger.LogInformation(
+                "Egress proxy not configured ({Section}:EgressProxyExePath/CaCertPath/CaKeyPath); "
+                    + "sandbox egress token injection (GitHub/ADO) is disabled.",
+                SandboxGatewayOptions.SectionName
+            );
+            return;
+        }
+
+        var (host, port) = ParseListen(_options.EgressProxyListen);
+
+        // Adopt a proxy already listening (started out-of-band); spawn our own only otherwise.
+        if (await IsPortOpenAsync(host, port, ct).ConfigureAwait(false))
+        {
+            _logger.LogInformation("Adopted existing egress proxy at {Listen}", _options.EgressProxyListen);
+            return;
+        }
+
+        if (!File.Exists(_options.EgressProxyExePath) || !File.Exists(_options.CaCertPath) || !File.Exists(_options.CaKeyPath))
+        {
+            _logger.LogWarning(
+                "Egress proxy configured but a required file is missing (exe '{Exe}', ca '{Ca}', key '{Key}'); "
+                    + "token injection disabled.",
+                _options.EgressProxyExePath,
+                _options.CaCertPath,
+                _options.CaKeyPath
+            );
+            return;
+        }
+
+        try
+        {
+            var psi = BuildProxyStartInfo();
+            var proc =
+                Process.Start(psi)
+                ?? throw new InvalidOperationException($"Failed to start egress proxy '{_options.EgressProxyExePath}'.");
+
+            _proxyProcess = proc;
+            _ownsProxy = true;
+            proc.OutputDataReceived += (_, e) => LogProxyLine("stdout", e.Data);
+            proc.ErrorDataReceived += (_, e) => LogProxyLine("stderr", e.Data);
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+
+            _logger.LogInformation(
+                "Spawned egress proxy (pid {Pid}) at {Listen}; waiting for it to listen",
+                proc.Id,
+                _options.EgressProxyListen
+            );
+
+            var deadline = DateTime.UtcNow + SpawnReadyTimeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (proc.HasExited)
+                {
+                    _logger.LogWarning(
+                        "Egress proxy exited during startup (code {Code}); token injection disabled.",
+                        SafeExitCode(proc)
+                    );
+                    return;
+                }
+
+                if (await IsPortOpenAsync(host, port, ct).ConfigureAwait(false))
+                {
+                    _logger.LogInformation("Egress proxy is listening at {Listen}", _options.EgressProxyListen);
+                    return;
+                }
+
+                await Task.Delay(SpawnPollInterval, ct).ConfigureAwait(false);
+            }
+
+            _logger.LogWarning(
+                "Egress proxy did not start listening at {Listen} within {Secs:0}s; token injection may not work.",
+                _options.EgressProxyListen,
+                SpawnReadyTimeout.TotalSeconds
+            );
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to start the egress proxy; sandbox token injection (GitHub/ADO) is disabled.");
+        }
+    }
+
+    /// <summary>Builds the egress proxy <see cref="ProcessStartInfo"/> (mirrors the repo's launch scripts).</summary>
+    private ProcessStartInfo BuildProxyStartInfo()
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = _options.EgressProxyExePath!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            WorkingDirectory = Path.GetDirectoryName(_options.EgressProxyExePath!) ?? AppContext.BaseDirectory,
+        };
+
+        psi.Environment["LISTEN_ADDR"] = _options.EgressProxyListen;
+        psi.Environment["GATEWAY_URL"] = GatewayBaseUrl;
+        psi.Environment["CA_CERT_PATH"] = _options.CaCertPath!;
+        psi.Environment["CA_KEY_PATH"] = _options.CaKeyPath!;
+        psi.Environment["LOG_FORMAT"] = "json";
+        return psi;
+    }
+
+    /// <summary>Parses a <c>host:port</c> listen address, defaulting to <c>127.0.0.1:8090</c> on malformed input.</summary>
+    private static (string Host, int Port) ParseListen(string listen)
+    {
+        var idx = listen.LastIndexOf(':');
+        return idx > 0 && int.TryParse(listen[(idx + 1)..], out var port)
+            ? (listen[..idx], port)
+            : ("127.0.0.1", DefaultGatewayPort);
+    }
+
+    /// <summary>Returns true when a TCP connection to <paramref name="host"/>:<paramref name="port"/> succeeds within 500ms.</summary>
+    private static async Task<bool> IsPortOpenAsync(string host, int port, CancellationToken ct)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(500));
+            await client.ConnectAsync(host, port, timeoutCts.Token).ConfigureAwait(false);
+            return client.Connected;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void LogProxyLine(string stream, string? line)
+    {
+        if (!string.IsNullOrEmpty(line))
+        {
+            _logger.LogDebug("[egress-proxy {Stream}] {Line}", stream, line);
+        }
+    }
+
+    private void TryKillProxy()
+    {
+        var proc = _proxyProcess;
+        if (proc is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!proc.HasExited)
+            {
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+                _logger.LogInformation("Stopped spawned egress proxy (pid {Pid})", SafePid(proc));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to stop spawned egress proxy");
+        }
+        finally
+        {
+            _ownsProxy = false;
+        }
     }
 
     /// <summary>

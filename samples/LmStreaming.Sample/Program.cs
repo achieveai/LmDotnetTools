@@ -173,6 +173,10 @@ try
         sp.GetRequiredService<ILogger<AdoDeviceFlowProvider>>()
     ));
 
+    // Restore persisted sign-in state at startup so the status API/UI reflects a prior run's sign-in
+    // (token injection always reads the store directly, but the surfaced status was in-memory only).
+    _ = builder.Services.AddHostedService<OAuthTokenHydrator>();
+
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
         sandboxOptions,

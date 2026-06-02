@@ -67,4 +67,28 @@ public sealed class SandboxGatewayOptions
     /// MCP servers to the sandbox.
     /// </summary>
     public string? PluginsDirs { get; set; }
+
+    /// <summary>
+    /// Absolute path to <c>egress-proxy.exe</c>. When this and <see cref="CaCertPath"/>/<see cref="CaKeyPath"/>
+    /// are set, the app adopt-or-spawns the egress proxy so sandbox outbound traffic is policy-enforced and
+    /// OAuth tokens can be injected (the auth-webhook path). Without it, the gateway tells sandboxes to use a
+    /// proxy that isn't running, so external API calls (GitHub/ADO) fail to connect.
+    /// </summary>
+    public string? EgressProxyExePath { get; set; }
+
+    /// <summary>
+    /// <c>host:port</c> the egress proxy listens on (also the gateway's <c>EGRESS_PROXY_URL</c>).
+    /// Defaults to the value the gateway expects on the local backend.
+    /// </summary>
+    public string EgressProxyListen { get; set; } = "127.0.0.1:8090";
+
+    /// <summary>
+    /// Host path to the MITM CA certificate the egress proxy presents (becomes the proxy's
+    /// <c>CA_CERT_PATH</c> and the gateway's <c>CA_CERT_HOST_PATH</c>, which it exports to sandboxes as
+    /// <c>CURL_CA_BUNDLE</c>/<c>SSL_CERT_FILE</c>).
+    /// </summary>
+    public string? CaCertPath { get; set; }
+
+    /// <summary>Host path to the MITM CA private key (the egress proxy's <c>CA_KEY_PATH</c>).</summary>
+    public string? CaKeyPath { get; set; }
 }

@@ -41,6 +41,12 @@ public interface IOAuthTokenProvider
     /// <summary>Current sign-in status (no secrets).</summary>
     OAuthStatus Status { get; }
 
+    /// <summary>
+    /// Loads any persisted token at startup so <see cref="Status"/> reflects a sign-in that happened
+    /// in a previous run. Safe to call once at startup; a missing/invalid token leaves state NotStarted.
+    /// </summary>
+    Task HydrateFromStoreAsync(CancellationToken ct = default);
+
     /// <summary>Starts the device-code flow and begins background polling; returns the challenge to show the user.</summary>
     Task<DeviceCodeChallenge> BeginSignInAsync(CancellationToken ct = default);
 

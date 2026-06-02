@@ -99,6 +99,37 @@ public abstract partial class DeviceFlowOAuthProviderBase : IOAuthTokenProvider
     }
 
     /// <inheritdoc />
+    public async Task HydrateFromStoreAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var record = await _store.GetAsync(ProviderId, ct).ConfigureAwait(false);
+            if (record is null)
+            {
+                return;
+            }
+
+            // A persisted record means a prior successful sign-in. The access token is refreshed on
+            // demand by GetAccessTokenAsync, so surface SignedIn even if the cached token has lapsed.
+            SetStatus(new OAuthStatus(
+                OAuthSignInState.SignedIn,
+                record.Account,
+                record.Scopes,
+                record.AccessTokenExpiresAtUtc,
+                Error: null));
+            Logger.LogInformation(
+                "Restored persisted sign-in for OAuth provider {ProviderId} (account {Account}).",
+                ProviderId,
+                record.Account ?? "(unknown)");
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal: a missing/corrupt token file just leaves the provider NotStarted.
+            Logger.LogWarning(ex, "Failed to restore persisted sign-in for OAuth provider {ProviderId}.", ProviderId);
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<DeviceCodeChallenge> BeginSignInAsync(CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(ClientId))
