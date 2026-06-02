@@ -3,6 +3,8 @@
 **/TestResults/
 **/logs/
 .env
+.env.*
+!.env.example
 **/.env.test
 *.pyc
 *.pyo
@@ -51,3 +53,6 @@ node_modules/
 
 # Husky.Net auto-install scratch dir
 .husky/_/
+
+# OAuth refresh/access token store (FileOAuthTokenStore) — never commit secrets
+**/oauth-tokens/
