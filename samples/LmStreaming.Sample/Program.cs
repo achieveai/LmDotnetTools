@@ -26,6 +26,7 @@ using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -134,6 +135,53 @@ try
         return registry;
     });
 
+    // Sandbox MCP gateway integration (Workspace Agent mode). The gateway lifetime boots eagerly
+    // as a hosted service but is non-fatal: when the gateway is not configured/available the app
+    // still starts for all other modes; the hard failure surfaces only when Workspace Agent mode
+    // actually tries to create a sandbox session.
+    var sandboxOptions =
+        builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
+        ?? new SandboxGatewayOptions();
+    _ = builder.Services.AddSingleton(sandboxOptions);
+    _ = builder.Services.AddSingleton(sp => new SandboxGatewayLifetime(
+        sandboxOptions,
+        sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
+        new HttpClient()
+    ));
+    _ = builder.Services.AddHostedService(sp => sp.GetRequiredService<SandboxGatewayLifetime>());
+
+    // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
+    var authOptions =
+        builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
+    _ = builder.Services.AddSingleton(authOptions);
+    _ = builder.Services.AddSingleton<AuthSharedSecret>();
+    var oauthTokenDir = Path.Combine(AppContext.BaseDirectory, "oauth-tokens");
+    _ = builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
+        oauthTokenDir,
+        sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
+    ));
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubDeviceFlowProvider(
+        authOptions.Github,
+        sp.GetRequiredService<IOAuthTokenStore>(),
+        new HttpClient(),
+        sp.GetRequiredService<ILogger<GitHubDeviceFlowProvider>>()
+    ));
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoDeviceFlowProvider(
+        authOptions.Ado,
+        sp.GetRequiredService<IOAuthTokenStore>(),
+        new HttpClient(),
+        sp.GetRequiredService<ILogger<AdoDeviceFlowProvider>>()
+    ));
+
+    _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
+        sp.GetRequiredService<SandboxGatewayLifetime>(),
+        sandboxOptions,
+        sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
+        new HttpClient(),
+        authOptions,
+        sp.GetRequiredService<AuthSharedSecret>()
+    ));
+
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
     // dropdown regardless of LM_PROVIDER_MODE.
@@ -221,6 +269,45 @@ try
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
                 var normalizedProviderId = providerId.ToLowerInvariant();
+
+                // Workspace Agent mode is backed by the sandbox MCP gateway. Resolve the sandbox
+                // session up front (sync-over-async, consistent with the books wiring) and augment
+                // the system prompt with the workspace's absolute host path — the local backend has
+                // no '/workspace' mount, so the model must use the absolute path for the file tools.
+                var isWorkspaceMode = mode.Id == SystemChatModes.WorkspaceAgentModeId;
+                var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
+                var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
+                SandboxSession? sandboxSession = null;
+                var effectiveMode = mode;
+                if (isWorkspaceMode)
+                {
+                    // Only the middleware providers (OpenAI/Anthropic/test/...) and Copilot are wired
+                    // to route tool calls to the sandbox gateway. Reject the CLI-only providers and
+                    // mock variants up front instead of creating an unused sandbox session and an
+                    // agent with no sandbox tools.
+                    if (
+                        normalizedProviderId
+                        is "codex"
+                            or "claude"
+                            or "codex-mock"
+                            or "claude-mock"
+                            or "copilot-mock"
+                    )
+                    {
+                        throw new ProviderUnavailableException(
+                            normalizedProviderId,
+                            "Workspace Agent mode supports the OpenAI/Anthropic (and Copilot) providers; this provider is not wired for the sandbox."
+                        );
+                    }
+
+                    sandboxSession = sandboxRegistry.GetOrCreateSessionAsync("default").GetAwaiter().GetResult();
+                    var wsSuffix =
+                        "\n\nYour workspace directory is: "
+                        + sandboxSession.HostPath
+                        + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
+                        + "The shell tools (Bash, PowerShell) already start in this directory.";
+                    effectiveMode = mode with { SystemPrompt = mode.SystemPrompt + wsSuffix };
+                }
 
                 // *-mock providers reuse the same agent-loop helpers as their real counterparts;
                 // the mock-host base URL is threaded into the SDK options as a per-spawn override
@@ -372,11 +459,19 @@ try
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateCopilotAgentLoop(
                             threadId,
-                            mode,
+                            effectiveMode,
                             functionRegistry,
                             requestResponseDumpFileName,
                             conversationStore,
-                            loggerFactory
+                            loggerFactory,
+                            extraMcpServers: isWorkspaceMode
+                                ? BuildHttpMcpServer(
+                                    "sandbox",
+                                    $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                                    new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId }
+                                )
+                                : null,
+                            workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null
                         )
                     );
                 }
@@ -413,6 +508,22 @@ try
                     if (mcpClients.Count > 0)
                     {
                         ownedResources = [.. mcpClients.Cast<IAsyncDisposable>()];
+                    }
+                }
+                else if (isWorkspaceMode)
+                {
+                    // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
+                    // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header.
+                    var sandboxClients = ConnectHttpMcpClient(
+                        filteredRegistry,
+                        "sandbox",
+                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                        new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId },
+                        loggerFactory
+                    );
+                    if (sandboxClients.Count > 0)
+                    {
+                        ownedResources = [.. sandboxClients.Cast<IAsyncDisposable>()];
                     }
                 }
 
@@ -454,7 +565,7 @@ try
                         providerAgent,
                         filteredRegistry,
                         threadId,
-                        systemPrompt: mode.SystemPrompt,
+                        systemPrompt: effectiveMode.SystemPrompt,
                         defaultOptions: new GenerateReplyOptions
                         {
                             ModelId = modelId,
@@ -723,8 +834,9 @@ public partial class Program
 
     // Shared across the GitHub Copilot-backed agents: one token (resolved from the Copilot/gh CLI
     // login) and one client-session id for the process lifetime.
-    private static readonly Lazy<ICopilotTokenProvider> s_copilotTokenProvider =
-        new(() => new CliCredentialCopilotTokenProvider());
+    private static readonly Lazy<ICopilotTokenProvider> s_copilotTokenProvider = new(() =>
+        new CliCredentialCopilotTokenProvider()
+    );
 
     private static readonly Lazy<CopilotSessionContext> s_copilotSession = new(() => new CopilotSessionContext());
 
@@ -1189,7 +1301,9 @@ public partial class Program
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
         string? mockBaseUrlOverride = null,
-        string? mockApiKeyOverride = null
+        string? mockApiKeyOverride = null,
+        IReadOnlyDictionary<string, McpServerConfig>? extraMcpServers = null,
+        string? workingDirectoryOverride = null
     )
     {
         var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
@@ -1237,6 +1351,13 @@ public partial class Program
         var effectiveModelAllowlistProbeEnabled =
             string.IsNullOrWhiteSpace(mockBaseUrlOverride) && modelAllowlistProbeEnabled;
 
+        // Workspace Agent mode supplies an explicit working directory (the sandbox host path);
+        // otherwise fall back to the env-configured value.
+        var effectiveWorkingDirectory =
+            !string.IsNullOrWhiteSpace(workingDirectoryOverride) ? workingDirectoryOverride
+            : string.IsNullOrWhiteSpace(workingDirectory) ? null
+            : workingDirectory;
+
         var copilotOptions = new CopilotSdkOptions
         {
             CopilotCliPath = copilotCliPath,
@@ -1244,7 +1365,8 @@ public partial class Program
             Model = model,
             ApiKey = string.IsNullOrWhiteSpace(effectiveApiKey) ? null : effectiveApiKey,
             BaseUrl = string.IsNullOrWhiteSpace(effectiveBaseUrl) ? null : effectiveBaseUrl,
-            WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? null : workingDirectory,
+            WorkingDirectory = effectiveWorkingDirectory,
+            McpServers = extraMcpServers ?? ImmutableDictionary<string, McpServerConfig>.Empty,
             EnableRpcTrace = enableRpcTrace,
             RpcTraceFilePath = traceFilePath,
             CopilotSessionId = sessionId,
@@ -1352,6 +1474,74 @@ public partial class Program
         }
 
         return (registry, createdClients);
+    }
+
+    /// <summary>
+    ///     Builds a single-entry MCP server configuration for an HTTP endpoint.
+    ///     Used by CLI-driven providers (e.g. Copilot) which advertise MCP servers to the CLI
+    ///     rather than routing tool calls through the middleware pipeline.
+    /// </summary>
+    private static Dictionary<string, McpServerConfig> BuildHttpMcpServer(
+        string name,
+        string endpoint,
+        IReadOnlyDictionary<string, string> headers
+    )
+    {
+        return new Dictionary<string, McpServerConfig>
+        {
+            [name] = McpServerConfig.CreateHttp(endpoint, headers: headers),
+        };
+    }
+
+    /// <summary>
+    ///     Connects to an HTTP MCP server and adds its tools to the FunctionRegistry.
+    ///     Used by middleware-pipeline providers (Anthropic/OpenAI) which route tool calls through
+    ///     the registry. Returns the created McpClient instances for proper disposal by the caller.
+    ///     On failure the warning is logged and an empty list is returned so the agent still runs
+    ///     (without the MCP tools), mirroring <see cref="ConnectLlmQueryMcpClients"/>.
+    /// </summary>
+    private static List<McpClient> ConnectHttpMcpClient(
+        FunctionRegistry registry,
+        string name,
+        string endpoint,
+        IReadOnlyDictionary<string, string> headers,
+        ILoggerFactory loggerFactory
+    )
+    {
+        var createdClients = new List<McpClient>();
+        var logger = loggerFactory.CreateLogger<Program>();
+        try
+        {
+            var transport = new HttpClientTransport(
+                new HttpClientTransportOptions
+                {
+                    Name = name,
+                    Endpoint = new Uri(endpoint),
+                    // AdditionalHeaders is IDictionary; copy the read-only input into a mutable map.
+                    AdditionalHeaders = new Dictionary<string, string>(headers),
+                }
+            );
+
+            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
+            var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
+            createdClients.Add(client);
+
+            var mcpClients = new Dictionary<string, McpClient> { [name] = client };
+            _ = registry.AddMcpClientsAsync(mcpClients, name).GetAwaiter().GetResult();
+
+            logger.LogInformation("Connected to MCP server '{Name}' at {Endpoint}", name, endpoint);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",
+                name,
+                endpoint
+            );
+        }
+
+        return createdClients;
     }
 
     /// <summary>
