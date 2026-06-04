@@ -4,13 +4,13 @@ using Microsoft.AspNetCore.Mvc;
 namespace LmStreaming.Sample.Controllers;
 
 /// <summary>
-/// UI-facing endpoints that drive the OAuth device-code sign-in lifecycle for each registered
-/// provider (e.g. "github", "ado"). The browser polls <see cref="Status"/> while the user
-/// authorizes the device code out-of-band.
+/// UI-facing endpoints that drive the interactive (browser + loopback redirect) OAuth sign-in
+/// lifecycle for each registered provider (e.g. "github", "ado"). Sign-in opens the system browser;
+/// the caller polls <see cref="Status"/> until the background loopback exchange completes.
 /// </summary>
 /// <remarks>
 /// SECURITY: these endpoints never surface token material — only the UI-safe
-/// <see cref="OAuthStatus"/> record and the device-code <see cref="DeviceCodeChallenge"/>.
+/// <see cref="OAuthStatus"/> record and the <see cref="SignInChallenge"/> (URL that was opened).
 /// </remarks>
 [ApiController]
 [Route("api/auth")]
@@ -19,7 +19,8 @@ public sealed class AuthController(
     ILogger<AuthController> logger) : ControllerBase
 {
     /// <summary>
-    /// Starts the device-code flow for the named provider and returns the challenge to show the user.
+    /// Opens the browser to start the interactive sign-in for the named provider and returns the
+    /// challenge (the authorization URL that was opened).
     /// </summary>
     /// <param name="provider">Provider id, e.g. "github" or "ado".</param>
     /// <param name="ct">Cancellation token.</param>

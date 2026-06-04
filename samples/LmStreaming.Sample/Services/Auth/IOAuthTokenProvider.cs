@@ -12,13 +12,17 @@ public enum OAuthSignInState
 /// <summary>A short-lived access token with its absolute UTC expiry.</summary>
 public sealed record OAuthAccessToken(string Value, DateTimeOffset ExpiresAtUtc);
 
-/// <summary>The device-code challenge to show the user during sign-in.</summary>
-public sealed record DeviceCodeChallenge(
-    string UserCode,
-    string VerificationUri,
-    string? VerificationUriComplete,
-    int ExpiresInSeconds,
-    int IntervalSeconds);
+/// <summary>
+/// Result of starting an interactive browser sign-in. The provider opens the system browser
+/// (the backend runs on the user's own machine, so "server-side" is the user's machine) and
+/// completes the authorization-code exchange on a loopback redirect in the background; the caller
+/// then polls <see cref="IOAuthTokenProvider.Status"/> until it reaches
+/// <see cref="OAuthSignInState.SignedIn"/> or <see cref="OAuthSignInState.Failed"/>.
+/// </summary>
+/// <param name="AuthorizationUrl">The authorization URL that was opened — surfaced so the caller can
+/// display/relaunch it if the browser failed to open automatically.</param>
+/// <param name="BrowserLaunched">True when the app successfully launched the system browser.</param>
+public sealed record SignInChallenge(string AuthorizationUrl, bool BrowserLaunched);
 
 /// <summary>Current sign-in status (safe to expose to the UI; contains no secrets).</summary>
 public sealed record OAuthStatus(
@@ -29,9 +33,9 @@ public sealed record OAuthStatus(
     string? Error);
 
 /// <summary>
-/// Owns the OAuth device-code sign-in + refresh-token lifecycle for one provider
-/// (e.g. "github" or "ado"). Implementations persist the refresh token and refresh
-/// the access token on demand.
+/// Owns the OAuth sign-in + token lifecycle for one provider (e.g. "github" or "ado").
+/// Sign-in is an interactive, browser-based authorization-code flow with a loopback redirect;
+/// implementations persist their tokens and renew the access token on demand.
 /// </summary>
 public interface IOAuthTokenProvider
 {
@@ -47,16 +51,19 @@ public interface IOAuthTokenProvider
     /// </summary>
     Task HydrateFromStoreAsync(CancellationToken ct = default);
 
-    /// <summary>Starts the device-code flow and begins background polling; returns the challenge to show the user.</summary>
-    Task<DeviceCodeChallenge> BeginSignInAsync(CancellationToken ct = default);
+    /// <summary>
+    /// Opens the system browser to begin the interactive authorization-code flow and starts the
+    /// background loopback exchange; returns immediately with the URL that was opened. The caller
+    /// polls <see cref="Status"/> for completion.
+    /// </summary>
+    Task<SignInChallenge> BeginSignInAsync(CancellationToken ct = default);
 
     /// <summary>Clears stored tokens and resets to NotStarted.</summary>
     Task SignOutAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Returns a valid access token, transparently refreshing via the stored refresh token when
-    /// the current one is missing or within the expiry skew. Throws InvalidOperationException
-    /// when not signed in / refresh fails.
+    /// Returns a valid access token, transparently refreshing when the current one is missing or
+    /// within the expiry skew. Throws InvalidOperationException when not signed in / refresh fails.
     /// </summary>
     Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default);
 }

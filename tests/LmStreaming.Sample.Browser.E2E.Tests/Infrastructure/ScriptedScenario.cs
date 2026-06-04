@@ -35,11 +35,12 @@ public static class ScriptedScenario
         this PlaywrightFixture fixture,
         string providerMode,
         HttpMessageHandler handler,
-        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null
+        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null,
+        int? fixedPort = null
     )
     {
         var builder = new ScriptedBuilder(handler, subAgentFactory);
-        var factory = new BrowserWebAppFactory(providerMode, builder);
+        var factory = new BrowserWebAppFactory(providerMode, builder, fixedPort);
         IBrowserContext? context = null;
         try
         {

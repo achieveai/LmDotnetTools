@@ -50,8 +50,8 @@ This almost always means **the user has not signed in to that service yet** (or 
 connected). Do **not** retry in a loop, fabricate credentials, or try alternate hosts. Instead, stop and
 tell the user plainly, e.g.:
 
-> "To do this I need access to **<service>**. Please sign in from the app — open the **<service>** sign-in,
-> go to the shown URL, enter the device code, and authorize. Then ask me again."
+> "To do this I need access to **<service>**. Please sign in from the app — start the **<service>** sign-in;
+> a browser window will open where you log in and authorize. Then ask me again."
 
 Then wait. Once they've signed in, the same request will succeed.
 

@@ -155,22 +155,23 @@ try
         builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
     _ = builder.Services.AddSingleton(authOptions);
     _ = builder.Services.AddSingleton<AuthSharedSecret>();
-    var oauthTokenDir = Path.Combine(AppContext.BaseDirectory, "oauth-tokens");
+    var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
+        ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
+        : authOptions.TokenStoreDir;
     _ = builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubDeviceFlowProvider(
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubOAuthProvider(
         authOptions.Github,
         sp.GetRequiredService<IOAuthTokenStore>(),
         new HttpClient(),
-        sp.GetRequiredService<ILogger<GitHubDeviceFlowProvider>>()
+        sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoDeviceFlowProvider(
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoOAuthProvider(
         authOptions.Ado,
-        sp.GetRequiredService<IOAuthTokenStore>(),
-        new HttpClient(),
-        sp.GetRequiredService<ILogger<AdoDeviceFlowProvider>>()
+        Path.Combine(oauthTokenDir, "msal-ado.bin"),
+        sp.GetRequiredService<ILogger<AdoOAuthProvider>>()
     ));
 
     // Restore persisted sign-in state at startup so the status API/UI reflects a prior run's sign-in

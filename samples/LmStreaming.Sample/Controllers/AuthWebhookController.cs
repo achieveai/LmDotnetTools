@@ -64,7 +64,7 @@ public sealed class AuthWebhookController(
                 "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
-            return Ok(AuthWebhookResponse.Allow(token));
+            return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, token));
         }
         catch (InvalidOperationException ex)
         {
@@ -160,13 +160,41 @@ public sealed record AuthWebhookResponse
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
 
-    /// <summary>Builds an allow decision injecting the bearer token and the token's real expiry.</summary>
-    internal static AuthWebhookResponse Allow(OAuthAccessToken token) => new()
+    /// <summary>
+    /// Builds an allow decision injecting a host-appropriate Authorization header and the token's real
+    /// expiry. Most endpoints take <c>Bearer</c>, but GitHub's git-over-HTTPS endpoint
+    /// (<c>github.com</c>) rejects Bearer with 401 and requires HTTP Basic — so git operations get
+    /// <c>Basic base64("x-access-token:&lt;token&gt;")</c> instead. See <see cref="BuildAuthorizationHeaderValue"/>.
+    /// </summary>
+    internal static AuthWebhookResponse Allow(string providerId, string? destinationHost, OAuthAccessToken token) => new()
     {
         Decision = "allow",
-        Headers = [["Authorization", $"Bearer {token.Value}"]],
+        Headers = [["Authorization", BuildAuthorizationHeaderValue(providerId, destinationHost, token)]],
         ExpiresAt = token.ExpiresAtUtc,
     };
+
+    /// <summary>
+    /// Selects the Authorization scheme for the destination. GitHub's REST API (<c>api.github.com</c>)
+    /// and archive host (<c>codeload.github.com</c>) accept <c>Bearer</c>, but its Git smart-HTTP
+    /// endpoint (<c>github.com</c>, used by <c>git clone/fetch/push</c>) only accepts HTTP Basic auth
+    /// with username <c>x-access-token</c> and the token as the password. Everything else (the GitHub
+    /// REST API, Azure DevOps, …) keeps <c>Bearer</c>.
+    /// </summary>
+    internal static string BuildAuthorizationHeaderValue(string providerId, string? destinationHost, OAuthAccessToken token)
+    {
+        if (IsGitHubGitHost(providerId, destinationHost))
+        {
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"x-access-token:{token.Value}"));
+            return $"Basic {basic}";
+        }
+
+        return $"Bearer {token.Value}";
+    }
+
+    /// <summary>True only for the GitHub provider's Git smart-HTTP host (<c>github.com</c>), which needs Basic auth.</summary>
+    private static bool IsGitHubGitHost(string providerId, string? destinationHost) =>
+        string.Equals(providerId, "github", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(destinationHost, "github.com", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Builds a deny decision carrying a (token-free) reason.</summary>
     internal static AuthWebhookResponse Deny(string reason) => new()

@@ -38,10 +38,19 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly string _providerMode;
     private readonly ITestAgentBuilder? _builder;
     private readonly string _conversationPath;
+    private readonly int? _fixedPort;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
-    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder? builder)
+    /// <param name="providerMode">Provider-mode key: a scripted mode (<c>test</c> / <c>test-anthropic</c>) or a <c>*-mock</c> variant.</param>
+    /// <param name="builder">Scripted SSE agent builder (required for scripted modes; unused/null for <c>*-mock</c> modes).</param>
+    /// <param name="fixedPort">
+    /// When set, Kestrel binds <c>http://127.0.0.1:{fixedPort}</c> instead of an ephemeral port.
+    /// Needed when an external process (e.g. the sandbox gateway) must call back into this host at a
+    /// URL known <em>before</em> the host starts — such as the auth webhook for a real <c>git clone</c>
+    /// egress test. Defaults to <c>null</c> (ephemeral) for every other scenario.
+    /// </param>
+    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder? builder, int? fixedPort = null)
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -70,6 +79,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
         _providerMode = providerMode;
         _builder = builder;
+        _fixedPort = fixedPort;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -131,7 +141,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         builder.ConfigureWebHost(webHost =>
         {
             webHost.UseKestrel();
-            webHost.UseUrls("http://127.0.0.1:0");
+            webHost.UseUrls($"http://127.0.0.1:{_fixedPort ?? 0}");
         });
 
         var host = builder.Build();

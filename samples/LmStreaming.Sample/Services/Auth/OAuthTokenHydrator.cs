@@ -2,9 +2,9 @@ namespace LmStreaming.Sample.Services.Auth;
 
 /// <summary>
 /// At startup, asks each registered <see cref="IOAuthTokenProvider"/> to restore its persisted
-/// sign-in state from the token store, so a sign-in from a previous run is reflected by the status
-/// API / UI (and isn't shown as "not signed in" after a restart). Token injection itself never
-/// depended on this — <see cref="IOAuthTokenProvider.GetAccessTokenAsync"/> reads the store directly —
+/// sign-in state, so a sign-in from a previous run is reflected by the status API / UI (and isn't
+/// shown as "not signed in" after a restart). Token injection itself never depended on this —
+/// <see cref="IOAuthTokenProvider.GetAccessTokenAsync"/> reads the persisted token directly —
 /// this only fixes the surfaced status.
 /// </summary>
 public sealed class OAuthTokenHydrator(IEnumerable<IOAuthTokenProvider> providers, ILogger<OAuthTokenHydrator> logger)
