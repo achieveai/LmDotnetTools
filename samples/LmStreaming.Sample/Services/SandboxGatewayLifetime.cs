@@ -234,6 +234,10 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         // sandboxes to route through it. Without it, sandbox calls to GitHub/ADO connection-refuse.
         await EnsureEgressProxyAsync(cancellationToken).ConfigureAwait(false);
 
+        // Create the configured workspace dir up front so the gateway can mount it (the gateway
+        // rejects a workspace leaf that doesn't already exist under WORKSPACE_BASE_PATH).
+        EnsureWorkspaceDirectory();
+
         // Dispose any process object left over from a prior failed spawn attempt before replacing it.
         _process?.Dispose();
         _process = null;
@@ -307,9 +311,12 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         // when auth providers are not configured; required when they are.
         psi.Environment["AUTH_WEBHOOK_HTTP_LOOPBACK_HOSTS"] = "127.0.0.1,localhost";
 
-        if (!string.IsNullOrWhiteSpace(_options.WorkspaceBasePath))
+        // Resolved base honors SandboxGateway:WorkspacePath (an absolute workspace dir) by using its
+        // parent; otherwise it's the configured WorkspaceBasePath.
+        var (workspaceBasePath, _, _) = _options.ResolveWorkspace();
+        if (!string.IsNullOrWhiteSpace(workspaceBasePath))
         {
-            psi.Environment["WORKSPACE_BASE_PATH"] = _options.WorkspaceBasePath;
+            psi.Environment["WORKSPACE_BASE_PATH"] = workspaceBasePath;
         }
 
         if (!string.IsNullOrWhiteSpace(_options.SkillsDir))
@@ -335,6 +342,30 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         }
 
         return psi;
+    }
+
+    /// <summary>
+    /// Creates the resolved workspace directory (and any parents) if it doesn't exist, so a
+    /// freshly-named <c>SandboxGateway:WorkspacePath</c>/<c>Workspace</c> works without a manual mkdir.
+    /// Best-effort: a failure is logged and the gateway's own error surfaces later if the dir is unusable.
+    /// </summary>
+    private void EnsureWorkspaceDirectory()
+    {
+        var fullPath = _options.ResolveWorkspace().FullPath;
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return;
+        }
+
+        try
+        {
+            _ = Directory.CreateDirectory(fullPath);
+            _logger.LogInformation("Using sandbox workspace directory {WorkspacePath}", fullPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not create workspace directory '{WorkspacePath}'", fullPath);
+        }
     }
 
     /// <summary>True when an egress proxy exe + CA cert/key are all configured.</summary>

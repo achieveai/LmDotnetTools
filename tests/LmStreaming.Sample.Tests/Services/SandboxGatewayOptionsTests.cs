@@ -1,0 +1,122 @@
+using LmStreaming.Sample.Services;
+
+namespace LmStreaming.Sample.Tests.Services;
+
+/// <summary>
+/// Unit tests for <see cref="SandboxGatewayOptions.ResolveWorkspace"/> — the pure base/leaf/full-path
+/// resolution that drives <c>WORKSPACE_BASE_PATH</c>, the session workspace, and directory creation.
+/// Paths are built with <see cref="Path"/> APIs (never hardcoded separators) so the cases hold on any OS.
+/// </summary>
+public class SandboxGatewayOptionsTests
+{
+    [Fact]
+    public void ResolveWorkspace_FallsBackToBaseAndLeaf_WhenWorkspacePathUnset()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
+        var options = new SandboxGatewayOptions
+        {
+            WorkspaceBasePath = basePath,
+            Workspace = "proj",
+            WorkspacePath = null,
+        };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        resolvedBase.Should().Be(basePath);
+        leaf.Should().Be("proj");
+        full.Should().Be(Path.Combine(basePath, "proj"));
+    }
+
+    [Fact]
+    public void ResolveWorkspace_ReturnsAllNull_WhenNothingConfigured()
+    {
+        var options = new SandboxGatewayOptions();
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        resolvedBase.Should().BeNull();
+        leaf.Should().BeNull();
+        full.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveWorkspace_FullPathIsNull_WhenBaseSetButLeafMissing()
+    {
+        // Base alone can't form a mountable workspace path — FullPath must be null so callers skip
+        // directory creation rather than calling Path.Combine with a null leaf.
+        var options = new SandboxGatewayOptions
+        {
+            WorkspaceBasePath = Path.GetTempPath(),
+            Workspace = null,
+        };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        resolvedBase.Should().Be(Path.GetTempPath());
+        leaf.Should().BeNull();
+        full.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveWorkspace_SplitsAbsoluteWorkspacePath_IntoParentAndFolderName()
+    {
+        var absolute = Path.Combine(Path.GetTempPath(), "a", "b", "myrepo");
+        var options = new SandboxGatewayOptions { WorkspacePath = absolute };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        var expectedFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(absolute));
+        full.Should().Be(expectedFull);
+        leaf.Should().Be("myrepo");
+        resolvedBase.Should().Be(Path.GetDirectoryName(expectedFull));
+    }
+
+    [Fact]
+    public void ResolveWorkspace_IgnoresTrailingSeparator_OnWorkspacePath()
+    {
+        var absolute = Path.Combine(Path.GetTempPath(), "a", "b", "myrepo");
+        var options = new SandboxGatewayOptions { WorkspacePath = absolute + Path.DirectorySeparatorChar };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        // A trailing separator must not turn the leaf into an empty string.
+        leaf.Should().Be("myrepo");
+        full.Should().Be(Path.TrimEndingDirectorySeparator(Path.GetFullPath(absolute)));
+        resolvedBase.Should().Be(Path.GetDirectoryName(full!));
+    }
+
+    [Fact]
+    public void ResolveWorkspace_MakesRelativeWorkspacePathAbsolute_AgainstCurrentDirectory()
+    {
+        // Documents the (intentional) behavior that a relative WorkspacePath is resolved against the
+        // process working directory rather than passed through raw.
+        var relative = Path.Combine("sub", "leaf");
+        var options = new SandboxGatewayOptions { WorkspacePath = relative };
+
+        var (_, leaf, full) = options.ResolveWorkspace();
+
+        leaf.Should().Be("leaf");
+        full.Should().Be(Path.TrimEndingDirectorySeparator(Path.GetFullPath(relative)));
+        Path.IsPathFullyQualified(full!).Should().BeTrue("a relative WorkspacePath is normalized to an absolute path");
+    }
+
+    [Fact]
+    public void ResolveWorkspace_PrefersWorkspacePath_OverBaseAndLeaf()
+    {
+        var absolute = Path.Combine(Path.GetTempPath(), "override-ws");
+        var options = new SandboxGatewayOptions
+        {
+            WorkspaceBasePath = Path.Combine(Path.GetTempPath(), "ignored-base"),
+            Workspace = "ignored-leaf",
+            WorkspacePath = absolute,
+        };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace();
+
+        var expectedFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(absolute));
+        full.Should().Be(expectedFull);
+        leaf.Should().Be("override-ws");
+        resolvedBase.Should().Be(Path.GetDirectoryName(expectedFull));
+        resolvedBase.Should().NotBe(options.WorkspaceBasePath, "WorkspacePath takes precedence over the legacy base");
+    }
+}

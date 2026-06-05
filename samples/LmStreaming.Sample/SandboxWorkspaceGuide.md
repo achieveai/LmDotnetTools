@@ -68,6 +68,7 @@ Workspace Agent mode is configured through the **`SandboxGateway`** section of
 | `BaseUrl` | `http://localhost:3000` | Base URL of the gateway the app connects to. |
 | `Workspace` | — | Workspace path **relative to `WorkspaceBasePath`**, mounted as the sandbox workspace. |
 | `WorkspaceBasePath` | — | Host base directory the gateway resolves the workspace under (becomes `WORKSPACE_BASE_PATH` when the gateway is spawned). |
+| `WorkspacePath` | — | **Optional absolute path** to the workspace dir. When set it **overrides** `WorkspaceBasePath` + `Workspace`: the app uses its parent as `WORKSPACE_BASE_PATH` and its folder name as the workspace, and creates it if missing. The simplest way to point the sandbox at any folder (see below). |
 | `AppId` | `lmstreaming-sample` | App id sent in the sandbox-create request. |
 | `AutoSpawn` | `true` | If a healthy gateway is already running at `BaseUrl`, adopt it; otherwise spawn `GatewayExePath`. |
 | `GatewayExePath` | — | Absolute path to the built `mcp-gateway.exe`, used for auto-spawn. |
@@ -94,9 +95,34 @@ Example (`appsettings.Development.json`):
 ```
 
 With the example above, the mounted workspace is `WorkspaceBasePath` + `Workspace` =
-`B:\sandbox-workspaces\demo` (the gateway **creates the directory if it does not exist**).
+`B:\sandbox-workspaces\demo` (the app **creates the directory if it does not exist**).
 Point `Workspace`/`WorkspaceBasePath` at a **dedicated** folder rather than a real source repo —
 the local backend runs unsandboxed, so the agent has read/write access to whatever you mount.
+
+### Use any folder as the workspace
+
+To point the sandbox at **any** absolute folder at startup, set **`WorkspacePath`** instead of
+splitting it into base + leaf:
+
+```json
+"SandboxGateway": { "WorkspacePath": "B:\\sandbox-workspaces\\my-project" }
+```
+
+The app creates the directory if it doesn't exist, spawns the gateway with the **parent**
+(`B:\sandbox-workspaces`) as `WORKSPACE_BASE_PATH`, and uses the **folder name** (`my-project`) as
+the workspace. You can set it without editing config too — both bind to the same option:
+
+- env var: `SandboxGateway__WorkspacePath=B:\sandbox-workspaces\my-project`
+- command line: `dotnet run --project samples/LmStreaming.Sample -- --SandboxGateway:WorkspacePath="B:\sandbox-workspaces\my-project"`
+
+> **Heads-up — unsandboxed access:** the local backend runs the agent **unsandboxed**, so it gets
+> read/write to whatever `WorkspacePath` points at. You *can* point it at an existing source repo,
+> but prefer a **dedicated** folder (or a throwaway clone) so the agent can't modify a repo you care
+> about — consistent with the dedicated-folder note above.
+
+> **Caveat:** `WorkspacePath` only takes effect when the app **spawns** the gateway. If a gateway is
+> already running on `:3000`, the app *adopts* it and keeps that gateway's `WORKSPACE_BASE_PATH` — so
+> stop the running gateway first (the workspace must live under whatever base the live gateway uses).
 
 > **Startup is non-fatal.** If the gateway is not configured or not reachable, the app still
 > boots and runs all other chat modes. The error only surfaces when **Workspace Agent mode is
