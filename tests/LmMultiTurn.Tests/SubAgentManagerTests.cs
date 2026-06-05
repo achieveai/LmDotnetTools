@@ -119,7 +119,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Peek_ThrowsOnUnknownAgentId()
+    public void Peek_ThrowsOnUnknownAgentId()
     {
         // Arrange
         _manager = CreateManager();

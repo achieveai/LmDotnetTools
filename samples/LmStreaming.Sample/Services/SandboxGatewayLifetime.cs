@@ -338,7 +338,7 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
         if (EgressProxyConfigured)
         {
             psi.Environment["EGRESS_PROXY_URL"] = $"http://{_options.EgressProxyListen}";
-            psi.Environment["CA_CERT_HOST_PATH"] = _options.CaCertPath!;
+            psi.Environment["CA_CERT_HOST_PATH"] = _options.CaCertPath;
         }
 
         return psi;
@@ -475,20 +475,20 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
     {
         var psi = new ProcessStartInfo
         {
-            FileName = _options.EgressProxyExePath!,
+            FileName = _options.EgressProxyExePath,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
-            WorkingDirectory = Path.GetDirectoryName(_options.EgressProxyExePath!) ?? AppContext.BaseDirectory,
+            WorkingDirectory = Path.GetDirectoryName(_options.EgressProxyExePath) ?? AppContext.BaseDirectory,
         };
 
         psi.Environment["LISTEN_ADDR"] = _options.EgressProxyListen;
         psi.Environment["GATEWAY_URL"] = GatewayBaseUrl;
-        psi.Environment["CA_CERT_PATH"] = _options.CaCertPath!;
-        psi.Environment["CA_KEY_PATH"] = _options.CaKeyPath!;
+        psi.Environment["CA_CERT_PATH"] = _options.CaCertPath;
+        psi.Environment["CA_KEY_PATH"] = _options.CaKeyPath;
         psi.Environment["LOG_FORMAT"] = "json";
         return psi;
     }

@@ -530,6 +530,29 @@ try
                     {
                         ownedResources = [.. sandboxClients.Cast<IAsyncDisposable>()];
                     }
+                    else
+                    {
+                        // The sandbox MCP endpoint is unreachable. Booting anyway is intentional
+                        // (best-effort demo), but the workspace suffix added above claims file/shell
+                        // tools that this agent does not have — rebuild the prompt from the original
+                        // mode with an honest degraded-mode notice instead, so the model tells the
+                        // user rather than hallucinating tool calls.
+                        effectiveMode = mode with
+                        {
+                            SystemPrompt = mode.SystemPrompt
+                                + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
+                                + "could not be reached), so NO file or shell tools exist in this conversation. "
+                                + "Do not claim or attempt to use them. Tell the user the workspace is offline and "
+                                + "that restarting the app (or the sandbox gateway) should restore it.",
+                        };
+                        loggerFactory
+                            .CreateLogger<Program>()
+                            .LogWarning(
+                                "Workspace Agent mode is running WITHOUT sandbox tools for thread {ThreadId}; "
+                                    + "the system prompt now reports degraded mode instead of claiming tools",
+                                threadId
+                            );
+                    }
                 }
 
                 try

@@ -81,8 +81,7 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
         await CancelSignInAsync().ConfigureAwait(false);
 
         var cts = new CancellationTokenSource();
-        _signInCts = cts;
-        _signInTask = Task.Run(
+        var task = Task.Run(
             async () =>
             {
                 try
@@ -100,15 +99,28 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
                 }
             },
             CancellationToken.None);
+
+        // Publish under the same gate as the status so a concurrent CancelSignInAsync (sign-out,
+        // re-sign-in) never observes a torn cts/task pair.
+        lock (_statusGate)
+        {
+            _signInCts = cts;
+            _signInTask = task;
+        }
     }
 
     /// <summary>Cancels and awaits the current background sign-in task (if any).</summary>
     protected async Task CancelSignInAsync()
     {
-        var cts = _signInCts;
-        var task = _signInTask;
-        _signInCts = null;
-        _signInTask = null;
+        CancellationTokenSource? cts;
+        Task? task;
+        lock (_statusGate)
+        {
+            cts = _signInCts;
+            task = _signInTask;
+            _signInCts = null;
+            _signInTask = null;
+        }
 
         if (cts is null)
         {

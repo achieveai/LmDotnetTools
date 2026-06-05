@@ -13,9 +13,10 @@ namespace LmStreaming.Sample.Controllers;
 /// </summary>
 /// <remarks>
 /// SECURITY: callers are authenticated by a shared secret carried in the <c>Authorization</c>
-/// header, compared in constant time. This controller never logs the token, the incoming
-/// Authorization header value, or the shared secret — only provider id, destination host, and the
-/// allow/deny decision.
+/// header, compared in constant time, and tokens are only injected toward the provider's own
+/// destination hosts (<see cref="OAuthProviderHosts"/> — the same lists the sandbox network rules
+/// are built from). This controller never logs the token, the incoming Authorization header value,
+/// or the shared secret — only provider id, destination host, and the allow/deny decision.
 /// </remarks>
 [ApiController]
 [Route("api/auth/webhook")]
@@ -57,6 +58,18 @@ public sealed class AuthWebhookController(
             return Ok(AuthWebhookResponse.Deny("unknown provider"));
         }
 
+        // Defense-in-depth: the egress proxy already validates the destination per its rules, but a
+        // rules misconfiguration must not turn this endpoint into an open token-minting oracle —
+        // only inject the provider's token toward that provider's own hosts.
+        if (!OAuthProviderHosts.IsAllowed(tokenProvider.ProviderId, body.DestinationHost))
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+            return Ok(AuthWebhookResponse.Deny($"destination host not allowed for provider '{tokenProvider.ProviderId}'"));
+        }
+
         try
         {
             var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
@@ -76,6 +89,23 @@ public sealed class AuthWebhookController(
                 tokenProvider.ProviderId,
                 body.DestinationHost);
             return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The gateway aborted the call — nobody is waiting for a decision.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Any other failure (token-store IO, refresh HTTP call, MSAL, JSON parsing) must still
+            // honor the always-200 allow/deny contract: an unhandled 500 surfaces gateway-side as an
+            // opaque webhook failure instead of a clean deny. Reason stays generic and token-free.
+            logger.LogWarning(
+                ex,
+                "Auth-webhook unexpected failure for provider {ProviderId} (host {DestinationHost}); denying.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+            return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
         }
     }
 

@@ -33,11 +33,14 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     private const string AuthorizeEndpoint = "https://github.com/login/oauth/authorize";
     private const string TokenEndpoint = "https://github.com/login/oauth/access_token";
     private static readonly TimeSpan ExpirySkew = TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan SignInTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan CallbackReadTimeout = TimeSpan.FromSeconds(10);
     private static DateTimeOffset NonExpiringSentinel => DateTimeOffset.UtcNow.AddYears(100);
 
     private readonly GitHubAuthOptions _options;
     private readonly IOAuthTokenStore _store;
     private readonly HttpClient _http;
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
 
     /// <summary>Creates the GitHub web-app-flow provider.</summary>
     /// <param name="options">GitHub client id, client secret + scopes.</param>
@@ -102,7 +105,7 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
         var challenge = CreateCodeChallenge(verifier);
         var state = CreateCodeVerifier();
 
-        var authorizeUrl = BuildAuthorizeUrl(_options.ClientId!, redirectUri, _options.Scopes, state, challenge);
+        var authorizeUrl = BuildAuthorizeUrl(_options.ClientId, redirectUri, _options.Scopes, state, challenge);
 
         SetStatus(new OAuthStatus(OAuthSignInState.Pending, Account: null, _options.Scopes, ExpiresAtUtc: null, Error: null));
         var launched = OpenBrowser(authorizeUrl);
@@ -110,9 +113,13 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
 
         await StartBackgroundSignInAsync(async token =>
         {
+            // Overall deadline: without it an abandoned browser tab leaves the provider Pending
+            // forever — the callback simply never arrives and nothing else fails.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadline.CancelAfter(SignInTimeout);
             try
             {
-                var query = await WaitForLoopbackCallbackAsync(listener, token).ConfigureAwait(false);
+                var query = await WaitForLoopbackCallbackAsync(listener, deadline.Token).ConfigureAwait(false);
                 if (!query.TryGetValue("state", out var returnedState) || returnedState != state)
                 {
                     SetFailed("state_mismatch");
@@ -134,7 +141,12 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
                     return;
                 }
 
-                await ExchangeCodeAndPersistAsync(code, verifier, redirectUri, token).ConfigureAwait(false);
+                await ExchangeCodeAndPersistAsync(code, verifier, redirectUri, deadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                SetFailed("sign_in_timeout");
+                Logger.LogWarning("GitHub sign-in timed out after {Timeout:c} awaiting the loopback callback.", SignInTimeout);
             }
             finally
             {
@@ -157,6 +169,36 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     /// <inheritdoc />
     public override async Task<OAuthAccessToken> GetAccessTokenAsync(IReadOnlyList<string>? scopes = null, CancellationToken ct = default)
     {
+        var record = await ReadRecordAsync(ct).ConfigureAwait(false);
+        if (TryGetValidToken(record) is { } token)
+        {
+            return token;
+        }
+
+        // Single-flight the refresh: GitHub-App refresh tokens are SINGLE-USE, so concurrent
+        // refreshes would race — the loser's grant comes back `invalid_grant` after the stored
+        // refresh token was already burned, leaving the provider dead until a manual re-sign-in.
+        await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // Re-read: a concurrent caller may have refreshed and persisted while we waited.
+            record = await ReadRecordAsync(ct).ConfigureAwait(false);
+            if (TryGetValidToken(record) is { } refreshed)
+            {
+                return refreshed;
+            }
+
+            return await RefreshAccessTokenAsync(record, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = _refreshGate.Release();
+        }
+    }
+
+    /// <summary>Reads the persisted token record, throwing when the provider is not signed in.</summary>
+    private async Task<OAuthTokenRecord> ReadRecordAsync(CancellationToken ct)
+    {
         var record = await _store.GetAsync(ProviderId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("GitHub provider is not signed in.");
 
@@ -165,16 +207,23 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
             throw new InvalidOperationException("GitHub provider has no stored access token; sign in again.");
         }
 
+        return record;
+    }
+
+    /// <summary>
+    /// Returns the stored token when no refresh is needed (classic non-expiring OAuth-App token, or
+    /// an expiring token still comfortably within its lifetime); null when a refresh is required.
+    /// The record must come from <see cref="ReadRecordAsync"/>, which guarantees a non-empty token.
+    /// </summary>
+    private static OAuthAccessToken? TryGetValidToken(OAuthTokenRecord record)
+    {
         var expiry = record.AccessTokenExpiresAtUtc ?? NonExpiringSentinel;
         var canRefresh = !string.IsNullOrEmpty(record.RefreshToken);
 
         // Classic OAuth-App tokens never expire and can't be refreshed — return what we have.
-        if (!canRefresh || expiry - ExpirySkew > DateTimeOffset.UtcNow)
-        {
-            return new OAuthAccessToken(record.AccessToken, expiry);
-        }
-
-        return await RefreshAccessTokenAsync(record, ct).ConfigureAwait(false);
+        return !canRefresh || expiry - ExpirySkew > DateTimeOffset.UtcNow
+            ? new OAuthAccessToken(record.AccessToken!, expiry)
+            : null;
     }
 
     /// <summary>Exchanges the authorization code (with the PKCE verifier) for a token and persists it.</summary>
@@ -304,32 +353,65 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
     }
 
     /// <summary>
-    /// Accepts one loopback connection, parses the request-line query string, and writes a small
-    /// "you can close this tab" HTML response so the user sees a clean completion page.
+    /// Accepts loopback connections until the <c>/callback</c> request arrives, then parses its
+    /// query string and writes a small "you can close this tab" HTML response. Stray connections
+    /// (favicon probes, port scanners) get a 404 and are skipped rather than consuming the callback
+    /// wait, and each connection's read is bounded so a stalled client cannot wedge the sign-in.
     /// </summary>
     private static async Task<IReadOnlyDictionary<string, string?>> WaitForLoopbackCallbackAsync(TcpListener listener, CancellationToken ct)
     {
-        using var client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
-        await using var stream = client.GetStream();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await using var stream = client.GetStream();
+                using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                readCts.CancelAfter(CallbackReadTimeout);
 
-        var buffer = new byte[8192];
-        var read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
-        var requestLine = Encoding.ASCII.GetString(buffer, 0, read).Split('\n').FirstOrDefault() ?? string.Empty;
+                var buffer = new byte[8192];
+                var read = await stream.ReadAsync(buffer, readCts.Token).ConfigureAwait(false);
+                var requestLine = Encoding.ASCII.GetString(buffer, 0, read).Split('\n').FirstOrDefault() ?? string.Empty;
 
-        // Request line: "GET /callback?code=...&state=... HTTP/1.1"
-        var parts = requestLine.Split(' ');
-        var target = parts.Length > 1 ? parts[1] : "/";
-        var queryStart = target.IndexOf('?', StringComparison.Ordinal);
-        var query = queryStart >= 0 ? target[queryStart..] : string.Empty;
+                // Request line: "GET /callback?code=...&state=... HTTP/1.1"
+                var parts = requestLine.Split(' ');
+                var target = parts.Length > 1 ? parts[1] : "/";
+                var queryStart = target.IndexOf('?', StringComparison.Ordinal);
+                var path = queryStart >= 0 ? target[..queryStart] : target;
+                var query = queryStart >= 0 ? target[queryStart..] : string.Empty;
 
-        const string html = "<!doctype html><html><body style=\"font-family:sans-serif\">"
-            + "<h3>Sign-in complete</h3><p>You can close this tab and return to the app.</p></body></html>";
-        var response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                if (!string.Equals(path, "/callback", StringComparison.Ordinal))
+                {
+                    const string notFound = "<!doctype html><html><body>Not found.</body></html>";
+                    await WriteHttpResponseAsync(stream, "404 Not Found", notFound, readCts.Token).ConfigureAwait(false);
+                    continue;
+                }
+
+                const string html = "<!doctype html><html><body style=\"font-family:sans-serif\">"
+                    + "<h3>Sign-in complete</h3><p>You can close this tab and return to the app.</p></body></html>";
+                await WriteHttpResponseAsync(stream, "200 OK", html, readCts.Token).ConfigureAwait(false);
+
+                return QueryHelpers.ParseQuery(query).ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value.ToString());
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Per-connection read timeout: drop the stalled connection, keep awaiting the callback.
+            }
+            catch (IOException)
+            {
+                // Connection reset by a stray client — keep awaiting the callback.
+            }
+        }
+    }
+
+    /// <summary>Writes a minimal HTTP/1.1 response with an HTML body to the raw loopback stream.</summary>
+    private static async Task WriteHttpResponseAsync(NetworkStream stream, string status, string html, CancellationToken ct)
+    {
+        var response = $"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n"
             + $"Content-Length: {Encoding.UTF8.GetByteCount(html)}\r\nConnection: close\r\n\r\n{html}";
         await stream.WriteAsync(Encoding.UTF8.GetBytes(response), ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
-
-        return QueryHelpers.ParseQuery(query).ToDictionary(kvp => kvp.Key, kvp => (string?)kvp.Value.ToString());
     }
 
     /// <summary>

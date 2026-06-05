@@ -111,16 +111,31 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
 
         await StartBackgroundSignInAsync(async token =>
         {
-            var result = await app
-                .AcquireTokenInteractive(_scopes)
-                .WithSystemWebViewOptions(webViewOptions)
-                .WithUseEmbeddedWebView(false)
-                .ExecuteAsync(token)
-                .ConfigureAwait(false);
+            // Cancelling the originating request aborts the WHOLE interactive sign-in (not just
+            // the URL wait below): link the request ct into MSAL's flow so an abandoned/aborted
+            // sign-in request doesn't leave an orphaned MSAL listener running in the background.
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, ct);
+            try
+            {
+                var result = await app
+                    .AcquireTokenInteractive(_scopes)
+                    .WithSystemWebViewOptions(webViewOptions)
+                    .WithUseEmbeddedWebView(false)
+                    .ExecuteAsync(linked.Token)
+                    .ConfigureAwait(false);
 
-            urlReady.TrySetResult(string.Empty);
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, _options.Scopes, result.ExpiresOn, Error: null));
-            Logger.LogInformation("Signed in to ADO as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
+                urlReady.TrySetResult(string.Empty);
+                SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, _options.Scopes, result.ExpiresOn, Error: null));
+                Logger.LogInformation("Signed in to ADO as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested && !token.IsCancellationRequested)
+            {
+                // Aborted by the request, not by sign-out/re-sign-in: leave the provider in a clean
+                // NotStarted state instead of Pending-forever, then let the base log the cancellation.
+                SetStatus(new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null));
+                Logger.LogInformation("ADO sign-in aborted by the originating request.");
+                throw;
+            }
         }).ConfigureAwait(false);
 
         // Wait briefly for MSAL to produce the authorize URL; fall back to the authority on timeout.

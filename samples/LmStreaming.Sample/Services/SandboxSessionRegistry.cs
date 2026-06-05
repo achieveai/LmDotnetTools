@@ -337,7 +337,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 new NetworkRuleDto(
                     Id: "github",
                     Action: "allow",
-                    Hosts: ["github.com", "api.github.com", "codeload.github.com"],
+                    Hosts: OAuthProviderHosts.For("github"),
                     Ports: [443],
                     Methods: [],
                     Paths: [],
@@ -364,7 +364,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 new NetworkRuleDto(
                     Id: "ado",
                     Action: "allow",
-                    Hosts: ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
+                    Hosts: OAuthProviderHosts.For("ado"),
                     Ports: [443],
                     Methods: [],
                     Paths: [],
