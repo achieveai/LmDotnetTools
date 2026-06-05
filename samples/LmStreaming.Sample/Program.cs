@@ -574,6 +574,12 @@ try
                         defaultOptions: new GenerateReplyOptions
                         {
                             ModelId = modelId,
+                            // Output-token ceiling. The provider default is 4096; with extended thinking
+                            // enabled (2048-token budget, set above) that left only ~2K for the answer, so
+                            // a large structured reply could exhaust the budget while still thinking and
+                            // emit no text at all (stop_reason=max_tokens). 8192 leaves ~6K for the answer
+                            // after the 2K thinking budget.
+                            MaxToken = 8192,
                             BuiltInTools = filteredBuiltInTools,
                             RequestResponseDumpFileName = requestResponseDumpFileName,
                             PromptCaching = PromptCachingMode.Auto,
