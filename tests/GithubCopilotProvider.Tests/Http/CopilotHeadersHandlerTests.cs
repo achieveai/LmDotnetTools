@@ -5,7 +5,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Http;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Http;
 
 public sealed class CopilotHeadersHandlerTests
 {
