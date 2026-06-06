@@ -14,8 +14,9 @@ using Xunit;
 namespace LmMultiTurn.Tests;
 
 /// <summary>
-/// Unit tests for SubAgentManager lifecycle operations:
-/// spawning, peeking, completion relay, concurrency enforcement, and disposal.
+/// Unit tests for SubAgentManager lifecycle operations: synchronous and background
+/// spawning, peeking, completion relay, continuation via SendMessageAsync,
+/// concurrency enforcement, and disposal.
 /// </summary>
 public class SubAgentManagerTests : IAsyncLifetime
 {
@@ -46,7 +47,64 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SpawnAsync_CreatesAgentAndReturnsId()
+    public async Task SpawnAsync_Synchronous_ReturnsFinalTextWithoutParentRelay()
+    {
+        // Arrange: sub-agent returns a single text response then the run completes
+        SetupSubAgentResponse([
+            new TextMessage { Text = "Sub-agent result", Role = Role.Assistant },
+        ]);
+
+        _manager = CreateManager();
+
+        // Act: synchronous spawn (default) blocks and returns the final answer directly
+        var result = await _manager.SpawnAsync("test-agent", "Do some work");
+
+        // Assert: the tool result is the sub-agent's final text, not a JSON receipt
+        result.Should().Be("Sub-agent result");
+
+        // The synchronous path must NOT relay the result to the parent — the result
+        // flows back only as this tool result, in the same parent turn.
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Synchronous_Error_ThrowsAndDoesNotRelayToParent()
+    {
+        // Arrange: sub-agent throws -> MultiTurnAgentLoop completes the run with IsError=true
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("API call failed"));
+
+        _manager = CreateManager();
+
+        // Act: synchronous spawn surfaces the failure as a typed exception
+        var act = () => _manager.SpawnAsync("test-agent", "error-prone task");
+
+        // Assert
+        await act.Should().ThrowAsync<SubAgentExecutionException>()
+            .WithMessage("*test-agent*failed*");
+
+        // No parent relay on the synchronous path.
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Background_ReturnsSpawnReceipt()
     {
         // Arrange
         SetupSubAgentResponse([
@@ -55,8 +113,9 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         _manager = CreateManager(maxConcurrent: 5);
 
-        // Act
-        var resultJson = await _manager.SpawnAsync("test-agent", "Do some work");
+        // Act: background spawn returns immediately with a JSON receipt
+        var resultJson = await _manager.SpawnAsync(
+            "test-agent", "Do some work", runInBackground: true);
 
         // Assert
         using var doc = JsonDocument.Parse(resultJson);
@@ -86,29 +145,17 @@ public class SubAgentManagerTests : IAsyncLifetime
     {
         // Arrange: sub-agent that never completes (blocks indefinitely)
         var blockingTcs = new TaskCompletionSource<bool>();
-        _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                async (_, _, ct) =>
-                {
-                    // Wait until cancelled or test completes
-                    await blockingTcs.Task.WaitAsync(ct);
-                    return ToAsyncEnumerable([
-                        new TextMessage { Text = "done", Role = Role.Assistant },
-                    ]);
-                });
+        SetupBlockingSubAgent(blockingTcs);
 
         _manager = CreateManager(maxConcurrent: 1);
 
-        // Act: first spawn should succeed
-        await _manager.SpawnAsync("test-agent", "first task");
+        // Act: first (background) spawn acquires the only concurrency slot
+        await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
 
-        // Second spawn should fail because concurrency limit is 1
-        // and first agent is still running (semaphore wait times out after 5s)
-        var act = () => _manager.SpawnAsync("test-agent", "second task");
+        // Second spawn should fail because concurrency limit is 1 and the first agent
+        // is still running (semaphore wait times out after 5s).
+        var act = () => _manager.SpawnAsync(
+            "test-agent", "second task", runInBackground: true);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>()
@@ -141,7 +188,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         ]);
 
         _manager = CreateManager();
-        var resultJson = await _manager.SpawnAsync("test-agent", "Do analysis");
+        var resultJson = await _manager.SpawnAsync(
+            "test-agent", "Do analysis", runInBackground: true);
 
         using var spawnDoc = JsonDocument.Parse(resultJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
@@ -176,7 +224,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Completion_SendsWrappedResultToParent()
+    public async Task Completion_Background_SendsWrappedResultToParent()
     {
         // Arrange: sub-agent returns a text response then the run completes
         SetupSubAgentResponse([
@@ -184,7 +232,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         ]);
 
         _manager = CreateManager();
-        await _manager.SpawnAsync("test-agent", "Analyze the codebase");
+        await _manager.SpawnAsync(
+            "test-agent", "Analyze the codebase", runInBackground: true);
 
         // Poll until the sub-agent completion is relayed to parent
         var parentCalled = false;
@@ -229,24 +278,13 @@ public class SubAgentManagerTests : IAsyncLifetime
     [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {
-        // Arrange: create a sub-agent with a delayed response
+        // Arrange: create a background sub-agent with a delayed response
         var blockingTcs = new TaskCompletionSource<bool>();
-        _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                async (_, _, ct) =>
-                {
-                    await blockingTcs.Task.WaitAsync(ct);
-                    return ToAsyncEnumerable([
-                        new TextMessage { Text = "done", Role = Role.Assistant },
-                    ]);
-                });
+        SetupBlockingSubAgent(blockingTcs);
 
         _manager = CreateManager(maxConcurrent: 5);
-        await _manager.SpawnAsync("test-agent", "long-running task 1");
+        await _manager.SpawnAsync(
+            "test-agent", "long-running task 1", runInBackground: true);
 
         // Act & Assert: dispose should not throw even with running agents
         blockingTcs.SetResult(true);
@@ -258,32 +296,22 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ResumeAsync_RunningAgent_SendsMessage()
+    public async Task SendMessageAsync_RunningAgent_SendsMessage()
     {
         // Arrange: sub-agent that blocks so it stays in Running state
         var blockingTcs = new TaskCompletionSource<bool>();
-        _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                async (_, _, ct) =>
-                {
-                    await blockingTcs.Task.WaitAsync(ct);
-                    return ToAsyncEnumerable([
-                        new TextMessage { Text = "done", Role = Role.Assistant },
-                    ]);
-                });
+        SetupBlockingSubAgent(blockingTcs);
 
         _manager = CreateManager();
-        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task");
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", runInBackground: true);
 
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // Act: resume with a new message while agent is running
-        var resumeJson = await _manager.ResumeAsync(agentId, "follow-up message");
+        // Act: continue with a new message (background) while the agent is running
+        var resumeJson = await _manager.SendMessageAsync(
+            agentId, "follow-up message", runInBackground: true);
 
         // Assert
         using var resumeDoc = JsonDocument.Parse(resumeJson);
@@ -295,7 +323,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ResumeAsync_CompletedAgent_RestartsRun()
+    public async Task SendMessageAsync_CompletedAgent_RestartsRun()
     {
         // Arrange: sub-agent completes quickly
         SetupSubAgentResponse([
@@ -303,7 +331,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         ]);
 
         _manager = CreateManager();
-        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task");
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", runInBackground: true);
 
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
@@ -330,13 +359,14 @@ public class SubAgentManagerTests : IAsyncLifetime
         peekDoc.RootElement.GetProperty("status").GetString()
             .Should().Be("completed");
 
-        // Act: resume the completed agent - this should restart a new run
-        // Need to set up the mock to respond again for the restart
+        // Act: continue the completed agent - this restarts a new run.
+        // Set up the mock to respond again for the restart.
         SetupSubAgentResponse([
             new TextMessage { Text = "Second result", Role = Role.Assistant },
         ]);
 
-        var resumeJson = await _manager.ResumeAsync(agentId, "continue work");
+        var resumeJson = await _manager.SendMessageAsync(
+            agentId, "continue work", runInBackground: true);
 
         // Assert
         using var resumeDoc = JsonDocument.Parse(resumeJson);
@@ -345,21 +375,123 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ResumeAsync_UnknownAgentId_Throws()
+    public async Task SendMessageAsync_ResolvesAgentByName()
+    {
+        // Arrange: blocking agent stays Running so it can receive a follow-up message
+        var blockingTcs = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(blockingTcs);
+
+        _manager = CreateManager();
+
+        // Spawn with a caller-supplied name in the background
+        await _manager.SpawnAsync(
+            "test-agent", "initial task", name: "researcher", runInBackground: true);
+
+        // Act: address the agent by its name instead of its generated id
+        var resumeJson = await _manager.SendMessageAsync(
+            "researcher", "follow-up message", runInBackground: true);
+
+        // Assert
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        var root = resumeDoc.RootElement;
+        root.GetProperty("name").GetString().Should().Be("researcher");
+        root.GetProperty("status").GetString().Should().Be("message_sent");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_InjectIntoRunningBackgroundAgent_DoesNotOverReleaseConcurrencyGate()
+    {
+        // Regression guard for the gate single-release invariant. A background sub-agent
+        // continued in place via SendMessage (while still Running) feeds a SECOND run
+        // under the SAME monitor, so that one monitor observes two RunCompletedMessages.
+        // The concurrency slot is acquired once (at spawn), so it must be released exactly
+        // once. Releasing per completion (the original bug) over-releases the SemaphoreSlim,
+        // which throws SemaphoreFullException inside the monitor and flips the agent to
+        // Error status. The fix releases once per monitor, so the agent settles 'completed'.
+        var entered = new TaskCompletionSource<bool>();
+        var release = new TaskCompletionSource<bool>();
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (_, _, ct) =>
+                {
+                    // Signal the first turn is in-flight, then block so the task input is
+                    // already consumed before the follow-up is injected (forcing two runs).
+                    _ = entered.TrySetResult(true);
+                    await release.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([
+                        new TextMessage { Text = "done", Role = Role.Assistant },
+                    ]);
+                });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Wait until the first run has consumed the task and is blocked, so the follow-up
+        // becomes a distinct second run rather than collapsing into the first batch.
+        (await entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+
+        // Inject the follow-up while the first run is still Running -> same-monitor path.
+        var resumeJson = await _manager.SendMessageAsync(
+            agentId, "follow-up", runInBackground: true);
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        resumeDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be("message_sent");
+
+        // Release the block: the first run completes, then the queued follow-up drives a
+        // second run — both completions are observed by the one monitor.
+        release.SetResult(true);
+
+        // The agent must settle in 'completed', NOT 'error'. Under the over-release bug the
+        // monitor faults on the second completion (SemaphoreFullException) -> Error status.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    return _manager!.Peek(agentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        var peekJson = _manager.Peek(agentId);
+        using var peekDoc = JsonDocument.Parse(peekJson);
+        peekDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be(
+                "completed",
+                "the monitor must release the concurrency slot exactly once across both runs");
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_UnknownTarget_Throws()
     {
         // Arrange
         _manager = CreateManager();
 
         // Act
-        var act = () => _manager.ResumeAsync("non-existent-id", "some message");
+        var act = () => _manager.SendMessageAsync("non-existent-id", "some message");
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*Unknown agent ID*non-existent-id*");
+            .WithMessage("*Unknown sub-agent*non-existent-id*");
     }
 
     [Fact]
-    public async Task Completion_Error_SendsWrappedErrorToParent()
+    public async Task Completion_Background_Error_SendsWrappedErrorToParent()
     {
         // Arrange: sub-agent throws on first call to trigger error run completion.
         // MultiTurnAgentLoop catches this and calls CompleteRunAsync(isError: true),
@@ -372,7 +504,8 @@ public class SubAgentManagerTests : IAsyncLifetime
             .ThrowsAsync(new InvalidOperationException("API call failed"));
 
         _manager = CreateManager();
-        await _manager.SpawnAsync("test-agent", "error-prone task");
+        await _manager.SpawnAsync(
+            "test-agent", "error-prone task", runInBackground: true);
 
         // Poll until parent receives error notification
         await WaitForConditionAsync(
@@ -486,23 +619,6 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Checks if a message is a TextMessage containing sub-agent XML tags.
-    /// Extracted as a static method to avoid pattern matching in Moq expression trees.
-    /// </summary>
-    private static bool ContainsSubAgentTag(
-        IMessage message,
-        string templateName)
-    {
-        if (message is not TextMessage tm)
-        {
-            return false;
-        }
-
-        return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
-            && tm.Text.Contains("</sub-agent>");
-    }
-
-    /// <summary>
     /// Checks if a message is a TextMessage containing sub-agent error markers.
     /// Verifies the [Error] tag specifically to distinguish from [Completed].
     /// </summary>
@@ -567,6 +683,28 @@ public class SubAgentManagerTests : IAsyncLifetime
                 It.IsAny<GenerateReplyOptions>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
+    }
+
+    /// <summary>
+    /// Configures the mock sub-agent to block until <paramref name="release"/> is
+    /// completed (or the run is cancelled), keeping it in the Running state. Used by
+    /// concurrency, disposal, and continuation tests that need a long-running agent.
+    /// </summary>
+    private void SetupBlockingSubAgent(TaskCompletionSource<bool> release)
+    {
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (_, _, ct) =>
+                {
+                    await release.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([
+                        new TextMessage { Text = "done", Role = Role.Assistant },
+                    ]);
+                });
     }
 
     /// <summary>

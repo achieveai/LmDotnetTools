@@ -7,9 +7,10 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 
 /// <summary>
 /// Parent emits two <c>Agent</c> tool calls in a single turn. Two sub-agents should
-/// spawn, complete independently, and both results relay back before the parent produces
-/// its final summary. The two sub-agents share a system-prompt marker but differ on a
-/// tag (A/B) so each one picks from its own plan queue.
+/// spawn, complete independently, and both final answers come back as the two synchronous
+/// <c>Agent</c> tool results before the parent produces its final summary. The two
+/// sub-agents differ on a system-prompt marker (A/B) so each one picks from its own plan
+/// queue.
 /// </summary>
 public sealed class ConcurrentSubAgentsTests
 {
@@ -28,8 +29,8 @@ public sealed class ConcurrentSubAgentsTests
                 .Turn(t => t.Text("worker-B done"))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
                 .Turn(t => t.ToolCalls(
-                    ("Agent", new { template_name = "worker_a", task = "do A" }),
-                    ("Agent", new { template_name = "worker_b", task = "do B" })))
+                    ("Agent", new { subagent_type = "worker_a", prompt = "do A" }),
+                    ("Agent", new { subagent_type = "worker_b", prompt = "do B" })))
                 .Turn(t => t.Text("Both workers finished."))
             .Build();
 

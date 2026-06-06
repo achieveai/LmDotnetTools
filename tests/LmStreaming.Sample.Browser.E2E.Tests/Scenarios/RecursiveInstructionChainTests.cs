@@ -43,7 +43,7 @@ public sealed class RecursiveInstructionChainTests
             .Turn(t => t.Text("Sub-agent summary: Seattle is rainy."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
             // Parent instruction chain: spawn sub-agent -> summarize.
-            .Turn(t => t.ToolCall("Agent", new { template_name = "weather_sub", task = "check Seattle weather" }))
+            .Turn(t => t.ToolCall("Agent", new { subagent_type = "weather_sub", prompt = "check Seattle weather" }))
             .Turn(t => t.Text("Parent final: sub-agent confirmed Seattle is rainy."))
             .Build();
 
@@ -83,13 +83,14 @@ public sealed class RecursiveInstructionChainTests
         string.Join(" ", assistantTexts).Should().Contain("Parent final");
         string.Join(" ", assistantTexts).Should().Contain("Seattle is rainy");
 
-        // Sub-agent's tool-call turn must be consumed; later sub-agent turns may be
-        // short-circuited by the Agent-relay termination policy (see SubAgentToolUseTests
-        // in the transport suite for the exact invariant).
+        // Under the synchronous Agent model a sub-agent run ends at its first text-only turn
+        // (no tool calls). The sub-agent consumes its tool-call turn (1) and the follow-up text
+        // turn (2) that terminates the run; the third scripted summary turn is never reached, so
+        // exactly one turn remains queued.
         responder
             .RemainingTurns["weather-sub"]
             .Should()
-            .BeLessThan(3, "sub-agent should have consumed at least its tool-call turn");
+            .Be(1, "the run ends at the first text-only turn, leaving the third scripted turn unconsumed");
 
         responder.RemainingTurns["parent"].Should().Be(0);
         await session.SaveSuccessScreenshotAsync($"RecursiveChain.Parent_and_sub_agent_instruction_chains_render_end_to_end_{providerMode}");

@@ -18,6 +18,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
@@ -580,15 +581,20 @@ try
                         extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
                     }
 
-                    // Test-mode DI seam: opt-in sub-agent orchestration. Real-provider modes
-                    // never resolve this service, so production wiring is unchanged.
+                    // Sub-agent orchestration options. Only the middleware providers reach this
+                    // path — the CLI providers (codex/claude/copilot and their *-mock variants)
+                    // returned earlier and have no sub-agent hook, so they are out of scope. Test
+                    // modes go through the ITestAgentBuilder DI seam (scripted templates for E2E);
+                    // the real providers get the production template catalog. In both cases the
+                    // template AgentFactory reuses agentFactory(normalizedProviderId) so each spawn
+                    // builds a FRESH provider agent on the same backend as the parent.
                     var isTestMode =
                         string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
                             .CreateSubAgentOptions(loggerFactory, () => agentFactory(normalizedProviderId))
-                        : null;
+                        : BuildProductionSubAgentOptions(() => agentFactory(normalizedProviderId));
 
                     var agent = new MultiTurnAgentLoop(
                         providerAgent,
@@ -1200,6 +1206,52 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     Builds the production sub-agent orchestration options for the real middleware
+    ///     providers (OpenAI / Anthropic / Copilot-backed). Each template reuses the parent's
+    ///     provider via <paramref name="providerAgentFactory"/> — invoked per spawn so every
+    ///     sub-agent gets a FRESH provider agent on the same backend — and carries its own
+    ///     system prompt and turn budget. The CLI providers (codex/claude/copilot) have no
+    ///     sub-agent hook and are out of scope, so this is only called from the middleware path.
+    /// </summary>
+    private static SubAgentOptions BuildProductionSubAgentOptions(Func<IStreamingAgent> providerAgentFactory)
+    {
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["general-purpose"] = new SubAgentTemplate
+            {
+                Name = "General-purpose agent",
+                Description = "Autonomous worker for multi-step tasks: research, search, and follow-through.",
+                WhenToUse =
+                    "Delegate self-contained tasks that need several tool calls or focused investigation "
+                    + "so the parent context stays clean. Not for trivial one-shot answers.",
+                SystemPrompt =
+                    "You are a general-purpose sub-agent working on behalf of a parent agent. "
+                    + "Complete the delegated task end to end using the tools available to you, then "
+                    + "return a concise final answer that fully captures your findings — the parent only "
+                    + "sees your final message, not your intermediate steps.",
+                AgentFactory = providerAgentFactory,
+                MaxTurnsPerRun = 25,
+            },
+            ["researcher"] = new SubAgentTemplate
+            {
+                Name = "Researcher",
+                Description = "Focused investigator that gathers information and summarizes findings.",
+                WhenToUse =
+                    "Delegate open-ended investigation across sources when you need a distilled summary "
+                    + "rather than raw results. Prefer general-purpose for tasks that also mutate state.",
+                SystemPrompt =
+                    "You are a research sub-agent. Investigate the delegated question thoroughly using the "
+                    + "tools available to you, cross-check what you find, and return a clear, well-structured "
+                    + "summary. The parent only sees your final message, so make it self-contained.",
+                AgentFactory = providerAgentFactory,
+                MaxTurnsPerRun = 25,
+            },
+        };
+
+        return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
     }
 
     private static int ResolveCodexMcpPort()

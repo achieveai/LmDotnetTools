@@ -34,7 +34,7 @@ public sealed class SubAgentToolUseTests
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
                 .Turn(t => t.ToolCall(
                     "Agent",
-                    new { template_name = "weather_sub", task = "check Seattle weather" }))
+                    new { subagent_type = "weather_sub", prompt = "check Seattle weather" }))
                 .Turn(t => t.Text("Parent: sub-agent completed the weather check."))
             .Build();
 
@@ -74,13 +74,12 @@ public sealed class SubAgentToolUseTests
         var toolResults = frames.ToolCallResults();
         toolResults.Should().NotBeEmpty();
 
-        // Sub-agent must consume at least its first (tool-call) turn. Whether the second
-        // (final-text) turn is also consumed depends on how the parent's Agent-tool relay
-        // finalizes the sub-agent's loop — some paths terminate the sub-agent as soon as its
-        // first useful action (the tool call) is surfaced back up to the parent. We assert the
-        // weaker invariant rather than couple this E2E test to that relay-termination policy.
+        // Synchronous Agent: the parent blocks until the sub-agent's run COMPLETES, so by the
+        // time the parent produces its summary the sub-agent has deterministically consumed
+        // BOTH of its turns (the get_weather tool call AND the final text). No background relay,
+        // no race — the queue is fully drained.
         responder.RemainingTurns["weather-sub"].Should()
-            .BeLessThan(2, "sub-agent should have consumed at least its tool-call turn");
+            .Be(0, "the parent awaits the sub-agent's full run, draining both of its turns");
 
         var streamedText = frames.ConcatText();
         streamedText.Should().Contain("sub-agent completed the weather check");
