@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -24,6 +25,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly ILogger _logger;
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
+    private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
 
     public SubAgentManager(
@@ -50,10 +52,17 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>
     /// Spawn a new sub-agent from a named template.
+    /// When <paramref name="runInBackground"/> is false (default), blocks until the
+    /// sub-agent's run completes and returns its final answer as the result. When true,
+    /// returns immediately with a JSON spawn receipt (agent id) and relays the eventual
+    /// result to the parent as an injected message.
     /// </summary>
     public async Task<string> SpawnAsync(
         string templateName,
         string task,
+        string? name = null,
+        string? model = null,
+        bool runInBackground = false,
         string[]? addTools = null,
         string[]? removeTools = null,
         CancellationToken ct = default)
@@ -74,21 +83,39 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         var agentId = Guid.NewGuid().ToString("N")[..12];
+        SubAgentState state;
 
         try
         {
-            var agent = CreateSubAgent(agentId, template, addTools, removeTools, out var store);
+            var agent = CreateSubAgent(agentId, template, model, addTools, removeTools, out var store);
 
-            var state = new SubAgentState
+            state = new SubAgentState
             {
                 AgentId = agentId,
                 TemplateName = templateName,
                 Task = task,
                 Agent = agent,
                 Store = store,
+                Name = name,
+                NotifyParentOnCompletion = runInBackground,
             };
 
             _agents[agentId] = state;
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                if (_namesToIds.TryGetValue(name, out var existingId)
+                    && existingId != agentId
+                    && _agents.ContainsKey(existingId))
+                {
+                    _logger.LogWarning(
+                        "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
+                            + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
+                            + "address the new agent.",
+                        name, existingId, agentId);
+                }
+
+                _namesToIds[name] = agentId;
+            }
 
             // Start the agent loop in the background
             var cts = state.Cts;
@@ -104,57 +131,125 @@ public sealed class SubAgentManager : IAsyncDisposable
                 [new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             _logger.LogInformation(
-                "Spawned sub-agent {AgentId} from template {Template} with task: {Task}",
-                agentId, templateName, Truncate(task, 100));
+                "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task: {Task}",
+                agentId, templateName, runInBackground, Truncate(task, 100));
+        }
+        catch
+        {
+            // Release the gate on spawn-time failure (before the monitor takes ownership).
+            _ = _concurrencyGate.Release();
+            throw;
+        }
+
+        // Past this point the monitor owns the concurrency gate; do not release it here.
+        if (runInBackground)
+        {
+            // Nobody awaits the completion on the background path; observe any fault
+            // so it never surfaces as an UnobservedTaskException.
+            ObserveCompletionFaults(state);
 
             return JsonSerializer.Serialize(new
             {
                 agent_id = agentId,
+                name,
                 template = templateName,
                 status = "spawned",
             });
         }
-        catch
-        {
-            // Release the gate on failure
-            _ = _concurrencyGate.Release();
-            throw;
-        }
+
+        // Synchronous: block until the run completes and return its final answer.
+        // Parent relay is suppressed (NotifyParentOnCompletion=false) so the result
+        // flows back only as this tool result, in the same parent turn.
+        return await AwaitCompletionAsync(state, ct);
     }
 
     /// <summary>
-    /// Resume or send a new message to an existing sub-agent.
+    /// Continue an existing sub-agent identified by its id or caller-supplied name.
+    /// A running agent receives the message in its current run; a finished agent is
+    /// restarted. When <paramref name="runInBackground"/> is false (default), blocks
+    /// until the (re)started run completes and returns its final answer; when true,
+    /// returns a JSON receipt immediately and relays the result to the parent.
     /// </summary>
-    public async Task<string> ResumeAsync(
-        string agentId,
-        string newMessage,
+    public async Task<string> SendMessageAsync(
+        string target,
+        string prompt,
+        bool runInBackground = false,
         CancellationToken ct = default)
     {
-        if (!_agents.TryGetValue(agentId, out var state))
+        var agentId = ResolveAgentId(target);
+        var state = _agents[agentId];
+
+        var wasRunning = state.Status == SubAgentStatus.Running;
+        state.NotifyParentOnCompletion = runInBackground;
+
+        // A finished completion is replaced so this run can be awaited fresh; a pending
+        // one (running agent) is kept so existing waiters observe the next resolution.
+        state.ResetCompletionIfFinished();
+
+        if (wasRunning)
         {
-            throw new ArgumentException(
-                $"Unknown agent ID '{agentId}'.", nameof(agentId));
+            // Inject the message into the currently running agent.
+            _ = await state.Agent.SendAsync(
+                [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+
+            _logger.LogInformation(
+                "Sent message to running sub-agent {AgentId}: {Message}",
+                agentId, Truncate(prompt, 100));
+        }
+        else
+        {
+            await RestartRunAsync(state, prompt, ct);
         }
 
-        if (state.Status == SubAgentStatus.Running)
+        if (runInBackground)
         {
-            // Inject message into the currently running agent
-            _ = await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
+            ObserveCompletionFaults(state);
 
             return JsonSerializer.Serialize(new
             {
                 agent_id = agentId,
-                status = "message_sent",
+                name = state.Name,
+                status = wasRunning ? "message_sent" : "resumed",
             });
         }
 
-        // Agent is completed/error/stopped - need to resume
+        return await AwaitCompletionAsync(state, ct);
+    }
+
+    /// <summary>
+    /// Resolves a caller-supplied target (agent id or name) to a concrete agent id.
+    /// </summary>
+    private string ResolveAgentId(string target)
+    {
+        if (_agents.ContainsKey(target))
+        {
+            return target;
+        }
+
+        if (_namesToIds.TryGetValue(target, out var id) && _agents.ContainsKey(id))
+        {
+            return id;
+        }
+
+        throw new ArgumentException(
+            $"Unknown sub-agent '{target}'. Provide a valid agent id or name.",
+            nameof(target));
+    }
+
+    /// <summary>
+    /// Restarts a finished (completed/error/stopped) sub-agent's run with a new message.
+    /// On success the new monitor owns the concurrency gate; on failure the gate is released.
+    /// </summary>
+    private async Task RestartRunAsync(
+        SubAgentState state,
+        string prompt,
+        CancellationToken ct)
+    {
         if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
             throw new InvalidOperationException(
                 $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) " +
-                $"reached. Cannot resume agent '{agentId}'.");
+                $"reached. Cannot resume agent '{state.AgentId}'.");
         }
 
         try
@@ -205,19 +300,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
 
             _ = await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = newMessage }], ct: ct);
+                [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
 
             state.Status = SubAgentStatus.Running;
 
             _logger.LogInformation(
                 "Resumed sub-agent {AgentId} with message: {Message}",
-                agentId, Truncate(newMessage, 100));
-
-            return JsonSerializer.Serialize(new
-            {
-                agent_id = agentId,
-                status = "resumed",
-            });
+                state.AgentId, Truncate(prompt, 100));
         }
         catch
         {
@@ -254,6 +343,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         return JsonSerializer.Serialize(new
         {
             agent_id = agentId,
+            name = state.Name,
             status = state.Status.ToString().ToLowerInvariant(),
             template = state.TemplateName,
             task = state.Task,
@@ -334,6 +424,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         _agents.Clear();
+        _namesToIds.Clear();
         _concurrencyGate.Dispose();
     }
 
@@ -343,11 +434,17 @@ public sealed class SubAgentManager : IAsyncDisposable
     private IMultiTurnAgent CreateSubAgent(
         string agentId,
         SubAgentTemplate template,
+        string? modelOverride,
         string[]? addTools,
         string[]? removeTools,
         out IConversationStore? store)
     {
         var providerAgent = template.AgentFactory();
+
+        // Apply the per-spawn model override (if any) on top of the template defaults.
+        var defaultOptions = string.IsNullOrWhiteSpace(modelOverride)
+            ? template.DefaultOptions
+            : (template.DefaultOptions ?? new GenerateReplyOptions()) with { ModelId = modelOverride };
 
         // Determine conversation store
         var storeFactory =
@@ -380,7 +477,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             registry,
             threadId: $"subagent-{agentId}",
             systemPrompt: template.SystemPrompt,
-            defaultOptions: template.DefaultOptions,
+            defaultOptions: defaultOptions,
             maxTurnsPerRun: template.MaxTurnsPerRun,
             store: store,
             logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger));
@@ -447,7 +544,29 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct)
     {
         string? lastTextContent = null;
-        var completionHandled = false;
+        var gateReleased = false;
+
+        // Release the concurrency slot exactly once per monitor. A single monitor can
+        // observe multiple RunCompletedMessages — a background sub-agent continued in
+        // place via SendMessage runs again under the same monitor — but the slot was
+        // acquired once (at spawn/restart), so it must be released once: on the first
+        // completion, and never again. Releasing per-completion would over-release the
+        // semaphore (eventually SemaphoreFullException) and break the concurrency limit.
+        void ReleaseGateOnce()
+        {
+            if (!gateReleased)
+            {
+                gateReleased = true;
+                _ = _concurrencyGate.Release();
+            }
+        }
+
+        // Subscribers receive raw streaming deltas: the publishing middleware runs
+        // upstream of the joiner, so the consolidated TextMessage never reaches here —
+        // only TextUpdateMessage deltas do. Reconstruct the sub-agent's final answer by
+        // accumulating deltas per generation and keeping the latest generation's text.
+        var textBuilder = new StringBuilder();
+        string? textGenerationId = null;
 
         try
         {
@@ -463,11 +582,30 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
-                // Track last assistant text for completion result
-                if (msg is TextMessage tm
+                // Track the last assistant text for the completion result. Subscribers
+                // receive raw deltas, so accumulate TextUpdateMessage deltas per
+                // generation; a consolidated TextMessage (non-streaming mock) is taken as-is.
+                if (msg is TextUpdateMessage tu
+                    && tu.Role == Role.Assistant
+                    && !tu.IsThinking)
+                {
+                    // A new generation resets the accumulator so we keep only the most
+                    // recent assistant message, not earlier turns' text.
+                    if (!string.Equals(textGenerationId, tu.GenerationId, StringComparison.Ordinal))
+                    {
+                        textGenerationId = tu.GenerationId;
+                        _ = textBuilder.Clear();
+                    }
+
+                    _ = textBuilder.Append(tu.Text);
+                    lastTextContent = textBuilder.ToString();
+                }
+                else if (msg is TextMessage tm
                     && tm.Role == Role.Assistant
                     && !tm.IsThinking)
                 {
+                    textGenerationId = tm.GenerationId;
+                    _ = textBuilder.Clear().Append(tm.Text);
                     lastTextContent = tm.Text;
                 }
 
@@ -475,8 +613,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     state.LastResult = lastTextContent;
                     await HandleRunCompletionAsync(state, rcm, lastTextContent);
-                    completionHandled = true;
+                    ReleaseGateOnce();
                     lastTextContent = null;
+                    textGenerationId = null;
+                    _ = textBuilder.Clear();
                 }
             }
         }
@@ -499,56 +639,106 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         finally
         {
-            // Guard against semaphore slot leaks: if HandleRunCompletionAsync
-            // was never called (stream ended without RunCompletedMessage,
-            // cancellation, or exception), release the semaphore here.
-            if (!completionHandled)
-            {
-                _ = _concurrencyGate.Release();
-            }
+            // Fallback: if no completion was ever handled (the stream ended, was
+            // cancelled, or faulted before any RunCompletedMessage), the slot still
+            // needs releasing. ReleaseGateOnce is idempotent, so this is a no-op when
+            // a completion already released it.
+            ReleaseGateOnce();
         }
     }
 
     /// <summary>
-    /// Handles a sub-agent run completion by updating state and notifying the parent.
+    /// Handles a sub-agent run completion: resolves the synchronous completion signal
+    /// and, for background spawns/continuations, relays the result to the parent.
     /// </summary>
     private async Task HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
         string? lastTextContent)
     {
-        try
+        // The concurrency slot is released by the monitor (ReleaseGateOnce), exactly once
+        // per monitor lifetime — not here, because a single monitor may handle several
+        // completions when a background sub-agent is continued in place via SendMessage.
+        if (rcm.IsError)
         {
-            if (rcm.IsError)
+            state.Status = SubAgentStatus.Error;
+
+            var errorText =
+                $"<sub-agent name=\"{state.TemplateName}\" " +
+                $"id=\"{state.AgentId}\">\n" +
+                $"[Error] Task: {state.Task}\n" +
+                $"Error: {rcm.ErrorMessage}\n" +
+                $"</sub-agent>";
+
+            // Fault the synchronous waiter (if any); a background spawn observes
+            // this fault via ObserveCompletionFaults so it is never unobserved.
+            _ = state.Completion.TrySetException(
+                new SubAgentExecutionException(
+                    state.AgentId, state.TemplateName, rcm.ErrorMessage));
+
+            if (state.NotifyParentOnCompletion)
             {
-                state.Status = SubAgentStatus.Error;
-
-                var errorText =
-                    $"<sub-agent name=\"{state.TemplateName}\" " +
-                    $"id=\"{state.AgentId}\">\n" +
-                    $"[Error] Task: {state.Task}\n" +
-                    $"Error: {rcm.ErrorMessage}\n" +
-                    $"</sub-agent>";
-
                 await SendToParentAsync(state, errorText);
             }
-            else
+        }
+        else
+        {
+            state.Status = SubAgentStatus.Completed;
+
+            var result = lastTextContent ?? "(no text response)";
+
+            var resultText =
+                $"<sub-agent name=\"{state.TemplateName}\" " +
+                $"id=\"{state.AgentId}\">\n" +
+                $"[Completed] Task: {state.Task}\n" +
+                $"Result: {result}\n" +
+                $"</sub-agent>";
+
+            _ = state.Completion.TrySetResult(result);
+
+            if (state.NotifyParentOnCompletion)
             {
-                state.Status = SubAgentStatus.Completed;
-
-                var resultText =
-                    $"<sub-agent name=\"{state.TemplateName}\" " +
-                    $"id=\"{state.AgentId}\">\n" +
-                    $"[Completed] Task: {state.Task}\n" +
-                    $"Result: {lastTextContent ?? "(no text response)"}\n" +
-                    $"</sub-agent>";
-
                 await SendToParentAsync(state, resultText);
             }
         }
-        finally
+    }
+
+    /// <summary>
+    /// Observes faults on a completion the caller will not await (background path),
+    /// so a faulted run never surfaces as an UnobservedTaskException during GC.
+    /// </summary>
+    private static void ObserveCompletionFaults(SubAgentState state)
+    {
+        _ = state.Completion.Task.ContinueWith(
+            static t => { _ = t.Exception; },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Awaits a synchronous sub-agent run's completion. If the parent abandons the wait
+    /// (its cancellation token fires), the sub-agent is cancelled too so it stops promptly
+    /// and frees its concurrency slot instead of running on, orphaned.
+    /// </summary>
+    private static async Task<string> AwaitCompletionAsync(SubAgentState state, CancellationToken ct)
+    {
+        try
         {
-            _ = _concurrencyGate.Release();
+            return await state.Completion.Task.WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            try
+            {
+                await state.Cts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The sub-agent was already torn down (e.g. concurrent disposal); nothing to cancel.
+            }
+
+            throw;
         }
     }
 

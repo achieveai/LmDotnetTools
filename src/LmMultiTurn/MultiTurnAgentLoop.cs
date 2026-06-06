@@ -106,7 +106,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 
             var toolProvider = new SubAgentToolProvider(
                 _subAgentManager,
-                [.. subAgentOptions.Templates.Keys]);
+                subAgentOptions.Templates);
 
             _ = functionRegistry.AddProvider(toolProvider);
         }

@@ -15,15 +15,16 @@ namespace LmMultiTurn.Tests;
 
 /// <summary>
 /// Integration tests verifying the full sub-agent orchestration flow:
-/// parent agent spawns sub-agent via tool call, sub-agent completes,
-/// and result is relayed back to the parent.
+/// parent agent spawns a sub-agent via tool call, the sub-agent completes,
+/// and the result flows back to the parent — synchronously as the tool result
+/// (default) or via a background receipt polled with CheckAgent.
 /// </summary>
 public class SubAgentIntegrationTests
 {
     /// <summary>
-    /// End-to-end test: parent calls the Agent tool to spawn a sub-agent,
-    /// the tool handler returns a JSON result with agent_id, and the
-    /// sub-agent's mock responds with a text message.
+    /// End-to-end test: parent calls the Agent tool to spawn a sub-agent. By
+    /// default the call is synchronous, so the tool result IS the sub-agent's
+    /// final answer (not a JSON receipt) and there is no second parent relay turn.
     /// </summary>
     [Fact]
     public async Task ParentSpawnsSubAgent_SubAgentCompletes_ParentReceivesResult()
@@ -62,8 +63,8 @@ public class SubAgentIntegrationTests
                                 FunctionName = "Agent",
                                 FunctionArgs = JsonSerializer.Serialize(new
                                 {
-                                    template_name = "researcher",
-                                    task = "Research the topic",
+                                    subagent_type = "researcher",
+                                    prompt = "Research the topic",
                                 }),
                                 ToolCallId = "call_agent_1",
                                 Role = Role.Assistant,
@@ -128,21 +129,15 @@ public class SubAgentIntegrationTests
             tc => tc.FunctionName == "Agent",
             "the parent should have called the Agent tool");
 
-        // The tool call result should contain a valid agent_id
+        // Synchronous Agent: the tool result IS the sub-agent's final answer,
+        // not a JSON spawn receipt.
         var toolCallResults = messages.OfType<ToolCallResultMessage>().ToList();
         toolCallResults.Should().NotBeEmpty(
             "the Agent tool should have returned a result");
 
-        var agentToolResult = toolCallResults
-            .FirstOrDefault(r => r.ToolName == "Agent" || r.Result.Contains("agent_id"));
-        agentToolResult.Should().NotBeNull(
-            "the Agent tool result should be present");
-
-        using var resultDoc = JsonDocument.Parse(agentToolResult!.Result);
-        resultDoc.RootElement.GetProperty("agent_id").GetString()
-            .Should().NotBeNullOrEmpty("spawn should return an agent_id");
-        resultDoc.RootElement.GetProperty("status").GetString()
-            .Should().Be("spawned");
+        toolCallResults.Should().Contain(
+            r => r.Result.Contains("Sub-agent analysis complete"),
+            "synchronous Agent returns the sub-agent's final text as the tool result");
 
         // The parent should have generated a final text response
         messages.OfType<TextMessage>()
@@ -158,8 +153,9 @@ public class SubAgentIntegrationTests
     }
 
     /// <summary>
-    /// Verifies that the CheckAgent tool is registered and callable
-    /// alongside the Agent tool when sub-agent options are configured.
+    /// Verifies the background spawn + CheckAgent flow: a sub-agent spawned with
+    /// run_in_background: true returns a JSON receipt with an agent id, which the
+    /// parent then polls with the CheckAgent tool.
     /// </summary>
     [Fact]
     public async Task SubAgentTools_AreRegisteredAndCallable()
@@ -190,15 +186,17 @@ public class SubAgentIntegrationTests
                     parentCallCount++;
                     if (parentCallCount == 1)
                     {
-                        // Spawn a sub-agent
+                        // Spawn a sub-agent in the background so the tool returns a
+                        // receipt (agent_id) immediately for CheckAgent to poll.
                         return Task.FromResult(ToAsyncEnumerable([
                             new ToolCallMessage
                             {
                                 FunctionName = "Agent",
                                 FunctionArgs = JsonSerializer.Serialize(new
                                 {
-                                    template_name = "worker",
-                                    task = "Do some work",
+                                    subagent_type = "worker",
+                                    prompt = "Do some work",
+                                    run_in_background = true,
                                 }),
                                 ToolCallId = "call_spawn",
                                 Role = Role.Assistant,

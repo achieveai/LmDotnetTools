@@ -38,6 +38,18 @@ internal class SubAgentState
     public required string Task { get; init; }
     public required IMultiTurnAgent Agent { get; init; }
 
+    /// <summary>
+    /// Optional caller-supplied handle so SendMessage can address this agent by name.
+    /// </summary>
+    public string? Name { get; init; }
+
+    /// <summary>
+    /// When true (background spawn/continuation), run completion is relayed to the
+    /// parent as an injected user message. When false (synchronous call), the tool
+    /// handler awaiting <see cref="Completion"/> returns the result directly instead.
+    /// </summary>
+    public bool NotifyParentOnCompletion { get; set; }
+
     public Task? RunTask { get; set; }
     public Task? MonitorTask { get; set; }
     public CancellationTokenSource Cts { get; set; } = new();
@@ -63,4 +75,33 @@ internal class SubAgentState
     /// Populated from the last assistant TextMessage before RunCompletedMessage.
     /// </summary>
     public string? LastResult { get; set; }
+
+    /// <summary>
+    /// Signal resolved when the current run completes: the final assistant text on
+    /// success, faulted on error, cancelled when the run ends without completing.
+    /// Synchronous Agent/SendMessage calls await this to return the result as the
+    /// tool result.
+    /// </summary>
+    public TaskCompletionSource<string> Completion { get; private set; } = CreateCompletionSource();
+
+    /// <summary>
+    /// Replaces an already-resolved completion with a fresh one so a follow-up
+    /// run (SendMessage continuation) can be awaited. A pending (unresolved)
+    /// completion is kept — existing waiters observe the next resolution.
+    /// </summary>
+    public void ResetCompletionIfFinished()
+    {
+        if (Completion.Task.IsCompleted)
+        {
+            Completion = CreateCompletionSource();
+        }
+    }
+
+    private static TaskCompletionSource<string> CreateCompletionSource()
+    {
+        // RunContinuationsAsynchronously: the monitor task resolves this signal;
+        // running waiter continuations inline would execute tool-handler code on
+        // the monitor's subscription thread.
+        return new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }

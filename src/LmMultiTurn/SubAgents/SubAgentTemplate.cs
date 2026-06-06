@@ -17,6 +17,18 @@ public record SubAgentTemplate
     public string? Name { get; init; }
 
     /// <summary>
+    /// One-line summary of what this sub-agent does. Embedded in the Agent tool
+    /// description's template catalog so the parent LLM can pick the right type.
+    /// </summary>
+    public string? Description { get; init; }
+
+    /// <summary>
+    /// Delegation guidance: when the parent should (and should not) delegate to
+    /// this sub-agent. Embedded in the Agent tool description's template catalog.
+    /// </summary>
+    public string? WhenToUse { get; init; }
+
+    /// <summary>
     /// Independent system prompt for the sub-agent.
     /// </summary>
     public required string SystemPrompt { get; init; }

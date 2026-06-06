@@ -9,15 +9,15 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// <summary>
 /// Exercises the parent → <c>SubAgentManager</c> → sub-agent fan-out path under scripted
 /// SSE. The parent's first turn emits an <c>Agent</c> tool call that spawns a sub-agent;
-/// the sub-agent returns a plain-text result which <c>SubAgentManager</c> relays back into
-/// the parent as a user message; the parent's second turn summarizes the relayed result.
+/// the call is synchronous, so the sub-agent's plain-text answer comes back as the
+/// <c>Agent</c> tool result (no parent relay) and the parent's second turn summarizes it.
 /// </summary>
 public sealed class SubAgentSpawnTests
 {
     [Theory]
     [InlineData("test")]
     [InlineData("test-anthropic")]
-    public async Task Parent_spawns_subagent_and_relays_result(string providerMode)
+    public async Task Parent_spawns_subagent_and_receives_result(string providerMode)
     {
         const string ResearcherPromptMarker = "You are the research sub-agent";
 
@@ -27,7 +27,7 @@ public sealed class SubAgentSpawnTests
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
                 .Turn(t => t.ToolCall(
                     "Agent",
-                    new { template_name = "researcher", task = "Find AI papers" }))
+                    new { subagent_type = "researcher", prompt = "Find AI papers" }))
                 .Turn(t => t.Text("Summary: researcher surfaced three AI papers."))
             .Build();
 
@@ -52,6 +52,13 @@ public sealed class SubAgentSpawnTests
 
         var toolCalls = frames.ToolCallNames();
         toolCalls.Should().Contain("Agent");
+
+        // Synchronous Agent: the sub-agent's final text comes back as the tool result
+        // (not a JSON spawn receipt), proving the parent blocked on completion.
+        var toolResults = frames.ToolCallResults();
+        toolResults.Should().Contain(
+            r => r.Contains("Found three fresh AI papers today.", StringComparison.Ordinal),
+            "the Agent tool result is the sub-agent's final answer");
 
         var streamedText = frames.ConcatText();
         streamedText.Should().Contain("Summary: researcher surfaced three AI papers");
