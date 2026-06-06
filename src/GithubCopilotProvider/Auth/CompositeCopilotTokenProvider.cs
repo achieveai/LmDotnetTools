@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Tries a sequence of <see cref="ICopilotTokenProvider"/>s in order and returns the first token
@@ -26,9 +26,7 @@ public sealed class CompositeCopilotTokenProvider : ICopilotTokenProvider
     /// <summary>
     ///     Builds the default chain: existing CLI/env credentials first, then GitHub device flow.
     /// </summary>
-    public static CompositeCopilotTokenProvider CreateDefault(
-        DeviceFlowCopilotTokenProvider? deviceFlow = null
-    )
+    public static CompositeCopilotTokenProvider CreateDefault(DeviceFlowCopilotTokenProvider? deviceFlow = null)
     {
         return new CompositeCopilotTokenProvider(
             new CliCredentialCopilotTokenProvider(),

@@ -1,7 +1,7 @@
 using System.Net.Http.Headers;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Http;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Http;
 
 /// <summary>
 ///     <see cref="DelegatingHandler"/> that authenticates and decorates outgoing requests for the

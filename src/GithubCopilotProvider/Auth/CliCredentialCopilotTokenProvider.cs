@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Resolves a GitHub OAuth token from credentials already present on the machine, in priority order:
@@ -173,9 +173,11 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
                     continue;
                 }
 
-                if (entry.Value.ValueKind == JsonValueKind.Object
+                if (
+                    entry.Value.ValueKind == JsonValueKind.Object
                     && entry.Value.TryGetProperty("oauth_token", out var tokenEl)
-                    && tokenEl.ValueKind == JsonValueKind.String)
+                    && tokenEl.ValueKind == JsonValueKind.String
+                )
                 {
                     var token = tokenEl.GetString();
                     if (!string.IsNullOrWhiteSpace(token))
@@ -327,7 +329,8 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
             var token = output.Trim();
             return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(token) ? token : null;
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        catch (Exception ex)
+            when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
             // gh not installed / not on PATH.
             return null;

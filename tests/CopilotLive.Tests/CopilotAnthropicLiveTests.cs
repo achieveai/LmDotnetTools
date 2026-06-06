@@ -1,5 +1,5 @@
 using System.Text;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using FluentAssertions;

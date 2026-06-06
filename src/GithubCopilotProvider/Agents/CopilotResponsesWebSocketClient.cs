@@ -2,12 +2,13 @@ using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 
 /// <summary>
 ///     <see cref="IOpenAiResponsesClient"/> implementation that drives the GitHub Copilot Responses
@@ -120,8 +121,10 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
 
                 var ev = ResponseEventParser.Parse(text);
 
-                if (ev is ResponseLifecycleEvent lifecycle
-                    && string.Equals(lifecycle.Type, ResponseEventTypes.ResponseCompleted, StringComparison.Ordinal))
+                if (
+                    ev is ResponseLifecycleEvent lifecycle
+                    && string.Equals(lifecycle.Type, ResponseEventTypes.ResponseCompleted, StringComparison.Ordinal)
+                )
                 {
                     _previousResponseId = TryGetResponseId(lifecycle.Response) ?? _previousResponseId;
                 }
@@ -166,9 +169,11 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
 
     private static string? TryGetResponseId(JsonElement response)
     {
-        if (response.ValueKind == JsonValueKind.Object
+        if (
+            response.ValueKind == JsonValueKind.Object
             && response.TryGetProperty("id", out var idEl)
-            && idEl.ValueKind == JsonValueKind.String)
+            && idEl.ValueKind == JsonValueKind.String
+        )
         {
             return idEl.GetString();
         }

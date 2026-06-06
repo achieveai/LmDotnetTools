@@ -1,10 +1,10 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
-using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents;
 
 /// <summary>
 ///     Verifies the WebSocket Responses transport: <c>response.create</c> framing, event parsing
@@ -15,8 +15,7 @@ public sealed class CopilotResponsesWebSocketClientTests
 {
     private sealed class StubTokenProvider : ICopilotTokenProvider
     {
-        public Task<string> GetTokenAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult("gho_test");
+        public Task<string> GetTokenAsync(CancellationToken cancellationToken = default) => Task.FromResult("gho_test");
     }
 
     private sealed class FakeSocket : ICopilotResponsesSocket
@@ -57,9 +56,13 @@ public sealed class CopilotResponsesWebSocketClientTests
     private static IEnumerable<string> ScriptedTurn(string sentFrame, int turnIndex)
     {
         var responseId = "resp-" + turnIndex;
-        yield return "{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"" + responseId + "\"}}";
+        yield return "{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\""
+            + responseId
+            + "\"}}";
         yield return "{\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"i\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}";
-        yield return "{\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"" + responseId + "\"}}";
+        yield return "{\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\""
+            + responseId
+            + "\"}}";
     }
 
     private static ResponseCreateRequest Request() =>
@@ -109,11 +112,14 @@ public sealed class CopilotResponsesWebSocketClientTests
 
         var events = await CollectAsync(client.StreamResponseAsync(Request()));
 
-        events.Select(e => e.Type).Should().ContainInOrder(
-            ResponseEventTypes.ResponseCreated,
-            ResponseEventTypes.OutputTextDelta,
-            ResponseEventTypes.ResponseCompleted
-        );
+        events
+            .Select(e => e.Type)
+            .Should()
+            .ContainInOrder(
+                ResponseEventTypes.ResponseCreated,
+                ResponseEventTypes.OutputTextDelta,
+                ResponseEventTypes.ResponseCompleted
+            );
         events.Last().Should().BeOfType<ResponseLifecycleEvent>();
     }
 

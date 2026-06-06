@@ -1,7 +1,7 @@
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Auth;
 
 public sealed class CliCredentialCopilotTokenProviderTests
 {
@@ -9,10 +9,7 @@ public sealed class CliCredentialCopilotTokenProviderTests
     public void TryReadOAuthTokenFromJson_reads_copilot_hosts_shape()
     {
         var path = Path.Combine(Path.GetTempPath(), $"copilot-hosts-{Guid.NewGuid():N}.json");
-        File.WriteAllText(
-            path,
-            """{ "github.com": { "user": "octocat", "oauth_token": "gho_from_hosts" } }"""
-        );
+        File.WriteAllText(path, """{ "github.com": { "user": "octocat", "oauth_token": "gho_from_hosts" } }""");
 
         try
         {
@@ -28,10 +25,7 @@ public sealed class CliCredentialCopilotTokenProviderTests
     public void TryReadOAuthTokenFromJson_reads_apps_shape_with_composite_key()
     {
         var path = Path.Combine(Path.GetTempPath(), $"copilot-apps-{Guid.NewGuid():N}.json");
-        File.WriteAllText(
-            path,
-            """{ "github.com:Iv1.b507a08c87ecfe98": { "oauth_token": "gho_from_apps" } }"""
-        );
+        File.WriteAllText(path, """{ "github.com:Iv1.b507a08c87ecfe98": { "oauth_token": "gho_from_apps" } }""");
 
         try
         {

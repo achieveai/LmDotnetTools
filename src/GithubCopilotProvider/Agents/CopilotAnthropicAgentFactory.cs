@@ -1,9 +1,11 @@
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Http;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using Microsoft.Extensions.Logging;
 
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 
 /// <summary>
 ///     Builds an <see cref="AnthropicAgent"/> that talks the Anthropic Messages API through the

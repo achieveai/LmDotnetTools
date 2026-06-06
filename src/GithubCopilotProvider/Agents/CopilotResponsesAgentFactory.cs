@@ -1,7 +1,8 @@
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using Microsoft.Extensions.Logging;
 
-namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 
 /// <summary>Transport choice for the GitHub Copilot Responses API.</summary>
 public enum CopilotResponsesTransport
@@ -51,9 +52,10 @@ public static class CopilotResponsesAgentFactory
         var context = session ?? new CopilotSessionContext();
         var host = copilotOptions.BaseUrl.TrimEnd('/');
 
-        var client = transport == CopilotResponsesTransport.Sse
-            ? CreateSseClient(host, tokenProvider, context, copilotOptions)
-            : CreateWebSocketClient(host, tokenProvider, context, copilotOptions, logger);
+        var client =
+            transport == CopilotResponsesTransport.Sse
+                ? CreateSseClient(host, tokenProvider, context, copilotOptions)
+                : CreateWebSocketClient(host, tokenProvider, context, copilotOptions, logger);
 
         return new OpenAiResponsesAgent(name, client, logger);
     }
@@ -96,9 +98,7 @@ public static class CopilotResponsesAgentFactory
         return host;
     }
 
-    private static IReadOnlyDictionary<string, string> WithOpenAiIntent(
-        IReadOnlyDictionary<string, string>? existing
-    )
+    private static IReadOnlyDictionary<string, string> WithOpenAiIntent(IReadOnlyDictionary<string, string>? existing)
     {
         var merged = existing is null
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

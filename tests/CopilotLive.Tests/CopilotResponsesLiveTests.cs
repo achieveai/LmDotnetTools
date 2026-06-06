@@ -1,7 +1,7 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using FluentAssertions;
 using Xunit.Abstractions;
 

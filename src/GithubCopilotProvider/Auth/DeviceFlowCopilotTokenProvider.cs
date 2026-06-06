@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Acquires a GitHub OAuth token via the GitHub OAuth <em>device flow</em> and caches it on disk
@@ -122,15 +122,11 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
                     break;
                 case "expired_token":
                 case "access_denied":
-                    throw new InvalidOperationException(
-                        $"GitHub device-flow authorization failed: {poll.Error}."
-                    );
+                    throw new InvalidOperationException($"GitHub device-flow authorization failed: {poll.Error}.");
                 default:
                     if (!string.IsNullOrEmpty(poll.Error))
                     {
-                        throw new InvalidOperationException(
-                            $"GitHub device-flow authorization failed: {poll.Error}."
-                        );
+                        throw new InvalidOperationException($"GitHub device-flow authorization failed: {poll.Error}.");
                     }
 
                     break;
@@ -152,9 +148,10 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
 
         using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
         _ = response.EnsureSuccessStatusCode();
-        var body = await response.Content.ReadFromJsonAsync<DeviceCodeResponse>(cancellationToken).ConfigureAwait(false);
-        return body
-            ?? throw new InvalidOperationException("GitHub device-code endpoint returned an empty response.");
+        var body = await response
+            .Content.ReadFromJsonAsync<DeviceCodeResponse>(cancellationToken)
+            .ConfigureAwait(false);
+        return body ?? throw new InvalidOperationException("GitHub device-code endpoint returned an empty response.");
     }
 
     private async Task<AccessTokenResponse> PollAccessTokenAsync(string deviceCode, CancellationToken cancellationToken)
@@ -173,14 +170,18 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
         request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
 
         using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadFromJsonAsync<AccessTokenResponse>(cancellationToken).ConfigureAwait(false);
+        var body = await response
+            .Content.ReadFromJsonAsync<AccessTokenResponse>(cancellationToken)
+            .ConfigureAwait(false);
         return body ?? new AccessTokenResponse();
     }
 
     private static void DefaultPresent(DeviceCodeInfo info)
     {
         Console.WriteLine();
-        Console.WriteLine($"To authorize GitHub Copilot access, open {info.VerificationUri} and enter code: {info.UserCode}");
+        Console.WriteLine(
+            $"To authorize GitHub Copilot access, open {info.VerificationUri} and enter code: {info.UserCode}"
+        );
         Console.WriteLine();
     }
 
@@ -194,7 +195,8 @@ public sealed class DeviceFlowCopilotTokenProvider : ICopilotTokenProvider
             );
             return Path.Combine(dir, TokenCacheFileName);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             return null;
         }
