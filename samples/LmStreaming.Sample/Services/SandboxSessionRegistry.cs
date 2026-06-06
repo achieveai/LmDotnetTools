@@ -164,11 +164,13 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
+        var discovery = BuildDiscovery();
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,
             authProviders,
-            network
+            network,
+            discovery
         );
 
         _logger.LogInformation(
@@ -258,6 +260,63 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         _httpClient.Dispose();
     }
 
+    /// <summary>
+    /// Lists items the gateway has discovered for the session's workspace (the result of its
+    /// background sweep of context files — sub-agents, skills, etc). Callers filter by
+    /// <see cref="DiscoveredItem.Kind"/> for the kinds they care about.
+    /// </summary>
+    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync"/>.</param>
+    /// <param name="ct">Cancellation token observed by the HTTP call.</param>
+    /// <returns>The discovered items. Empty when the gateway reports no discoveries; never null.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the gateway returns a non-success status. The body (truncated) is included so
+    /// callers can correlate against gateway logs. Caller is expected to catch + log + degrade.
+    /// </exception>
+    public async Task<IReadOnlyList<DiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+
+        var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{sessionId}/discovered";
+        using var response = await _httpClient.GetAsync(requestUri, ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var bodySnippet = TruncateBody(body);
+            // Log + throw, matching CreateSessionAsync's policy: the caller is expected to catch
+            // and degrade, but we still want a server-log breadcrumb correlating the failure with
+            // gateway logs by session id.
+            _logger.LogError(
+                "Sandbox discovered-items list failed for session {SessionId}: {StatusCode} {Body}",
+                sessionId,
+                (int)response.StatusCode,
+                bodySnippet
+            );
+            throw new InvalidOperationException(
+                $"Sandbox gateway returned {(int)response.StatusCode} listing discovered items for "
+                    + $"session '{sessionId}': {bodySnippet}"
+            );
+        }
+
+        var payload = await response
+            .Content.ReadFromJsonAsync<DiscoveredItemsResponse>(JsonOptions, ct)
+            .ConfigureAwait(false);
+
+        return payload?.Items ?? [];
+    }
+
+    private const int ErrorBodyMaxLength = 500;
+
+    /// <summary>
+    /// Caps a gateway error body so a large HTML error page (e.g. a 502 from a reverse proxy) can
+    /// not blow up server logs or the exception message. Mirrors the doc-claim on
+    /// <see cref="ListDiscoveredAsync"/>.
+    /// </summary>
+    private static string TruncateBody(string body) =>
+        string.IsNullOrEmpty(body) || body.Length <= ErrorBodyMaxLength
+            ? body
+            : body[..ErrorBodyMaxLength] + "...(truncated)";
+
     private async Task DestroySessionAsync(SandboxSession session)
     {
         try
@@ -319,7 +378,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     {
         var providers = new List<AuthProviderDto>();
         var rules = new List<NetworkRuleDto>();
-        var baseUrl = _authOptions.Webhook.PublicBaseUrl.TrimEnd('/');
+        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
 
         if (!string.IsNullOrWhiteSpace(_authOptions.Github.ClientId))
         {
@@ -378,13 +437,59 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         return providers.Count > 0 ? (providers, new NetworkDto(rules)) : (null, null);
     }
 
+    /// <summary>
+    /// Builds the outbound <c>discovery</c> block telling the gateway where to deliver
+    /// context-discovery events. The URL is the public webhook base (the same one the gateway
+    /// already uses for auth callbacks) plus the discovery route; the auth value is the
+    /// gateway↔webhook shared secret. SECRET — never logged.
+    /// </summary>
+    private DiscoveryDto BuildDiscovery()
+    {
+        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
+        return new DiscoveryDto(
+            new DiscoveryWebhookDto(
+                Url: $"{baseUrl}/api/discovery/context_discovery",
+                Auth: _sharedSecret.Value
+            )
+        );
+    }
+
     // --- Gateway JSON contract (snake_case via JsonOptions) ---
 
     private sealed record CreateSandboxRequest(
         [property: JsonPropertyName("app")] AppRef App,
         [property: JsonPropertyName("workspace")] string Workspace,
         [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
-        [property: JsonPropertyName("network")] NetworkDto? Network
+        [property: JsonPropertyName("network")] NetworkDto? Network,
+        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null
+    );
+
+    /// <summary>Outbound <c>discovery</c> block telling the gateway where to deliver
+    /// context-discovery events. Omitted from the request JSON when null.</summary>
+    internal sealed record DiscoveryDto(
+        [property: JsonPropertyName("webhook")] DiscoveryWebhookDto Webhook
+    );
+
+    /// <summary>Webhook descriptor inside the outbound <c>discovery</c> block. <c>auth</c>
+    /// matches the value the gateway later presents in the <c>Authorization</c> header on its
+    /// callbacks — same convention as the auth-provider <c>gateway_auth</c> field.</summary>
+    internal sealed record DiscoveryWebhookDto(
+        [property: JsonPropertyName("url")] string Url,
+        [property: JsonPropertyName("auth")] string Auth
+    );
+
+    /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
+    /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;
+    /// <see cref="Path"/> is workspace-relative.</summary>
+    public sealed record DiscoveredItem(
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("description")] string? Description,
+        [property: JsonPropertyName("path")] string Path
+    );
+
+    private sealed record DiscoveredItemsResponse(
+        [property: JsonPropertyName("items")] IReadOnlyList<DiscoveredItem> Items
     );
 
     private sealed record AppRef([property: JsonPropertyName("id")] string Id);

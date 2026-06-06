@@ -29,6 +29,7 @@ using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Auth;
+using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -188,6 +189,11 @@ try
         authOptions,
         sp.GetRequiredService<AuthSharedSecret>()
     ));
+
+    // Workspace sub-agent discovery. The loader asks the gateway what it has discovered in
+    // the session's workspace (sub-agent markdown files under .claude/agents/, etc.) and maps
+    // them into SubAgentTemplate so they show up as spawnable types in the Agent tool catalog.
+    _ = builder.Services.AddSingleton<WorkspaceSubAgentLoader>();
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
@@ -591,10 +597,21 @@ try
                     var isTestMode =
                         string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
+                    // Sync-over-async on the agent-creation factory delegate: there is no async
+                    // seam exposed by the pool's agent factory contract, and this runs on the
+                    // pool-creation path (no ASP.NET SynchronizationContext) so a .Result here
+                    // cannot deadlock. The blocking call is HTTP only when a sandbox session is
+                    // active; otherwise BuildProductionSubAgentOptionsAsync returns synchronously.
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
                             .CreateSubAgentOptions(loggerFactory, () => agentFactory(normalizedProviderId))
-                        : BuildProductionSubAgentOptions(() => agentFactory(normalizedProviderId));
+                        : BuildProductionSubAgentOptionsAsync(
+                                () => agentFactory(normalizedProviderId),
+                                sandboxSession,
+                                sp.GetRequiredService<WorkspaceSubAgentLoader>(),
+                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
+                            .GetAwaiter()
+                            .GetResult();
 
                     var agent = new MultiTurnAgentLoop(
                         providerAgent,
@@ -1216,9 +1233,13 @@ public partial class Program
     ///     system prompt and turn budget. The CLI providers (codex/claude/copilot) have no
     ///     sub-agent hook and are out of scope, so this is only called from the middleware path.
     /// </summary>
-    private static SubAgentOptions BuildProductionSubAgentOptions(Func<IStreamingAgent> providerAgentFactory)
+    private static async Task<SubAgentOptions> BuildProductionSubAgentOptionsAsync(
+        Func<IStreamingAgent> providerAgentFactory,
+        SandboxSession? sandboxSession,
+        WorkspaceSubAgentLoader workspaceLoader,
+        Microsoft.Extensions.Logging.ILogger logger)
     {
-        var templates = new Dictionary<string, SubAgentTemplate>
+        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
         {
             ["general-purpose"] = new SubAgentTemplate
             {
@@ -1233,7 +1254,7 @@ public partial class Program
                     + "return a concise final answer that fully captures your findings — the parent only "
                     + "sees your final message, not your intermediate steps.",
                 AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = 25,
+                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
             },
             ["researcher"] = new SubAgentTemplate
             {
@@ -1247,9 +1268,23 @@ public partial class Program
                     + "tools available to you, cross-check what you find, and return a clear, well-structured "
                     + "summary. The parent only sees your final message, so make it self-contained.",
                 AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = 25,
+                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
             },
         };
+
+        // When a sandbox session is available, merge in any sub-agents the gateway has
+        // discovered in the workspace. Collision policy: BUILT-IN WINS — a discovered template
+        // cannot shadow one of the hardcoded entries above. Failures inside the loader are
+        // already logged and surfaced as an empty dictionary, so this call cannot throw and
+        // never aborts the agent-creation path.
+        if (sandboxSession is not null)
+        {
+            var discovered = await workspaceLoader
+                .LoadAsync(sandboxSession, providerAgentFactory)
+                .ConfigureAwait(false);
+
+            WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
+        }
 
         return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
     }

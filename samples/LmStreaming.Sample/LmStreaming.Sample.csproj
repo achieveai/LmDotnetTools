@@ -9,6 +9,8 @@
   <ItemGroup>
     <!-- Expose internal auth-provider helpers (authorize-URL / scope builders) to the E2E test project. -->
     <InternalsVisibleTo Include="LmStreaming.Sample.E2E.Tests" />
+    <!-- Expose internal sub-agent merge helper + loader internals to the unit test project. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Client" Version="4.84.1" />
@@ -21,6 +23,7 @@
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
   <PropertyGroup>
     <!-- Opt-in build of the Vue SPA during `dotnet build`. Disabled by default so everyday
