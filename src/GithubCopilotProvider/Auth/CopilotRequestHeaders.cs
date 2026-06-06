@@ -1,8 +1,8 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Produces the standard set of GitHub Copilot request headers (excluding <c>Authorization</c>)
-///     shared by the HTTP <see cref="AchieveAi.LmDotnetTools.LmCore.Http.CopilotHeadersHandler"/> and
+///     shared by the HTTP <see cref="AchieveAi.LmDotnetTools.GithubCopilotProvider.Http.CopilotHeadersHandler"/> and
 ///     the WebSocket transport, so both decorate requests identically.
 /// </summary>
 public static class CopilotRequestHeaders

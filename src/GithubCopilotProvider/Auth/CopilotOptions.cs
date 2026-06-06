@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Configuration for routing provider requests through the GitHub Copilot API

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
+    <ProjectReference Include="..\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
+    <PackageReference Include="System.Net.Http.Json" Version="9.0.5" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>AchieveAi.LmDotnetTools.GithubCopilotProvider</RootNamespace>
+    <PackageId>AchieveAi.LmDotnetTools.GithubCopilotProvider</PackageId>
+    <Description>GitHub Copilot provider for the LmDotnetTools library, routing Anthropic Messages and OpenAI Responses providers through the GitHub Copilot API (auth + HTTP/WebSocket transport).</Description>
+    <PackageTags>$(PackageTags);github;copilot;provider</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>

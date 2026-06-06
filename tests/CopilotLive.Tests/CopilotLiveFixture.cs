@@ -1,5 +1,5 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 namespace AchieveAi.LmDotnetTools.CopilotLive.Tests;
 
@@ -81,7 +81,7 @@ public sealed class CopilotLiveFixture
         var env = Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL");
         if (!string.IsNullOrWhiteSpace(env))
         {
-            return env!;
+            return env;
         }
 
         var models = await GetModelsAsync(cancellationToken).ConfigureAwait(false);
@@ -97,7 +97,7 @@ public sealed class CopilotLiveFixture
         var env = Environment.GetEnvironmentVariable("COPILOT_OPENAI_MODEL");
         if (!string.IsNullOrWhiteSpace(env))
         {
-            return env!;
+            return env;
         }
 
         var models = await GetModelsAsync(cancellationToken).ConfigureAwait(false);
@@ -145,7 +145,7 @@ public sealed class CopilotLiveFixture
                     var id = idEl.GetString();
                     if (!string.IsNullOrWhiteSpace(id))
                     {
-                        ids.Add(id!);
+                        ids.Add(id);
                     }
                 }
             }

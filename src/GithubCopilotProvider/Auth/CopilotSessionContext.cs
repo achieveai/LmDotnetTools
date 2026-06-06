@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Holds the client-tracking identifiers the GitHub Copilot backend correlates requests by.
@@ -14,7 +14,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Auth;
 ///     </para>
 ///     <para>
 ///     The per-request <c>x-interaction-id</c> is generated fresh on each request by
-///     <see cref="AchieveAi.LmDotnetTools.LmCore.Http.CopilotHeadersHandler"/> and is therefore not
+///     <see cref="AchieveAi.LmDotnetTools.GithubCopilotProvider.Http.CopilotHeadersHandler"/> and is therefore not
 ///     stored here.
 ///     </para>
 /// </remarks>
@@ -62,7 +62,8 @@ public sealed class CopilotSessionContext
             File.WriteAllText(path, generated);
             return generated;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             // If the machine id can't be persisted (read-only/sandboxed FS), fall back to an
             // ephemeral id so requests still carry a well-formed header.

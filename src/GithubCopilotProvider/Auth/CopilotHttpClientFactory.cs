@@ -1,7 +1,7 @@
-using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Http;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Builds <see cref="HttpClient"/> instances that route through the GitHub Copilot API by
@@ -35,7 +35,12 @@ public static class CopilotHttpClientFactory
         ArgumentNullException.ThrowIfNull(tokenProvider);
         ArgumentNullException.ThrowIfNull(session);
 
-        var handler = new CopilotHeadersHandler(tokenProvider, session, options, innerHandler ?? new HttpClientHandler());
+        var handler = new CopilotHeadersHandler(
+            tokenProvider,
+            session,
+            options,
+            innerHandler ?? new HttpClientHandler()
+        );
 
         return new HttpClient(handler)
         {

@@ -1,5 +1,5 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 namespace LmStreaming.Sample.Services;
 

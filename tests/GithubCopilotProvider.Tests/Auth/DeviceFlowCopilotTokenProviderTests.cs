@@ -1,10 +1,10 @@
 using System.Net;
 using System.Text;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Auth;
 
 public sealed class DeviceFlowCopilotTokenProviderTests
 {

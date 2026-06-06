@@ -1,7 +1,7 @@
-using AchieveAi.LmDotnetTools.LmCore.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Auth;
 
 public sealed class CompositeCopilotTokenProviderTests
 {

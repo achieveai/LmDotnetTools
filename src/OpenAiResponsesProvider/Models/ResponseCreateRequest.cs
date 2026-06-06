@@ -49,7 +49,7 @@ public sealed record ResponseCreateRequest
 
     /// <summary>
     ///     Reasoning configuration (e.g. <c>{ "effort": "high" }</c>). Used by reasoning-capable
-    ///     models surfaced through the Copilot Responses transport.
+    ///     models surfaced through the Responses transport.
     /// </summary>
     [JsonPropertyName("reasoning")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -63,8 +63,8 @@ public sealed record ResponseCreateRequest
     public ResponseTextOptions? Text { get; init; }
 
     /// <summary>
-    ///     Whether the server should persist response state. The Copilot CLI sends <c>false</c> and
-    ///     carries reasoning across turns via <c>include: ["reasoning.encrypted_content"]</c>.
+    ///     Whether the server should persist response state. Some clients send <c>false</c> and
+    ///     carry reasoning across turns via <c>include: ["reasoning.encrypted_content"]</c>.
     /// </summary>
     [JsonPropertyName("store")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

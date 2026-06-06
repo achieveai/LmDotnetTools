@@ -1,11 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
-using AchieveAi.LmDotnetTools.LmCore.Auth;
-using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Http;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Auth;
 
 public sealed class CopilotHeadersHandlerTests
 {
@@ -42,14 +42,21 @@ public sealed class CopilotHeadersHandlerTests
             inner
         );
 
-        return (new HttpClient(handler) { BaseAddress = new Uri("https://api.enterprise.githubcopilot.com") }, captured, tokens);
+        return (
+            new HttpClient(handler) { BaseAddress = new Uri("https://api.enterprise.githubcopilot.com") },
+            captured,
+            tokens
+        );
     }
 
     [Fact]
     public async Task Adds_auth_and_copilot_headers()
     {
         var (client, captured, tokens) = BuildClient(
-            new CopilotOptions { ExtraHeaders = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" } }
+            new CopilotOptions
+            {
+                ExtraHeaders = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" },
+            }
         );
 
         _ = await client.PostAsync("/v1/messages", new StringContent("{}"));
@@ -86,7 +93,10 @@ public sealed class CopilotHeadersHandlerTests
     public async Task Does_not_overwrite_a_header_the_caller_already_set()
     {
         var (client, captured, _) = BuildClient(
-            new CopilotOptions { ExtraHeaders = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" } }
+            new CopilotOptions
+            {
+                ExtraHeaders = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" },
+            }
         );
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")

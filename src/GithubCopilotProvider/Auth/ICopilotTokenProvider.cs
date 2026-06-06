@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Auth;
+namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 
 /// <summary>
 ///     Supplies the GitHub OAuth bearer token used to authenticate against the GitHub Copilot API.

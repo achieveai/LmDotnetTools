@@ -267,8 +267,8 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
                     break;
 
-                // Fallback / primary path for backends (e.g. GitHub Copilot) that rotate the
-                // per-event item_id so the delta-correlated path above can't match. The terminal
+                // Fallback / primary path for backends that rotate the per-event item_id so the
+                // delta-correlated path above can't match. The terminal
                 // output_item.done carries the complete function_call item (name, call_id, arguments),
                 // which is all we need. Deduped by call_id against the delta path.
                 case ResponseOutputItemEvent fnDone
