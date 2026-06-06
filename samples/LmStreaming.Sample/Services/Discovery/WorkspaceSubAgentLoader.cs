@@ -24,6 +24,14 @@ public sealed class WorkspaceSubAgentLoader
 {
     private const string SubAgentKind = "subagent";
 
+    /// <summary>
+    /// Per-spawn turn cap shared by every sample sub-agent template (built-in and discovered).
+    /// Centralised so the three call sites stay aligned and so a future bump is one edit, not
+    /// three drifting literals. Lower than <see cref="SubAgentTemplate"/>'s built-in default of
+    /// 50 because the sample's middleware path is single-provider and each turn is full-cost.
+    /// </summary>
+    internal const int DefaultMaxTurnsPerRun = 25;
+
     private readonly SandboxSessionRegistry _registry;
     private readonly ILogger<WorkspaceSubAgentLoader> _logger;
 
@@ -136,6 +144,36 @@ public sealed class WorkspaceSubAgentLoader
     }
 
     /// <summary>
+    /// Merges <paramref name="discovered"/> into <paramref name="builtIns"/> under built-in-wins
+    /// semantics: a discovered template whose key collides with an existing built-in entry is
+    /// skipped and logged. This pins a trust boundary — untrusted workspace markdown must NEVER
+    /// shadow a trusted hardcoded template — so any future change to the merge direction needs
+    /// the merge test to be updated explicitly.
+    /// </summary>
+    /// <param name="builtIns">The mutable built-in catalog. Receives discovered entries on no-collision.</param>
+    /// <param name="discovered">Discovered templates returned by <see cref="LoadAsync"/>.</param>
+    /// <param name="logger">Logger used to record collisions. Never null in production.</param>
+    internal static void MergeBuiltInWins(
+        IDictionary<string, SubAgentTemplate> builtIns,
+        IReadOnlyDictionary<string, SubAgentTemplate> discovered,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        ArgumentNullException.ThrowIfNull(builtIns);
+        ArgumentNullException.ThrowIfNull(discovered);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        foreach (var (key, template) in discovered)
+        {
+            if (!builtIns.TryAdd(key, template))
+            {
+                logger.LogWarning(
+                    "Discovered sub-agent {Name} collides with a built-in template; keeping the built-in",
+                    key);
+            }
+        }
+    }
+
+    /// <summary>
     /// Maps a parsed markdown sub-agent into a <see cref="SubAgentTemplate"/>. Internal-static so
     /// the unit tests can pin the mapping table without needing a registry instance.
     /// </summary>
@@ -151,7 +189,7 @@ public sealed class WorkspaceSubAgentLoader
     ///     parent's runtime defaults (matching the built-in templates' shape).</item>
     ///   <item><c>tools</c> → <see cref="SubAgentTemplate.EnabledTools"/>. Absent (null) means
     ///     inherit every parent tool; an empty list means deny all tools (distinct case).</item>
-    ///   <item><c>MaxTurnsPerRun = 25</c> to match the existing production templates.</item>
+    ///   <item><see cref="DefaultMaxTurnsPerRun"/> to match the existing production templates.</item>
     /// </list>
     /// </remarks>
     internal static SubAgentTemplate MapToTemplate(
@@ -171,7 +209,7 @@ public sealed class WorkspaceSubAgentLoader
             AgentFactory = agentFactory,
             DefaultOptions = defaults,
             EnabledTools = parsed.Tools,
-            MaxTurnsPerRun = 25,
+            MaxTurnsPerRun = DefaultMaxTurnsPerRun,
         };
     }
 

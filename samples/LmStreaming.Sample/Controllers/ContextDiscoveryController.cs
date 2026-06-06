@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json.Serialization;
 using LmStreaming.Sample.Services.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -32,7 +30,7 @@ public sealed class ContextDiscoveryController(
     [HttpPost("context_discovery")]
     public IActionResult Notify([FromBody] ContextDiscoveryPayload? body)
     {
-        if (!IsAuthorized())
+        if (!sharedSecret.Matches(Request.Headers.Authorization.ToString()))
         {
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized context-discovery webhook call.");
@@ -45,26 +43,17 @@ public sealed class ContextDiscoveryController(
             return BadRequest();
         }
 
+        // Description is logged alongside kind/name/path so the field carries diagnostic value
+        // in this iteration even though dynamic activation (the consumer that mutates the catalog
+        // from these events) is deferred to #77.
         logger.LogInformation(
-            "ContextDiscovery: kind={Kind} name={Name} path={Path}",
+            "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description}",
             body.Kind,
             body.Name,
-            body.Path);
+            body.Path,
+            body.Description);
 
         return Ok();
-    }
-
-    private bool IsAuthorized()
-    {
-        var presented = Request.Headers.Authorization.ToString();
-        if (string.IsNullOrEmpty(presented))
-        {
-            return false;
-        }
-
-        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
-        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(sharedSecret.Value));
-        return CryptographicOperations.FixedTimeEquals(presentedHash, expectedHash);
     }
 }
 

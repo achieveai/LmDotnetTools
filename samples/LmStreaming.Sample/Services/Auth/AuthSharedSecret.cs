@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 
 namespace LmStreaming.Sample.Services.Auth;
 
@@ -33,4 +34,23 @@ public sealed class AuthSharedSecret
     /// The resolved shared secret. SECRET — never log this value.
     /// </summary>
     public string Value { get; }
+
+    /// <summary>
+    /// Constant-time comparison of <paramref name="presented"/> against the shared secret. Both
+    /// sides are hashed to a fixed-width SHA-256 digest first, so the comparison neither throws
+    /// on a length mismatch nor leaks the secret's length via an early-exit. Returns false when
+    /// the presented value is null or empty (the "missing header" case).
+    /// </summary>
+    /// <param name="presented">The raw value from the inbound <c>Authorization</c> header.</param>
+    public bool Matches(string? presented)
+    {
+        if (string.IsNullOrEmpty(presented))
+        {
+            return false;
+        }
+
+        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
+        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(Value));
+        return CryptographicOperations.FixedTimeEquals(presentedHash, expectedHash);
+    }
 }

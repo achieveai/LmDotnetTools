@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
 using LmStreaming.Sample.Services.Auth;
@@ -39,7 +38,7 @@ public sealed class AuthWebhookController(
         [FromBody] AuthWebhookRequest body,
         CancellationToken ct = default)
     {
-        if (!IsAuthorized())
+        if (!sharedSecret.Matches(Request.Headers.Authorization.ToString()))
         {
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized auth-webhook call for provider {Provider}.", provider);
@@ -107,24 +106,6 @@ public sealed class AuthWebhookController(
                 body.DestinationHost);
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
         }
-    }
-
-    /// <summary>
-    /// Constant-time comparison of the incoming <c>Authorization</c> header against the shared secret.
-    /// Both sides are hashed to a fixed-width SHA-256 digest first, so the comparison neither throws
-    /// on a length mismatch nor leaks the secret's length via an early-exit.
-    /// </summary>
-    private bool IsAuthorized()
-    {
-        var presented = Request.Headers.Authorization.ToString();
-        if (string.IsNullOrEmpty(presented))
-        {
-            return false;
-        }
-
-        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
-        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(sharedSecret.Value));
-        return CryptographicOperations.FixedTimeEquals(presentedHash, expectedHash);
     }
 
     /// <summary>Resolves a registered provider by the route id, matching <see cref="IOAuthTokenProvider.ProviderId"/> case-insensitively.</summary>

@@ -104,7 +104,7 @@ public class WorkspaceSubAgentLoaderTests
 
         var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
 
-        template.MaxTurnsPerRun.Should().Be(25);
+        template.MaxTurnsPerRun.Should().Be(WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
     }
 
     [Fact]

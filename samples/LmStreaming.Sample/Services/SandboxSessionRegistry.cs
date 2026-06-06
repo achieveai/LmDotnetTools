@@ -282,9 +282,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var bodySnippet = TruncateBody(body);
+            // Log + throw, matching CreateSessionAsync's policy: the caller is expected to catch
+            // and degrade, but we still want a server-log breadcrumb correlating the failure with
+            // gateway logs by session id.
+            _logger.LogError(
+                "Sandbox discovered-items list failed for session {SessionId}: {StatusCode} {Body}",
+                sessionId,
+                (int)response.StatusCode,
+                bodySnippet
+            );
             throw new InvalidOperationException(
                 $"Sandbox gateway returned {(int)response.StatusCode} listing discovered items for "
-                    + $"session '{sessionId}': {body}"
+                    + $"session '{sessionId}': {bodySnippet}"
             );
         }
 
@@ -294,6 +304,18 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
         return payload?.Items ?? [];
     }
+
+    private const int ErrorBodyMaxLength = 500;
+
+    /// <summary>
+    /// Caps a gateway error body so a large HTML error page (e.g. a 502 from a reverse proxy) can
+    /// not blow up server logs or the exception message. Mirrors the doc-claim on
+    /// <see cref="ListDiscoveredAsync"/>.
+    /// </summary>
+    private static string TruncateBody(string body) =>
+        string.IsNullOrEmpty(body) || body.Length <= ErrorBodyMaxLength
+            ? body
+            : body[..ErrorBodyMaxLength] + "...(truncated)";
 
     private async Task DestroySessionAsync(SandboxSession session)
     {
@@ -356,7 +378,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     {
         var providers = new List<AuthProviderDto>();
         var rules = new List<NetworkRuleDto>();
-        var baseUrl = _authOptions.Webhook.PublicBaseUrl.TrimEnd('/');
+        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
 
         if (!string.IsNullOrWhiteSpace(_authOptions.Github.ClientId))
         {
@@ -423,7 +445,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// </summary>
     private DiscoveryDto BuildDiscovery()
     {
-        var baseUrl = _authOptions.Webhook.PublicBaseUrl.TrimEnd('/');
+        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
         return new DiscoveryDto(
             new DiscoveryWebhookDto(
                 Url: $"{baseUrl}/api/discovery/context_discovery",

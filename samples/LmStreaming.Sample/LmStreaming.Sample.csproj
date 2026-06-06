@@ -9,6 +9,8 @@
   <ItemGroup>
     <!-- Expose internal auth-provider helpers (authorize-URL / scope builders) to the E2E test project. -->
     <InternalsVisibleTo Include="LmStreaming.Sample.E2E.Tests" />
+    <!-- Expose internal sub-agent merge helper + loader internals to the unit test project. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Client" Version="4.84.1" />

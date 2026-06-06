@@ -69,4 +69,11 @@ public sealed class WebhookOptions
 
     /// <summary>Shared secret the gateway sends as Authorization when calling the webhook. When null, one is generated at startup.</summary>
     public string? GatewaySharedSecret { get; set; }
+
+    /// <summary>
+    /// Webhook public base URL with the trailing slash stripped — the canonical form callers
+    /// concatenate route segments to. Centralised so the gateway → app callback URLs all agree
+    /// even if a future operator misconfigures <see cref="PublicBaseUrl"/> with a trailing slash.
+    /// </summary>
+    public string CallbackBaseUrl => PublicBaseUrl.TrimEnd('/');
 }

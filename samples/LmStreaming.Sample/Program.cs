@@ -597,6 +597,11 @@ try
                     var isTestMode =
                         string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
+                    // Sync-over-async on the agent-creation factory delegate: there is no async
+                    // seam exposed by the pool's agent factory contract, and this runs on the
+                    // pool-creation path (no ASP.NET SynchronizationContext) so a .Result here
+                    // cannot deadlock. The blocking call is HTTP only when a sandbox session is
+                    // active; otherwise BuildProductionSubAgentOptionsAsync returns synchronously.
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
                             .CreateSubAgentOptions(loggerFactory, () => agentFactory(normalizedProviderId))
@@ -1249,7 +1254,7 @@ public partial class Program
                     + "return a concise final answer that fully captures your findings — the parent only "
                     + "sees your final message, not your intermediate steps.",
                 AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = 25,
+                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
             },
             ["researcher"] = new SubAgentTemplate
             {
@@ -1263,7 +1268,7 @@ public partial class Program
                     + "tools available to you, cross-check what you find, and return a clear, well-structured "
                     + "summary. The parent only sees your final message, so make it self-contained.",
                 AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = 25,
+                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
             },
         };
 
@@ -1278,15 +1283,7 @@ public partial class Program
                 .LoadAsync(sandboxSession, providerAgentFactory)
                 .ConfigureAwait(false);
 
-            foreach (var (key, template) in discovered)
-            {
-                if (!templates.TryAdd(key, template))
-                {
-                    logger.LogWarning(
-                        "Discovered sub-agent {Name} collides with a built-in template; keeping the built-in",
-                        key);
-                }
-            }
+            WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
         }
 
         return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
