@@ -1,9 +1,22 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Services;
+
+/// <summary>
+/// Per-session binding the context-discovery webhook needs to convert a discovered subagent into
+/// a live template: the catalog the loop reads (<see cref="Source"/>) plus the agent factory the
+/// template's spawn-time wiring will reuse (<see cref="AgentFactory"/>). The factory is provider-
+/// specific and only known at agent-creation time, so it must travel with the source rather than
+/// be re-derived inside the webhook handler.
+/// </summary>
+public sealed record SubAgentSessionBinding(
+    MutableSubAgentTemplateSource Source,
+    Func<IStreamingAgent> AgentFactory);
 
 /// <summary>
 /// A sandbox session created against the gateway and bound to a workspace directory.
@@ -46,6 +59,26 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     };
 
     private readonly ConcurrentDictionary<string, Lazy<Task<SandboxSession>>> _sessions = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per-session sub-agent binding (template source + agent factory) the loop uses to populate
+    /// the Agent tool's <c>subagent_type</c> enum and that the context-discovery webhook mutates
+    /// when the gateway reports a newly discovered subagent. Keyed by gateway session id (NOT
+    /// workspace id) so the webhook — which carries the session id, not the workspace id — can
+    /// look up the same instance the loop is reading from.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SubAgentSessionBinding> _subAgentBindings =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Reverse map from gateway session id to the <see cref="SandboxSession"/> it represents.
+    /// Populated by <see cref="CreateSessionAsync"/> after a session is created so the
+    /// context-discovery webhook (which only knows the session id) can resolve back to the
+    /// session's <c>HostPath</c> for path-containment checks.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SandboxSession> _sessionsById =
+        new(StringComparer.Ordinal);
+
     private readonly SandboxGatewayLifetime _gateway;
     private readonly SandboxGatewayOptions _options;
     private readonly ILogger<SandboxSessionRegistry> _logger;
@@ -222,6 +255,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var hostPath = StripLongPathPrefix(payload.Volumes?.Workspace?.ContainerPath ?? string.Empty);
         var session = new SandboxSession(workspaceId, payload.SessionId, workspaceRelPath, hostPath);
 
+        // Register the reverse session-id → session mapping so the context-discovery webhook can
+        // resolve back to the session. Last-write-wins is acceptable because session ids are
+        // gateway-allocated and unique per creation.
+        _sessionsById[session.SessionId] = session;
+
         _logger.LogInformation(
             "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
             session.SessionId,
@@ -257,6 +295,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         }
 
         _sessions.Clear();
+        _subAgentBindings.Clear();
+        _sessionsById.Clear();
         _httpClient.Dispose();
     }
 
@@ -303,6 +343,80 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             .ConfigureAwait(false);
 
         return payload?.Items ?? [];
+    }
+
+    /// <summary>
+    /// Returns the <see cref="SubAgentSessionBinding"/> for <paramref name="sessionId"/>, creating
+    /// one on first access — seeded with <paramref name="seed"/> and remembering
+    /// <paramref name="agentFactory"/> for the discovery webhook's spawn-time wiring. Subsequent
+    /// calls return the existing binding unchanged; the binding is single-instance per session for
+    /// the registry's lifetime so the loop and the discovery webhook always share state.
+    /// </summary>
+    /// <remarks>
+    /// The seed lets the pool factory plant the built-in templates as the initial entries before
+    /// the loop wires the source into <see cref="SubAgentToolProvider"/>/<see cref="SubAgentManager"/>.
+    /// </remarks>
+    public SubAgentSessionBinding GetOrAddSubAgentBinding(
+        string sessionId,
+        IReadOnlyDictionary<string, SubAgentTemplate> seed,
+        Func<IStreamingAgent> agentFactory)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(seed);
+        ArgumentNullException.ThrowIfNull(agentFactory);
+
+        var binding = _subAgentBindings.GetOrAdd(
+            sessionId,
+            _ => new SubAgentSessionBinding(new MutableSubAgentTemplateSource(seed), agentFactory));
+
+        // Reconcile the seed every call: a later pool factory invocation for the same session may
+        // present additional built-in templates that weren't present on the first call. TryRegister
+        // is first-wins, so previously seeded entries (and any discovered templates registered by
+        // the webhook in between) are preserved — the trust boundary holds.
+        foreach (var kvp in seed)
+        {
+            _ = binding.Source.TryRegister(kvp.Key, kvp.Value);
+        }
+
+        return binding;
+    }
+
+    /// <summary>
+    /// Tries to look up the sub-agent binding previously registered for <paramref name="sessionId"/>
+    /// via <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/>
+    /// set to null) when no binding exists — the discovery webhook treats that as a best-effort
+    /// no-op rather than an error, since the session may not have routed through the agent path
+    /// yet.
+    /// </summary>
+    public bool TryGetSubAgentBinding(string sessionId, out SubAgentSessionBinding? binding)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            binding = null;
+            return false;
+        }
+
+        return _subAgentBindings.TryGetValue(sessionId, out binding);
+    }
+
+    /// <summary>
+    /// Tries to look up a created <see cref="SandboxSession"/> by its gateway-allocated session id.
+    /// Returns false (with <paramref name="session"/> set to null) when no session has been created
+    /// with that id yet — discovery callbacks that race ahead of session creation are treated as
+    /// best-effort no-ops by the caller.
+    /// </summary>
+    public bool TryGetSessionById(string sessionId, out SandboxSession? session)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            session = null;
+            return false;
+        }
+
+        return _sessionsById.TryGetValue(sessionId, out session);
     }
 
     private const int ErrorBodyMaxLength = 500;

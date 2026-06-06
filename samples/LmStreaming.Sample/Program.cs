@@ -602,16 +602,33 @@ try
                     // pool-creation path (no ASP.NET SynchronizationContext) so a .Result here
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise BuildProductionSubAgentOptionsAsync returns synchronously.
+                    Func<IStreamingAgent> subAgentFactory = () => agentFactory(normalizedProviderId);
                     var subAgentOptions = isTestMode
                         ? sp.GetRequiredService<ITestAgentBuilder>()
-                            .CreateSubAgentOptions(loggerFactory, () => agentFactory(normalizedProviderId))
+                            .CreateSubAgentOptions(loggerFactory, subAgentFactory)
                         : BuildProductionSubAgentOptionsAsync(
-                                () => agentFactory(normalizedProviderId),
+                                subAgentFactory,
                                 sandboxSession,
                                 sp.GetRequiredService<WorkspaceSubAgentLoader>(),
                                 loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
                             .GetAwaiter()
                             .GetResult();
+
+                    // When a sandbox session is active, share the catalog with the session
+                    // registry so the context-discovery webhook can activate newly discovered
+                    // subagents into the same source the loop is reading. Without a session there
+                    // is no webhook path, so the loop falls back to wrapping the static templates
+                    // in a private source inside its ctor.
+                    MutableSubAgentTemplateSource? sharedSubAgentSource = null;
+                    if (sandboxSession is not null && subAgentOptions is not null)
+                    {
+                        var binding = sp.GetRequiredService<SandboxSessionRegistry>()
+                            .GetOrAddSubAgentBinding(
+                                sandboxSession.SessionId,
+                                subAgentOptions.Templates,
+                                subAgentFactory);
+                        sharedSubAgentSource = binding.Source;
+                    }
 
                     var agent = new MultiTurnAgentLoop(
                         providerAgent,
@@ -635,6 +652,7 @@ try
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
+                        subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory
                     );
 

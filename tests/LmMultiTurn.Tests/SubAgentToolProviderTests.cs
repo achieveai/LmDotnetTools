@@ -22,6 +22,7 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     private readonly Mock<IStreamingAgent> _subAgentMock = new();
     private SubAgentManager? _manager;
     private SubAgentToolProvider? _provider;
+    private MutableSubAgentTemplateSource? _source;
 
     public Task InitializeAsync()
     {
@@ -59,13 +60,16 @@ public class SubAgentToolProviderTests : IAsyncLifetime
             MaxConcurrentSubAgents = 5,
         };
 
+        _source = new MutableSubAgentTemplateSource(options.Templates);
+
         _manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
-            options: options);
+            options: options,
+            source: _source);
 
-        _provider = new SubAgentToolProvider(_manager, options.Templates);
+        _provider = new SubAgentToolProvider(_manager, _source);
 
         return Task.CompletedTask;
     }
@@ -196,6 +200,59 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*agent_id*required*");
+    }
+
+    [Fact]
+    public void GetFunctions_AfterTryRegister_ReflectsNewTemplate()
+    {
+        // Mid-session activation contract (#77): when the discovery webhook registers a new
+        // template into the shared source, the next GetFunctions() call must surface it in the
+        // Agent tool's catalog. The ToolCallInjectionMiddleware re-invokes the function-set
+        // factory each request, so this provider must NOT cache its descriptor list.
+        var beforeRegister = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent").Contract.Description!;
+        beforeRegister.Should().NotContain("reviewer");
+
+        _source!.TryRegister("reviewer", new SubAgentTemplate
+        {
+            Name = "reviewer",
+            SystemPrompt = "You are a reviewer.",
+            Description = "Reviews pull requests for correctness.",
+            WhenToUse = "Use after coder completes a change.",
+            AgentFactory = () => _subAgentMock.Object,
+        }).Should().BeTrue();
+
+        var afterRegister = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent").Contract.Description!;
+        afterRegister.Should().Contain("reviewer");
+        afterRegister.Should().Contain("Reviews pull requests for correctness.");
+        afterRegister.Should().Contain("Use after coder completes a change.");
+    }
+
+    [Fact]
+    public void AgentDescriptor_SubagentTypeEnumList_IncludesNewlyRegistered()
+    {
+        // The subagent_type parameter description carries a comma-separated enum list of
+        // available template keys; this must also reflect a TryRegister-added template so the
+        // parent LLM knows it can pick the new type.
+        _source!.TryRegister("reviewer", new SubAgentTemplate
+        {
+            Name = "reviewer",
+            SystemPrompt = "You are a reviewer.",
+            Description = "Reviews PRs.",
+            WhenToUse = "After coder.",
+            AgentFactory = () => _subAgentMock.Object,
+        });
+
+        var subagentTypeDesc = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent")
+            .Contract.Parameters!
+            .First(p => p.Name == "subagent_type")
+            .Description!;
+
+        subagentTypeDesc.Should().Contain("researcher");
+        subagentTypeDesc.Should().Contain("coder");
+        subagentTypeDesc.Should().Contain("reviewer");
     }
 
     private ToolHandler GetHandler(string name)

@@ -65,6 +65,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <param name="store">Optional persistence store for conversation state</param>
     /// <param name="logger">Optional logger</param>
     /// <param name="subAgentOptions">Optional sub-agent orchestration configuration</param>
+    /// <param name="subAgentTemplateSource">
+    ///     Optional mutable template catalog shared with an outer owner (e.g. a sandbox
+    ///     session registry that activates discovered subagents mid-session). When null
+    ///     and <paramref name="subAgentOptions"/> is provided, the loop wraps
+    ///     <c>subAgentOptions.Templates</c> in a fresh, private source.
+    /// </param>
     /// <param name="loggerFactory">
     ///     Optional logger factory used to give the internal message pipeline middlewares
     ///     (MessageTransformation, MessageUpdateJoiner) their own category loggers so their
@@ -82,6 +88,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<MultiTurnAgentLoop>? logger = null,
         SubAgentOptions? subAgentOptions = null,
+        MutableSubAgentTemplateSource? subAgentTemplateSource = null,
         ILoggerFactory? loggerFactory = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
@@ -97,16 +104,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers) = functionRegistry.Build();
 
+            // Use the caller-supplied source when present (so an outer owner — typically
+            // a sandbox session registry — can activate discovered subagents mid-session
+            // by calling TryRegister on it). Otherwise wrap the static template dictionary
+            // in a fresh source so behavior matches the previous immutable contract.
+            var source = subAgentTemplateSource
+                ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
+
             _subAgentManager = new SubAgentManager(
                 parentAgent: this,
                 parentContracts: [.. contracts],
                 parentHandlers: handlers,
                 options: subAgentOptions,
+                source: source,
                 logger: logger);
 
             var toolProvider = new SubAgentToolProvider(
                 _subAgentManager,
-                subAgentOptions.Templates);
+                source);
 
             _ = functionRegistry.AddProvider(toolProvider);
         }
