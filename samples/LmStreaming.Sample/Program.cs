@@ -155,23 +155,28 @@ try
         builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
     _ = builder.Services.AddSingleton(authOptions);
     _ = builder.Services.AddSingleton<AuthSharedSecret>();
-    var oauthTokenDir = Path.Combine(AppContext.BaseDirectory, "oauth-tokens");
+    var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
+        ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
+        : authOptions.TokenStoreDir;
     _ = builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubDeviceFlowProvider(
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubOAuthProvider(
         authOptions.Github,
         sp.GetRequiredService<IOAuthTokenStore>(),
         new HttpClient(),
-        sp.GetRequiredService<ILogger<GitHubDeviceFlowProvider>>()
+        sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoDeviceFlowProvider(
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoOAuthProvider(
         authOptions.Ado,
-        sp.GetRequiredService<IOAuthTokenStore>(),
-        new HttpClient(),
-        sp.GetRequiredService<ILogger<AdoDeviceFlowProvider>>()
+        Path.Combine(oauthTokenDir, "msal-ado.bin"),
+        sp.GetRequiredService<ILogger<AdoOAuthProvider>>()
     ));
+
+    // Restore persisted sign-in state at startup so the status API/UI reflects a prior run's sign-in
+    // (token injection always reads the store directly, but the surfaced status was in-memory only).
+    _ = builder.Services.AddHostedService<OAuthTokenHydrator>();
 
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
@@ -525,6 +530,29 @@ try
                     {
                         ownedResources = [.. sandboxClients.Cast<IAsyncDisposable>()];
                     }
+                    else
+                    {
+                        // The sandbox MCP endpoint is unreachable. Booting anyway is intentional
+                        // (best-effort demo), but the workspace suffix added above claims file/shell
+                        // tools that this agent does not have — rebuild the prompt from the original
+                        // mode with an honest degraded-mode notice instead, so the model tells the
+                        // user rather than hallucinating tool calls.
+                        effectiveMode = mode with
+                        {
+                            SystemPrompt = mode.SystemPrompt
+                                + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
+                                + "could not be reached), so NO file or shell tools exist in this conversation. "
+                                + "Do not claim or attempt to use them. Tell the user the workspace is offline and "
+                                + "that restarting the app (or the sandbox gateway) should restore it.",
+                        };
+                        loggerFactory
+                            .CreateLogger<Program>()
+                            .LogWarning(
+                                "Workspace Agent mode is running WITHOUT sandbox tools for thread {ThreadId}; "
+                                    + "the system prompt now reports degraded mode instead of claiming tools",
+                                threadId
+                            );
+                    }
                 }
 
                 try
@@ -569,6 +597,12 @@ try
                         defaultOptions: new GenerateReplyOptions
                         {
                             ModelId = modelId,
+                            // Output-token ceiling. The provider default is 4096; with extended thinking
+                            // enabled (2048-token budget, set above) that left only ~2K for the answer, so
+                            // a large structured reply could exhaust the budget while still thinking and
+                            // emit no text at all (stop_reason=max_tokens). 8192 leaves ~6K for the answer
+                            // after the 2K thinking budget.
+                            MaxToken = 8192,
                             BuiltInTools = filteredBuiltInTools,
                             RequestResponseDumpFileName = requestResponseDumpFileName,
                             PromptCaching = PromptCachingMode.Auto,

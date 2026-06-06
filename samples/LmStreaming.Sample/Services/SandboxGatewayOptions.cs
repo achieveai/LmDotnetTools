@@ -30,6 +30,40 @@ public sealed class SandboxGatewayOptions
     public string? WorkspaceBasePath { get; set; }
 
     /// <summary>
+    /// Optional ABSOLUTE path to the workspace directory. When set, it takes precedence over
+    /// <see cref="WorkspaceBasePath"/> + <see cref="Workspace"/>: the app spawns the gateway with
+    /// this path's parent as <c>WORKSPACE_BASE_PATH</c>, uses the final folder name as the session
+    /// workspace, and creates the directory if it doesn't exist. This is the simplest way to point
+    /// the sandbox at ANY folder (e.g. an existing repo) at startup without splitting it into
+    /// base + leaf yourself. Only honored when the app SPAWNS the gateway — a pre-running/adopted
+    /// gateway keeps its own <c>WORKSPACE_BASE_PATH</c>.
+    /// </summary>
+    public string? WorkspacePath { get; set; }
+
+    /// <summary>
+    /// Resolves the workspace into its three forms in a single pass: the gateway base directory
+    /// (<c>WORKSPACE_BASE_PATH</c>), the session workspace leaf, and the absolute host path.
+    /// When <see cref="WorkspacePath"/> is set it wins — its parent becomes the base and its final
+    /// folder the leaf; otherwise <see cref="WorkspaceBasePath"/> + <see cref="Workspace"/> are used.
+    /// <c>FullPath</c> is <c>null</c> when no workspace is configured, so callers skip directory
+    /// creation. A relative <see cref="WorkspacePath"/> is made absolute against the current directory
+    /// by <see cref="Path.GetFullPath(string)"/>.
+    /// </summary>
+    public (string? BasePath, string? Leaf, string? FullPath) ResolveWorkspace()
+    {
+        if (!string.IsNullOrWhiteSpace(WorkspacePath))
+        {
+            var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(WorkspacePath));
+            return (Path.GetDirectoryName(fullPath), Path.GetFileName(fullPath), fullPath);
+        }
+
+        var combined = !string.IsNullOrWhiteSpace(WorkspaceBasePath) && !string.IsNullOrWhiteSpace(Workspace)
+            ? Path.Combine(WorkspaceBasePath, Workspace)
+            : null;
+        return (WorkspaceBasePath, Workspace, combined);
+    }
+
+    /// <summary>
     /// App id sent in the sandbox-create request.
     /// </summary>
     public string AppId { get; set; } = "lmstreaming-sample";
@@ -56,4 +90,39 @@ public sealed class SandboxGatewayOptions
     /// <c>';'</c>-separated values on Windows).
     /// </summary>
     public string? SkillsDir { get; set; }
+
+    /// <summary>
+    /// Claude-plugin marketplace directories to load, as one or more comma-separated
+    /// <c>alias=path</c> entries (e.g. <c>"claude_plugins=B:\sources\claude_plugins"</c>).
+    /// Becomes <c>PLUGINS_DIRS</c> when the gateway is spawned. Each directory may hold a
+    /// <c>.claude-plugin/marketplace.json</c> catalog (or be scanned for plugin subdirectories
+    /// containing <c>.claude-plugin/plugin.json</c>, <c>.mcp.json</c>, <c>SKILL.md</c>, or a
+    /// <c>skills/</c> subdir); the gateway surfaces each plugin's skills and <c>.mcp.json</c>
+    /// MCP servers to the sandbox.
+    /// </summary>
+    public string? PluginsDirs { get; set; }
+
+    /// <summary>
+    /// Absolute path to <c>egress-proxy.exe</c>. When this and <see cref="CaCertPath"/>/<see cref="CaKeyPath"/>
+    /// are set, the app adopt-or-spawns the egress proxy so sandbox outbound traffic is policy-enforced and
+    /// OAuth tokens can be injected (the auth-webhook path). Without it, the gateway tells sandboxes to use a
+    /// proxy that isn't running, so external API calls (GitHub/ADO) fail to connect.
+    /// </summary>
+    public string? EgressProxyExePath { get; set; }
+
+    /// <summary>
+    /// <c>host:port</c> the egress proxy listens on (also the gateway's <c>EGRESS_PROXY_URL</c>).
+    /// Defaults to the value the gateway expects on the local backend.
+    /// </summary>
+    public string EgressProxyListen { get; set; } = "127.0.0.1:8090";
+
+    /// <summary>
+    /// Host path to the MITM CA certificate the egress proxy presents (becomes the proxy's
+    /// <c>CA_CERT_PATH</c> and the gateway's <c>CA_CERT_HOST_PATH</c>, which it exports to sandboxes as
+    /// <c>CURL_CA_BUNDLE</c>/<c>SSL_CERT_FILE</c>).
+    /// </summary>
+    public string? CaCertPath { get; set; }
+
+    /// <summary>Host path to the MITM CA private key (the egress proxy's <c>CA_KEY_PATH</c>).</summary>
+    public string? CaKeyPath { get; set; }
 }

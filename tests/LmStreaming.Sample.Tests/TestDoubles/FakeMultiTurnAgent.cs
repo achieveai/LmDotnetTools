@@ -27,7 +27,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 
-#pragma warning disable CS1998 // Async method lacks 'await' - intentional stub using yield break
+#pragma warning disable CS1998, IDE0391 // Async iterator lacks 'await' - intentional empty stub using yield break
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
@@ -43,7 +43,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         _ = ct;
         yield break;
     }
-#pragma warning restore CS1998
+#pragma warning restore CS1998, IDE0391
 
     public Task RunAsync(CancellationToken ct = default)
     {

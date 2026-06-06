@@ -27,7 +27,10 @@ namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 /// </remarks>
 public sealed class SandboxGatewayPrerequisites
 {
-    private const string DefaultBaseUrl = "http://localhost:3000";
+    // Use the loopback IPv4 literal, not "localhost": the gateway binds 127.0.0.1, and "localhost"
+    // resolves to ::1 first on Windows, where a short health-probe timeout elapses before the IPv4
+    // fallback is tried — making an available gateway look absent. Override with SANDBOX_GATEWAY_URL.
+    private const string DefaultBaseUrl = "http://127.0.0.1:3000";
 
     private SandboxGatewayPrerequisites(
         bool available,

@@ -125,4 +125,114 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         reason.Should().NotBeNullOrEmpty();
         LogTestEnd();
     }
+
+    [Fact]
+    public async Task Correct_secret_and_signed_in_returns_200_allow_with_injected_bearer()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        using var client = factory.CreateClient();
+
+        // Simulate a persisted sign-in (as if from a previous run / restart): seed the github token
+        // store the same singleton the provider reads. GetAccessTokenAsync then returns this token.
+        await factory.Services.GetRequiredService<IOAuthTokenStore>().SaveAsync(new OAuthTokenRecord(
+            Provider: "github",
+            Account: "octocat",
+            RefreshToken: string.Empty,
+            AccessToken: "injected-token-xyz",
+            AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+            Scopes: ["repo", "read:org"]));
+        Logger.LogInformation("Seeded a valid github token in the store (value not logged) to exercise the allow path");
+
+        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
+        {
+            Content = JsonBody(),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+
+        Logger.LogInformation("POST /api/auth/webhook/github with CORRECT shared secret, signed in (expect 200 allow + Bearer)");
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        doc.RootElement.GetProperty("decision").GetString().Should().Be("allow");
+
+        // The gateway gets exactly one header pair: Authorization: Bearer <token>.
+        var headers = doc.RootElement.GetProperty("headers");
+        headers.GetArrayLength().Should().Be(1);
+        var pair = headers[0];
+        pair[0].GetString().Should().Be("Authorization");
+        pair[1].GetString().Should().Be("Bearer injected-token-xyz");
+
+        // The injected header must carry the token's real expiry so the gateway re-calls on lapse.
+        doc.RootElement.TryGetProperty("expires_at", out var expiresAt).Should().BeTrue();
+        expiresAt.GetDateTimeOffset().Should().BeAfter(DateTimeOffset.UtcNow.AddDays(1));
+
+        // Clean up so a sibling test in the same process starts from a known (signed-out) state.
+        await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
+        LogTestEnd();
+    }
+
+    [Fact]
+    public async Task GitHub_git_host_returns_200_allow_with_injected_basic_x_access_token()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        using var client = factory.CreateClient();
+
+        // Seed a valid github token, then hit the GIT smart-HTTP host (github.com) rather than the
+        // REST API host. GitHub's git endpoint rejects `Bearer` with 401, so the webhook must inject
+        // HTTP Basic with username `x-access-token` and the token as the password.
+        await factory.Services.GetRequiredService<IOAuthTokenStore>().SaveAsync(new OAuthTokenRecord(
+            Provider: "github",
+            Account: "octocat",
+            RefreshToken: string.Empty,
+            AccessToken: "injected-token-xyz",
+            AccessTokenExpiresAtUtc: DateTimeOffset.UtcNow.AddYears(1),
+            Scopes: ["repo", "read:org"]));
+
+        const string gitBody = """
+            {
+              "session_id": "s-test",
+              "app_id": "lmstreaming-sample",
+              "provider_id": "github",
+              "rule_id": "github",
+              "destination_host": "github.com",
+              "destination_port": 443,
+              "method": "GET",
+              "path": "/achieveai/LmDotnetTools.git/info/refs",
+              "required_scopes": []
+            }
+            """;
+
+        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
+        {
+            Content = new StringContent(gitBody, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+
+        Logger.LogInformation("POST /api/auth/webhook/github for git host github.com (expect 200 allow + Basic x-access-token)");
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        doc.RootElement.GetProperty("decision").GetString().Should().Be("allow");
+
+        var headers = doc.RootElement.GetProperty("headers");
+        headers.GetArrayLength().Should().Be(1);
+        var pair = headers[0];
+        pair[0].GetString().Should().Be("Authorization");
+
+        var expectedBasic = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:injected-token-xyz"));
+        pair[1].GetString().Should().Be(expectedBasic);
+
+        await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
+        LogTestEnd();
+    }
 }

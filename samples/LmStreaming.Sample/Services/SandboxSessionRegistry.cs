@@ -144,7 +144,24 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         // first point at which Workspace Agent mode actually requires a healthy gateway.
         await _gateway.EnsureReadyAsync(ct).ConfigureAwait(false);
 
-        var workspaceRelPath = _options.Workspace ?? string.Empty;
+        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace();
+        var workspaceRelPath = workspaceLeaf ?? string.Empty;
+
+        // Ensure the workspace directory exists before the gateway mounts it — the gateway rejects a
+        // leaf that doesn't exist under WORKSPACE_BASE_PATH. Idempotent with the spawn-time creation;
+        // this also covers the adopt-an-existing-gateway path (no spawn ran).
+        if (!string.IsNullOrWhiteSpace(workspaceFullPath))
+        {
+            try
+            {
+                _ = Directory.CreateDirectory(workspaceFullPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not create workspace directory '{WorkspacePath}'", workspaceFullPath);
+            }
+        }
+
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var request = new CreateSandboxRequest(
@@ -320,7 +337,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 new NetworkRuleDto(
                     Id: "github",
                     Action: "allow",
-                    Hosts: ["github.com", "api.github.com", "codeload.github.com"],
+                    Hosts: OAuthProviderHosts.For("github"),
                     Ports: [443],
                     Methods: [],
                     Paths: [],
@@ -347,7 +364,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 new NetworkRuleDto(
                     Id: "ado",
                     Action: "allow",
-                    Hosts: ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
+                    Hosts: OAuthProviderHosts.For("ado"),
                     Ports: [443],
                     Methods: [],
                     Paths: [],

@@ -13,9 +13,10 @@ namespace LmStreaming.Sample.Controllers;
 /// </summary>
 /// <remarks>
 /// SECURITY: callers are authenticated by a shared secret carried in the <c>Authorization</c>
-/// header, compared in constant time. This controller never logs the token, the incoming
-/// Authorization header value, or the shared secret — only provider id, destination host, and the
-/// allow/deny decision.
+/// header, compared in constant time, and tokens are only injected toward the provider's own
+/// destination hosts (<see cref="OAuthProviderHosts"/> — the same lists the sandbox network rules
+/// are built from). This controller never logs the token, the incoming Authorization header value,
+/// or the shared secret — only provider id, destination host, and the allow/deny decision.
 /// </remarks>
 [ApiController]
 [Route("api/auth/webhook")]
@@ -57,6 +58,18 @@ public sealed class AuthWebhookController(
             return Ok(AuthWebhookResponse.Deny("unknown provider"));
         }
 
+        // Defense-in-depth: the egress proxy already validates the destination per its rules, but a
+        // rules misconfiguration must not turn this endpoint into an open token-minting oracle —
+        // only inject the provider's token toward that provider's own hosts.
+        if (!OAuthProviderHosts.IsAllowed(tokenProvider.ProviderId, body.DestinationHost))
+        {
+            logger.LogWarning(
+                "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+            return Ok(AuthWebhookResponse.Deny($"destination host not allowed for provider '{tokenProvider.ProviderId}'"));
+        }
+
         try
         {
             var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
@@ -64,7 +77,7 @@ public sealed class AuthWebhookController(
                 "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
-            return Ok(AuthWebhookResponse.Allow(token));
+            return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, token));
         }
         catch (InvalidOperationException ex)
         {
@@ -76,6 +89,23 @@ public sealed class AuthWebhookController(
                 tokenProvider.ProviderId,
                 body.DestinationHost);
             return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The gateway aborted the call — nobody is waiting for a decision.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Any other failure (token-store IO, refresh HTTP call, MSAL, JSON parsing) must still
+            // honor the always-200 allow/deny contract: an unhandled 500 surfaces gateway-side as an
+            // opaque webhook failure instead of a clean deny. Reason stays generic and token-free.
+            logger.LogWarning(
+                ex,
+                "Auth-webhook unexpected failure for provider {ProviderId} (host {DestinationHost}); denying.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+            return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
         }
     }
 
@@ -160,13 +190,41 @@ public sealed record AuthWebhookResponse
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
 
-    /// <summary>Builds an allow decision injecting the bearer token and the token's real expiry.</summary>
-    internal static AuthWebhookResponse Allow(OAuthAccessToken token) => new()
+    /// <summary>
+    /// Builds an allow decision injecting a host-appropriate Authorization header and the token's real
+    /// expiry. Most endpoints take <c>Bearer</c>, but GitHub's git-over-HTTPS endpoint
+    /// (<c>github.com</c>) rejects Bearer with 401 and requires HTTP Basic — so git operations get
+    /// <c>Basic base64("x-access-token:&lt;token&gt;")</c> instead. See <see cref="BuildAuthorizationHeaderValue"/>.
+    /// </summary>
+    internal static AuthWebhookResponse Allow(string providerId, string? destinationHost, OAuthAccessToken token) => new()
     {
         Decision = "allow",
-        Headers = [["Authorization", $"Bearer {token.Value}"]],
+        Headers = [["Authorization", BuildAuthorizationHeaderValue(providerId, destinationHost, token)]],
         ExpiresAt = token.ExpiresAtUtc,
     };
+
+    /// <summary>
+    /// Selects the Authorization scheme for the destination. GitHub's REST API (<c>api.github.com</c>)
+    /// and archive host (<c>codeload.github.com</c>) accept <c>Bearer</c>, but its Git smart-HTTP
+    /// endpoint (<c>github.com</c>, used by <c>git clone/fetch/push</c>) only accepts HTTP Basic auth
+    /// with username <c>x-access-token</c> and the token as the password. Everything else (the GitHub
+    /// REST API, Azure DevOps, …) keeps <c>Bearer</c>.
+    /// </summary>
+    internal static string BuildAuthorizationHeaderValue(string providerId, string? destinationHost, OAuthAccessToken token)
+    {
+        if (IsGitHubGitHost(providerId, destinationHost))
+        {
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"x-access-token:{token.Value}"));
+            return $"Basic {basic}";
+        }
+
+        return $"Bearer {token.Value}";
+    }
+
+    /// <summary>True only for the GitHub provider's Git smart-HTTP host (<c>github.com</c>), which needs Basic auth.</summary>
+    private static bool IsGitHubGitHost(string providerId, string? destinationHost) =>
+        string.Equals(providerId, "github", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(destinationHost, "github.com", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Builds a deny decision carrying a (token-free) reason.</summary>
     internal static AuthWebhookResponse Deny(string reason) => new()
