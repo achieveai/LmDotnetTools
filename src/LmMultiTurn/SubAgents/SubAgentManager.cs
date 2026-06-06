@@ -672,7 +672,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Fault the synchronous waiter (if any); a background spawn observes
             // this fault via ObserveCompletionFaults so it is never unobserved.
-            _ = state.Completion.TrySetException(
+            _ = state.TryCompleteWithException(
                 new SubAgentExecutionException(
                     state.AgentId, state.TemplateName, rcm.ErrorMessage));
 
@@ -694,7 +694,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 $"Result: {result}\n" +
                 $"</sub-agent>";
 
-            _ = state.Completion.TrySetResult(result);
+            _ = state.TryCompleteWithResult(result);
 
             if (state.NotifyParentOnCompletion)
             {
@@ -720,6 +720,9 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Awaits a synchronous sub-agent run's completion. If the parent abandons the wait
     /// (its cancellation token fires), the sub-agent is cancelled too so it stops promptly
     /// and frees its concurrency slot instead of running on, orphaned.
+    /// The wait has no independent timeout ceiling: it is bounded only by the caller's
+    /// <paramref name="ct"/> (the parent turn's lifetime), while runaway sub-agent runs are
+    /// independently bounded by the template's MaxTurnsPerRun.
     /// </summary>
     private static async Task<string> AwaitCompletionAsync(SubAgentState state, CancellationToken ct)
     {

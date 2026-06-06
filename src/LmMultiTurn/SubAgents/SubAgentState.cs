@@ -48,7 +48,8 @@ internal class SubAgentState
     /// parent as an injected user message. When false (synchronous call), the tool
     /// handler awaiting <see cref="Completion"/> returns the result directly instead.
     /// </summary>
-    public bool NotifyParentOnCompletion { get; set; }
+    private volatile bool _notifyParentOnCompletion;
+    public bool NotifyParentOnCompletion { get => _notifyParentOnCompletion; set => _notifyParentOnCompletion = value; }
 
     public Task? RunTask { get; set; }
     public Task? MonitorTask { get; set; }
@@ -85,15 +86,48 @@ internal class SubAgentState
     public TaskCompletionSource<string> Completion { get; private set; } = CreateCompletionSource();
 
     /// <summary>
+    /// Guards the read-check-replace of <see cref="Completion"/> against the monitor
+    /// thread resolving the same source, so reset and resolution never race.
+    /// </summary>
+    private readonly object _completionLock = new();
+
+    /// <summary>
     /// Replaces an already-resolved completion with a fresh one so a follow-up
     /// run (SendMessage continuation) can be awaited. A pending (unresolved)
     /// completion is kept — existing waiters observe the next resolution.
     /// </summary>
     public void ResetCompletionIfFinished()
     {
-        if (Completion.Task.IsCompleted)
+        lock (_completionLock)
         {
-            Completion = CreateCompletionSource();
+            if (Completion.Task.IsCompleted)
+            {
+                Completion = CreateCompletionSource();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves the current completion with a successful result under the completion
+    /// lock, so it cannot race a concurrent <see cref="ResetCompletionIfFinished"/>.
+    /// </summary>
+    public bool TryCompleteWithResult(string result)
+    {
+        lock (_completionLock)
+        {
+            return Completion.TrySetResult(result);
+        }
+    }
+
+    /// <summary>
+    /// Faults the current completion under the completion lock, so it cannot race a
+    /// concurrent <see cref="ResetCompletionIfFinished"/>.
+    /// </summary>
+    public bool TryCompleteWithException(Exception exception)
+    {
+        lock (_completionLock)
+        {
+            return Completion.TrySetException(exception);
         }
     }
 
