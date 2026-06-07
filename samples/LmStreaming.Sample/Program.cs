@@ -1374,8 +1374,11 @@ public partial class Program
         IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> items;
         try
         {
+            // Bound this sync-over-async gateway GET so a slow/unresponsive gateway can't park a
+            // thread-pool thread for the HttpClient default (100s) on every agent creation.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             items = sandboxRegistry
-                .ListDiscoveredAsync(sandboxSession.SessionId)
+                .ListDiscoveredAsync(sandboxSession.SessionId, cts.Token)
                 .GetAwaiter()
                 .GetResult();
         }

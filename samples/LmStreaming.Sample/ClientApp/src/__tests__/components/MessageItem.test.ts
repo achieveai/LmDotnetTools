@@ -150,6 +150,53 @@ describe('MessageItem.vue', () => {
     expect(wrapper.find('.user-avatar').exists()).toBe(true);
   });
 
+  it('should render compact context pill for sandbox context-discovery messages', () => {
+    const contextMessage: TextMessage = {
+      $type: MessageType.Text,
+      role: 'user',
+      text: '<context-discovery path="CLAUDE.md">…body…</context-discovery>',
+      context_discovery: { path: 'CLAUDE.md' },
+    };
+    const wrapper = mount(MessageItem, {
+      props: { message: createChatMessage(contextMessage, 'user') },
+    });
+
+    const pill = wrapper.find('[data-testid="context-pill"]');
+    expect(pill.exists()).toBe(true);
+    expect(pill.text()).toContain('CLAUDE.md');
+    // Body must NOT be dumped into the conversation as a plain text bubble.
+    expect(wrapper.find('.markdown-content').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="context-pill-truncated"]').exists()).toBe(false);
+  });
+
+  it('should mark truncated context pill with the truncated badge', () => {
+    const contextMessage: TextMessage = {
+      $type: MessageType.Text,
+      role: 'user',
+      text: '<context-discovery path="AGENTS.md" truncated="true">…</context-discovery>',
+      context_discovery: { path: 'AGENTS.md', truncated: true },
+    };
+    const wrapper = mount(MessageItem, {
+      props: { message: createChatMessage(contextMessage, 'user') },
+    });
+
+    expect(wrapper.find('[data-testid="context-pill-truncated"]').exists()).toBe(true);
+  });
+
+  it('should render plain TextMessage when context_discovery marker is absent', () => {
+    const plain: TextMessage = {
+      $type: MessageType.Text,
+      role: 'user',
+      text: 'just a plain user message',
+    };
+    const wrapper = mount(MessageItem, {
+      props: { message: createChatMessage(plain, 'user') },
+    });
+
+    expect(wrapper.find('[data-testid="context-pill"]').exists()).toBe(false);
+    expect(wrapper.find('.text-message').exists()).toBe(true);
+  });
+
   it('should render unknown message types with JSON fallback', () => {
     // Create a message with an unknown type
     const unknownContent = {
