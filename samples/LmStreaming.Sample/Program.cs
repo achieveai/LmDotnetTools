@@ -185,6 +185,14 @@ try
     ));
     _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
 
+    _ = builder.Services.AddSingleton(sp => new M365OAuthProvider(
+        authOptions.M365,
+        authOptions.Webhook.CallbackBaseUrl,
+        Path.Combine(oauthTokenDir, "msal-m365.bin"),
+        sp.GetRequiredService<ILogger<M365OAuthProvider>>()
+    ));
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<M365OAuthProvider>());
+
     // Restore persisted sign-in state at startup so the status API/UI reflects a prior run's sign-in
     // (token injection always reads the store directly, but the surfaced status was in-memory only).
     _ = builder.Services.AddHostedService<OAuthTokenHydrator>();

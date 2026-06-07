@@ -15,6 +15,9 @@ public sealed class AuthOptions
     /// <summary>Azure DevOps (Entra/MSAL) interactive sign-in settings.</summary>
     public AdoAuthOptions Ado { get; set; } = new();
 
+    /// <summary>Microsoft 365 (Entra/MSAL confidential-client) interactive sign-in settings.</summary>
+    public M365AuthOptions M365 { get; set; } = new();
+
     /// <summary>Gateway↔webhook callback settings.</summary>
     public WebhookOptions Webhook { get; set; } = new();
 
@@ -59,6 +62,47 @@ public sealed class AdoAuthOptions
     /// MSAL manages refresh itself and the provider strips reserved scopes before calling MSAL.
     /// </summary>
     public string[] Scopes { get; set; } = ["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access"];
+}
+
+/// <summary>
+/// Microsoft 365 (Entra) OAuth settings — confidential web client with auth-code + PKCE.
+/// The client secret is REQUIRED and must NEVER be committed; supply it via user-secrets / env
+/// (e.g. <c>Auth__M365__ClientSecret</c>).
+/// </summary>
+public sealed class M365AuthOptions
+{
+    /// <summary>Entra app (confidential client) id. When null/empty, M365 auth is disabled.</summary>
+    public string? ClientId { get; set; }
+
+    /// <summary>
+    /// Entra app client secret. REQUIRED to enable M365 sign-in; supply via user-secrets / env only,
+    /// NEVER in committed appsettings. When null/empty, M365 sign-in is disabled.
+    /// </summary>
+    public string? ClientSecret { get; set; }
+
+    /// <summary>
+    /// Entra tenant id (or "common"/"organizations"). The configured app registration is
+    /// multi-tenant; tenant-pin by default so token caching is per-tenant.
+    /// </summary>
+    public string TenantId { get; set; } = "common";
+
+    /// <summary>
+    /// Delegated Microsoft Graph scopes requested during the authorization-code flow. MSAL injects
+    /// reserved OIDC scopes (<c>openid</c>, <c>profile</c>, <c>offline_access</c>) itself.
+    /// </summary>
+    public string[] Scopes { get; set; } =
+    [
+        "User.Read",
+        "Mail.Read",
+        "Calendars.Read",
+        "OnlineMeetings.Read",
+    ];
+
+    /// <summary>
+    /// App-hosted callback path on the primary port (e.g. <c>http://localhost:5000/auth/m365/callback</c>).
+    /// Must match the redirect URI registered in the Entra app. Leading slash required.
+    /// </summary>
+    public string RedirectPath { get; set; } = "/auth/m365/callback";
 }
 
 /// <summary>Gateway↔webhook callback settings.</summary>
