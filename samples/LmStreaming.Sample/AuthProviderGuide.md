@@ -1,17 +1,24 @@
-# Auth Provider Guide — GitHub + Azure DevOps token injection
+# Auth Provider Guide — GitHub + Azure DevOps + Microsoft 365 token injection
 
 This guide covers the **OAuth auth-provider** feature in the `LmStreaming.Sample` app: signing a
-user in to GitHub and Azure DevOps with an interactive **browser + loopback** authorization-code
-flow (open the system browser, log in, the app captures the redirect on a local `127.0.0.1` port),
-persisting their tokens locally, and hosting an **auth webhook** that the sandbox gateway calls to
-inject a freshly-valid access token into sandbox→GitHub/ADO requests.
+user in to GitHub, Azure DevOps and Microsoft 365 (Microsoft Graph) with an interactive
+authorization-code flow (open the system browser, log in, the app captures the redirect), persisting
+their tokens locally, and hosting an **auth webhook** that the sandbox gateway calls to inject a
+freshly-valid access token into sandbox→GitHub / ADO / Graph requests.
 
 > **Flow per provider.** GitHub uses the OAuth *web-application* (authorization-code) flow — the same
 > one the GitHub CLI uses; it needs a client **secret** in the code→token exchange (GitHub requires
-> it even with PKCE). Azure DevOps uses **MSAL.NET** (`AcquireTokenInteractive`/`AcquireTokenSilent`)
-> against Microsoft Entra — a public client with **no secret** and PKCE, mirroring how the
-> `azure-devops-mcp` authenticates. Because the app's backend runs on your own machine, "open the
-> browser" happens locally; a headless/remote host is not supported by this sample.
+> it even with PKCE). The callback lands on an **ephemeral loopback** port (`http://127.0.0.1:<port>/callback`).
+> Azure DevOps uses **MSAL.NET** (`AcquireTokenInteractive`/`AcquireTokenSilent`) against Microsoft
+> Entra — a public client with **no secret** and PKCE, mirroring how the `azure-devops-mcp`
+> authenticates. The MSAL public-client flow also owns its own loopback listener.
+> Microsoft 365 (Graph) uses **MSAL.NET confidential-client + PKCE** with the callback hosted on
+> **the app's primary port** (`http://localhost:5000/auth/m365/callback`) — no standalone
+> `HttpListener`, no fixed port 3333. A **client secret is required** (the Entra app is a web app),
+> and it MUST come from user-secrets / env (`Auth__M365__ClientSecret`), never from committed
+> appsettings.
+> Because the app's backend runs on your own machine, "open the browser" happens locally; a
+> headless/remote host is not supported by this sample.
 
 It builds directly on the **Workspace Agent** sandbox — read
 [`SandboxWorkspaceGuide.md`](./SandboxWorkspaceGuide.md) first if you have not. This guide only
@@ -19,33 +26,38 @@ adds the authenticated-egress layer on top of that sandbox.
 
 ## Overview
 
-When the workspace agent runs `git` or `curl` against GitHub or Azure DevOps **inside the
-sandbox**, the gateway's egress proxy intercepts the outbound request and calls back to this app's
-webhook to obtain an `Authorization: Bearer <token>` header to inject. **The sandbox never sees the
-token** — it is added by the gateway proxy, outside the sandbox boundary, on the way out.
+When the workspace agent runs `git`, `curl`, or any HTTP call against GitHub, Azure DevOps or
+Microsoft Graph **inside the sandbox**, the gateway's egress proxy intercepts the outbound request
+and calls back to this app's webhook to obtain an `Authorization: Bearer <token>` header to inject.
+**The sandbox never sees the token** — it is added by the gateway proxy, outside the sandbox
+boundary, on the way out.
 
 Key properties:
 
-- **Default-deny egress.** Only the configured GitHub/ADO hosts are reachable from the sandbox, and
-  only when the matching provider is signed in. Everything else is blocked.
-- **One signed-in identity per provider, app-wide.** There is a single GitHub user and a single ADO
-  user for the whole app (not per chat / per session).
+- **Default-deny egress.** Only the configured GitHub/ADO/M365 hosts are reachable from the sandbox,
+  and only when the matching provider is signed in. Everything else is blocked.
+- **One signed-in identity per provider, app-wide.** There is a single GitHub user, a single ADO
+  user and a single M365 user for the whole app (not per chat / per session).
 - **Refresh tokens are persisted locally** under a gitignored `oauth-tokens/` directory and are
   **never logged**. The app refreshes the short-lived access token on demand from the stored refresh
-  token.
+  token (GitHub: `github.json`; ADO/M365: MSAL cache files `msal-ado.bin` / `msal-m365.bin`).
 
 ```
-                         ┌─────────────────────────────────────────────┐
-  Browser ◀─ opens ────▶ │  LmStreaming.Sample app                     │
-  (login + loopback      │   • AuthController     (api/auth/*)          │
-   redirect to 127.0.0.1)│   • AuthWebhookController (api/auth/webhook) │
-                         │   • GitHub web-flow + ADO MSAL + token store │
-                         └───────────────▲─────────────────────────────┘
-                                         │ 3. POST /api/auth/webhook/{provider}
-                                         │    (shared secret) → Bearer token
-                ┌────────────────────────┴──────────────┐
-  sandbox ──1. git/curl──▶ │  Sandbox gateway (egress proxy)          │ ──2. allow? + token──▶ GitHub / ADO
-  (no token)               └──────────────────────────────────────────┘
+                         ┌──────────────────────────────────────────────────┐
+  Browser ◀─ opens ────▶ │  LmStreaming.Sample app                          │
+  (login + redirect      │   • AdoAuthController       (api/auth/ado/*)     │
+   to loopback OR the    │   • GitHubAuthController    (api/auth/github/*)  │
+   app's primary port)   │   • M365AuthController      (api/auth/m365/*     │
+                         │                              + auth/m365/callback)│
+                         │   • AuthPagesController     (GET /auth/{prov})   │
+                         │   • AuthWebhookController   (api/auth/webhook/*) │
+                         │   • GitHub web-flow + ADO MSAL + M365 MSAL CCA   │
+                         └────────────────────▲─────────────────────────────┘
+                                              │ 3. POST /api/auth/webhook/{provider}
+                                              │    (shared secret) → Bearer token
+                ┌─────────────────────────────┴───────────┐
+  sandbox ──1. git/curl──▶ │  Sandbox gateway (egress proxy)            │ ──2. allow? + token──▶ GitHub / ADO / Graph
+  (no token)               └────────────────────────────────────────────┘
 ```
 
 ---
@@ -92,6 +104,34 @@ The app requests the Azure DevOps resource scope `499b84ac-1321-427f-aa17-267ca6
 `offline_access` may appear in config for parity, but MSAL manages refresh itself and the provider
 strips reserved scopes before calling MSAL.
 
+### Microsoft 365 — register your own confidential client
+
+M365 (Microsoft Graph) uses an **Entra confidential web client** with MSAL.NET, authorization-code +
+PKCE. Unlike GitHub/ADO there is **no default first-party app shipped in config** — you must
+register your own and supply the client secret out of band.
+
+1. Go to **Entra ID → App registrations → New registration**. Pick **"Accounts in any organizational
+   directory (Multitenant) — personal Microsoft accounts not required"** unless you want a single-tenant
+   pin.
+2. Under **Authentication**, add a **"Web"** platform with redirect URI
+   `http://localhost:5000/auth/m365/callback` — this is hosted on the **app's primary port**, not on
+   an ephemeral loopback. If you change the app's port or the `Auth:M365:RedirectPath` setting, the
+   redirect URI registered in Entra must match exactly.
+3. Under **Certificates & secrets**, create a **client secret**. Copy the **Value** (not the Id) —
+   you'll only see it once. Supply it via user-secrets / env (`Auth__M365__ClientSecret`); never
+   commit it to source.
+4. Note the **Application (client) ID** and the **Directory (tenant) ID**. The sample defaults the
+   tenant to `common` (multi-tenant); pin to your tenant id if you want per-tenant cache isolation.
+5. Under **API permissions**, add the **delegated Microsoft Graph** permissions you intend to
+   request. The defaults (`User.Read`, `Mail.Read`, `Calendars.Read`, `OnlineMeetings.Read`) require
+   nothing but user consent; resource-targeting Teams scopes (`OnlineMeetings.ReadWrite`,
+   `ChannelMessage.Read.All`, …) require **admin consent** and only work for accounts in the
+   tenant that granted it.
+
+> **Important — organizer-only Teams meetings.** Microsoft Graph's `OnlineMeetings.Read` (delegated)
+> only returns meetings the **signed-in user organized**. Reading another organizer's meetings
+> requires application permissions + admin consent, which is out of scope for this sample.
+
 ---
 
 ## Configuration
@@ -109,7 +149,12 @@ All settings live under the **`Auth`** configuration section (bound to
 | `Auth:Ado:ClientId` | *(empty; Dev: azure-devops-mcp id)* | **Required to enable ADO.** When empty, ADO auth is disabled. No secret (public client). |
 | `Auth:Ado:TenantId` | `organizations` | Entra tenant; `organizations` works for work/school accounts. |
 | `Auth:Ado:Scopes` | `["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access"]` | ADO resource scope. MSAL manages refresh; reserved scopes (e.g. `offline_access`) are stripped before MSAL. |
-| `Auth:Webhook:PublicBaseUrl` | `http://127.0.0.1:5000` | The base URL the **gateway** calls back on to reach this app's webhook. |
+| `Auth:M365:ClientId` | *(empty)* | **Required to enable M365.** When empty, M365 auth is disabled. No first-party default — register your own Entra confidential client. |
+| `Auth:M365:ClientSecret` | *(empty)* | **REQUIRED to enable M365** and **MUST come from user-secrets / env only** (`Auth__M365__ClientSecret`), never from committed appsettings. |
+| `Auth:M365:TenantId` | `common` | Entra tenant; `common` works for multi-tenant work/school accounts. Pin to a tenant id for per-tenant token cache isolation. |
+| `Auth:M365:Scopes` | `["User.Read","Mail.Read","Calendars.Read","OnlineMeetings.Read"]` | Delegated Microsoft Graph scopes. MSAL strips reserved OIDC scopes (`openid`/`profile`/`offline_access`) before calling MSAL. |
+| `Auth:M365:RedirectPath` | `/auth/m365/callback` | App-primary-port callback path. Must exactly match the redirect URI registered in the Entra app. |
+| `Auth:Webhook:PublicBaseUrl` | `http://127.0.0.1:5000` | The base URL the **gateway** calls back on to reach this app's webhook. Also serves as the M365 callback base. |
 | `Auth:Webhook:GatewaySharedSecret` | *(empty)* | Shared secret the gateway sends as `Authorization`. If unset, a random 64-hex-char secret is generated at startup. |
 
 ### appsettings.json example
@@ -125,6 +170,11 @@ All settings live under the **`Auth`** configuration section (bound to
     "Ado": {
       "ClientId": "00000000-0000-0000-0000-000000000000",
       "TenantId": "organizations"
+    },
+    "M365": {
+      "ClientId": "00000000-0000-0000-0000-000000000000",
+      "TenantId": "common",
+      "Scopes": ["User.Read", "Mail.Read", "Calendars.Read", "OnlineMeetings.Read"]
     },
     "Webhook": {
       "PublicBaseUrl": "http://127.0.0.1:5000"
@@ -146,21 +196,38 @@ Auth__Github__ClientId=Iv23xxxxxxxxxxxxxxxx
 Auth__Github__ClientSecret=<your github client secret>
 Auth__Ado__ClientId=00000000-0000-0000-0000-000000000000
 Auth__Ado__TenantId=organizations
+Auth__M365__ClientId=00000000-0000-0000-0000-000000000000
+Auth__M365__ClientSecret=<your m365 entra confidential-client secret>
+Auth__M365__TenantId=common
 Auth__Webhook__GatewaySharedSecret=<a long random string>
 ```
 
-> **Provider disabled when `ClientId` is empty.** If a provider's client id is blank, that provider
-> is simply disabled: **no** `auth_providers`/`network.rules` for it are sent to the gateway, and
-> the plain Workspace Agent demo still works unchanged. You can enable just GitHub, just ADO, or
-> both.
+> **Provider disabled when client id (or, for M365, the client secret) is empty.** That provider is
+> simply disabled: **no** `auth_providers`/`network.rules` for it are sent to the gateway, and the
+> plain Workspace Agent demo still works unchanged. You can enable any subset of GitHub, ADO, and
+> M365 independently.
 
 ---
 
-## Sign-in flow (browser + loopback) — API
+## Sign-in flow — API
 
-The browser-facing endpoints are served by `Controllers/AuthController.cs` under the route
-`api/auth/{provider}` where `{provider}` is **`github`** or **`ado`** (case-insensitive). These
-endpoints never return token material — only the sign-in challenge and a UI-safe status.
+Each provider gets its own thin controller under `Controllers/` — `AdoAuthController`,
+`GitHubAuthController`, `M365AuthController` — routed at `api/auth/{provider}/*` where `{provider}`
+is **`github`**, **`ado`**, or **`m365`** (case-insensitive). These endpoints never return token
+material — only the sign-in challenge and a UI-safe status.
+
+> **Where the callback lands.** GitHub and ADO use a per-process ephemeral **loopback** redirect
+> (`http://127.0.0.1:<port>/callback`) owned by their respective sign-in machinery. M365 instead
+> hosts the callback on the **app's primary port** (`GET /auth/m365/callback`, served by
+> `M365AuthController`) — this matches Entra's "Web" client expectations and avoids a standalone
+> `HttpListener`.
+
+### Browser entry — `GET /auth/{provider}`
+
+For convenience there is also a tiny HTML landing page at `GET /auth/{provider}` (served by
+`AuthPagesController`). Visiting it in a browser either renders the already-signed-in status or
+starts the interactive sign-in (opens the system browser) and returns a page that polls
+`/api/auth/{provider}/status` until the flow completes. Unknown provider ids return **404**.
 
 ### `POST /api/auth/{provider}/signin`
 
@@ -220,7 +287,9 @@ Clears the stored tokens and resets the provider to `NotStarted`. Returns **204 
 curl -s -X POST http://127.0.0.1:5000/api/auth/github/signout -o /dev/null -w "%{http_code}\n"
 ```
 
-The same three endpoints exist for `ado` — just swap `github` for `ado` in the path.
+The same three endpoints exist for `ado` and `m365` — just swap `github` for `ado` or `m365` in
+the path. The M365 controller additionally serves the Entra-facing callback at
+`GET /auth/m365/callback` (no `/api` prefix — that path is the redirect URI registered with Entra).
 
 ---
 
@@ -271,6 +340,7 @@ the sandbox-create request:
   `action: "allow"` and routes that provider's hosts (port 443) through the matching auth provider:
   - **github** → `github.com`, `api.github.com`, `codeload.github.com`
   - **ado** → `dev.azure.com`, `*.dev.azure.com`, `*.visualstudio.com`
+  - **m365** → `graph.microsoft.com`
 
 When **no** provider is configured, both blocks are omitted entirely and the plain workspace sandbox
 is created as before.
@@ -338,11 +408,14 @@ own gateway, you must set this yourself (or serve the webhook over HTTPS).
 ## Security notes
 
 - **Tokens and the shared secret are sensitive.** GitHub tokens are persisted as one JSON file per
-  provider, and the ADO **MSAL token cache** (containing its refresh token) as `msal-ado.bin`, both
-  under the gitignored `oauth-tokens/` directory (matched by `**/oauth-tokens/` in `.gitignore`).
-  These blobs are plaintext at rest — acceptable for local dev; harden with OS-protected storage for
-  production. Token material is **never** written to logs — only the provider id, account, scopes,
-  and expiry.
+  provider; ADO and M365 use **MSAL token caches** (containing their refresh tokens) at
+  `msal-ado.bin` and `msal-m365.bin` respectively. All three live under the gitignored
+  `oauth-tokens/` directory (matched by `**/oauth-tokens/` in `.gitignore`). These blobs are
+  plaintext at rest — acceptable for local dev; harden with OS-protected storage for production.
+  Token material is **never** written to logs — only the provider id, account, scopes, and expiry.
+- **M365 client secret stays out of source.** The M365 confidential-client secret MUST be supplied
+  via user-secrets / env (`Auth__M365__ClientSecret`). Committed `appsettings.Development.json`
+  carries the M365 client id + tenant only — no secret.
 - **Webhook authentication is constant-time.** The shared secret is validated with a fixed-time
   comparison of SHA-256 digests; the controller never logs the token, the incoming `Authorization`
   value, or the secret, and never echoes token material back to the gateway.
@@ -387,3 +460,20 @@ gateway will be out of sync. Set an explicit secret to pin it.
 **`deny` with "sign in required" in the webhook response.**
 The provider is not signed in (or its refresh failed). Re-run the sign-in flow and confirm
 `GET /api/auth/{provider}/status` returns `SignedIn` before exercising the sandbox.
+
+**M365 sign-in fails immediately or returns 409 Conflict.**
+The M365 provider needs **both** a `ClientId` and a `ClientSecret` (it's a confidential-client web
+app). With either missing, sign-in is disabled and POST `/api/auth/m365/signin` returns 409.
+Supply the secret via `Auth__M365__ClientSecret` only (user-secrets / env), never via committed
+appsettings.
+
+**M365 callback returns `AADSTS50011: reply URL does not match`.**
+The redirect URI registered in the Entra app must **exactly** match
+`{Auth:Webhook:PublicBaseUrl}{Auth:M365:RedirectPath}` (default
+`http://localhost:5000/auth/m365/callback`). If you change the app port or the `RedirectPath`,
+update the Entra app's redirect URI to match.
+
+**M365 returns empty results for another organizer's Teams meetings.**
+Expected. Delegated `OnlineMeetings.Read` only sees meetings the **signed-in user** organized;
+reading another organizer's meetings needs application permissions + admin consent (out of scope
+for this sample).
