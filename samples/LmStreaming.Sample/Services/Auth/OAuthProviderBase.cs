@@ -14,6 +14,14 @@ namespace LmStreaming.Sample.Services.Auth;
 /// </remarks>
 public abstract class OAuthProviderBase : IOAuthTokenProvider
 {
+    // MSAL injects these reserved OIDC scopes itself and throws if they're passed through.
+    private static readonly HashSet<string> ReservedMsalScopes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "openid",
+        "profile",
+        "offline_access",
+    };
+
     private readonly object _statusGate = new();
     private OAuthStatus _status = new(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null);
     private CancellationTokenSource? _signInCts;
@@ -144,6 +152,14 @@ public abstract class OAuthProviderBase : IOAuthTokenProvider
             cts.Dispose();
         }
     }
+
+    /// <summary>
+    /// Drops MSAL's reserved OIDC scopes (e.g. <c>offline_access</c>) from a configured scope list,
+    /// since MSAL injects them itself and rejects them if passed through. Shared across MSAL-backed
+    /// providers (ADO, M365) so the rule lives with the base, not a peer provider.
+    /// </summary>
+    internal static string[] StripReservedScopes(IEnumerable<string> scopes) =>
+        [.. scopes.Where(s => !ReservedMsalScopes.Contains(s))];
 
     /// <summary>
     /// Best-effort launch of the system default browser at <paramref name="url"/>. Returns false

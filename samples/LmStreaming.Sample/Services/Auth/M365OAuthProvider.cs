@@ -56,7 +56,7 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         _cacheFilePath = tokenCacheFilePath ?? throw new ArgumentNullException(nameof(tokenCacheFilePath));
         _time = time ?? TimeProvider.System;
 
-        _scopes = AdoOAuthProvider.StripReservedScopes(_options.Scopes);
+        _scopes = StripReservedScopes(_options.Scopes);
         CallbackBaseUrl = (callbackBaseUrl ?? throw new ArgumentNullException(nameof(callbackBaseUrl))).TrimEnd('/');
 
         // Leave the provider disabled (no MSAL app) when unconfigured — sign-in/token calls then

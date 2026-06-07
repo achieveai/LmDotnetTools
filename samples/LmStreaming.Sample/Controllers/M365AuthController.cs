@@ -15,6 +15,7 @@ namespace LmStreaming.Sample.Controllers;
 /// The callback action returns an inline HTML page with no token information.
 /// </remarks>
 [ApiController]
+[Route("api/auth/m365")]
 public sealed class M365AuthController(
     M365OAuthProvider provider,
     ILogger<M365AuthController> logger) : ControllerBase
@@ -23,7 +24,7 @@ public sealed class M365AuthController(
     /// Opens the browser to start the interactive sign-in and returns the challenge (the
     /// authorization URL that was opened).
     /// </summary>
-    [HttpPost("api/auth/m365/signin")]
+    [HttpPost("signin")]
     public async Task<IActionResult> SignIn(CancellationToken ct = default)
     {
         try
@@ -40,11 +41,11 @@ public sealed class M365AuthController(
     }
 
     /// <summary>Returns the current (UI-safe) sign-in status.</summary>
-    [HttpGet("api/auth/m365/status")]
+    [HttpGet("status")]
     public IActionResult Status() => Ok(provider.Status);
 
     /// <summary>Clears stored tokens and resets to the not-started state.</summary>
-    [HttpPost("api/auth/m365/signout")]
+    [HttpPost("signout")]
     public async Task<IActionResult> SignOut(CancellationToken ct = default)
     {
         await provider.SignOutAsync(ct);
@@ -55,12 +56,11 @@ public sealed class M365AuthController(
     /// <summary>
     /// App-hosted OAuth callback. Entra redirects the browser here with <c>code</c> + <c>state</c>
     /// (or an <c>error</c>); we redeem the code via MSAL and render a small landing page that the
-    /// user can close. Note: the route is registered with a relative path so a future operator who
-    /// overrides <see cref="M365AuthOptions.RedirectPath"/> can match a different callback path —
-    /// the registered route here is the default; conventional ASP.NET routing handles the most
-    /// common case (operators who keep the default) without dynamic route registration.
+    /// user can close. The leading slash on the route opts out of the class-level <c>api/auth/m365</c>
+    /// prefix so the callback path matches the default <see cref="M365AuthOptions.RedirectPath"/>
+    /// (which Entra needs configured up-front against its app registration).
     /// </summary>
-    [HttpGet("auth/m365/callback")]
+    [HttpGet("/auth/m365/callback")]
     public async Task<IActionResult> Callback(
         [FromQuery] string? code,
         [FromQuery] string? state,

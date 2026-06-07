@@ -17,14 +17,6 @@ namespace LmStreaming.Sample.Services.Auth;
 /// </remarks>
 public sealed class AdoOAuthProvider : OAuthProviderBase
 {
-    // Reserved OIDC scopes MSAL injects itself; passing them through throws "does not accept reserved scopes".
-    private static readonly HashSet<string> ReservedScopes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "openid",
-        "profile",
-        "offline_access",
-    };
-
     private readonly AdoAuthOptions _options;
     private readonly IPublicClientApplication? _app;
     private readonly string[] _scopes;
@@ -191,13 +183,6 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
             throw new InvalidOperationException("ADO sign-in expired or was revoked; sign in again.", ex);
         }
     }
-
-    /// <summary>
-    /// Drops MSAL's reserved OIDC scopes (e.g. <c>offline_access</c>) from a configured scope list,
-    /// since MSAL injects them itself and rejects them if passed through. Exposed internally for test.
-    /// </summary>
-    internal static string[] StripReservedScopes(IEnumerable<string> scopes) =>
-        [.. scopes.Where(s => !ReservedScopes.Contains(s))];
 
     /// <summary>Returns the single cached account, or null when unconfigured / none is signed in.</summary>
     private async Task<IAccount?> GetAccountAsync()
