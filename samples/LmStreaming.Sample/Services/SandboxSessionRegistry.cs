@@ -79,6 +79,27 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SandboxSession> _sessionsById =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Session id → set of agent-pool thread ids currently routed to that session. The
+    /// context-discovery webhook uses this to fan an injected message out to every live thread
+    /// when the gateway delivers a context_file. Membership is added by <see cref="RegisterThread"/>
+    /// (called after the session/binding are wired) and removed by <see cref="UnregisterThread"/>
+    /// (called from the pool's thread-removed notifier — NOT from a mode switch, which preserves
+    /// the same threadId and therefore must continue routing).
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionThreads =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per-session dedup ledger of <c>(kind, path)</c> tuples the gateway has already delivered.
+    /// Gateways may retry the same discovery on transient failure or when the workspace mount
+    /// re-emits an event; without this gate the injector would inject the same context file
+    /// twice into the same thread. No TTL — entries are scoped to the registry lifetime, cleared
+    /// on <see cref="DisposeAsync"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _discoverySeen =
+        new(StringComparer.Ordinal);
+
     private readonly SandboxGatewayLifetime _gateway;
     private readonly SandboxGatewayOptions _options;
     private readonly ILogger<SandboxSessionRegistry> _logger;
@@ -297,6 +318,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         _sessions.Clear();
         _subAgentBindings.Clear();
         _sessionsById.Clear();
+        _sessionThreads.Clear();
+        _discoverySeen.Clear();
         _httpClient.Dispose();
     }
 
@@ -417,6 +440,105 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         }
 
         return _sessionsById.TryGetValue(sessionId, out session);
+    }
+
+    /// <summary>
+    /// Registers an agent-pool thread as belonging to <paramref name="sessionId"/> so the
+    /// context-discovery injector can find every thread that should receive an injection event.
+    /// Idempotent: re-registering the same thread is a no-op.
+    /// </summary>
+    public void RegisterThread(string sessionId, string threadId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        var set = _sessionThreads.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+        _ = set.TryAdd(threadId, 0);
+    }
+
+    /// <summary>
+    /// Removes an agent-pool thread's membership from <paramref name="sessionId"/>. Called by the
+    /// pool's thread-removed notifier on <c>RemoveAgentAsync</c> — NOT on a mode-switch
+    /// recreation (which preserves the same threadId and therefore must continue routing).
+    /// Idempotent: removing an absent thread is a no-op.
+    /// </summary>
+    public void UnregisterThread(string sessionId, string threadId)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        if (_sessionThreads.TryGetValue(sessionId, out var set))
+        {
+            _ = set.TryRemove(threadId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Removes <paramref name="threadId"/> from every session's membership set. Used by the
+    /// pool's <c>ThreadRemoved</c> notifier, which only knows the threadId (the pool has no
+    /// session context). Walks the registry's per-session sets — small enough that an O(sessions)
+    /// scan on thread teardown is preferable to maintaining a reverse map that must be kept in
+    /// sync with every register/unregister call.
+    /// </summary>
+    public void UnregisterThreadFromAllSessions(string threadId)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        foreach (var set in _sessionThreads.Values)
+        {
+            _ = set.TryRemove(threadId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Returns a snapshot of the thread ids currently registered against
+    /// <paramref name="sessionId"/>. Empty when nothing is registered (no exception). The
+    /// returned list is a copy — callers can safely iterate it without holding a registry lock.
+    /// </summary>
+    public IReadOnlyList<string> GetThreads(string sessionId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return [];
+        }
+
+        return _sessionThreads.TryGetValue(sessionId, out var set)
+            ? [.. set.Keys]
+            : [];
+    }
+
+    /// <summary>
+    /// Atomically marks <c>(kind, path)</c> as seen for <paramref name="sessionId"/>. Returns
+    /// true on the first call (caller proceeds with injection) and false on every subsequent
+    /// call for the same tuple (caller drops the duplicate). Used to defend against gateway
+    /// retry storms re-firing the same discovery event.
+    /// </summary>
+    public bool TryMarkDiscoverySeen(string sessionId, string kind, string path)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var set = _discoverySeen.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+        return set.TryAdd($"{kind}\0{path}", 0);
     }
 
     private const int ErrorBodyMaxLength = 500;

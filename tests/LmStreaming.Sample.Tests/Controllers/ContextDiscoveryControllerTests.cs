@@ -1,6 +1,7 @@
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
+using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
 
 namespace LmStreaming.Sample.Tests.Controllers;
@@ -18,7 +19,8 @@ public class ContextDiscoveryControllerTests
     private static ContextDiscoveryController CreateController(
         string? authorizationHeader,
         SandboxSessionRegistry? registry = null,
-        WorkspaceSubAgentLoader? loader = null)
+        WorkspaceSubAgentLoader? loader = null,
+        ContextDiscoveryInjector? injector = null)
     {
         var sharedSecret = new AuthSharedSecret(new AuthOptions
         {
@@ -27,11 +29,13 @@ public class ContextDiscoveryControllerTests
 
         registry ??= CreateEmptyRegistry();
         loader ??= new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
+        injector ??= CreateNoopInjector(registry);
 
         var controller = new ContextDiscoveryController(
             sharedSecret,
             registry,
             loader,
+            injector,
             NullLogger<ContextDiscoveryController>.Instance);
 
         var httpContext = new DefaultHttpContext();
@@ -42,6 +46,22 @@ public class ContextDiscoveryControllerTests
 
         controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
         return controller;
+    }
+
+    private static ContextDiscoveryInjector CreateNoopInjector(SandboxSessionRegistry registry)
+    {
+        // The pool is real but unwired — TryGet returns false for every threadId since the test
+        // never calls GetOrCreateAgent. That keeps the injector's per-thread send loop a no-op
+        // while still letting it exercise the validation/dedup paths against the real registry.
+        var pool = new MultiTurnAgentPool(
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        return new ContextDiscoveryInjector(
+            registry,
+            pool,
+            new ContextDiscoveryFormatter(),
+            NullLogger<ContextDiscoveryInjector>.Instance);
     }
 
     private static SandboxSessionRegistry CreateEmptyRegistry()
@@ -110,14 +130,87 @@ public class ContextDiscoveryControllerTests
     }
 
     [Fact]
-    public async Task NotifyAsync_CorrectSecret_MissingName_ReturnsBadRequest()
+    public async Task NotifyAsync_CorrectSecret_SubAgentMissingName_ReturnsBadRequest()
     {
+        // Sub-agent activations are keyed by name (the value the model picks via the Agent tool's
+        // subagent_type enum). Without it we can't register or look up the template, so reject.
         var controller = CreateController(authorizationHeader: Secret);
         var body = new ContextDiscoveryPayload { Kind = "subagent" };
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
         result.Should().BeOfType<BadRequestResult>();
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CorrectSecret_ContextFileMissingPath_ReturnsBadRequest()
+    {
+        // context_file deliveries are keyed by path (the dedup key + the pill label) — a missing
+        // path can't be deduped against retries and can't be displayed to the user.
+        var controller = CreateController(authorizationHeader: Secret);
+        var body = new ContextDiscoveryPayload { Kind = "context_file", Content = "body" };
+
+        var result = await controller.NotifyAsync(body, CancellationToken.None);
+
+        result.Should().BeOfType<BadRequestResult>();
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CorrectSecret_ContextFileMissingContent_ReturnsBadRequest()
+    {
+        // Null content means the gateway has nothing for the model to read; the injector would
+        // drop it anyway, but rejecting at the boundary keeps the contract crisp.
+        var controller = CreateController(authorizationHeader: Secret);
+        var body = new ContextDiscoveryPayload { Kind = "context_file", Path = "CLAUDE.md" };
+
+        var result = await controller.NotifyAsync(body, CancellationToken.None);
+
+        result.Should().BeOfType<BadRequestResult>();
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CorrectSecret_ContextFile_EmptyContent_IsAccepted()
+    {
+        // Empty (but non-null) content passes validation — the gateway may legitimately deliver an
+        // empty file. The injector treats it as a drop downstream so nothing reaches the model,
+        // but the contract at the boundary is "non-null is acceptable".
+        var controller = CreateController(authorizationHeader: Secret);
+        var body = new ContextDiscoveryPayload
+        {
+            SessionId = "session-x",
+            Kind = "context_file",
+            Path = "CLAUDE.md",
+            Content = string.Empty,
+        };
+
+        var result = await controller.NotifyAsync(body, CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CorrectSecret_ContextFile_DispatchesToInjector()
+    {
+        // Verifies the controller actually invokes the injector for context_file deliveries by
+        // observing the registry's dedup side effect: after the first successful dispatch,
+        // TryMarkDiscoverySeen for the same (sessionId, kind, path) must return false.
+        var registry = CreateEmptyRegistry();
+        var controller = CreateController(authorizationHeader: Secret, registry: registry);
+
+        var body = new ContextDiscoveryPayload
+        {
+            SessionId = "session-dispatch",
+            Kind = "context_file",
+            Path = "CLAUDE.md",
+            Content = "body",
+        };
+
+        var result = await controller.NotifyAsync(body, CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        registry
+            .TryMarkDiscoverySeen("session-dispatch", "context_file", "CLAUDE.md")
+            .Should().BeFalse("the injector should have already marked this entry as seen during dispatch");
     }
 
     [Fact]

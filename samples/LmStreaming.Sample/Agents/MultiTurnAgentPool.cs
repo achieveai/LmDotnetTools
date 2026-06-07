@@ -428,6 +428,33 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Tries to return the live agent for <paramref name="threadId"/> without creating one. Used
+    /// by external dispatchers (e.g. the context-discovery webhook) that need to push a message
+    /// into an existing conversation but must remain best-effort when the thread has been torn
+    /// down between the trigger and the dispatch.
+    /// </summary>
+    public bool TryGet(string threadId, out IMultiTurnAgent? agent)
+    {
+        if (string.IsNullOrEmpty(threadId) || !_agents.TryGetValue(threadId, out var entry))
+        {
+            agent = null;
+            return false;
+        }
+
+        agent = entry.Agent;
+        return true;
+    }
+
+    /// <summary>
+    /// Raised after <see cref="RemoveAgentAsync"/> tears down a thread's agent so external
+    /// tables (session→thread routing in the sandbox registry, presence lists, etc.) can drop
+    /// the entry. Intentionally NOT raised by <see cref="RecreateAgentWithModeAsync"/>: a mode
+    /// switch preserves the same threadId, so any external routing keyed on threadId must remain
+    /// intact across the swap.
+    /// </summary>
+    public event Action<string>? ThreadRemoved;
+
+    /// <summary>
     /// Gets the current mode for an agent.
     /// </summary>
     /// <param name="threadId">The thread identifier</param>
@@ -488,6 +515,21 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         {
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
             await entry.DisposeAsync();
+            RaiseThreadRemoved(threadId);
+        }
+    }
+
+    private void RaiseThreadRemoved(string threadId)
+    {
+        try
+        {
+            ThreadRemoved?.Invoke(threadId);
+        }
+        catch (Exception ex)
+        {
+            // External subscribers (session registry, etc.) must not poison the pool's lifecycle
+            // if they throw — log and swallow so a buggy listener can't strand other threads.
+            _logger.LogWarning(ex, "ThreadRemoved subscriber threw for thread {ThreadId}", threadId);
         }
     }
 

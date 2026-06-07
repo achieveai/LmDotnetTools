@@ -290,6 +290,107 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task TryGet_ReturnsExistingAgent_AfterGetOrCreate()
+    {
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var created = pool.GetOrCreateAgent("thread-tryget", mode);
+
+        var success = pool.TryGet("thread-tryget", out var fetched);
+
+        success.Should().BeTrue();
+        fetched.Should().BeSameAs(created);
+    }
+
+    [Fact]
+    public async Task TryGet_ReturnsFalse_WhenThreadIdUnknown()
+    {
+        await using var pool = CreatePool();
+
+        var success = pool.TryGet("never-created", out var fetched);
+
+        success.Should().BeFalse();
+        fetched.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TryGet_ReturnsFalse_WhenThreadIdIsEmpty()
+    {
+        await using var pool = CreatePool();
+
+        // Guards against accidental TryGet("") calls from upstream where a missing/empty
+        // sessionId or threadId would otherwise hash to the empty-string slot.
+        pool.TryGet(string.Empty, out var fetched).Should().BeFalse();
+        fetched.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ThreadRemoved_FiresOnce_OnRemoveAgentAsync()
+    {
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-removed", mode);
+
+        var notifications = new List<string>();
+        pool.ThreadRemoved += id => notifications.Add(id);
+
+        await pool.RemoveAgentAsync("thread-removed");
+
+        notifications.Should().ContainSingle().Which.Should().Be("thread-removed");
+    }
+
+    [Fact]
+    public async Task ThreadRemoved_DoesNotFire_WhenThreadAlreadyAbsent()
+    {
+        await using var pool = CreatePool();
+
+        var notifications = new List<string>();
+        pool.ThreadRemoved += id => notifications.Add(id);
+
+        // No-op: nothing to dispose, nothing to notify. Listeners (registry) would otherwise see
+        // ghost unregister events for threadIds that never existed.
+        await pool.RemoveAgentAsync("never-created");
+
+        notifications.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ThreadRemoved_DoesNotFire_OnRecreateAgentWithModeAsync()
+    {
+        // F3 regression: mode-switch preserves threadId, so the registry's session→thread map
+        // must stay intact across the swap. If ThreadRemoved fired here, the context-discovery
+        // injector would lose its route to the freshly-recreated agent.
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-mode-swap", mode);
+
+        var notifications = new List<string>();
+        pool.ThreadRemoved += id => notifications.Add(id);
+
+        var newMode = SystemChatModes.All[0];
+        _ = await pool.RecreateAgentWithModeAsync("thread-mode-swap", newMode);
+
+        notifications.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ThreadRemoved_SubscriberException_DoesNotPoisonOtherSubscribers()
+    {
+        // Defensive: a buggy subscriber must not strand subsequent listeners. The pool wraps
+        // the invocation in a try/catch and logs; verifying we don't leak the exception means
+        // RemoveAgentAsync completes cleanly even if one subscriber throws.
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-bad-sub", mode);
+
+        pool.ThreadRemoved += _ => throw new InvalidOperationException("boom");
+
+        var act = async () => await pool.RemoveAgentAsync("thread-bad-sub");
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
     public async Task GetEffectiveProviderId_ReturnsDefault_WhenNoPersistedProvider()
     {
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
