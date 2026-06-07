@@ -670,6 +670,37 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
+        // M365 (Microsoft Graph). Gate on both ClientId and ClientSecret: the provider stays
+        // disabled when the secret is missing, so emitting the gateway rule + webhook entry in that
+        // case would point to a webhook that always denies — confusing rather than helpful.
+        if (!string.IsNullOrWhiteSpace(_authOptions.M365.ClientId)
+            && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret))
+        {
+            providers.Add(
+                new AuthProviderDto(
+                    Id: "m365-auth",
+                    Type: "webhook",
+                    Endpoint: $"{baseUrl}/api/auth/webhook/m365",
+                    GatewayAuth: _sharedSecret.Value,
+                    CacheTtlSeconds: 300,
+                    RequiredScopes: []
+                )
+            );
+            rules.Add(
+                new NetworkRuleDto(
+                    Id: "m365",
+                    Action: "allow",
+                    Hosts: OAuthProviderHosts.For("m365"),
+                    Ports: [443],
+                    Methods: [],
+                    Paths: [],
+                    AuthProvider: "m365-auth",
+                    RequiredScopes: [],
+                    Priority: 100
+                )
+            );
+        }
+
         return providers.Count > 0 ? (providers, new NetworkDto(rules)) : (null, null);
     }
 

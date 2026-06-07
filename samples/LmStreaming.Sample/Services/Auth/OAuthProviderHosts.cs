@@ -12,6 +12,7 @@ internal static class OAuthProviderHosts
     {
         ["github"] = ["github.com", "api.github.com", "codeload.github.com"],
         ["ado"] = ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
+        ["m365"] = ["graph.microsoft.com"],
     };
 
     /// <summary>The allowed destination hosts for <paramref name="providerId"/> (empty when unknown).</summary>
