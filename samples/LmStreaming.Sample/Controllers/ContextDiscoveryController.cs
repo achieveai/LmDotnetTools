@@ -8,6 +8,17 @@ using Microsoft.AspNetCore.Mvc;
 namespace LmStreaming.Sample.Controllers;
 
 /// <summary>
+/// Known values of <see cref="ContextDiscoveryPayload.Kind"/>. Strings (not an enum) because
+/// the gateway may add new kinds without breaking older app builds — unknown kinds are accepted
+/// and logged as a no-op rather than rejected.
+/// </summary>
+internal static class ContextDiscoveryKinds
+{
+    public const string SubAgent = "subagent";
+    public const string ContextFile = "context_file";
+}
+
+/// <summary>
 /// Webhook endpoint the sandbox gateway calls when it discovers a new context file in the
 /// workspace (sub-agent, skill, …). For <c>kind == "subagent"</c> payloads this resolves the
 /// session, loads the markdown via <see cref="WorkspaceSubAgentLoader.LoadOneAsync"/>, and
@@ -27,10 +38,9 @@ public sealed class ContextDiscoveryController(
     AuthSharedSecret sharedSecret,
     SandboxSessionRegistry sessionRegistry,
     WorkspaceSubAgentLoader subAgentLoader,
+    ContextDiscoveryInjector contextInjector,
     ILogger<ContextDiscoveryController> logger) : ControllerBase
 {
-    private const string SubAgentKind = "subagent";
-
     /// <summary>
     /// Gateway callback for one discovered context item. Returns 200 on success (including
     /// best-effort no-ops), 401 if the shared secret doesn't match, 400 if the payload is
@@ -48,26 +58,57 @@ public sealed class ContextDiscoveryController(
             return Unauthorized();
         }
 
-        if (body is null || string.IsNullOrWhiteSpace(body.Kind) || string.IsNullOrWhiteSpace(body.Name))
+        if (body is null || !IsValid(body))
         {
             logger.LogWarning("Rejected context-discovery webhook with malformed payload.");
             return BadRequest();
         }
 
         logger.LogInformation(
-            "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId}",
+            "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId} truncated={Truncated}",
             body.Kind,
             body.Name,
             body.Path,
             body.Description,
-            body.SessionId);
+            body.SessionId,
+            body.Truncated);
 
-        if (string.Equals(body.Kind, SubAgentKind, StringComparison.Ordinal))
+        if (string.Equals(body.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
         {
             await TryActivateSubAgentAsync(body, cancellationToken).ConfigureAwait(false);
         }
+        else if (string.Equals(body.Kind, ContextDiscoveryKinds.ContextFile, StringComparison.Ordinal))
+        {
+            await contextInjector.InjectAsync(body, cancellationToken).ConfigureAwait(false);
+        }
 
         return Ok();
+    }
+
+    /// <summary>
+    /// Kind-aware payload validation. Sub-agent deliveries require a name (the activation key);
+    /// context-file deliveries require a path + content (the only thing the injector needs to
+    /// build the next-turn message). Unknown kinds are accepted (logged + no-op) so the gateway
+    /// can introduce new kinds without breaking older app builds.
+    /// </summary>
+    private static bool IsValid(ContextDiscoveryPayload body)
+    {
+        if (string.IsNullOrWhiteSpace(body.Kind))
+        {
+            return false;
+        }
+
+        if (string.Equals(body.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
+        {
+            return !string.IsNullOrWhiteSpace(body.Name);
+        }
+
+        if (string.Equals(body.Kind, ContextDiscoveryKinds.ContextFile, StringComparison.Ordinal))
+        {
+            return !string.IsNullOrWhiteSpace(body.Path) && body.Content is not null;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -220,4 +261,20 @@ public sealed record ContextDiscoveryPayload
 
     [JsonPropertyName("path")]
     public string? Path { get; init; }
+
+    /// <summary>
+    /// Body of a discovered context file (CLAUDE.md / AGENTS.md). Sent by the gateway only for
+    /// <c>kind == "context_file"</c> deliveries; the sub-agent path resolves the markdown by
+    /// reading it from the workspace host directory instead and ignores this field.
+    /// </summary>
+    [JsonPropertyName("content")]
+    public string? Content { get; init; }
+
+    /// <summary>
+    /// Set by the gateway when <see cref="Content"/> was truncated to fit a delivery size cap.
+    /// The injector surfaces a tag in the injected message so the model knows it isn't seeing
+    /// the full file. Optional + defaults to false when absent.
+    /// </summary>
+    [JsonPropertyName("truncated")]
+    public bool? Truncated { get; init; }
 }

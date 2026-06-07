@@ -57,6 +57,23 @@ export interface TextMessage extends IMessage {
   $type: typeof MessageType.Text;
   text: string;
   isThinking?: boolean;
+  /**
+   * Marker the backend sets via TextMessage.Metadata["context_discovery"] when a sandbox
+   * context file (CLAUDE.md / AGENTS.md) is injected mid-session. ShadowPropertiesJsonConverter
+   * flattens it to a top-level field on the wire, so the chat client can render a "Context
+   * loaded" pill without inspecting message text. Absent on every other message.
+   */
+  context_discovery?: ContextDiscoveryMetadata;
+}
+
+/**
+ * Metadata for a sandbox-discovered context file that was injected into the conversation.
+ * Mirrors the keys the C# ContextDiscoveryInjector packs into
+ * <c>TextMessage.Metadata["context_discovery"]</c>.
+ */
+export interface ContextDiscoveryMetadata {
+  path: string;
+  truncated?: boolean;
 }
 
 /**

@@ -195,6 +195,13 @@ try
     // them into SubAgentTemplate so they show up as spawnable types in the Agent tool catalog.
     _ = builder.Services.AddSingleton<WorkspaceSubAgentLoader>();
 
+    // Sandbox context-file (CLAUDE.md / AGENTS.md) injection. The formatter owns the
+    // <context-discovery> wrapper tag shared by the boot-time system prompt and the mid-session
+    // user-turn injection; the injector wires gateway webhook deliveries into every live agent
+    // thread bound to the same sandbox session.
+    _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
+    _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
+
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
     // dropdown regardless of LM_PROVIDER_MODE.
@@ -275,8 +282,9 @@ try
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
+        var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
 
-        return new MultiTurnAgentPool(
+        var pool = new MultiTurnAgentPool(
             (threadId, mode, providerId, requestResponseDumpFileName) =>
             {
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
@@ -319,6 +327,21 @@ try
                         + sandboxSession.HostPath
                         + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
                         + "The shell tools (Bash, PowerShell) already start in this directory.";
+
+                    // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
+                    // discovered into the system prompt. Mid-session deliveries land via the
+                    // webhook + injector; this fills the boot-time hole where the gateway has
+                    // already scanned the workspace before the first turn is sent.
+                    var contextSuffix = TryBuildRootContextSuffix(
+                        sandboxRegistry,
+                        sandboxSession,
+                        sp.GetRequiredService<ContextDiscoveryFormatter>(),
+                        loggerFactory.CreateLogger("LmStreaming.Sample.ContextDiscoverySeed"));
+                    if (!string.IsNullOrEmpty(contextSuffix))
+                    {
+                        wsSuffix += contextSuffix;
+                    }
+
                     effectiveMode = mode with { SystemPrompt = mode.SystemPrompt + wsSuffix };
                 }
 
@@ -628,6 +651,12 @@ try
                                 subAgentOptions.Templates,
                                 subAgentFactory);
                         sharedSubAgentSource = binding.Source;
+
+                        // Register this agent's threadId against the session so the
+                        // context-discovery webhook can fan a context_file delivery out to it.
+                        // Mode-switch recreations preserve threadId by design (and don't fire
+                        // the pool's ThreadRemoved event), so this registration survives them.
+                        sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     }
 
                     var agent = new MultiTurnAgentLoop(
@@ -682,6 +711,20 @@ try
             conversationStore: conversationStore,
             logger: loggerFactory.CreateLogger<MultiTurnAgentPool>()
         );
+
+        // When a thread is fully removed (NOT recreated for a mode-switch — that preserves the
+        // same threadId), drop its session→thread membership so the context-discovery injector
+        // stops trying to enqueue messages into the disposed agent. The registry can't observe
+        // sessionId from the threadId alone, so we walk the small per-session sets.
+        pool.ThreadRemoved += threadId =>
+        {
+            // Best-effort: the registry's UnregisterThread is itself best-effort + idempotent,
+            // and a session id we don't know about is a no-op. We don't have the sessionId in
+            // hand, so the cleanest contract is to ask the registry to scrub.
+            sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
+        };
+
+        return pool;
     });
 
     // Register the ChatWebSocketManager
@@ -1305,6 +1348,92 @@ public partial class Program
         }
 
         return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
+    }
+
+    /// <summary>
+    /// Asks the gateway for every <c>context_file</c> the workspace contains, host-reads each
+    /// one (via the same containment guard the sub-agent loader uses), and concatenates the
+    /// formatted blocks. Returns an empty string when discovery hasn't surfaced any context
+    /// files yet, the session has no host path, the gateway call fails, or every file fails
+    /// the containment / read step. All failures are logged and swallowed — context-file
+    /// seeding is a best-effort enrichment, never a precondition for the chat session.
+    /// </summary>
+    private static string TryBuildRootContextSuffix(
+        SandboxSessionRegistry sandboxRegistry,
+        SandboxSession sandboxSession,
+        ContextDiscoveryFormatter formatter,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        const string ContextFileKind = "context_file";
+
+        if (string.IsNullOrWhiteSpace(sandboxSession.HostPath))
+        {
+            return string.Empty;
+        }
+
+        IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> items;
+        try
+        {
+            items = sandboxRegistry
+                .ListDiscoveredAsync(sandboxSession.SessionId)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to list discovered context files for session {SessionId}; skipping root context seed.",
+                sandboxSession.SessionId);
+            return string.Empty;
+        }
+
+        var basePath = WorkspaceSubAgentLoader.NormalizeBasePath(sandboxSession.HostPath);
+        var blocks = new List<string>();
+
+        foreach (var item in items)
+        {
+            if (!string.Equals(item.Kind, ContextFileKind, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!WorkspaceSubAgentLoader.TryResolveContainedPath(basePath, item.Path, out var fullPath))
+            {
+                logger.LogWarning(
+                    "Skipping discovered context file {Path} for session {SessionId}: outside workspace.",
+                    item.Path,
+                    sandboxSession.SessionId);
+                continue;
+            }
+
+            string content;
+            try
+            {
+                content = File.ReadAllText(fullPath);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Skipping discovered context file {Path} for session {SessionId}: read failed.",
+                    item.Path,
+                    sandboxSession.SessionId);
+                continue;
+            }
+
+            var block = formatter.BuildSystemPromptBlock(item.Path, content, truncated: false);
+            if (!string.IsNullOrEmpty(block))
+            {
+                blocks.Add(block);
+                // Mark each seeded file as seen so a same-file delivery on the webhook side
+                // (the gateway re-emits the same path right after session creation) is dropped
+                // by the injector — otherwise the model would see the file twice on turn 1.
+                _ = sandboxRegistry.TryMarkDiscoverySeen(sandboxSession.SessionId, ContextFileKind, item.Path);
+            }
+        }
+
+        return blocks.Count == 0 ? string.Empty : "\n\n" + string.Join("\n\n", blocks);
     }
 
     private static int ResolveCodexMcpPort()

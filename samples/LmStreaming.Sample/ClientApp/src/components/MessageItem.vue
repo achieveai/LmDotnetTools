@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { inject } from 'vue';
 import type { ChatMessage } from '@/composables/useChat';
-import type { ToolCallResultMessage, ToolCall } from '@/types';
+import type { ToolCallResultMessage, ToolCall, TextMessage } from '@/types';
 import { isTextMessage, isToolsCallMessage, isReasoningMessage } from '@/types';
 import TextMessageVue from './TextMessage.vue';
 import ThinkingPill from './ThinkingPill.vue';
 import { getToolComponent } from './tools/toolRegistry';
+
+/**
+ * Detects sandbox context-file injections so the message renders as a compact pill instead
+ * of a wall of CLAUDE.md / AGENTS.md body. The marker is set by the backend's
+ * ContextDiscoveryInjector and flattened to a top-level field by ShadowPropertiesJsonConverter.
+ */
+function isContextDiscoveryMessage(content: ChatMessage['content']): content is TextMessage {
+  return isTextMessage(content) && content.context_discovery != null;
+}
 
 defineProps<{
   message: ChatMessage;
@@ -51,6 +60,23 @@ function getResult(toolCall: ToolCall): ToolCallResultMessage | null {
           />
         </div>
       </template>
+
+      <!-- Sandbox-discovered context file (CLAUDE.md / AGENTS.md): compact pill, not the full body -->
+      <div
+        v-else-if="isContextDiscoveryMessage(message.content)"
+        class="context-pill"
+        data-testid="context-pill"
+        :title="message.content.context_discovery!.path"
+      >
+        <span class="context-pill-icon" aria-hidden="true">&#x1F4C4;</span>
+        <span class="context-pill-label">Context loaded:</span>
+        <span class="context-pill-path">{{ message.content.context_discovery!.path }}</span>
+        <span
+          v-if="message.content.context_discovery!.truncated"
+          class="context-pill-truncated"
+          data-testid="context-pill-truncated"
+        >(truncated)</span>
+      </div>
 
       <!-- Text message - render as regular text -->
       <TextMessageVue
@@ -133,5 +159,30 @@ function getResult(toolCall: ToolCall): ToolCallResultMessage | null {
   font-size: 12px;
   overflow-x: auto;
   margin: 0;
+}
+
+.context-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  color: #3730a3;
+  font-size: 13px;
+}
+
+.context-pill-label {
+  font-weight: 500;
+}
+
+.context-pill-path {
+  font-family: monospace;
+}
+
+.context-pill-truncated {
+  color: #9a3412;
+  font-size: 12px;
 }
 </style>
