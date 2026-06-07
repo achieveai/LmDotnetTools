@@ -44,12 +44,16 @@ public sealed class M365OAuthProvider : OAuthProviderBase
     /// <param name="tokenCacheFilePath">Gitignored file the MSAL token cache is serialized to.</param>
     /// <param name="logger">Logger; token material is never written to it.</param>
     /// <param name="time">Clock — overridable for tests (defaults to <see cref="TimeProvider.System"/>).</param>
+    /// <param name="msalHttpClientFactory">MSAL HTTP transport override — only used in tests to stub the
+    /// Entra token endpoint without hitting the network. Production leaves it null so MSAL provisions
+    /// its default HTTP client.</param>
     public M365OAuthProvider(
         M365AuthOptions options,
         string callbackBaseUrl,
         string tokenCacheFilePath,
         ILogger<M365OAuthProvider> logger,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IMsalHttpClientFactory? msalHttpClientFactory = null)
         : base(logger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -67,12 +71,20 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         }
 
         var authority = $"https://login.microsoftonline.com/{_options.TenantId}";
-        _app = ConfidentialClientApplicationBuilder
+        var builder = ConfidentialClientApplicationBuilder
             .Create(_options.ClientId)
             .WithClientSecret(_options.ClientSecret)
             .WithAuthority(authority)
-            .WithRedirectUri(BuildRedirectUri())
-            .Build();
+            .WithRedirectUri(BuildRedirectUri());
+
+        if (msalHttpClientFactory is not null)
+        {
+            // Tests intercept the Entra token endpoint via this factory; instance discovery would
+            // otherwise reach out to login.microsoftonline.com on the first call.
+            builder = builder.WithHttpClientFactory(msalHttpClientFactory).WithInstanceDiscovery(false);
+        }
+
+        _app = builder.Build();
 
         _app.UserTokenCache.SetBeforeAccess(OnBeforeCacheAccess);
         _app.UserTokenCache.SetAfterAccess(OnAfterCacheAccess);
@@ -108,7 +120,7 @@ public sealed class M365OAuthProvider : OAuthProviderBase
     }
 
     /// <inheritdoc />
-    public override Task<SignInChallenge> BeginSignInAsync(CancellationToken ct = default)
+    public override async Task<SignInChallenge> BeginSignInAsync(CancellationToken ct = default)
     {
         if (_app is null)
         {
@@ -136,7 +148,32 @@ public sealed class M365OAuthProvider : OAuthProviderBase
         var launched = OpenBrowser(authorizeUrl);
         Logger.LogInformation("M365 sign-in started (browser launched: {Launched}); awaiting app-hosted callback.", launched);
 
-        return Task.FromResult(new SignInChallenge(authorizeUrl, launched));
+        // Without a deadline, an abandoned browser tab leaves status Pending forever: the callback
+        // simply never arrives. Mirror GitHub's pattern — schedule a background timer that flips to
+        // sign_in_timeout if the state is still pending at the TTL.
+        await StartBackgroundSignInAsync(token => RunSignInDeadlineAsync(state, token)).ConfigureAwait(false);
+
+        return new SignInChallenge(authorizeUrl, launched);
+    }
+
+    private async Task RunSignInDeadlineAsync(string state, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(PendingSignInTtl, _time, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        // Race against the callback: only flip if the state entry is still pending. CompleteSignInAsync
+        // removes the entry on success/failure, so an in-flight redemption clears it before we get here.
+        if (_pending.TryRemove(state, out _) && Status.State == OAuthSignInState.Pending)
+        {
+            SetFailed("sign_in_timeout");
+            Logger.LogWarning("M365 sign-in timed out after {Timeout:c} awaiting the app-hosted callback.", PendingSignInTtl);
+        }
     }
 
     /// <inheritdoc />
@@ -333,9 +370,33 @@ public sealed class M365OAuthProvider : OAuthProviderBase
     {
         lock (_cacheLock)
         {
-            if (File.Exists(_cacheFilePath))
+            if (!File.Exists(_cacheFilePath))
             {
-                args.TokenCache.DeserializeMsalV3(File.ReadAllBytes(_cacheFilePath));
+                return;
+            }
+
+            byte[] bytes;
+            try
+            {
+                bytes = File.ReadAllBytes(_cacheFilePath);
+            }
+            catch (IOException ex)
+            {
+                // Cache file is locked by another process or unreadable. Skip the load and let MSAL
+                // operate against an empty cache — the user will see NotStarted and re-sign-in.
+                Logger.LogWarning(ex, "M365 token cache could not be read; continuing with an empty cache.");
+                return;
+            }
+
+            try
+            {
+                args.TokenCache.DeserializeMsalV3(bytes);
+            }
+            catch (Exception ex)
+            {
+                // Corrupt / truncated cache (crash mid-write, disk full). Treat as empty rather than
+                // wedging the token-acquire path — the user re-signs once and the cache is rewritten.
+                Logger.LogWarning(ex, "M365 token cache at {Path} was unreadable and will be ignored.", _cacheFilePath);
             }
         }
     }

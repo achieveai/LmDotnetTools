@@ -40,7 +40,7 @@ public sealed class AuthPagesController(
         var status = provider.Status;
         if (status.State == OAuthSignInState.SignedIn)
         {
-            return Content(BuildSignedInHtml(provider.ProviderId, status.Account), "text/html");
+            return Content(BuildSignedInHtml(provider.ProviderId, status), "text/html");
         }
 
         try
@@ -58,15 +58,30 @@ public sealed class AuthPagesController(
         return Content(BuildPendingHtml(provider.ProviderId), "text/html");
     }
 
-    private static string BuildSignedInHtml(string providerId, string? account)
+    private static string BuildSignedInHtml(string providerId, OAuthStatus status)
     {
         var encoded = Encode(providerId);
-        var accountLine = string.IsNullOrEmpty(account)
+        var accountLine = string.IsNullOrEmpty(status.Account)
             ? string.Empty
-            : $"<p>Account: <code>{Encode(account)}</code></p>";
+            : $"<p>Account: <code>{Encode(status.Account)}</code></p>";
+
+        // Scopes the user granted, surfaced verbatim from the provider's last sign-in so the
+        // operator can confirm the grant covers what the app needs. Empty list (e.g. provider has
+        // not exposed scopes) just renders nothing.
+        var scopesLine = status.Scopes is { Count: > 0 }
+            ? $"<p>Scopes: <code>{Encode(string.Join(' ', status.Scopes))}</code></p>"
+            : string.Empty;
+
+        // ExpiresAtUtc is rendered as an ISO-8601 absolute timestamp; the operator can compare it
+        // against now without us guessing a locale. Some providers (M365 hydrate) don't surface an
+        // expiry — omit the line in that case.
+        var expiryLine = status.ExpiresAtUtc is { } expiresAt
+            ? $"<p>Expires: <code>{Encode(expiresAt.UtcDateTime.ToString("o", System.Globalization.CultureInfo.InvariantCulture))}</code></p>"
+            : string.Empty;
+
         return Page(
             rawTitle: $"Signed in to {providerId}",
-            body: $"<h3>Signed in to {encoded}</h3>{accountLine}<p>You can close this tab.</p>");
+            body: $"<h3>Signed in to {encoded}</h3>{accountLine}{scopesLine}{expiryLine}<p>You can close this tab.</p>");
     }
 
     private static string BuildUnavailableHtml(string providerId, string error)

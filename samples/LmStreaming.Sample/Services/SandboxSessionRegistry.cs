@@ -610,6 +610,15 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// provider's hosts. Returns <c>(null, null)</c> when no provider is configured so both blocks
     /// are omitted from the JSON.
     /// </summary>
+    /// <summary>
+    /// Test seam: returns the gateway auth-provider ids the registry would attach to a
+    /// sandbox-create request given the current <see cref="AuthOptions"/>. Mirrors the inputs that
+    /// drive the optional gateway rule + webhook entry — useful for asserting the gating logic for
+    /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
+    /// </summary>
+    internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
+        BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
+
     private (IReadOnlyList<AuthProviderDto>? Providers, NetworkDto? Network) BuildAuthProviders()
     {
         var providers = new List<AuthProviderDto>();

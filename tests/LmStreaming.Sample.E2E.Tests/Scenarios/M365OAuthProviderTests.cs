@@ -1,6 +1,9 @@
+using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
 using LmStreaming.Sample.Services.Auth;
+using Microsoft.Identity.Client;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.E2E.Tests.Scenarios;
@@ -20,20 +23,27 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
     {
     }
 
-    private M365OAuthProvider NewProvider(string? clientId, string? clientSecret, string cacheDir, TimeProvider? time = null) =>
+    private M365OAuthProvider NewProvider(
+        string? clientId,
+        string? clientSecret,
+        string cacheDir,
+        TimeProvider? time = null,
+        IMsalHttpClientFactory? msalHttpClientFactory = null,
+        string tenantId = "common") =>
         new(
             new M365AuthOptions
             {
                 ClientId = clientId,
                 ClientSecret = clientSecret,
-                TenantId = "common",
+                TenantId = tenantId,
                 Scopes = ["User.Read", "Mail.Read", "openid", "profile", "offline_access"],
                 RedirectPath = "/auth/m365/callback",
             },
             callbackBaseUrl: "http://localhost:5000",
             tokenCacheFilePath: Path.Combine(cacheDir, "msal-m365.bin"),
             LoggerFactory.CreateLogger<M365OAuthProvider>(),
-            time);
+            time,
+            msalHttpClientFactory);
 
     [Fact]
     public async Task Unconfigured_provider_is_disabled_not_crashing()
@@ -225,6 +235,29 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Hydrate_with_corrupt_cache_file_is_tolerated_and_leaves_not_started()
+    {
+        // Crash-mid-write or disk-full leaves msal-m365.bin with garbage bytes. Without a guard around
+        // DeserializeMsalV3 the next token-acquire path throws and wedges a previously signed-in user.
+        // After the fix it must be treated as an empty cache: no throw, state stays NotStarted.
+        LogTestStart();
+        using var temp = new TempDir();
+        Directory.CreateDirectory(temp.Path);
+        var cachePath = Path.Combine(temp.Path, "msal-m365.bin");
+        await File.WriteAllBytesAsync(cachePath, [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02]);
+
+        var provider = NewProvider(
+            clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
+            clientSecret: "secret",
+            cacheDir: temp.Path);
+
+        var hydrate = async () => await provider.HydrateFromStoreAsync();
+        await hydrate.Should().NotThrowAsync();
+        provider.Status.State.Should().Be(OAuthSignInState.NotStarted);
+        LogTestEnd();
+    }
+
+    [Fact]
     public async Task CompleteSignInAsync_returns_not_configured_when_provider_disabled()
     {
         LogTestStart();
@@ -234,6 +267,155 @@ public sealed class M365OAuthProviderTests : LoggingTestBase
         var failure = await provider.CompleteSignInAsync(code: "abc", state: "any");
         failure.Should().Be("not_configured");
         LogTestEnd();
+    }
+
+    [Fact]
+    public async Task CompleteSignInAsync_routes_token_exchange_through_injected_msal_http_factory()
+    {
+        // Pins the IMsalHttpClientFactory seam: without it, the AC's claim of test coverage for the
+        // token-endpoint surface is empty. The handler MUST observe the POST to /oauth2/v2.0/token —
+        // proving the factory is actually threaded through to MSAL's ConfidentialClient builder.
+        LogTestStart();
+        using var temp = new TempDir();
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+
+        var handler = new RecordingHandler((request, _) =>
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: stub\"}",
+                    Encoding.UTF8,
+                    "application/json"),
+            });
+        var factory = new FakeMsalHttpClientFactory(handler);
+
+        var provider = NewProvider(
+            clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
+            clientSecret: "secret",
+            cacheDir: temp.Path,
+            time: time,
+            msalHttpClientFactory: factory);
+        provider.RegisterPendingForTest("state-1", "verifier-1", time.GetUtcNow() + TimeSpan.FromMinutes(5));
+
+        _ = await provider.CompleteSignInAsync(code: "auth-code", state: "state-1");
+
+        handler.Requests.Should().Contain(u => u.AbsolutePath.EndsWith("/oauth2/v2.0/token", StringComparison.Ordinal),
+            "the seam must route MSAL's token request through the injected factory");
+        Logger.LogInformation("Seam captured {Count} token-endpoint calls.", handler.Requests.Count);
+        LogTestEnd();
+    }
+
+    [Fact]
+    public async Task CompleteSignInAsync_maps_invalid_grant_response_to_status_failed_with_error_code()
+    {
+        // Covers AC requirement (d): token-endpoint invalid_grant → mapped error code on Status,
+        // and no token material is leaked into the surfaced error (none was sent — but assert
+        // that the error code echoed is the OAuth error and not the description, which is the part
+        // that could leak details).
+        LogTestStart();
+        using var temp = new TempDir();
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+
+        var handler = new RecordingHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    "{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70008: refresh token expired\"}",
+                    Encoding.UTF8,
+                    "application/json"),
+            });
+        var factory = new FakeMsalHttpClientFactory(handler);
+
+        var provider = NewProvider(
+            clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
+            clientSecret: "secret",
+            cacheDir: temp.Path,
+            time: time,
+            msalHttpClientFactory: factory);
+        provider.RegisterPendingForTest("state-bad", "verifier-bad", time.GetUtcNow() + TimeSpan.FromMinutes(5));
+
+        var failure = await provider.CompleteSignInAsync(code: "auth-code", state: "state-bad");
+
+        failure.Should().Be("invalid_grant");
+        provider.Status.State.Should().Be(OAuthSignInState.Failed);
+        provider.Status.Error.Should().Be("invalid_grant", "MSAL's OAuth error code, not the description, is what we surface");
+        LogTestEnd();
+    }
+
+    [Fact]
+    public async Task CompleteSignInAsync_maps_token_endpoint_5xx_to_exchange_failed()
+    {
+        // Covers the catch-all branch: an unexpected token-endpoint failure (5xx, malformed body)
+        // must not throw past CompleteSignInAsync — the controller relies on the string return
+        // value to render the deny landing page.
+        LogTestStart();
+        using var temp = new TempDir();
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+
+        var handler = new RecordingHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("server is on fire", Encoding.UTF8, "text/plain"),
+            });
+        var factory = new FakeMsalHttpClientFactory(handler);
+
+        var provider = NewProvider(
+            clientId: "1d999ae2-a1f6-44ca-b733-c3df6ce8dc0c",
+            clientSecret: "secret",
+            cacheDir: temp.Path,
+            time: time,
+            msalHttpClientFactory: factory);
+        provider.RegisterPendingForTest("state-5xx", "verifier", time.GetUtcNow() + TimeSpan.FromMinutes(5));
+
+        var failure = await provider.CompleteSignInAsync(code: "code", state: "state-5xx");
+
+        failure.Should().NotBeNullOrEmpty();
+        provider.Status.State.Should().Be(OAuthSignInState.Failed);
+        // Error must not contain the response body (no leakage of incident details / token material).
+        provider.Status.Error.Should().NotContain("server is on fire");
+        LogTestEnd();
+    }
+
+    private sealed class FakeMsalHttpClientFactory : IMsalHttpClientFactory
+    {
+        private readonly HttpClient _client;
+
+        public FakeMsalHttpClientFactory(HttpMessageHandler handler) => _client = new HttpClient(handler);
+
+        public HttpClient GetHttpClient() => _client;
+    }
+
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> _responder;
+        private readonly List<Uri> _requests = [];
+
+        public RecordingHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> responder) =>
+            _responder = responder;
+
+        public IReadOnlyList<Uri> Requests
+        {
+            get
+            {
+                lock (_requests)
+                {
+                    return [.. _requests];
+                }
+            }
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            lock (_requests)
+            {
+                if (request.RequestUri is not null)
+                {
+                    _requests.Add(request.RequestUri);
+                }
+            }
+
+            return Task.FromResult(_responder(request, ct));
+        }
     }
 
     private sealed class ManualTimeProvider : TimeProvider

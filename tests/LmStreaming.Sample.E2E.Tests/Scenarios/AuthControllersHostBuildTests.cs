@@ -103,4 +103,31 @@ public sealed class AuthControllersHostBuildTests : LoggingTestBase
         m365Resp.IsSuccessStatusCode.Should().BeTrue();
         LogTestEnd();
     }
+
+    [Theory]
+    [InlineData("/api/auth/github/status")]
+    [InlineData("/api/auth/ado/status")]
+    [InlineData("/api/auth/m365/status")]
+    public async Task Status_serializes_state_as_string_name_for_landing_page_poll(string statusPath)
+    {
+        // Landing-page poll in AuthPagesController compares s.state === 'SignedIn' / 'Failed'.
+        // If OAuthSignInState ever serializes as the underlying integer (MVC's STJ default), every
+        // comparison goes dead and the page polls forever. The attribute-scoped [JsonStringEnumConverter]
+        // on the enum is what pins this contract.
+        LogTestStart();
+        using var factory = NewFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        using var resp = await client.GetAsync(statusPath);
+        var json = await resp.Content.ReadAsStringAsync();
+        Logger.LogInformation("{Path} -> {Body}", statusPath, json);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var stateProp = doc.RootElement.GetProperty("state");
+        stateProp.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
+        // Tolerant set — providers without config land in NotStarted; tests only need to assert
+        // that whatever value comes back is one of the documented string names.
+        stateProp.GetString().Should().BeOneOf("NotStarted", "Pending", "SignedIn", "Failed");
+        LogTestEnd();
+    }
 }
