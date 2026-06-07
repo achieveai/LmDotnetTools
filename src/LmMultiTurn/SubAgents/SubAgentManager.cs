@@ -22,6 +22,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
+    private readonly MutableSubAgentTemplateSource _source;
     private readonly ILogger _logger;
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
@@ -33,17 +34,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         IReadOnlyList<FunctionContract> parentContracts,
         IDictionary<string, ToolHandler> parentHandlers,
         SubAgentOptions options,
+        MutableSubAgentTemplateSource source,
         ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
         ArgumentNullException.ThrowIfNull(parentHandlers);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(source);
 
         _parentAgent = parentAgent;
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
         _options = options;
+        _source = source;
         _logger = logger ?? NullLogger.Instance;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
@@ -67,11 +71,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? removeTools = null,
         CancellationToken ct = default)
     {
-        if (!_options.Templates.TryGetValue(templateName, out var template))
+        // Snapshot the live source view so a concurrent TryRegister cannot make the
+        // diagnostic Available list inconsistent with the lookup that produced template.
+        var templates = _source.Templates;
+        if (!templates.TryGetValue(templateName, out var template))
         {
             throw new ArgumentException(
                 $"Unknown template '{templateName}'. " +
-                $"Available: {string.Join(", ", _options.Templates.Keys)}",
+                $"Available: {string.Join(", ", templates.Keys)}",
                 nameof(templateName));
         }
 
@@ -359,7 +366,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<string> GetTemplateNames()
     {
-        return _options.Templates.Keys.ToList().AsReadOnly();
+        return _source.Templates.Keys.ToList().AsReadOnly();
     }
 
     public async ValueTask DisposeAsync()

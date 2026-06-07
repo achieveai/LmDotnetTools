@@ -207,6 +207,65 @@ public class FunctionRegistryTests
     }
 
     [Fact]
+    public void BuildContracts_ReturnsSameContractsAsBuild()
+    {
+        // BuildContracts is the per-call hook ToolCallInjectionMiddleware uses; it must produce
+        // the same contracts as Build() (the canonical materialization path) so the catalog the
+        // LLM sees is identical to the one whose handlers are registered.
+        string[] funcs = ["func1", "func2"];
+        var registry = new FunctionRegistry();
+        var provider = CreateTestProvider("test", funcs);
+        _ = registry.AddProvider(provider);
+
+        var (buildContracts, _) = registry.Build();
+        var standaloneContracts = registry.BuildContracts();
+
+        Assert.Equal(
+            buildContracts.Select(c => c.Name).OrderBy(n => n),
+            standaloneContracts.Select(c => c.Name).OrderBy(n => n));
+    }
+
+    [Fact]
+    public void BuildContracts_Repeatable_SideEffectFree()
+    {
+        // The middleware calls BuildContracts() on every request; mutating internal registry
+        // state per-call would (a) break repeatability and (b) leak handler dictionaries.
+        // This test pins that calling BuildContracts twice returns the same contracts and that
+        // a subsequent Build() still works correctly.
+        string[] funcs = ["alpha", "beta"];
+        var registry = new FunctionRegistry();
+        _ = registry.AddProvider(CreateTestProvider("p", funcs));
+
+        var first = registry.BuildContracts().Select(c => c.Name).OrderBy(n => n).ToArray();
+        var second = registry.BuildContracts().Select(c => c.Name).OrderBy(n => n).ToArray();
+        var (afterBuild, handlersAfter) = registry.Build();
+
+        var third = afterBuild.Select(c => c.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(first, second);
+        Assert.Equal(first, third);
+        Assert.Equal(2, handlersAfter.Count);
+    }
+
+    [Fact]
+    public void BuildContracts_ObservesNewlyAddedProvider()
+    {
+        // The mid-session activation flow registers a new template into a MutableSubAgentTemplateSource
+        // and relies on the registry-equivalent surface (BuildContracts) to expose it. Mirror the
+        // same dynamic-add behaviour here directly against the FunctionRegistry path.
+        var registry = new FunctionRegistry();
+        _ = registry.AddProvider(CreateTestProvider("p1", ["one"]));
+
+        var before = registry.BuildContracts().Select(c => c.Name).ToArray();
+        _ = registry.AddProvider(CreateTestProvider("p2", ["two"]));
+        var after = registry.BuildContracts().Select(c => c.Name).OrderBy(n => n).ToArray();
+
+        string[] expectedBefore = ["one"];
+        string[] expectedAfter = ["one", "two"];
+        Assert.Equal(expectedBefore, before);
+        Assert.Equal(expectedAfter, after);
+    }
+
+    [Fact]
     public void BuildMiddleware_CreatesWorkingMiddleware()
     {
         // Arrange

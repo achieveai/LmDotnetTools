@@ -81,66 +81,108 @@ public sealed class WorkspaceSubAgentLoader
             return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
         }
 
-        var basePath = NormalizeBasePath(session.HostPath);
         var result = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
 
         foreach (var item in items)
         {
-            if (!string.Equals(item.Kind, SubAgentKind, StringComparison.Ordinal))
+            var loaded = await LoadOneAsync(session, item, agentFactory, ct).ConfigureAwait(false);
+            if (loaded is null || string.IsNullOrWhiteSpace(loaded.Name))
             {
                 continue;
             }
 
-            if (!TryResolveContainedPath(basePath, item.Path, out var fullPath))
-            {
-                _logger.LogWarning(
-                    "Skipping discovered sub-agent {Name}: path '{Path}' is outside workspace '{HostPath}'",
-                    item.Name,
-                    item.Path,
-                    session.HostPath);
-                continue;
-            }
-
-            string markdown;
-            try
-            {
-                markdown = await File.ReadAllTextAsync(fullPath, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Skipping discovered sub-agent {Name}: failed to read '{Path}'",
-                    item.Name,
-                    fullPath);
-                continue;
-            }
-
-            var stem = Path.GetFileNameWithoutExtension(fullPath);
-            var parsed = SubAgentMarkdownParser.Parse(markdown, stem);
-            if (parsed is null)
-            {
-                _logger.LogWarning(
-                    "Skipping discovered sub-agent {Name}: markdown at '{Path}' has no valid frontmatter or empty body",
-                    item.Name,
-                    fullPath);
-                continue;
-            }
-
-            var template = MapToTemplate(parsed, agentFactory);
-            if (!result.TryAdd(parsed.Name, template))
+            if (!result.TryAdd(loaded.Name, loaded))
             {
                 _logger.LogWarning(
                     "Discovered sub-agent {Name} collides with an earlier discovery; keeping the first occurrence",
-                    parsed.Name);
+                    loaded.Name);
             }
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Loads a single discovered item into a <see cref="SubAgentTemplate"/>, or returns null when
+    /// the item should be skipped (wrong kind, traversal attempt, missing/unreadable file,
+    /// malformed markdown). Cancellation propagates; all other failures are logged and become a
+    /// null result so the caller (batch loader OR the
+    /// <see cref="LmStreaming.Sample.Controllers.ContextDiscoveryController"/> webhook handler)
+    /// can treat them uniformly.
+    /// </summary>
+    /// <remarks>
+    /// Mid-session activation flow (issue #77): the context-discovery webhook fires once per newly
+    /// discovered item; for <c>kind == "subagent"</c> it calls this method and then registers the
+    /// result with the session's <c>MutableSubAgentTemplateSource</c>. Sharing this path with
+    /// <see cref="LoadAsync"/> keeps the boot-time scan and the live activation on a single
+    /// codepath so security/traversal guards and frontmatter rules cannot drift apart.
+    /// </remarks>
+    public async Task<SubAgentTemplate?> LoadOneAsync(
+        SandboxSession session,
+        SandboxSessionRegistry.DiscoveredItem item,
+        Func<IStreamingAgent> agentFactory,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(item);
+        ArgumentNullException.ThrowIfNull(agentFactory);
+
+        if (!string.Equals(item.Kind, SubAgentKind, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(session.HostPath))
+        {
+            _logger.LogWarning(
+                "Skipping discovered sub-agent {Name}: session {SessionId} has no HostPath",
+                item.Name,
+                session.SessionId);
+            return null;
+        }
+
+        var basePath = NormalizeBasePath(session.HostPath);
+        if (!TryResolveContainedPath(basePath, item.Path, out var fullPath))
+        {
+            _logger.LogWarning(
+                "Skipping discovered sub-agent {Name}: path '{Path}' is outside workspace '{HostPath}'",
+                item.Name,
+                item.Path,
+                session.HostPath);
+            return null;
+        }
+
+        string markdown;
+        try
+        {
+            markdown = await File.ReadAllTextAsync(fullPath, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Skipping discovered sub-agent {Name}: failed to read '{Path}'",
+                item.Name,
+                fullPath);
+            return null;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(fullPath);
+        var parsed = SubAgentMarkdownParser.Parse(markdown, stem);
+        if (parsed is null)
+        {
+            _logger.LogWarning(
+                "Skipping discovered sub-agent {Name}: markdown at '{Path}' has no valid frontmatter or empty body",
+                item.Name,
+                fullPath);
+            return null;
+        }
+
+        return MapToTemplate(parsed, agentFactory);
     }
 
     /// <summary>

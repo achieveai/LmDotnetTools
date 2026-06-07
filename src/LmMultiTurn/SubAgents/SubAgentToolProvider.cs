@@ -15,16 +15,16 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 public class SubAgentToolProvider : IFunctionProvider
 {
     private readonly SubAgentManager _manager;
-    private readonly IReadOnlyDictionary<string, SubAgentTemplate> _templates;
+    private readonly MutableSubAgentTemplateSource _source;
 
     public SubAgentToolProvider(
         SubAgentManager manager,
-        IReadOnlyDictionary<string, SubAgentTemplate> templates)
+        MutableSubAgentTemplateSource source)
     {
         ArgumentNullException.ThrowIfNull(manager);
-        ArgumentNullException.ThrowIfNull(templates);
+        ArgumentNullException.ThrowIfNull(source);
         _manager = manager;
-        _templates = templates;
+        _source = source;
     }
 
     public string ProviderName => "SubAgentTools";
@@ -43,7 +43,11 @@ public class SubAgentToolProvider : IFunctionProvider
 
     private FunctionDescriptor CreateAgentDescriptor()
     {
-        var typeList = string.Join(", ", _templates.Keys);
+        // Snapshot the live templates view once per descriptor build so the catalog text
+        // and the subagent_type enum list are consistent within this descriptor even when
+        // TryRegister lands concurrently.
+        var templates = _source.Templates;
+        var typeList = string.Join(", ", templates.Keys);
 
         var contract = new FunctionContract
         {
@@ -60,7 +64,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "Each sub-agent starts fresh and does NOT see your conversation history, "
                 + "so make the prompt self-contained. Use SendMessage to continue an "
                 + "existing sub-agent with a follow-up.\n\n"
-                + BuildTemplateCatalog(),
+                + BuildTemplateCatalog(templates),
             Parameters =
             [
                 new FunctionParameterContract
@@ -226,12 +230,12 @@ public class SubAgentToolProvider : IFunctionProvider
     /// Builds the per-template catalog embedded in the Agent tool description so the
     /// parent LLM can pick the right sub-agent type.
     /// </summary>
-    private string BuildTemplateCatalog()
+    private static string BuildTemplateCatalog(IReadOnlyDictionary<string, SubAgentTemplate> templates)
     {
         var sb = new StringBuilder();
         _ = sb.Append("Available sub-agent types (subagent_type):");
 
-        foreach (var (key, template) in _templates)
+        foreach (var (key, template) in templates)
         {
             var description = string.IsNullOrWhiteSpace(template.Description)
                 ? "(no description provided)"

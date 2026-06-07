@@ -646,7 +646,8 @@ public class SubAgentManagerTests : IAsyncLifetime
             parentAgent: _parentMock.Object,
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
-            options: options);
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates));
     }
 
     /// <summary>

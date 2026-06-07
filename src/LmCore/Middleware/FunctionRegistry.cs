@@ -10,16 +10,22 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
 ///     Builder for combining functions from multiple sources with conflict resolution.
-///     IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded
-///     context during application initialization. The registry should be built once during startup
-///     and the resulting function collections should be treated as read-only.
+///     IMPORTANT: Configuration (AddProvider, AddFunction, WithXxx) is NOT thread-safe and must
+///     run single-threaded at startup. Once configured, the registry is effectively frozen — at
+///     that point <see cref="Build"/> and <see cref="BuildContracts"/> may be called repeatedly
+///     and concurrently. Per-turn callers (e.g. <see cref="ToolCallInjectionMiddleware"/> via its
+///     factory delegate) rely on this contract so a mutating upstream catalog
+///     (e.g. <c>MutableSubAgentTemplateSource</c>, whose own thread-safety is provided by its
+///     internal <c>ConcurrentDictionary</c>) surfaces on the next turn without rebuilding the
+///     middleware stack.
 ///     Typical usage pattern:
-///     1. Create a FunctionRegistry instance during initialization
-///     2. Configure it with providers and settings
-///     3. Call Build() once to generate the final function collections
-///     4. Use the built collections (which are immutable) throughout the application lifetime
-///     Do not modify the registry after calling Build(), and do not share a FunctionRegistry
-///     instance across multiple threads during configuration.
+///     1. Create a FunctionRegistry instance during initialization.
+///     2. Configure it with providers and settings.
+///     3. Stop configuring (freeze).
+///     4. Call Build() / BuildContracts() per request. Provider-internal state may evolve as long
+///        as the provider documents its own thread-safety; the registry's own member collections
+///        are read-only after step 3.
+///     Do not call configuration methods after step 3.
 /// </summary>
 public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithProviders, IConfiguredFunctionRegistry
 {
@@ -86,6 +92,24 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         }
 
         return issues;
+    }
+
+    /// <summary>
+    ///     Re-materializes only the function contracts from the registered providers and
+    ///     explicit functions. Side-effect free and repeatable — callers may invoke this
+    ///     per request (e.g. <see cref="ToolCallInjectionMiddleware"/>'s factory delegate)
+    ///     so a mutating upstream catalog (such as <c>MutableSubAgentTemplateSource</c>)
+    ///     surfaces on the next turn without rebuilding the middleware stack.
+    /// </summary>
+    /// <remarks>
+    ///     This shares the contract-materialization path with <see cref="Build"/>; the
+    ///     handler dictionary it produces is discarded. Provider handlers are method
+    ///     references, so re-running the path is cheap.
+    /// </remarks>
+    public IEnumerable<FunctionContract> BuildContracts()
+    {
+        var (contracts, _) = Build();
+        return contracts;
     }
 
     /// <summary>
@@ -179,7 +203,10 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             finalHandlers[registeredName] = resolved.Handler;
         }
 
-        logger.LogInformation(
+        // Debug rather than Information because Build() is now re-run per turn via
+        // BuildContracts() to surface mutable upstream catalogs (e.g. MutableSubAgentTemplateSource);
+        // emitting an Information record every turn would spam logs.
+        logger.LogDebug(
             "Function registry built: {ContractCount} functions registered",
             finalContracts.Count
         );
@@ -221,8 +248,11 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         ILogger<ToolCallInjectionMiddleware>? logger = null
     )
     {
-        var (contracts, handlers) = Build();
-        var middleware = new ToolCallInjectionMiddleware(contracts, name, logger);
+        var (_, handlers) = Build();
+        var middleware = new ToolCallInjectionMiddleware(
+            BuildContracts,
+            name,
+            logger);
         return (middleware, handlers);
     }
 
