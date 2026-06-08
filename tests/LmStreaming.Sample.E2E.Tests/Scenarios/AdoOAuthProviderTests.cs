@@ -76,7 +76,7 @@ public sealed class AdoOAuthProviderTests : LoggingTestBase
     public void StripReservedScopes_removes_offline_access_keeps_resource_scope()
     {
         LogTestStart();
-        var result = AdoOAuthProvider.StripReservedScopes(
+        var result = OAuthProviderBase.StripReservedScopes(
             ["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access", "openid", "profile"]);
         Logger.LogInformation("Stripped scopes: [{Scopes}]", string.Join(", ", result));
 

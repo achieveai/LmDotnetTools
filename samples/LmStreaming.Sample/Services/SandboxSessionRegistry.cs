@@ -610,6 +610,15 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// provider's hosts. Returns <c>(null, null)</c> when no provider is configured so both blocks
     /// are omitted from the JSON.
     /// </summary>
+    /// <summary>
+    /// Test seam: returns the gateway auth-provider ids the registry would attach to a
+    /// sandbox-create request given the current <see cref="AuthOptions"/>. Mirrors the inputs that
+    /// drive the optional gateway rule + webhook entry — useful for asserting the gating logic for
+    /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
+    /// </summary>
+    internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
+        BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
+
     private (IReadOnlyList<AuthProviderDto>? Providers, NetworkDto? Network) BuildAuthProviders()
     {
         var providers = new List<AuthProviderDto>();
@@ -664,6 +673,37 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                     Methods: [],
                     Paths: [],
                     AuthProvider: "ado-auth",
+                    RequiredScopes: [],
+                    Priority: 100
+                )
+            );
+        }
+
+        // M365 (Microsoft Graph). Gate on both ClientId and ClientSecret: the provider stays
+        // disabled when the secret is missing, so emitting the gateway rule + webhook entry in that
+        // case would point to a webhook that always denies — confusing rather than helpful.
+        if (!string.IsNullOrWhiteSpace(_authOptions.M365.ClientId)
+            && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret))
+        {
+            providers.Add(
+                new AuthProviderDto(
+                    Id: "m365-auth",
+                    Type: "webhook",
+                    Endpoint: $"{baseUrl}/api/auth/webhook/m365",
+                    GatewayAuth: _sharedSecret.Value,
+                    CacheTtlSeconds: 300,
+                    RequiredScopes: []
+                )
+            );
+            rules.Add(
+                new NetworkRuleDto(
+                    Id: "m365",
+                    Action: "allow",
+                    Hosts: OAuthProviderHosts.For("m365"),
+                    Ports: [443],
+                    Methods: [],
+                    Paths: [],
+                    AuthProvider: "m365-auth",
                     RequiredScopes: [],
                     Priority: 100
                 )

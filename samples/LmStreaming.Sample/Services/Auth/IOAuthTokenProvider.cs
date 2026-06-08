@@ -1,6 +1,15 @@
+using System.Text.Json.Serialization;
+
 namespace LmStreaming.Sample.Services.Auth;
 
 /// <summary>Sign-in lifecycle state for an OAuth provider.</summary>
+/// <remarks>
+/// The attribute-scoped <see cref="JsonStringEnumConverter"/> pins this enum's wire shape to its
+/// string name (e.g. <c>"SignedIn"</c>) regardless of host MVC defaults. The poll script in
+/// <c>AuthPagesController</c> compares against those names; serializing as the underlying integer
+/// would leave the landing page polling forever.
+/// </remarks>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum OAuthSignInState
 {
     NotStarted,

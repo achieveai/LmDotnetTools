@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
@@ -101,9 +100,9 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var redirectUri = $"http://127.0.0.1:{port}/callback";
 
-        var verifier = CreateCodeVerifier();
-        var challenge = CreateCodeChallenge(verifier);
-        var state = CreateCodeVerifier();
+        var verifier = PkceHelper.CreateCodeVerifier();
+        var challenge = PkceHelper.CreateCodeChallenge(verifier);
+        var state = PkceHelper.CreateState();
 
         var authorizeUrl = BuildAuthorizeUrl(_options.ClientId, redirectUri, _options.Scopes, state, challenge);
 
@@ -433,16 +432,6 @@ public sealed class GitHubOAuthProvider : OAuthProviderBase
             ["code_challenge"] = codeChallenge,
             ["code_challenge_method"] = "S256",
         });
-
-    /// <summary>Creates a high-entropy, URL-safe PKCE code verifier.</summary>
-    private static string CreateCodeVerifier() => Base64Url(RandomNumberGenerator.GetBytes(32));
-
-    /// <summary>Derives the S256 PKCE code challenge from the verifier.</summary>
-    private static string CreateCodeChallenge(string verifier) => Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
-
-    /// <summary>Base64url-encodes (no padding) per RFC 7636.</summary>
-    private static string Base64Url(byte[] bytes) =>
-        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     /// <summary>Parsed token-endpoint response (success or OAuth error).</summary>
     private sealed record TokenResponse(string? AccessToken, string? RefreshToken, int ExpiresIn, string? Error);

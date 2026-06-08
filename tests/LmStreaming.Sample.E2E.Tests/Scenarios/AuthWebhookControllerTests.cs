@@ -235,4 +235,81 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
         LogTestEnd();
     }
+
+    [Fact]
+    public async Task M365_not_signed_in_returns_200_deny()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        using var client = factory.CreateClient();
+
+        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var body = """
+            {
+              "session_id": "s-test",
+              "app_id": "lmstreaming-sample",
+              "provider_id": "m365",
+              "rule_id": "m365",
+              "destination_host": "graph.microsoft.com",
+              "destination_port": 443,
+              "method": "GET",
+              "path": "/v1.0/me",
+              "required_scopes": []
+            }
+            """;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/m365")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+        Logger.LogInformation("POST /api/auth/webhook/m365 with CORRECT secret, not signed in (expect 200 deny)");
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+        LogTestEnd();
+    }
+
+    [Fact]
+    public async Task M365_disallowed_host_returns_200_deny_via_defense_in_depth()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        using var client = factory.CreateClient();
+
+        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        // A misconfigured rule pointing m365 at api.github.com must NOT mint an m365 token toward
+        // GitHub — the webhook's OAuthProviderHosts.IsAllowed check is the final gate.
+        var body = """
+            {
+              "session_id": "s-test",
+              "app_id": "lmstreaming-sample",
+              "provider_id": "m365",
+              "rule_id": "m365",
+              "destination_host": "api.github.com",
+              "destination_port": 443,
+              "method": "GET",
+              "path": "/user",
+              "required_scopes": []
+            }
+            """;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/m365")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+        Logger.LogInformation("POST /api/auth/webhook/m365 toward api.github.com (expect 200 deny by hostlist)");
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+        doc.RootElement.GetProperty("reason").GetString().Should().Contain("not allowed");
+        LogTestEnd();
+    }
 }

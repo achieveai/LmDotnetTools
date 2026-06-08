@@ -165,17 +165,33 @@ try
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new GitHubOAuthProvider(
+    // Dual-register each provider: the concrete type is what the per-provider controller
+    // (AdoAuthController / GitHubAuthController) takes in its ctor, while the IOAuthTokenProvider
+    // alias keeps the enumerable-consuming callers (AuthWebhookController, OAuthTokenHydrator)
+    // working unchanged. Concrete-first registration + alias-to-concrete means there's exactly one
+    // singleton instance per provider.
+    _ = builder.Services.AddSingleton(sp => new GitHubOAuthProvider(
         authOptions.Github,
         sp.GetRequiredService<IOAuthTokenStore>(),
         new HttpClient(),
         sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()
     ));
-    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => new AdoOAuthProvider(
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<GitHubOAuthProvider>());
+
+    _ = builder.Services.AddSingleton(sp => new AdoOAuthProvider(
         authOptions.Ado,
         Path.Combine(oauthTokenDir, "msal-ado.bin"),
         sp.GetRequiredService<ILogger<AdoOAuthProvider>>()
     ));
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
+
+    _ = builder.Services.AddSingleton(sp => new M365OAuthProvider(
+        authOptions.M365,
+        authOptions.Webhook.CallbackBaseUrl,
+        Path.Combine(oauthTokenDir, "msal-m365.bin"),
+        sp.GetRequiredService<ILogger<M365OAuthProvider>>()
+    ));
+    _ = builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<M365OAuthProvider>());
 
     // Restore persisted sign-in state at startup so the status API/UI reflects a prior run's sign-in
     // (token injection always reads the store directly, but the surfaced status was in-memory only).
