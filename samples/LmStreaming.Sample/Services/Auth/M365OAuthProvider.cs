@@ -280,7 +280,11 @@ public sealed class M365OAuthProvider : OAuthProviderBase
                 .ExecuteAsync(ct)
                 .ConfigureAwait(false);
 
-            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, _options.Scopes, result.ExpiresOn, Error: null));
+            // Report MSAL's GRANTED scopes (what was actually consented), not the requested set:
+            // this reflects what the token can do and dodges the config-binder's append-onto-array
+            // duplication that would surface in the UI-facing status.
+            var grantedScopes = result.Scopes?.ToArray() ?? [];
+            SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, grantedScopes, result.ExpiresOn, Error: null));
             Logger.LogInformation("Signed in to M365 as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
             return null;
         }

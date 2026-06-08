@@ -44,8 +44,13 @@ public sealed class GitHubAuthOptions
     /// </summary>
     public string? ClientSecret { get; set; }
 
-    /// <summary>Scopes requested during the GitHub authorization-code flow.</summary>
-    public string[] Scopes { get; set; } = ["repo", "read:org"];
+    /// <summary>
+    /// Scopes requested during the GitHub authorization-code flow. Single source of truth is
+    /// configuration (<c>appsettings.Development.json</c> / env); leaving the default empty avoids
+    /// the .NET config-binder's append-onto-pre-populated-array gotcha that would otherwise emit
+    /// duplicate scopes in <c>OAuthStatus.Scopes</c>.
+    /// </summary>
+    public string[] Scopes { get; set; } = [];
 }
 
 /// <summary>Azure DevOps (Entra/MSAL) interactive OAuth settings.</summary>
@@ -58,10 +63,12 @@ public sealed class AdoAuthOptions
     public string TenantId { get; set; } = "organizations";
 
     /// <summary>
-    /// Azure DevOps resource scope. <c>offline_access</c> may be present for parity with other tools;
-    /// MSAL manages refresh itself and the provider strips reserved scopes before calling MSAL.
+    /// Azure DevOps resource scope. Single source of truth is configuration; default is empty so
+    /// the .NET config-binder does not append onto a pre-populated array (which would surface as
+    /// duplicate scopes in <c>OAuthStatus.Scopes</c>). <c>offline_access</c> may be supplied in
+    /// config for parity with other tools; the provider strips reserved scopes before calling MSAL.
     /// </summary>
-    public string[] Scopes { get; set; } = ["499b84ac-1321-427f-aa17-267ca6975798/.default", "offline_access"];
+    public string[] Scopes { get; set; } = [];
 }
 
 /// <summary>
@@ -87,16 +94,13 @@ public sealed class M365AuthOptions
     public string TenantId { get; set; } = "common";
 
     /// <summary>
-    /// Delegated Microsoft Graph scopes requested during the authorization-code flow. MSAL injects
-    /// reserved OIDC scopes (<c>openid</c>, <c>profile</c>, <c>offline_access</c>) itself.
+    /// Delegated Microsoft Graph scopes requested during the authorization-code flow. Single
+    /// source of truth is configuration; default is empty so the .NET config-binder does not
+    /// append onto a pre-populated array (which would surface as duplicate scopes in
+    /// <c>OAuthStatus.Scopes</c>). MSAL injects reserved OIDC scopes (<c>openid</c>,
+    /// <c>profile</c>, <c>offline_access</c>) itself.
     /// </summary>
-    public string[] Scopes { get; set; } =
-    [
-        "User.Read",
-        "Mail.Read",
-        "Calendars.Read",
-        "OnlineMeetings.Read",
-    ];
+    public string[] Scopes { get; set; } = [];
 
     /// <summary>
     /// App-hosted callback path on the primary port (e.g. <c>http://localhost:5000/auth/m365/callback</c>).

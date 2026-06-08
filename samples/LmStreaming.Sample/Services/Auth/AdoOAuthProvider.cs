@@ -117,7 +117,9 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
                     .ConfigureAwait(false);
 
                 urlReady.TrySetResult(string.Empty);
-                SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, _options.Scopes, result.ExpiresOn, Error: null));
+                // Report MSAL's GRANTED scopes (what was actually consented), not the requested set.
+                var grantedScopes = result.Scopes?.ToArray() ?? [];
+                SetStatus(new OAuthStatus(OAuthSignInState.SignedIn, result.Account.Username, grantedScopes, result.ExpiresOn, Error: null));
                 Logger.LogInformation("Signed in to ADO as {Account} (expires {ExpiresAt:o}).", result.Account.Username, result.ExpiresOn);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested && !token.IsCancellationRequested)

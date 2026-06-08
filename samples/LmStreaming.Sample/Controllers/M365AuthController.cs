@@ -35,6 +35,7 @@ public sealed class M365AuthController(
         }
         catch (InvalidOperationException ex)
         {
+            // Provider is registered but not configured (e.g. missing client id / secret).
             logger.LogInformation("OAuth sign-in unavailable for provider {ProviderId}.", provider.ProviderId);
             return Conflict(new { error = ex.Message });
         }
