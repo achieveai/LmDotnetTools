@@ -220,6 +220,13 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             {
                 message.ExplicitText = ExtractToolsList(requestRoot);
             }
+            else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__TOOL_SCHEMA__"))
+            {
+                var toolName = message.ExplicitText.Contains(':')
+                    ? message.ExplicitText.Split(':', 2)[1]
+                    : null;
+                message.ExplicitText = ExtractToolSchema(requestRoot, toolName);
+            }
             else if (message.ExplicitText == "__REQUEST_URL__")
             {
                 message.ExplicitText = request.RequestUri?.ToString() ?? "No request URL";
@@ -322,6 +329,49 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
+    ///     Extracts the description and parameter schema for a single named tool.
+    /// </summary>
+    private static string ExtractToolSchema(JsonElement root, string? toolName)
+    {
+        if (string.IsNullOrEmpty(toolName))
+        {
+            return "No tool name specified";
+        }
+
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return "No tools available";
+        }
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            // OpenAI format: { "type": "function", "function": { "name", "description", "parameters" } }
+            if (
+                tool.TryGetProperty("function", out var fn)
+                && fn.ValueKind == JsonValueKind.Object
+                && fn.TryGetProperty("name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                && string.Equals(name.GetString(), toolName, StringComparison.Ordinal)
+            )
+            {
+                var description =
+                    fn.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                        ? desc.GetString()
+                        : null;
+                JsonElement? schema = fn.TryGetProperty("parameters", out var pars) ? pars : null;
+                return ToolSchemaFormatter.ToMarkdown(toolName, description, schema);
+            }
+        }
+
+        return $"Tool '{toolName}' not found";
+    }
+
+    /// <summary>
     ///     Extracts request headers as a newline-separated string.
     /// </summary>
     private static string ExtractRequestHeaders(HttpRequestMessage request)
@@ -353,12 +403,12 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             return root.GetRawText();
         }
 
-        var result = new Dictionary<string, string>();
+        var result = new Dictionary<string, JsonElement>();
         foreach (var field in fields)
         {
             if (root.TryGetProperty(field, out var value))
             {
-                result[field] = value.ToString();
+                result[field] = value;
             }
         }
 
