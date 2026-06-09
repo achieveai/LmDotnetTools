@@ -62,11 +62,16 @@ public sealed class ChatWebSocketManager
             : $"{threadId}-{Guid.NewGuid():N}";
         using var logScope = LogContext.PushProperty("codex_session_id", codexSessionId);
 
+        // Resolve the provider the pool will actually use (a thread is locked to its first
+        // provider) so the log reflects reality instead of just the client's request.
+        var effectiveProviderId = _agentPool.GetEffectiveProviderId(threadId, providerId);
+
         _logger.LogInformation(
-            "WebSocket connection started for thread {ThreadId} with mode {ModeId} provider {ProviderId} and session {CodexSessionId}",
+            "WebSocket connection started for thread {ThreadId} with mode {ModeId} requested provider {RequestedProviderId} effective provider {EffectiveProviderId} and session {CodexSessionId}",
             threadId,
             mode?.Id ?? "default",
             providerId ?? "(default)",
+            effectiveProviderId ?? "(default)",
             codexSessionId);
 
         var resolvedMode = mode ?? SystemChatModes.All[0];

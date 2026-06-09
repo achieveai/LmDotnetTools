@@ -56,3 +56,6 @@ node_modules/
 
 # OAuth refresh/access token store (FileOAuthTokenStore) — never commit secrets
 **/oauth-tokens/
+
+# Local git worktrees
+.worktrees/

@@ -208,6 +208,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         // first-creation calls for the same threadId still serialise on creation.
         var resolvedProviderId = ResolveProviderId(threadId, requestedProviderId);
 
+        // Surface silent provider overrides: a thread is locked to its first provider, so a
+        // later connection requesting a different provider is ignored. Without this warning the
+        // logs show the requested provider while a stale agent of a different provider serves
+        // the turn — which makes log-based debugging misleading.
+        if (
+            !string.IsNullOrWhiteSpace(requestedProviderId)
+            && !string.Equals(requestedProviderId, resolvedProviderId, StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            _logger.LogWarning(
+                "Thread {ThreadId} is locked to provider {EffectiveProviderId}; requested provider {RequestedProviderId} is ignored for this connection.",
+                threadId,
+                resolvedProviderId,
+                requestedProviderId
+            );
+        }
+
         // Use per-key lock to prevent concurrent factory invocations for the same threadId.
         // ConcurrentDictionary.GetOrAdd does not guarantee the factory runs at most once,
         // which would leak disposable resources (MCP clients) from the losing invocation.
