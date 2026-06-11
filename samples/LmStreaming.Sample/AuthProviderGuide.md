@@ -156,6 +156,8 @@ All settings live under the **`Auth`** configuration section (bound to
 | `Auth:M365:RedirectPath` | `/auth/m365/callback` | App-primary-port callback path. Must exactly match the redirect URI registered in the Entra app. |
 | `Auth:Webhook:PublicBaseUrl` | `http://127.0.0.1:5000` | The base URL the **gateway** calls back on to reach this app's webhook. Also serves as the M365 callback base. |
 | `Auth:Webhook:GatewaySharedSecret` | *(empty)* | Shared secret the gateway sends as `Authorization`. If unset, a random 64-hex-char secret is generated at startup. |
+| `Auth:Webhook:HoldTimeoutSeconds` | `120` | Deferred auth: how long a not-signed-in webhook call is held open while the chat UI prompts for sign-in. `0` disables deferral (immediate deny). |
+| `Auth:Webhook:PollIntervalSeconds` | `1.0` | Deferred auth: interval between token-acquisition attempts while a webhook call is held. |
 
 ### appsettings.json example
 
@@ -315,8 +317,9 @@ The webhook contract is implemented by `Controllers/AuthWebhookController.cs` on
    }
    ```
 
-   If the provider is not signed in (or a refresh fails), it returns a **deny** decision carrying a
-   token-free reason:
+   If the provider is not signed in (or a refresh fails), the call is first **held for deferred
+   auth** (see below); only when that hold resolves without a token does the app return a **deny**
+   decision carrying a token-free reason:
 
    ```json
    { "decision": "deny", "reason": "no valid token for provider 'github'; sign in required" }
@@ -327,6 +330,35 @@ The webhook contract is implemented by `Controllers/AuthWebhookController.cs` on
    the re-call the app transparently **refreshes** the access token using the stored refresh token
    (the access token is renewed ~120s before its real expiry), persists the new value, and returns
    it. The webhook never echoes token material into the gateway's logs.
+
+### Deferred auth (sign in on demand — no pre-auth required)
+
+You no longer need to sign in *before* the sandboxed agent touches GitHub/ADO/Graph. When the
+webhook finds no valid token, `Services/Auth/PendingAuthCoordinator.cs` **holds the gateway's call
+open** instead of denying:
+
+1. Connected chat clients receive an out-of-band WebSocket frame
+   (`{"$type":"auth_required","providerId":"github","signinUrl":"/auth/github","reason":"..."}`)
+   and the chat UI shows a sign-in banner. Clients that connect *while* a hold is in flight get the
+   prompt replayed on connect. One prompt is broadcast per provider no matter how many webhook
+   calls are held.
+2. Clicking the banner's **Sign in** button opens the `/auth/{provider}` landing page in a popup,
+   which starts the normal interactive sign-in.
+3. The hold **polls the provider's token acquisition** (every `Auth:Webhook:PollIntervalSeconds`)
+   — the moment a token lands (sign-in completed and persisted), the held call resolves **allow**
+   with the injected header, and clients receive `{"$type":"auth_completed","providerId":"github"}`
+   to dismiss the banner.
+4. If the user never signs in, the hold resolves **deny** after `Auth:Webhook:HoldTimeoutSeconds`
+   (default **120**). A *fresh* sign-in failure during the hold denies early; a stale `Failed`
+   status from an earlier attempt does not block deferral. Aborted gateway calls release the hold
+   immediately.
+
+Configuration:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `Auth:Webhook:HoldTimeoutSeconds` | `120` | How long a not-signed-in webhook call is held. **Set to `0` to disable deferral** (restore immediate deny). Keep below the gateway's own webhook client timeout. |
+| `Auth:Webhook:PollIntervalSeconds` | `1.0` | Interval between token-acquisition attempts while holding. |
 
 ### What the sandbox is created with
 

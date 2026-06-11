@@ -1,4 +1,5 @@
-import type { Message } from '@/types';
+import type { Message, AuthEvent } from '@/types';
+import { isAuthEventPayload } from '@/types';
 import type { ChatRequest } from './chatClient';
 import { logger } from '@/utils';
 
@@ -11,6 +12,11 @@ export interface WebSocketClientCallbacks {
   onMessage: (message: Message) => void;
   onDone: () => void;
   onError: (error: string) => void;
+  /**
+   * Out-of-band deferred-auth events (`auth_required` / `auth_completed`) pushed by the
+   * backend while a sandbox webhook call is held awaiting an interactive sign-in.
+   */
+  onAuthEvent?: (event: AuthEvent) => void;
 }
 
 /**
@@ -79,7 +85,7 @@ function normalizeKeys(value: unknown): unknown {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, providerId, record, onMessage, onDone, onError } = options;
+  const { baseUrl = '', threadId, modeId, providerId, record, onMessage, onDone, onError, onAuthEvent } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
@@ -114,6 +120,15 @@ export function createWebSocketConnection(
     socket.onmessage = (event) => {
       try {
         const data = event.data as string;
+
+        // Check for deferred-auth events BEFORE the generic error sniffing below — these
+        // frames are out-of-band prompts (sign-in required / completed), not chat messages.
+        if (isAuthEventPayload(data)) {
+          const authEvent = JSON.parse(data) as AuthEvent;
+          log.info('Received auth event', { type: authEvent.$type, providerId: authEvent.providerId });
+          onAuthEvent?.(authEvent);
+          return;
+        }
 
         // Check for done signal
         if (data === '{"$type":"done"}' || data.includes('"$type":"done"')) {

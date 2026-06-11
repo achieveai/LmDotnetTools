@@ -21,8 +21,12 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
 {
     private readonly string _providerMode;
     private readonly ITestAgentBuilder _builder;
+    private readonly IDictionary<string, string?>? _settings;
 
-    public E2EWebAppFactory(string providerMode, ITestAgentBuilder builder)
+    public E2EWebAppFactory(
+        string providerMode,
+        ITestAgentBuilder builder,
+        IDictionary<string, string?>? settings = null)
     {
         if (!string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase))
@@ -34,6 +38,7 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
 
         _providerMode = providerMode;
         _builder = builder ?? throw new ArgumentNullException(nameof(builder));
+        _settings = settings;
 
         // LmStreaming.Sample reads LM_PROVIDER_MODE at the top of Program.cs — well before any
         // host-builder callback fires. Set it here (in the factory ctor, before Server is
@@ -45,6 +50,16 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
+
+        // Per-test configuration overrides (e.g. "Auth:Webhook:HoldTimeoutSeconds") without
+        // touching process-global environment variables.
+        if (_settings is not null)
+        {
+            foreach (var (key, value) in _settings)
+            {
+                builder.UseSetting(key, value);
+            }
+        }
 
         // ConfigureTestServices runs AFTER Program.cs has registered its DefaultTestAgentBuilder,
         // so adding our builder here guarantees it replaces the production default (AddSingleton

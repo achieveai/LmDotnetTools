@@ -39,7 +39,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     {
     }
 
-    private E2EWebAppFactory NewFactory()
+    private E2EWebAppFactory NewFactory(bool disableDeferredAuth = false)
     {
         // Any scripted handler works — these tests hit the HTTP API, never create an agent.
         var responder = ScriptedSseResponder.New()
@@ -47,7 +47,13 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
                 .Turn(t => t.Text("ok"))
             .Build();
         Logger.LogInformation("Booting in-process sample host (provider mode 'test') for auth-webhook checks");
-        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()));
+
+        // Deferred auth would HOLD a not-signed-in webhook call for the configured timeout; the
+        // legacy immediate-deny tests disable it (HoldTimeoutSeconds=0) to stay deterministic.
+        var settings = disableDeferredAuth
+            ? new Dictionary<string, string?> { ["Auth:Webhook:HoldTimeoutSeconds"] = "0" }
+            : null;
+        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
     }
 
     private static StringContent JsonBody() => new(WebhookBody, Encoding.UTF8, "application/json");
@@ -92,7 +98,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     public async Task Correct_secret_but_not_signed_in_returns_200_deny()
     {
         LogTestStart();
-        using var factory = NewFactory();
+        using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
         // The real shared secret is resolved by the host (configured or random-at-startup).
@@ -240,7 +246,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     public async Task M365_not_signed_in_returns_200_deny()
     {
         LogTestStart();
-        using var factory = NewFactory();
+        using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
         var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;

@@ -119,6 +119,21 @@ public sealed class WebhookOptions
     public string? GatewaySharedSecret { get; set; }
 
     /// <summary>
+    /// Seconds a not-signed-in webhook call is HELD open awaiting an interactive sign-in (deferred
+    /// auth) before resolving deny. While held, connected chat clients receive an
+    /// <c>auth_required</c> WebSocket frame prompting the user to sign in; the moment a valid token
+    /// appears the held call resolves allow. Set to 0 (or negative) to disable deferral and restore
+    /// the legacy immediate-deny behavior. Keep this below the gateway's own webhook client timeout
+    /// or the gateway gives up before the user can sign in.
+    /// </summary>
+    public int HoldTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// Interval in seconds between token-acquisition attempts while a webhook call is held.
+    /// </summary>
+    public double PollIntervalSeconds { get; set; } = 1.0;
+
+    /// <summary>
     /// Webhook public base URL with the trailing slash stripped — the canonical form callers
     /// concatenate route segments to. Centralised so the gateway → app callback URLs all agree
     /// even if a future operator misconfigures <see cref="PublicBaseUrl"/> with a trailing slash.

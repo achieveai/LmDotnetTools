@@ -197,6 +197,11 @@ try
     // (token injection always reads the store directly, but the surfaced status was in-memory only).
     _ = builder.Services.AddHostedService<OAuthTokenHydrator>();
 
+    // Deferred auth: not-signed-in webhook calls are held while connected chat clients are
+    // prompted (auth_required WebSocket frame) to sign in interactively.
+    _ = builder.Services.AddSingleton<IAuthEventNotifier, WebSocketAuthEventNotifier>();
+    _ = builder.Services.AddSingleton<PendingAuthCoordinator>();
+
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
         sandboxOptions,
@@ -743,7 +748,9 @@ try
         return pool;
     });
 
-    // Register the ChatWebSocketManager
+    // Register the ChatWebSocketManager and the live-connection registry that lets backend
+    // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
+    _ = builder.Services.AddSingleton<WebSocketConnectionRegistry>();
     _ = builder.Services.AddSingleton<ChatWebSocketManager>();
 
     var app = builder.Build();

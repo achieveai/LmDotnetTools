@@ -22,6 +22,7 @@ namespace LmStreaming.Sample.Controllers;
 public sealed class AuthWebhookController(
     IEnumerable<IOAuthTokenProvider> providers,
     AuthSharedSecret sharedSecret,
+    PendingAuthCoordinator pendingAuth,
     ILogger<AuthWebhookController> logger) : ControllerBase
 {
     /// <summary>
@@ -84,6 +85,24 @@ public sealed class AuthWebhookController(
             // ONLY — never echo it back to the gateway, where it could surface in aggregated logs.
             logger.LogInformation(
                 ex,
+                "Auth-webhook found no valid token for provider {ProviderId} (host {DestinationHost}); deferring.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+
+            // Deferred auth: hold this call open while connected chat clients are prompted to
+            // sign in (auth_required WebSocket frame). Resolves allow the moment a token lands;
+            // resolves deny when the hold times out, sign-in fails, or deferral is disabled.
+            var deferred = await pendingAuth.WaitForTokenAsync(tokenProvider, body.RequiredScopes, ct);
+            if (deferred is not null)
+            {
+                logger.LogInformation(
+                    "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}) after deferred sign-in.",
+                    tokenProvider.ProviderId,
+                    body.DestinationHost);
+                return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, deferred));
+            }
+
+            logger.LogInformation(
                 "Auth-webhook deny for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
