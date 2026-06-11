@@ -85,12 +85,13 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal(4, messages2.Count);
         Assert.Equal("msg_016", response2.Id);
 
-        // Verify thinking message content
-        _ = Assert.IsType<TextMessage>(messages2[0]);
-        var thinkingMessage = messages2[0] as TextMessage;
+        // Verify thinking message content — surfaced as ReasoningMessage (the
+        // canonical LmCore type), consistent with the streaming parser.
+        _ = Assert.IsType<ReasoningMessage>(messages2[0]);
+        var thinkingMessage = messages2[0] as ReasoningMessage;
         Assert.NotNull(thinkingMessage);
-        Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Text);
-        Assert.True(thinkingMessage.IsThinking);
+        Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Reasoning);
+        Assert.Equal(ReasoningVisibility.Plain, thinkingMessage.Visibility);
 
         // Verify regular text message
         _ = Assert.IsType<TextMessage>(messages2[1]);

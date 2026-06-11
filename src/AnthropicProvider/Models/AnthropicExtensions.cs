@@ -212,13 +212,17 @@ public static class AnthropicExtensions
                 ],
             },
 
-            AnthropicResponseThinkingContent thinkingContent => new TextMessage
+            // Surface chain-of-thought as ReasoningMessage (the canonical LmCore
+            // type), consistent with the streaming parser. Previously this
+            // emitted TextMessage{IsThinking=true}, which left the non-streaming
+            // path on the legacy representation.
+            AnthropicResponseThinkingContent thinkingContent => new ReasoningMessage
             {
-                Text = thinkingContent.Thinking,
+                Reasoning = thinkingContent.Thinking,
+                Visibility = ReasoningVisibility.Plain,
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
-                IsThinking = true,
             },
 
             AnthropicResponseServerToolUseContent serverToolUse => new ToolCallMessage
