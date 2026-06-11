@@ -69,9 +69,13 @@ public sealed class PendingAuthCoordinator(
         // means the user tried and failed — deny early instead of waiting out the clock.
         var statusAtEntry = provider.Status;
 
-        var entry = Enter(provider.ProviderId, out var isFirstWaiter);
+        // Enter() lives INSIDE the try so its ref-count increment and the finally's ExitAsync
+        // decrement are structurally paired — no statement between them can orphan the entry
+        // (which would pin the auth_required broadcast/replay forever).
+        PendingEntry? entry = null;
         try
         {
+            entry = Enter(provider.ProviderId, out var isFirstWaiter);
             if (isFirstWaiter)
             {
                 await notifier.NotifyAuthRequiredAsync(
@@ -131,7 +135,10 @@ public sealed class PendingAuthCoordinator(
         }
         finally
         {
-            await ExitAsync(provider.ProviderId, entry);
+            if (entry is not null)
+            {
+                await ExitAsync(provider.ProviderId, entry);
+            }
         }
     }
 
@@ -161,25 +168,40 @@ public sealed class PendingAuthCoordinator(
         }
     }
 
-    /// <summary>Leaves the per-provider entry; the last waiter out clears it and, when a token was obtained, tells clients to dismiss the prompt.</summary>
+    /// <summary>
+    /// Leaves the per-provider entry. The last waiter out clears it and sends the terminal frame
+    /// that dismisses the client prompt: <c>auth_completed</c> when a token was obtained, otherwise
+    /// <c>auth_denied</c> (hold timed out, sign-in failed, or deferral disabled). Exactly one of the
+    /// two fires per prompt — without the deny side the banner would linger after a timeout.
+    /// </summary>
     private async Task ExitAsync(string providerId, PendingEntry entry)
     {
-        bool notifyCompleted;
+        bool isLastWaiter;
+        bool tokenObtained;
         lock (_gate)
         {
             entry.WaiterCount--;
-            if (entry.WaiterCount > 0)
+            isLastWaiter = entry.WaiterCount == 0;
+            if (isLastWaiter)
             {
-                return;
+                _ = _pending.Remove(providerId);
             }
 
-            _ = _pending.Remove(providerId);
-            notifyCompleted = entry.TokenObtained;
+            tokenObtained = entry.TokenObtained;
         }
 
-        if (notifyCompleted)
+        if (!isLastWaiter)
+        {
+            return;
+        }
+
+        if (tokenObtained)
         {
             await notifier.NotifyAuthCompletedAsync(providerId, CancellationToken.None);
+        }
+        else
+        {
+            await notifier.NotifyAuthDeniedAsync(providerId, "sign-in not completed", CancellationToken.None);
         }
     }
 }

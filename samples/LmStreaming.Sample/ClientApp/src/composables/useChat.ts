@@ -171,7 +171,9 @@ export function useChat(options: UseChatOptions = {}) {
       log.info('Auth required', { providerId: event.providerId, signinUrl: event.signinUrl });
       next.set(event.providerId, event);
     } else {
-      log.info('Auth completed', { providerId: event.providerId });
+      // auth_completed (token landed) or auth_denied (timeout / failed / disabled): both are
+      // terminal — dismiss the prompt for that provider.
+      log.info('Auth resolved', { providerId: event.providerId, type: event.$type });
       next.delete(event.providerId);
     }
     pendingAuth.value = next;

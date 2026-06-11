@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, watch } from 'vue';
 import type { AuthRequiredEvent } from '@/types';
 
 /**
  * Banner shown while the backend is HOLDING a sandbox webhook call waiting for an interactive
  * sign-in (deferred auth). One row per pending provider. The sign-in button opens the
- * same-origin landing page (e.g. /auth/github) in a popup; that page drives the OAuth flow and
- * self-polls its status. The banner is dismissed by the backend's `auth_completed` frame; as a
- * fallback (e.g. a missed frame after a real sign-in), it also polls the provider's status
- * endpoint and self-dismisses on SignedIn.
+ * same-origin landing page (e.g. /auth/github) in a popup; that page drives the OAuth flow.
+ * The banner is dismissed by the backend's terminal frame — `auth_completed` (a token landed)
+ * or `auth_denied` (the hold timed out / sign-in failed) — both handled in useChat, which
+ * removes the provider from the pending set. The ✕ button dismisses locally at any time.
  *
  * Note: the chat WebSocket connects lazily on the first message, so prompts can only arrive
  * once a conversation is active — the backend replays pending prompts to late connections.
  */
-const props = defineProps<{
+defineProps<{
   requests: AuthRequiredEvent[];
 }>();
 
@@ -24,42 +23,6 @@ const emit = defineEmits<{
 function openSignIn(request: AuthRequiredEvent): void {
   window.open(request.signinUrl, `auth-${request.providerId}`, 'popup,width=640,height=760');
 }
-
-const POLL_INTERVAL_MS = 2000;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-async function pollStatuses(): Promise<void> {
-  for (const request of props.requests) {
-    try {
-      const response = await fetch(`/api/auth/${encodeURIComponent(request.providerId)}/status`);
-      if (!response.ok) continue;
-      const status = (await response.json()) as { state?: string };
-      if (status.state === 'SignedIn') {
-        emit('dismiss', request.providerId);
-      }
-    } catch {
-      // Best-effort fallback; the auth_completed frame is the primary dismissal path.
-    }
-  }
-}
-
-function syncTimer(): void {
-  if (props.requests.length > 0 && pollTimer === null) {
-    pollTimer = setInterval(() => void pollStatuses(), POLL_INTERVAL_MS);
-  } else if (props.requests.length === 0 && pollTimer !== null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
-watch(() => props.requests.length, syncTimer);
-onMounted(syncTimer);
-onBeforeUnmount(() => {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-});
 </script>
 
 <template>

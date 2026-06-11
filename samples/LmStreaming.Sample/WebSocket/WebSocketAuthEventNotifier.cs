@@ -38,6 +38,20 @@ public sealed class WebSocketAuthEventNotifier(
         await registry.BroadcastAsync(json, ct);
     }
 
+    public async Task NotifyAuthDeniedAsync(string providerId, string reason, CancellationToken ct)
+    {
+        logger.LogInformation("Broadcasting auth_denied for provider {ProviderId}.", providerId);
+        var json = JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["$type"] = "auth_denied",
+                ["providerId"] = providerId,
+                ["reason"] = reason,
+            },
+            JsonOptions);
+        await registry.BroadcastAsync(json, ct);
+    }
+
     /// <summary>
     /// Builds the <c>auth_required</c> frame JSON — shared with the replay-on-connect path in
     /// <see cref="ChatWebSocketManager"/> so a client that connects mid-hold sees the same frame.

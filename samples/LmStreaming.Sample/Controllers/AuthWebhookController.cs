@@ -70,6 +70,13 @@ public sealed class AuthWebhookController(
             return Ok(AuthWebhookResponse.Deny($"destination host not allowed for provider '{tokenProvider.ProviderId}'"));
         }
 
+        // First attempt: a token may already be available (signed in / refreshable). Only the
+        // "not signed in" case (InvalidOperationException) falls through to deferral — and that
+        // decision is hoisted OUT of the catch so the deferred hold runs under its own try/catch.
+        // An await inside a catch block is not protected by the sibling catches of the same try,
+        // so running the hold there would let any non-OCE failure escape as a 500, breaking the
+        // always-200 allow/deny contract the broad catch below exists to guarantee.
+        bool defer = false;
         try
         {
             var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
@@ -88,10 +95,39 @@ public sealed class AuthWebhookController(
                 "Auth-webhook found no valid token for provider {ProviderId} (host {DestinationHost}); deferring.",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
+            defer = true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The gateway aborted the call — nobody is waiting for a decision.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Any other failure (token-store IO, refresh HTTP call, MSAL, JSON parsing) must still
+            // honor the always-200 allow/deny contract: an unhandled 500 surfaces gateway-side as an
+            // opaque webhook failure instead of a clean deny. Reason stays generic and token-free.
+            logger.LogWarning(
+                ex,
+                "Auth-webhook unexpected failure for provider {ProviderId} (host {DestinationHost}); denying.",
+                tokenProvider.ProviderId,
+                body.DestinationHost);
+            return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
+        }
 
-            // Deferred auth: hold this call open while connected chat clients are prompted to
-            // sign in (auth_required WebSocket frame). Resolves allow the moment a token lands;
-            // resolves deny when the hold times out, sign-in fails, or deferral is disabled.
+        if (!defer)
+        {
+            // Unreachable in practice (every branch above returns or sets defer), but keeps the
+            // compiler's definite-assignment analysis happy without a throw.
+            return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
+        }
+
+        // Deferred auth: hold this call open while connected chat clients are prompted to sign in
+        // (auth_required WebSocket frame). Resolves allow the moment a token lands; resolves deny
+        // when the hold times out, sign-in fails, or deferral is disabled. Runs under its own
+        // try/catch so the always-200 contract holds for the deferred path too.
+        try
+        {
             var deferred = await pendingAuth.WaitForTokenAsync(tokenProvider, body.RequiredScopes, ct);
             if (deferred is not null)
             {
@@ -110,17 +146,16 @@ public sealed class AuthWebhookController(
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // The gateway aborted the call — nobody is waiting for a decision.
+            // The gateway aborted the held call — nobody is waiting for a decision.
             throw;
         }
         catch (Exception ex)
         {
-            // Any other failure (token-store IO, refresh HTTP call, MSAL, JSON parsing) must still
-            // honor the always-200 allow/deny contract: an unhandled 500 surfaces gateway-side as an
-            // opaque webhook failure instead of a clean deny. Reason stays generic and token-free.
+            // Same always-200 guarantee for the deferred path: a token-store/MSAL/HTTP failure
+            // surfaced during the hold becomes a clean, token-free deny, not an opaque 500.
             logger.LogWarning(
                 ex,
-                "Auth-webhook unexpected failure for provider {ProviderId} (host {DestinationHost}); denying.",
+                "Auth-webhook deferred-hold failure for provider {ProviderId} (host {DestinationHost}); denying.",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));

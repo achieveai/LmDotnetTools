@@ -43,6 +43,7 @@ public class PendingAuthCoordinatorTests
     {
         public List<(string ProviderId, string SigninUrl, string Reason)> Required { get; } = [];
         public List<string> Completed { get; } = [];
+        public List<string> Denied { get; } = [];
 
         public Task NotifyAuthRequiredAsync(string providerId, string signinUrl, string reason, CancellationToken ct)
         {
@@ -59,6 +60,16 @@ public class PendingAuthCoordinatorTests
             lock (Completed)
             {
                 Completed.Add(providerId);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task NotifyAuthDeniedAsync(string providerId, string reason, CancellationToken ct)
+        {
+            lock (Denied)
+            {
+                Denied.Add(providerId);
             }
 
             return Task.CompletedTask;
@@ -102,10 +113,11 @@ public class PendingAuthCoordinatorTests
         notifier.Required.Should().ContainSingle()
             .Which.Should().Be(("github", "/auth/github", "sandbox egress requires sign-in to 'github'"));
         notifier.Completed.Should().ContainSingle().Which.Should().Be("github");
+        notifier.Denied.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Hold_timeout_returns_null_and_does_not_notify_completed()
+    public async Task Hold_timeout_returns_null_and_notifies_denied()
     {
         var provider = new FakeTokenProvider();
         var notifier = new RecordingNotifier();
@@ -116,6 +128,8 @@ public class PendingAuthCoordinatorTests
         token.Should().BeNull();
         notifier.Required.Should().ContainSingle();
         notifier.Completed.Should().BeEmpty();
+        notifier.Denied.Should().ContainSingle().Which.Should().Be("github",
+            "a timed-out hold must send the terminal auth_denied frame so the banner dismisses");
         coordinator.Snapshot().Should().BeEmpty("the entry must be cleaned up after the hold ends");
     }
 
@@ -138,6 +152,7 @@ public class PendingAuthCoordinatorTests
         tokens.Should().AllSatisfy(t => t!.Value.Should().Be("tok-123"));
         notifier.Required.Should().ContainSingle("only the first waiter triggers the prompt");
         notifier.Completed.Should().ContainSingle("only the last waiter out signals completion");
+        notifier.Denied.Should().BeEmpty("a hold that obtained a token must not also deny");
     }
 
     [Fact]
@@ -155,6 +170,7 @@ public class PendingAuthCoordinatorTests
 
         token.Should().BeNull("a failure that occurred after the hold began must deny early");
         notifier.Completed.Should().BeEmpty();
+        notifier.Denied.Should().ContainSingle().Which.Should().Be("github");
     }
 
     [Fact]
@@ -189,6 +205,7 @@ public class PendingAuthCoordinatorTests
         token.Should().BeNull();
         notifier.Required.Should().BeEmpty();
         notifier.Completed.Should().BeEmpty();
+        notifier.Denied.Should().BeEmpty("disabled deferral returns before entering a hold, so no prompt and no terminal frame");
     }
 
     [Fact]
@@ -207,6 +224,9 @@ public class PendingAuthCoordinatorTests
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
         coordinator.Snapshot().Should().BeEmpty("a cancelled hold must not leak its pending entry");
         notifier.Completed.Should().BeEmpty();
+        // The aborted hold is the last waiter leaving without a token, so it sends auth_denied to
+        // dismiss any prompt (a fresh webhook will re-prompt if the gateway retries).
+        notifier.Denied.Should().ContainSingle().Which.Should().Be("github");
     }
 
     [Fact]

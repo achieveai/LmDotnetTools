@@ -11,7 +11,7 @@ namespace LmStreaming.Sample.WebSocket;
 /// single async gate, because <see cref="System.Net.WebSockets.WebSocket.SendAsync(ArraySegment{byte}, WebSocketMessageType, bool, CancellationToken)"/>
 /// is not safe for concurrent calls.
 /// </summary>
-public sealed class RegisteredWebSocketConnection
+public sealed class RegisteredWebSocketConnection : IDisposable
 {
     private readonly System.Net.WebSockets.WebSocket _socket;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -83,6 +83,40 @@ public sealed class RegisteredWebSocketConnection
             _ = _sendGate.Release();
         }
     }
+
+    /// <summary>
+    /// Closes the underlying socket. Closing is an outbound operation, so it goes through the wrapper
+    /// (not the raw socket) to honor the single-write-path contract. Best-effort: a raced/already-torn
+    /// socket throws <see cref="WebSocketException"/>/<see cref="ObjectDisposedException"/>/
+    /// <see cref="InvalidOperationException"/>, all swallowed.
+    /// </summary>
+    public async Task TryCloseAsync(WebSocketCloseStatus status, string description, CancellationToken ct)
+    {
+        if (_socket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
+        try
+        {
+            await _socket.CloseAsync(status, description, ct);
+        }
+        catch (WebSocketException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Disposes the send gate. Safe to call after the connection's read/write loops have ended; any
+    /// in-flight <see cref="TrySendTextAsync"/> already swallows <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    public void Dispose() => _sendGate.Dispose();
 }
 
 /// <summary>
@@ -102,18 +136,38 @@ public sealed class WebSocketConnectionRegistry
         return connection;
     }
 
-    /// <summary>Removes a connection from the registry (idempotent).</summary>
-    public void Unregister(string connectionId) => _connections.TryRemove(connectionId, out _);
+    /// <summary>Removes a connection from the registry (idempotent) and disposes its send gate.</summary>
+    public void Unregister(string connectionId)
+    {
+        if (_connections.TryRemove(connectionId, out var connection))
+        {
+            connection.Dispose();
+        }
+    }
 
     /// <summary>Point-in-time view of the live connections.</summary>
     public IReadOnlyList<RegisteredWebSocketConnection> Snapshot() => [.. _connections.Values];
 
-    /// <summary>Best-effort broadcast of a text frame to every live connection.</summary>
+    /// <summary>
+    /// Best-effort broadcast of a text frame to every live connection, fanned out concurrently so a
+    /// single half-open or wedged socket cannot stall delivery to the others. A bounded
+    /// <see cref="BroadcastTimeout"/> caps how long any one send may block — out-of-band auth frames
+    /// must never wedge the auth path. <see cref="RegisteredWebSocketConnection.TrySendTextAsync"/>
+    /// turns a timeout/cancel into a quiet <c>false</c>, so the broadcast itself never throws.
+    /// </summary>
     public async Task BroadcastAsync(string json, CancellationToken ct)
     {
-        foreach (var connection in Snapshot())
+        var connections = Snapshot();
+        if (connections.Count == 0)
         {
-            _ = await connection.TrySendTextAsync(json, ct);
+            return;
         }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(BroadcastTimeout);
+        await Task.WhenAll(connections.Select(c => c.TrySendTextAsync(json, linked.Token)));
     }
+
+    /// <summary>Upper bound on how long any one connection's send may block a broadcast.</summary>
+    private static readonly TimeSpan BroadcastTimeout = TimeSpan.FromSeconds(5);
 }

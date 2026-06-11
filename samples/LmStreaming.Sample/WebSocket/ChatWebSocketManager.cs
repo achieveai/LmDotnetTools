@@ -117,7 +117,7 @@ public sealed class ChatWebSocketManager
                     threadId,
                     ex.Reason);
 
-                await SendProviderUnavailableErrorAsync(webSocket, connection, ex, recordWriter, cancellationToken);
+                await SendProviderUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
 
@@ -338,7 +338,6 @@ public sealed class ChatWebSocketManager
     }
 
     private async Task SendProviderUnavailableErrorAsync(
-        System.Net.WebSockets.WebSocket webSocket,
         RegisteredWebSocketConnection connection,
         ProviderUnavailableException ex,
         StreamWriter? recordWriter,
@@ -365,17 +364,11 @@ public sealed class ChatWebSocketManager
             await recordWriter.FlushAsync();
         }
 
-        try
-        {
-            await webSocket.CloseAsync(
-                WebSocketCloseStatus.NormalClosure,
-                "Provider unavailable",
-                CancellationToken.None);
-        }
-        catch (WebSocketException wsEx)
-        {
-            _logger.LogDebug(wsEx, "Failed to close after provider_unavailable error frame");
-        }
+        // Close through the wrapper so the single-write-path contract holds (closing is outbound).
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Provider unavailable",
+            CancellationToken.None);
     }
 }
 
