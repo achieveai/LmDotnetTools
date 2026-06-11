@@ -251,7 +251,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
     private IAnthropicClient CreateAnthropicClient(ProviderResolution resolution)
     {
         var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new ProviderConfig(apiKey, resolution.Connection.EndpointUrl, ProviderType.Anthropic);
+        var endpointUrl = resolution.Connection.GetEndpointUrl();
+        var providerCfg = new ProviderConfig(apiKey, endpointUrl, ProviderType.Anthropic);
         var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
@@ -259,13 +260,19 @@ public class ProviderAgentFactory : IProviderAgentFactory
             resolution.Connection.Headers,
             _logger
         );
-        return new AnthropicClient(httpClient);
+        // Pass the configured endpoint through: AnthropicClient builds request
+        // URLs from its own _baseUrl and otherwise defaults to api.anthropic.com,
+        // ignoring the HttpClient.BaseAddress set above. Without this, every
+        // Anthropic-compatible provider with a custom endpoint (DeepSeek, Kimi,
+        // etc.) is silently routed to Anthropic and fails auth.
+        return new AnthropicClient(httpClient, baseUrl: endpointUrl);
     }
 
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
         var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new ProviderConfig(apiKey, resolution.Connection.EndpointUrl);
+        var endpointUrl = resolution.Connection.GetEndpointUrl();
+        var providerCfg = new ProviderConfig(apiKey, endpointUrl);
         var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
@@ -273,7 +280,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
             resolution.Connection.Headers,
             _logger
         );
-        return new OpenClient(httpClient, resolution.Connection.EndpointUrl);
+        return new OpenClient(httpClient, endpointUrl);
     }
 
     private IAgent CreateClaudeAgentSdkAgent(ProviderResolution resolution)
