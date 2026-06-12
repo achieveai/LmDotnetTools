@@ -9,6 +9,7 @@ using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Services.Auth;
 using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
@@ -20,14 +21,20 @@ namespace LmStreaming.Sample.WebSocket;
 public sealed class ChatWebSocketManager
 {
     private readonly MultiTurnAgentPool _agentPool;
+    private readonly WebSocketConnectionRegistry _connectionRegistry;
+    private readonly PendingAuthCoordinator _pendingAuth;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
 
     public ChatWebSocketManager(
         MultiTurnAgentPool agentPool,
+        WebSocketConnectionRegistry connectionRegistry,
+        PendingAuthCoordinator pendingAuth,
         ILogger<ChatWebSocketManager> logger)
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
+        _connectionRegistry = connectionRegistry ?? throw new ArgumentNullException(nameof(connectionRegistry));
+        _pendingAuth = pendingAuth ?? throw new ArgumentNullException(nameof(pendingAuth));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
     }
@@ -71,60 +78,82 @@ public sealed class ChatWebSocketManager
 
         var resolvedMode = mode ?? SystemChatModes.All[0];
 
-        // Get or create agent for this thread with the specified mode and requested provider.
-        // ProviderUnavailableException is surfaced to the client as a structured error event
-        // before the connection is closed, so the UI can show "this provider is unavailable"
-        // rather than a generic disconnect.
-        IMultiTurnAgent agent;
+        // Register before agent creation so every outbound frame (including the
+        // provider_unavailable error below) flows through the connection's single gated write path.
+        var connection = _connectionRegistry.Register(threadId, webSocket);
         try
         {
-            agent = _agentPool.GetOrCreateAgent(
-                threadId,
-                resolvedMode,
-                providerId,
-                requestResponseDumpFileName);
-        }
-        catch (ProviderUnavailableException ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Provider {ProviderId} unavailable for thread {ThreadId}: {Reason}",
-                ex.ProviderId,
-                threadId,
-                ex.Reason);
+            // Replay any in-flight deferred-auth prompts: a webhook call may already be held
+            // waiting for sign-in (it broadcast auth_required before this client connected).
+            foreach (var pending in _pendingAuth.Snapshot())
+            {
+                _ = await connection.TrySendTextAsync(
+                    WebSocketAuthEventNotifier.BuildAuthRequiredJson(
+                        pending.ProviderId,
+                        pending.SigninUrl,
+                        pending.Reason),
+                    cancellationToken);
+            }
 
-            await SendProviderUnavailableErrorAsync(webSocket, ex, recordWriter, cancellationToken);
-            return;
-        }
+            // Get or create agent for this thread with the specified mode and requested provider.
+            // ProviderUnavailableException is surfaced to the client as a structured error event
+            // before the connection is closed, so the UI can show "this provider is unavailable"
+            // rather than a generic disconnect.
+            IMultiTurnAgent agent;
+            try
+            {
+                agent = _agentPool.GetOrCreateAgent(
+                    threadId,
+                    resolvedMode,
+                    providerId,
+                    requestResponseDumpFileName);
+            }
+            catch (ProviderUnavailableException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Provider {ProviderId} unavailable for thread {ThreadId}: {Reason}",
+                    ex.ProviderId,
+                    threadId,
+                    ex.Reason);
 
-        // Create linked cancellation for connection lifetime
-        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                await SendProviderUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
+                return;
+            }
 
-        // Start subscription task to stream messages to client
-        var subscriptionTask = StreamMessagesToClientAsync(webSocket, agent, threadId, recordWriter, connectionCts.Token);
+            // Create linked cancellation for connection lifetime
+            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        // Handle incoming messages from client
-        var receiveTask = ReceiveMessagesFromClientAsync(webSocket, agent, threadId, connectionCts.Token);
+            // Start subscription task to stream messages to client
+            var subscriptionTask = StreamMessagesToClientAsync(connection, agent, threadId, recordWriter, connectionCts.Token);
 
-        try
-        {
-            // Wait for either task to complete (connection close or error)
-            _ = await Task.WhenAny(subscriptionTask, receiveTask);
+            // Handle incoming messages from client
+            var receiveTask = ReceiveMessagesFromClientAsync(webSocket, agent, threadId, connectionCts.Token);
+
+            try
+            {
+                // Wait for either task to complete (connection close or error)
+                _ = await Task.WhenAny(subscriptionTask, receiveTask);
+            }
+            finally
+            {
+                // Cancel the other task
+                await connectionCts.CancelAsync();
+
+                // Ensure both tasks complete
+                try
+                {
+                    await Task.WhenAll(subscriptionTask, receiveTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected on cancellation
+                }
+            }
         }
         finally
         {
-            // Cancel the other task
-            await connectionCts.CancelAsync();
-
-            // Ensure both tasks complete
-            try
-            {
-                await Task.WhenAll(subscriptionTask, receiveTask);
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected on cancellation
-            }
+            _connectionRegistry.Unregister(connection.ConnectionId);
         }
 
         _logger.LogInformation("WebSocket connection ended for thread {ThreadId}", threadId);
@@ -134,7 +163,7 @@ public sealed class ChatWebSocketManager
     /// Subscribes to agent messages and streams them to the WebSocket client.
     /// </summary>
     private async Task StreamMessagesToClientAsync(
-        System.Net.WebSockets.WebSocket webSocket,
+        RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         StreamWriter? recordWriter,
@@ -144,19 +173,11 @@ public sealed class ChatWebSocketManager
         {
             await foreach (var message in agent.SubscribeAsync(ct))
             {
-                if (webSocket.State != WebSocketState.Open)
+                var messageJson = JsonSerializer.Serialize(message, _jsonOptions);
+                if (!await connection.TrySendTextAsync(messageJson, ct))
                 {
                     break;
                 }
-
-                var messageJson = JsonSerializer.Serialize(message, _jsonOptions);
-                var bytes = Encoding.UTF8.GetBytes(messageJson);
-
-                await webSocket.SendAsync(
-                    new ArraySegment<byte>(bytes),
-                    WebSocketMessageType.Text,
-                    endOfMessage: true,
-                    ct);
 
                 if (recordWriter != null)
                 {
@@ -190,12 +211,10 @@ public sealed class ChatWebSocketManager
                 if (message is RunCompletedMessage)
                 {
                     var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
-                    var doneBytes = Encoding.UTF8.GetBytes(doneJson);
-                    await webSocket.SendAsync(
-                        new ArraySegment<byte>(doneBytes),
-                        WebSocketMessageType.Text,
-                        endOfMessage: true,
-                        ct);
+                    if (!await connection.TrySendTextAsync(doneJson, ct))
+                    {
+                        break;
+                    }
 
                     if (recordWriter != null)
                     {
@@ -319,16 +338,11 @@ public sealed class ChatWebSocketManager
     }
 
     private async Task SendProviderUnavailableErrorAsync(
-        System.Net.WebSockets.WebSocket webSocket,
+        RegisteredWebSocketConnection connection,
         ProviderUnavailableException ex,
         StreamWriter? recordWriter,
         CancellationToken ct)
     {
-        if (webSocket.State != WebSocketState.Open)
-        {
-            return;
-        }
-
         var payload = new Dictionary<string, object?>
         {
             ["$type"] = "error",
@@ -338,35 +352,23 @@ public sealed class ChatWebSocketManager
             ["message"] = ex.Message,
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
-        var bytes = Encoding.UTF8.GetBytes(json);
 
-        try
+        if (!await connection.TrySendTextAsync(json, ct))
         {
-            await webSocket.SendAsync(
-                new ArraySegment<byte>(bytes),
-                WebSocketMessageType.Text,
-                endOfMessage: true,
-                ct);
+            return;
+        }
 
-            if (recordWriter != null)
-            {
-                await recordWriter.WriteLineAsync(json);
-                await recordWriter.FlushAsync();
-            }
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
 
-            await webSocket.CloseAsync(
-                WebSocketCloseStatus.NormalClosure,
-                "Provider unavailable",
-                CancellationToken.None);
-        }
-        catch (WebSocketException wsEx)
-        {
-            _logger.LogDebug(wsEx, "Failed to send provider_unavailable error frame");
-        }
-        catch (OperationCanceledException)
-        {
-            // Connection cancelled before we could write — nothing to do.
-        }
+        // Close through the wrapper so the single-write-path contract holds (closing is outbound).
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Provider unavailable",
+            CancellationToken.None);
     }
 }
 

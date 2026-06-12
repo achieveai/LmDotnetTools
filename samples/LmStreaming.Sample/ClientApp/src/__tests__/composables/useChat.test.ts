@@ -133,3 +133,72 @@ describe('useChat mode-aware websocket lifecycle', () => {
     ).toBe(true);
   });
 });
+
+describe('useChat deferred-auth prompts', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Drives the same `options.onAuthEvent` seam the real wsClient calls, so these exercise the
+  // production handleAuthEvent / dismissAuthRequest / pendingAuthRequests state machine.
+  async function openChatAndCaptureAuthEvent() {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options?.onAuthEvent).toBeTypeOf('function');
+    return { chat, onAuthEvent: options.onAuthEvent as (e: unknown) => void };
+  }
+
+  const providerIds = (chat: { pendingAuthRequests: { value: Array<{ providerId: string }> } }) =>
+    chat.pendingAuthRequests.value.map((r) => r.providerId).sort();
+
+  it('adds a pending request on auth_required and supports multiple providers', async () => {
+    const { chat, onAuthEvent } = await openChatAndCaptureAuthEvent();
+
+    onAuthEvent({ $type: 'auth_required', providerId: 'github', signinUrl: '/auth/github', reason: 'x' });
+    expect(chat.pendingAuthRequests.value).toHaveLength(1);
+    expect(chat.pendingAuthRequests.value[0]?.providerId).toBe('github');
+    expect(chat.pendingAuthRequests.value[0]?.signinUrl).toBe('/auth/github');
+
+    onAuthEvent({ $type: 'auth_required', providerId: 'ado', signinUrl: '/auth/ado' });
+    expect(providerIds(chat)).toEqual(['ado', 'github']);
+  });
+
+  it('removes the right provider on auth_completed and on auth_denied', async () => {
+    const { chat, onAuthEvent } = await openChatAndCaptureAuthEvent();
+
+    onAuthEvent({ $type: 'auth_required', providerId: 'github', signinUrl: '/auth/github' });
+    onAuthEvent({ $type: 'auth_required', providerId: 'ado', signinUrl: '/auth/ado' });
+    expect(providerIds(chat)).toEqual(['ado', 'github']);
+
+    // auth_completed dismisses only its own provider...
+    onAuthEvent({ $type: 'auth_completed', providerId: 'github' });
+    expect(providerIds(chat)).toEqual(['ado']);
+
+    // ...and auth_denied (timeout / failed) is equally terminal.
+    onAuthEvent({ $type: 'auth_denied', providerId: 'ado', reason: 'timeout' });
+    expect(chat.pendingAuthRequests.value).toHaveLength(0);
+  });
+
+  it('dismissAuthRequest removes a provider and is a no-op for an unknown one', async () => {
+    const { chat, onAuthEvent } = await openChatAndCaptureAuthEvent();
+
+    onAuthEvent({ $type: 'auth_required', providerId: 'github', signinUrl: '/auth/github' });
+    expect(providerIds(chat)).toEqual(['github']);
+
+    chat.dismissAuthRequest('does-not-exist');
+    expect(providerIds(chat)).toEqual(['github'], 'unknown provider must not change the set');
+
+    chat.dismissAuthRequest('github');
+    expect(chat.pendingAuthRequests.value).toHaveLength(0);
+  });
+});

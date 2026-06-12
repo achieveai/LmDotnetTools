@@ -110,6 +110,75 @@ public sealed class WebSocketTestClient : IAsyncDisposable
         return new FrameCollection(frames);
     }
 
+    /// <summary>
+    /// Reads frames until one matches <paramref name="predicate"/>, disposing non-matching frames
+    /// as it goes. Returns the matching <see cref="JsonDocument"/> — the CALLER must dispose it.
+    /// Throws <see cref="TimeoutException"/> when no match arrives within <paramref name="timeout"/>.
+    /// </summary>
+    public async Task<JsonDocument> WaitForFrameAsync(
+        Func<JsonDocument, bool> predicate,
+        TimeSpan timeout,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        var buffer = new byte[8192];
+        var sb = new StringBuilder();
+        var seen = 0;
+
+        try
+        {
+            while (_socket.State == WebSocketState.Open)
+            {
+                sb.Clear();
+
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), linked.Token)
+                        .ConfigureAwait(false);
+
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        throw new InvalidOperationException(
+                            $"Socket closed after {seen} frame(s) without a frame matching the predicate.");
+                    }
+
+                    if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
+                    {
+                        sb.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                    }
+                } while (!result.EndOfMessage);
+
+                if (sb.Length == 0)
+                {
+                    continue;
+                }
+
+                var doc = JsonDocument.Parse(sb.ToString());
+                seen++;
+
+                if (predicate(doc))
+                {
+                    return doc;
+                }
+
+                doc.Dispose();
+            }
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"No frame matched the predicate within {timeout}. Observed {seen} frame(s).");
+        }
+
+        throw new InvalidOperationException(
+            $"Socket left the Open state after {seen} frame(s) without a frame matching the predicate.");
+    }
+
     private static void DisposeAll(List<JsonDocument> frames)
     {
         foreach (var d in frames)

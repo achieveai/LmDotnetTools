@@ -9,6 +9,8 @@ import type {
   ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
+  AuthEvent,
+  AuthRequiredEvent,
 } from '@/types';
 import {
   MessageType,
@@ -157,6 +159,35 @@ export function useChat(options: UseChatOptions = {}) {
   
   // Persistent WebSocket connection for full-duplex communication
   let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
+
+  // Deferred-auth prompts pushed by the backend while a sandbox webhook call is held
+  // (providerId -> auth_required event). Replaced wholesale on change for Vue reactivity.
+  const pendingAuth = ref<Map<string, AuthRequiredEvent>>(new Map());
+
+  /** Handle an out-of-band deferred-auth frame from the WebSocket. */
+  function handleAuthEvent(event: AuthEvent): void {
+    const next = new Map(pendingAuth.value);
+    if (event.$type === 'auth_required') {
+      log.info('Auth required', { providerId: event.providerId, signinUrl: event.signinUrl });
+      next.set(event.providerId, event);
+    } else {
+      // auth_completed (token landed) or auth_denied (timeout / failed / disabled): both are
+      // terminal — dismiss the prompt for that provider.
+      log.info('Auth resolved', { providerId: event.providerId, type: event.$type });
+      next.delete(event.providerId);
+    }
+    pendingAuth.value = next;
+  }
+
+  /** Dismiss a deferred-auth prompt locally (e.g. user closed it or signed in). */
+  function dismissAuthRequest(providerId: string): void {
+    if (!pendingAuth.value.has(providerId)) return;
+    const next = new Map(pendingAuth.value);
+    next.delete(providerId);
+    pendingAuth.value = next;
+  }
+
+  const pendingAuthRequests = computed(() => [...pendingAuth.value.values()]);
 
   const { processUpdate, finalize, reset } = useMessageMerger();
 
@@ -853,6 +884,7 @@ export function useChat(options: UseChatOptions = {}) {
         providerId: currentProviderId,
         record: recordEnabled,
         ...callbacks,
+        onAuthEvent: handleAuthEvent,
         onDone: () => {
           log.debug('WebSocket stream done signal received');
           callbacks.onDone();
@@ -1069,6 +1101,8 @@ export function useChat(options: UseChatOptions = {}) {
     currentRunId,
     toolResults,
     pendingMessages: pendingMessagesForQueue,
+    pendingAuthRequests,
+    dismissAuthRequest,
     sendMessage,
     clearMessages,
     cancelStream,

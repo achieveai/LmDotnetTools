@@ -43,6 +43,24 @@ public static class UiHelpers
         return page.GetByTestId("error-banner");
     }
 
+    /// <summary>Deferred-auth banner — rendered while the backend holds a webhook call awaiting sign-in (one per provider, see <c>data-provider-id</c>).</summary>
+    public static ILocator AuthRequiredBanner(this IPage page)
+    {
+        return page.GetByTestId("auth-required-banner");
+    }
+
+    /// <summary>Sign-in button inside the deferred-auth banner — opens the same-origin sign-in popup.</summary>
+    public static ILocator AuthSigninButton(this IPage page)
+    {
+        return page.GetByTestId("auth-signin-button");
+    }
+
+    /// <summary>Dismiss (✕) button inside the deferred-auth banner.</summary>
+    public static ILocator AuthDismissButton(this IPage page)
+    {
+        return page.GetByTestId("auth-dismiss-button");
+    }
+
     /// <summary>The scrollable message list container.</summary>
     public static ILocator MessageList(this IPage page)
     {

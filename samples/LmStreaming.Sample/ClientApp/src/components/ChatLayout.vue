@@ -12,6 +12,7 @@ import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
+import AuthRequiredBanner from './AuthRequiredBanner.vue';
 
 const {
   conversations,
@@ -57,6 +58,8 @@ const {
   error,
   cumulativeUsage,
   pendingMessages,
+  pendingAuthRequests,
+  dismissAuthRequest,
   sendMessage,
   clearMessages,
   cancelStream,
@@ -345,6 +348,8 @@ onBeforeUnmount(() => {
         </header>
 
         <MessageList :display-items="displayItems" :is-loading="chatLoading" />
+
+        <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
         <div v-if="error" class="error-banner" data-testid="error-banner">
           {{ error }}
