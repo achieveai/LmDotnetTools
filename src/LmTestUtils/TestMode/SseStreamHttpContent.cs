@@ -520,6 +520,14 @@ public sealed class SseStreamHttpContent : HttpContent
         for (var i = 0; i < tokens.Length; i += wordsPerChunk)
         {
             var chunkTokens = string.Join(' ', tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i)));
+
+            // Re-attach the boundary space consumed by Split(' ') so concatenated reasoning deltas
+            // reconstruct the original text (see ChunkTextMessage for the rationale).
+            if (i > 0)
+            {
+                chunkTokens = " " + chunkTokens;
+            }
+
             yield return useReasoning
                 ? new Choice
                 {
@@ -571,13 +579,20 @@ public sealed class SseStreamHttpContent : HttpContent
         for (var i = 0; i < tokens.Length; i += wordsPerChunk)
         {
             var chunkTokens = string.Join(' ', tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i)));
+
+            // Split(' ') consumes the single space that separated this chunk from the previous one.
+            // Re-attach it on every chunk after the first so the client reconstructs the original
+            // text verbatim when it concatenates the streamed deltas (otherwise boundary spaces are
+            // lost, e.g. "a file" + "from" -> "filefrom").
+            var chunkContent = i == 0 ? chunkTokens : " " + chunkTokens;
+
             yield return new Choice
             {
                 Index = index,
                 Delta = new ChatMessage
                 {
                     Role = RoleEnum.Assistant,
-                    Content = new Union<string, Union<TextContent, ImageContent>[]>(chunkTokens),
+                    Content = new Union<string, Union<TextContent, ImageContent>[]>(chunkContent),
                 },
             };
         }

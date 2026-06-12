@@ -214,6 +214,22 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 continue;
             }
 
+            // Check for tool_schema - returns description + parameter schema for a single named tool
+            if (item.TryGetProperty("tool_schema", out var toolSchemaEl) && toolSchemaEl.ValueKind == JsonValueKind.Object)
+            {
+                var toolName =
+                    toolSchemaEl.TryGetProperty("name", out var toolNameEl)
+                    && toolNameEl.ValueKind == JsonValueKind.String
+                        ? toolNameEl.GetString()
+                        : null;
+
+                var placeholder = string.IsNullOrEmpty(toolName)
+                    ? "__TOOL_SCHEMA__"
+                    : $"__TOOL_SCHEMA__:{toolName}";
+                messages.Add(InstructionMessage.ForExplicitText(placeholder));
+                continue;
+            }
+
             // Check for request_url_echo - returns the request URL as text
             if (item.TryGetProperty("request_url_echo", out _))
             {
