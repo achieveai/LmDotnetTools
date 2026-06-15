@@ -56,3 +56,7 @@ node_modules/
 
 # OAuth refresh/access token store (FileOAuthTokenStore) — never commit secrets
 **/oauth-tokens/
+
+# Scratchpad working directory (keep folder, ignore contents)
+scratchPad/*
+!scratchPad/.gitkeep
