@@ -30,6 +30,9 @@ public class MultiTurnAgentBaseTests
         public string? LastRunId { get; private set; }
         public string? LastGenerationId { get; private set; }
 
+        /// <summary>Test-only window into the protected conversation history, used to assert recovery.</summary>
+        public IReadOnlyList<IMessage> SnapshotHistoryForTest() => GetHistorySnapshot();
+
         public TestMultiTurnAgent(
             string threadId,
             List<IMessage>? messagesToReturn = null,
@@ -649,6 +652,69 @@ public class MultiTurnAgentBaseTests
         receipt.QueuedAt.Should().BeOnOrBefore(afterSend);
 
         // Cleanup
+        await agent.DisposeAsync();
+    }
+
+    #endregion
+
+    #region History Recovery Tests
+
+    [Fact]
+    public async Task RunAsync_RecoversPersistedHistory_FromStore_WithoutExplicitRecoverCall()
+    {
+        // Regression: the agent pool builds a loop and starts it via RunAsync — it never calls
+        // RecoverAsync explicitly. After an app restart the in-memory history is empty, so unless
+        // RunAsync rehydrates the persisted conversation, the LLM loses ALL prior context even
+        // though every message is still on disk (symptom: "the model doesn't have older messages").
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-history-recovery";
+        const string runId = "prior-run";
+
+        var priorMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "Nice to meet you, Alice.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+        };
+        await store.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+        using var cts = new CancellationTokenSource();
+
+        // Act: start the loop exactly as the pool does — RunAsync, NOT an explicit RecoverAsync.
+        _ = agent.RunAsync(cts.Token);
+
+        // Recovery runs at loop startup; poll the working history until it rehydrates (or time out).
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (agent.SnapshotHistoryForTest().Count < priorMessages.Count && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Assert: the prior conversation is back in the loop's history, so the next turn resends
+        // it to the LLM.
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<TextMessage>().Select(m => m.Text)
+            .Should()
+            .Contain("My name is Alice.")
+            .And.Contain("Nice to meet you, Alice.");
+
+        await cts.CancelAsync();
         await agent.DisposeAsync();
     }
 
