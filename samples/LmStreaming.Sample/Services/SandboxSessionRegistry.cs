@@ -61,13 +61,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Lazy<Task<SandboxSession>>> _sessions = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Per-session sub-agent binding (template source + agent factory) the loop uses to populate
-    /// the Agent tool's <c>subagent_type</c> enum and that the context-discovery webhook mutates
-    /// when the gateway reports a newly discovered subagent. Keyed by gateway session id (NOT
-    /// workspace id) so the webhook — which carries the session id, not the workspace id — can
-    /// look up the same instance the loop is reading from.
+    /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
+    /// tool's <c>subagent_type</c> enum and that the context-discovery webhook mutates when the
+    /// gateway reports a newly discovered subagent.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SubAgentSessionBinding> _subAgentBindings =
+    /// <remarks>
+    /// Keyed by gateway session id and THEN by conversation (agent-pool thread) id. All
+    /// conversations share ONE sandbox session (v1 always uses the <c>"default"</c> workspace),
+    /// but each conversation owns its OWN catalog source so a sub-agent discovered/registered
+    /// while one conversation is live does not bleed into a NEW conversation that starts later.
+    /// The outer key is the session id (what the webhook carries) so it can fan a discovery out to
+    /// every conversation currently live on that session.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, SubAgentSessionBinding>> _subAgentBindings =
         new(StringComparer.Ordinal);
 
     /// <summary>
@@ -369,34 +375,49 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the <see cref="SubAgentSessionBinding"/> for <paramref name="sessionId"/>, creating
-    /// one on first access — seeded with <paramref name="seed"/> and remembering
+    /// Returns the <see cref="SubAgentSessionBinding"/> for the
+    /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
+    /// first access — seeded with <paramref name="seed"/> and remembering
     /// <paramref name="agentFactory"/> for the discovery webhook's spawn-time wiring. Subsequent
-    /// calls return the existing binding unchanged; the binding is single-instance per session for
-    /// the registry's lifetime so the loop and the discovery webhook always share state.
+    /// calls for the same pair return the existing binding unchanged.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Bindings are scoped per CONVERSATION, not per session: all conversations share one sandbox
+    /// session, but each gets its own catalog source seeded only with the static built-ins, so a
+    /// sub-agent discovered/registered while one conversation is live does NOT leak into a new
+    /// conversation that starts later. The webhook fans live discoveries out via
+    /// <see cref="GetSubAgentBindingsForSession"/>.
+    /// </para>
+    /// <para>
     /// The seed lets the pool factory plant the built-in templates as the initial entries before
     /// the loop wires the source into <see cref="SubAgentToolProvider"/>/<see cref="SubAgentManager"/>.
+    /// </para>
     /// </remarks>
     public SubAgentSessionBinding GetOrAddSubAgentBinding(
         string sessionId,
+        string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> seed,
         Func<IStreamingAgent> agentFactory)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
         ArgumentNullException.ThrowIfNull(seed);
         ArgumentNullException.ThrowIfNull(agentFactory);
 
-        var binding = _subAgentBindings.GetOrAdd(
+        var conversations = _subAgentBindings.GetOrAdd(
             sessionId,
+            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal));
+
+        var binding = conversations.GetOrAdd(
+            conversationId,
             _ => new SubAgentSessionBinding(new MutableSubAgentTemplateSource(seed), agentFactory));
 
-        // Reconcile the seed every call: a later pool factory invocation for the same session may
-        // present additional built-in templates that weren't present on the first call. TryRegister
-        // is first-wins, so previously seeded entries (and any discovered templates registered by
-        // the webhook in between) are preserved — the trust boundary holds.
+        // Reconcile the seed every call: a later pool factory invocation for the same conversation
+        // may present additional built-in templates that weren't present on the first call.
+        // TryRegister is first-wins, so previously seeded entries (and any discovered templates
+        // registered by the webhook in between) are preserved — the trust boundary holds.
         foreach (var kvp in seed)
         {
             _ = binding.Source.TryRegister(kvp.Key, kvp.Value);
@@ -406,22 +427,47 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Tries to look up the sub-agent binding previously registered for <paramref name="sessionId"/>
-    /// via <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/>
-    /// set to null) when no binding exists — the discovery webhook treats that as a best-effort
-    /// no-op rather than an error, since the session may not have routed through the agent path
-    /// yet.
+    /// Tries to look up the sub-agent binding previously registered for the
+    /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair via
+    /// <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/> set to
+    /// null) when no binding exists — the discovery webhook treats that as a best-effort no-op
+    /// rather than an error, since the conversation may not have routed through the agent path yet.
     /// </summary>
-    public bool TryGetSubAgentBinding(string sessionId, out SubAgentSessionBinding? binding)
+    public bool TryGetSubAgentBinding(string sessionId, string conversationId, out SubAgentSessionBinding? binding)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(sessionId))
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(conversationId))
         {
             binding = null;
             return false;
         }
 
-        return _subAgentBindings.TryGetValue(sessionId, out binding);
+        if (_subAgentBindings.TryGetValue(sessionId, out var conversations))
+        {
+            return conversations.TryGetValue(conversationId, out binding);
+        }
+
+        binding = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns every conversation's sub-agent binding currently registered for
+    /// <paramref name="sessionId"/>. Used by the context-discovery webhook to fan a discovered
+    /// sub-agent out to every conversation that is live on the shared session. Empty when no
+    /// conversation has initialised the agent path for the session yet.
+    /// </summary>
+    public IReadOnlyList<SubAgentSessionBinding> GetSubAgentBindingsForSession(string sessionId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return [];
+        }
+
+        return _subAgentBindings.TryGetValue(sessionId, out var conversations)
+            ? [.. conversations.Values]
+            : [];
     }
 
     /// <summary>
@@ -500,6 +546,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         foreach (var set in _sessionThreads.Values)
         {
             _ = set.TryRemove(threadId, out _);
+        }
+
+        // Release the conversation's per-conversation sub-agent binding (keyed by conversation ==
+        // thread id). One is created per chat, so without this they accumulate unbounded for the
+        // process lifetime.
+        foreach (var conversations in _subAgentBindings.Values)
+        {
+            _ = conversations.TryRemove(threadId, out _);
         }
     }
 

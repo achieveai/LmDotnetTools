@@ -30,6 +30,9 @@ public class MultiTurnAgentBaseTests
         public string? LastRunId { get; private set; }
         public string? LastGenerationId { get; private set; }
 
+        /// <summary>Test-only window into the protected conversation history, used to assert recovery.</summary>
+        public IReadOnlyList<IMessage> SnapshotHistoryForTest() => GetHistorySnapshot();
+
         public TestMultiTurnAgent(
             string threadId,
             List<IMessage>? messagesToReturn = null,
@@ -650,6 +653,185 @@ public class MultiTurnAgentBaseTests
 
         // Cleanup
         await agent.DisposeAsync();
+    }
+
+    #endregion
+
+    #region History Recovery Tests
+
+    [Fact]
+    public async Task RunAsync_RecoversPersistedHistory_FromStore_WithoutExplicitRecoverCall()
+    {
+        // Regression: the agent pool builds a loop and starts it via RunAsync — it never calls
+        // RecoverAsync explicitly. After an app restart the in-memory history is empty, so unless
+        // RunAsync rehydrates the persisted conversation, the LLM loses ALL prior context even
+        // though every message is still on disk (symptom: "the model doesn't have older messages").
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-history-recovery";
+        const string runId = "prior-run";
+
+        var priorMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "Nice to meet you, Alice.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+        };
+        await store.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+        using var cts = new CancellationTokenSource();
+
+        // Act: start the loop exactly as the pool does — RunAsync, NOT an explicit RecoverAsync.
+        _ = agent.RunAsync(cts.Token);
+
+        // Recovery runs at loop startup; poll the working history until it rehydrates (or time out).
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (agent.SnapshotHistoryForTest().Count < priorMessages.Count && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Assert: the prior conversation is back in the loop's history, so the next turn resends
+        // it to the LLM.
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<TextMessage>().Select(m => m.Text)
+            .Should()
+            .Contain("My name is Alice.")
+            .And.Contain("Nice to meet you, Alice.");
+
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_TransientLoadFailure_DoesNotPoisonRecovery_AndRetrySucceeds()
+    {
+        // Regression: _historyRecovered must NOT be set when LoadMessagesAsync/LoadMetadataAsync
+        // throws (transient store/IO failure). If the flag were set up front, the failed
+        // RecoverAsync would permanently block both RunAsync's startup recovery and any later
+        // explicit RecoverAsync, leaving the agent stuck with empty history even after the store
+        // recovers. Here the store throws on the FIRST LoadMessagesAsync call then succeeds; the
+        // first RecoverAsync must throw without marking recovered, and a SECOND RecoverAsync must
+        // restore history.
+        var inner = new InMemoryConversationStore();
+        var threadId = "test-thread-transient-recovery";
+        const string runId = "prior-run";
+
+        var priorMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "My name is Bob.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "Hello, Bob.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+        };
+        await inner.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+        await inner.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var store = new FlakyLoadMessagesStore(inner, failuresBeforeSuccess: 1);
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        // Act 1: first RecoverAsync hits the transient failure and throws.
+        var firstRecover = async () => await agent.RecoverAsync();
+        await firstRecover.Should().ThrowAsync<IOException>();
+
+        // The flag must NOT be stuck — history is still empty and a retry is allowed.
+        agent.SnapshotHistoryForTest().Should().BeEmpty(
+            "a failed recovery must not leave partially-restored history");
+
+        // Act 2: a later RunAsync (as the agent pool does — no explicit RecoverAsync) must still
+        // perform startup recovery, because the failed attempt must not have set _historyRecovered.
+        // The store now succeeds on its second LoadMessagesAsync call.
+        using var cts = new CancellationTokenSource();
+        _ = agent.RunAsync(cts.Token);
+
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (agent.SnapshotHistoryForTest().Count < priorMessages.Count && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Assert: the transient failure did not poison recovery — RunAsync rehydrated the history.
+        agent.SnapshotHistoryForTest().OfType<TextMessage>().Select(m => m.Text)
+            .Should()
+            .Contain("My name is Bob.")
+            .And.Contain("Hello, Bob.");
+
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Decorator store that throws on the first N <see cref="LoadMessagesAsync"/> calls (modeling a
+    /// transient store/IO failure) then delegates to the inner store. Used to prove that a failed
+    /// recovery does not permanently poison <c>_historyRecovered</c>.
+    /// </summary>
+    private sealed class FlakyLoadMessagesStore : IConversationStore
+    {
+        private readonly IConversationStore _inner;
+        private int _remainingFailures;
+
+        public FlakyLoadMessagesStore(IConversationStore inner, int failuresBeforeSuccess)
+        {
+            _inner = inner;
+            _remainingFailures = failuresBeforeSuccess;
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
+        {
+            if (_remainingFailures > 0)
+            {
+                _remainingFailures--;
+                throw new IOException("Transient store failure (simulated).");
+            }
+
+            return _inner.LoadMessagesAsync(threadId, ct);
+        }
+
+        public Task AppendMessagesAsync(string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default)
+            => _inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default)
+            => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
+            => _inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
+            => _inner.LoadMetadataAsync(threadId, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
+            => _inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, CancellationToken ct = default)
+            => _inner.ListThreadsAsync(limit, offset, ct);
     }
 
     #endregion

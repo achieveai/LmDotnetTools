@@ -9,6 +9,7 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 ///     <list type="number">
 ///         <item>environment variables (<c>GITHUB_COPILOT_TOKEN</c>, <c>GH_COPILOT_TOKEN</c>, <c>GH_TOKEN</c>, <c>GITHUB_TOKEN</c>);</item>
 ///         <item>the GitHub Copilot CLI config (<c>~/.copilot/config.json</c>), which stores its own GitHub token;</item>
+///         <item>the macOS login keychain (service <c>copilot-cli</c>), where the Copilot CLI stores its token on macOS;</item>
 ///         <item>the GitHub Copilot editor credential files (<c>apps.json</c> / <c>hosts.json</c>) under the user config dir;</item>
 ///         <item>the <c>gh</c> CLI hosts file (<c>hosts.yml</c>);</item>
 ///         <item>the <c>gh auth token</c> command.</item>
@@ -67,7 +68,15 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
             }
         }
 
-        // 3. GitHub Copilot editor credential files (apps.json / hosts.json).
+        // 3. macOS login keychain — the Copilot CLI stores its token here (service "copilot-cli"),
+        //    not in any file, so this is the only zero-setup source for a keychain-authenticated user.
+        var keychainToken = TryGetTokenFromMacKeychain();
+        if (!string.IsNullOrWhiteSpace(keychainToken))
+        {
+            return keychainToken;
+        }
+
+        // 4. GitHub Copilot editor credential files (apps.json / hosts.json).
         foreach (var path in CopilotEditorCredentialFiles())
         {
             var token = TryReadOAuthTokenFromJson(path);
@@ -77,7 +86,7 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
             }
         }
 
-        // 4. gh CLI hosts.yml (YAML).
+        // 5. gh CLI hosts.yml (YAML).
         foreach (var path in GhCliHostsYamlFiles())
         {
             var token = TryReadOAuthTokenFromYaml(path);
@@ -87,7 +96,7 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
             }
         }
 
-        // 5. gh auth token (shell out, last resort).
+        // 6. gh auth token (shell out, last resort).
         return TryGetTokenFromGhCli();
     }
 
@@ -287,6 +296,65 @@ public sealed partial class CliCredentialCopilotTokenProvider : ICopilotTokenPro
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     Reads the Copilot CLI's GitHub token from the macOS login keychain (generic-password
+    ///     service <c>copilot-cli</c>) via <c>security find-generic-password -s copilot-cli -w</c>.
+    ///     No-ops on non-macOS platforms. Only returns a value that looks like a GitHub token so a
+    ///     foreign/legacy keychain entry can never poison resolution.
+    /// </summary>
+    private static string? TryGetTokenFromMacKeychain()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "security",
+                    ArgumentList = { "find-generic-password", "-s", "copilot-cli", "-w" },
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                },
+            };
+
+            if (!process.Start())
+            {
+                return null;
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(5000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process already exited.
+                }
+
+                return null;
+            }
+
+            var token = output.Trim();
+            return process.ExitCode == 0 && GitHubTokenRegex().IsMatch(token) ? token : null;
+        }
+        catch (Exception ex)
+            when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            // `security` missing / not on PATH (non-macOS or stripped image).
+            return null;
+        }
     }
 
     private static string? TryGetTokenFromGhCli()

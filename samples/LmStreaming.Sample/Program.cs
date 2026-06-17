@@ -669,6 +669,7 @@ try
                         var binding = sp.GetRequiredService<SandboxSessionRegistry>()
                             .GetOrAddSubAgentBinding(
                                 sandboxSession.SessionId,
+                                threadId,
                                 subAgentOptions.Templates,
                                 subAgentFactory);
                         sharedSubAgentSource = binding.Source;
