@@ -246,6 +246,31 @@ public class InstructionChainParserTests
     }
 
     [Fact]
+    public void ExtractInstructionChain_WithToolsEcho_ShouldParseAsExplicitText()
+    {
+        // tools_echo surfaces tool names AND descriptions (unlike tools_list which is names only),
+        // so a probe can inspect content embedded in a tool's description — e.g. the sub-agent
+        // catalog baked into the "Agent" tool description.
+        var content = """
+            <|instruction_start|>
+            {"instruction_chain": [
+                {"id_message": "Echo tools", "messages":[{"tools_echo":{}}]}
+            ]}
+            <|instruction_end|>
+            """;
+
+        var result = _parser.ExtractInstructionChain(content);
+
+        Assert.NotNull(result);
+        Assert.Single(result);
+        Assert.Equal("Echo tools", result[0].IdMessage);
+        Assert.Single(result[0].Messages);
+        Assert.Equal("__TOOLS_ECHO__", result[0].Messages[0].ExplicitText);
+        Assert.Null(result[0].Messages[0].TextLength);
+        Assert.Null(result[0].Messages[0].ToolCalls);
+    }
+
+    [Fact]
     public void ExtractInstructionChain_WithMixedDynamicAndStaticMessages_ShouldParseAll()
     {
         // Arrange

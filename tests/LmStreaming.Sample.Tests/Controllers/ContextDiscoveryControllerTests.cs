@@ -1,3 +1,7 @@
+using System.Net;
+using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
@@ -271,6 +275,103 @@ public class ContextDiscoveryControllerTests
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
+    }
+
+    [Fact]
+    public async Task NotifyAsync_SubAgentDiscovery_RegistersEachConversationsOwnAgentFactory()
+    {
+        // Provider-bleed regression: a sub-agent discovered while TWO conversations are live on the
+        // shared session is loaded once, but each conversation must receive a template wired to ITS
+        // OWN AgentFactory — not the first conversation's. Otherwise conversation B's discovered
+        // sub-agent would spawn using conversation A's provider.
+        var hostPath = Path.Combine(Path.GetTempPath(), "wi-bleed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(hostPath, ".claude", "agents"));
+        await File.WriteAllTextAsync(
+            Path.Combine(hostPath, ".claude", "agents", "echo.md"),
+            "---\nname: echo\ndescription: Echoes a marker.\n---\nYou are the echo sub-agent.");
+
+        try
+        {
+            const string gatewaySessionId = "sess-bleed";
+
+            HttpResponseMessage Respond(HttpRequestMessage req)
+            {
+                if (req.Method == HttpMethod.Post
+                    && req.RequestUri!.AbsolutePath.Contains("/sandboxes", StringComparison.Ordinal))
+                {
+                    var containerPath = System.Text.Json.JsonSerializer.Serialize(hostPath);
+                    var json =
+                        "{\"session_id\":\"" + gatewaySessionId + "\",\"volumes\":{\"workspace\":{\"container_path\":"
+                        + containerPath + ",\"read_only\":false}}}";
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                    };
+                }
+
+                // Health probe (and anything else) → healthy.
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            var gateway = new SandboxGatewayLifetime(
+                new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, AutoSpawn = false },
+                NullLogger<SandboxGatewayLifetime>.Instance,
+                new HttpClient(new StubHandler(Respond)));
+
+            await using var registry = new SandboxSessionRegistry(
+                gateway,
+                new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, AutoSpawn = false },
+                NullLogger<SandboxSessionRegistry>.Instance,
+                new HttpClient(new StubHandler(Respond)),
+                new AuthOptions(),
+                new AuthSharedSecret(new AuthOptions()));
+
+            // Create the shared session so the webhook can resolve it by id.
+            var session = await registry.GetOrCreateSessionAsync("default");
+            session.SessionId.Should().Be(gatewaySessionId);
+
+            var agentA = new Mock<IStreamingAgent>().Object;
+            var agentB = new Mock<IStreamingAgent>().Object;
+            var emptySeed = new Dictionary<string, SubAgentTemplate>();
+            var bindingA = registry.GetOrAddSubAgentBinding(gatewaySessionId, "conv-A", emptySeed, () => agentA);
+            var bindingB = registry.GetOrAddSubAgentBinding(gatewaySessionId, "conv-B", emptySeed, () => agentB);
+
+            var loader = new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
+            var controller = CreateController(authorizationHeader: Secret, registry: registry, loader: loader);
+
+            var result = await controller.NotifyAsync(
+                new ContextDiscoveryPayload
+                {
+                    SessionId = gatewaySessionId,
+                    Kind = "subagent",
+                    Name = "echo",
+                    Path = ".claude/agents/echo.md",
+                },
+                CancellationToken.None);
+
+            result.Should().BeOfType<OkResult>();
+
+            bindingA.Source.Templates.Should().ContainKey("echo");
+            bindingB.Source.Templates.Should().ContainKey("echo");
+            bindingA.Source.Templates["echo"].AgentFactory().Should().BeSameAs(agentA);
+            bindingB.Source.Templates["echo"].AgentFactory().Should().BeSameAs(
+                agentB,
+                "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(hostPath))
+                {
+                    Directory.Delete(hostPath, recursive: true);
+                }
+            }
+            catch
+            {
+                // best-effort cleanup
+            }
+        }
     }
 
     private sealed class StubHandler : HttpMessageHandler

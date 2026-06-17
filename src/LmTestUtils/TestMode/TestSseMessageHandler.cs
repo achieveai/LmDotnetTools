@@ -216,6 +216,10 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             {
                 message.ExplicitText = ExtractSystemPrompt(requestRoot);
             }
+            else if (message.ExplicitText == "__TOOLS_ECHO__")
+            {
+                message.ExplicitText = ExtractToolsEcho(requestRoot);
+            }
             else if (message.ExplicitText == "__TOOLS_LIST__")
             {
                 message.ExplicitText = ExtractToolsList(requestRoot);
@@ -319,6 +323,46 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         }
 
         return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
+    }
+
+    /// <summary>
+    ///     Extracts each visible tool as <c>name: description</c>, newline-separated. Unlike
+    ///     <see cref="ExtractToolsList"/> (names only), this surfaces descriptions so a probe can
+    ///     inspect content embedded there — e.g. the sub-agent catalog baked into the "Agent" tool
+    ///     description. OpenAI wire format: <c>{ "function": { "name", "description" } }</c>.
+    /// </summary>
+    private static string ExtractToolsEcho(JsonElement root)
+    {
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return "No tools available";
+        }
+
+        var lines = new List<string>();
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object
+                || !tool.TryGetProperty("function", out var fn)
+                || fn.ValueKind != JsonValueKind.Object
+                || !fn.TryGetProperty("name", out var name)
+                || name.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var toolName = name.GetString();
+            if (string.IsNullOrEmpty(toolName))
+            {
+                continue;
+            }
+
+            var description = fn.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                ? desc.GetString() ?? string.Empty
+                : string.Empty;
+            lines.Add($"{toolName}: {description}");
+        }
+
+        return lines.Count == 0 ? "No tools available" : string.Join("\n", lines);
     }
 
     /// <summary>
