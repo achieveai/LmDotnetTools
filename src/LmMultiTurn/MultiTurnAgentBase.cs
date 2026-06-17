@@ -39,7 +39,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // Set once history has been (attempted to be) recovered from the store, so RunAsync's
     // startup recovery and any explicit RecoverAsync call never double-restore (RestoreHistory
     // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
-    private bool _historyRecovered;
+    private volatile bool _historyRecovered;
     private volatile bool _isDisposed;
 
     #endregion
@@ -489,15 +489,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             throw new InvalidOperationException("No persistence store configured");
         }
 
-        // Mark recovery as attempted up front so RunAsync's startup recovery does not run it a
-        // second time (RestoreHistory appends, so a double-recover would duplicate history).
-        _historyRecovered = true;
+        // NOTE: _historyRecovered is set ONLY on non-throwing completion (after RestoreHistory, and
+        // on the early "nothing to restore" returns). Setting it before I/O would mean a transient
+        // failure in LoadMetadataAsync/LoadMessagesAsync permanently blocks retry — RunAsync's
+        // startup recovery (gated on !_historyRecovered) would skip forever and the agent would run
+        // with empty history even after the store recovers. The double-recover guard is specifically
+        // about RestoreHistory appending, so the flag belongs right after a successful restore.
 
         // Load metadata first
         var metadata = await Store.LoadMetadataAsync(ThreadId, ct);
         if (metadata == null)
         {
             Logger.LogDebug("No stored metadata found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
 
@@ -506,14 +510,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         if (persistedMessages.Count == 0)
         {
             Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
 
         // Convert persisted messages back to IMessages
         var messages = MessagePersistenceConverter.FromPersistedMessages(persistedMessages);
 
-        // Restore history
+        // Restore history. Mark recovered immediately after the append succeeds so RunAsync's
+        // startup recovery and any later explicit RecoverAsync never double-restore.
         RestoreHistory(messages);
+        _historyRecovered = true;
 
         // Restore state
         lock (_stateLock)
