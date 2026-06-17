@@ -230,6 +230,15 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 continue;
             }
 
+            // Check for tools_echo - returns names AND descriptions of all visible tools. Lets a
+            // probe inspect content carried in a tool's description (e.g. the sub-agent catalog
+            // embedded in the "Agent" tool description), which tools_list (names only) cannot see.
+            if (item.TryGetProperty("tools_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__TOOLS_ECHO__"));
+                continue;
+            }
+
             // Check for request_url_echo - returns the request URL as text
             if (item.TryGetProperty("request_url_echo", out _))
             {
