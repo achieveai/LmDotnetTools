@@ -60,3 +60,6 @@ node_modules/
 # Scratchpad working directory (keep folder, ignore contents)
 scratchPad/*
 !scratchPad/.gitkeep
+
+# Git worktrees (isolated workspaces — never track their contents)
+worktrees/
