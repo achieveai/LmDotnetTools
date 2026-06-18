@@ -317,7 +317,7 @@ watch(
             class="menu-item manage-item"
             data-testid="workspace-create-open"
             :disabled="disabled"
-            @click="openCreateForm"
+            @click.stop="openCreateForm"
           >
             + New workspace
           </button>
