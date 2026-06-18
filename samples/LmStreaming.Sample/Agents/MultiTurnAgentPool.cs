@@ -22,9 +22,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     public const string ProviderPropertyKey = "provider";
 
+    /// <summary>
+    /// Property key in <see cref="ThreadMetadata.Properties"/> that stores the workspace id
+    /// chosen for a thread. Persisted on first creation, then treated as immutable for the
+    /// lifetime of that thread (persisted value wins over a later requested value), mirroring
+    /// <see cref="ProviderPropertyKey"/>.
+    /// </summary>
+    public const string WorkspacePropertyKey = "workspace";
+
+    private const string DefaultWorkspaceId = "default";
+
     private readonly ConcurrentDictionary<string, AgentEntry> _agents = new();
     private readonly ConcurrentDictionary<string, object> _creationLocks = new();
-    private readonly Func<string, ChatMode, string, string?, AgentCreationResult> _agentFactory;
+    private readonly Func<AgentCreationContext, AgentCreationResult> _agentFactory;
     private readonly ProviderRegistry? _providerRegistry;
     private readonly IConversationStore? _conversationStore;
     private readonly ILogger<MultiTurnAgentPool> _logger;
@@ -37,6 +47,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         bool AgentIsRunning,
         bool RunTaskCompleted,
         bool IsStale
+    );
+
+    /// <summary>
+    /// Inputs the agent factory receives for one (threadId) creation. Bundles the resolved
+    /// provider id, the chat mode, the optional request/response dump base file name, and the
+    /// resolved workspace id so the factory can mount the chosen workspace's sandbox directory.
+    /// </summary>
+    public sealed record AgentCreationContext(
+        string ThreadId,
+        ChatMode Mode,
+        string ProviderId,
+        string? DumpFile,
+        string? WorkspaceId
     );
 
     /// <summary>
@@ -58,6 +81,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         public required CancellationTokenSource Cts { get; init; }
         public required ChatMode Mode { get; init; }
         public required string ProviderId { get; init; }
+        public string? WorkspaceId { get; init; }
         public string? RequestResponseDumpFileName { get; init; }
         public IReadOnlyList<IAsyncDisposable>? OwnedResources { get; init; }
 
@@ -114,7 +138,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </param>
     /// <param name="logger">Logger for pool operations.</param>
     public MultiTurnAgentPool(
-        Func<string, ChatMode, string, string?, AgentCreationResult> agentFactory,
+        Func<AgentCreationContext, AgentCreationResult> agentFactory,
         ProviderRegistry? providerRegistry,
         IConversationStore? conversationStore,
         ILogger<MultiTurnAgentPool> logger
@@ -127,9 +151,28 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Back-compat overload taking a four-arg (threadId, mode, providerId, dump) factory that
+    /// predates the <see cref="AgentCreationContext"/> bundling. Existing callers/tests keep
+    /// compiling; the workspace id defaults to <c>"default"</c>.
+    /// </summary>
+    public MultiTurnAgentPool(
+        Func<string, ChatMode, string, string?, AgentCreationResult> agentFactory,
+        ProviderRegistry? providerRegistry,
+        IConversationStore? conversationStore,
+        ILogger<MultiTurnAgentPool> logger
+    )
+        : this(
+            agentFactory: WrapProviderFactory(agentFactory),
+            providerRegistry: providerRegistry,
+            conversationStore: conversationStore,
+            logger: logger
+        )
+    { }
+
+    /// <summary>
     /// Back-compat overload that omits the provider-id parameter from the factory. The
     /// pool injects a fixed provider id (<c>"legacy"</c>) when invoking the factory. Use
-    /// the provider-aware constructor for new code.
+    /// the context-aware constructor for new code.
     /// </summary>
     public MultiTurnAgentPool(
         Func<string, ChatMode, string?, AgentCreationResult> agentFactory,
@@ -143,12 +186,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         )
     { }
 
-    private static Func<string, ChatMode, string, string?, AgentCreationResult> WrapLegacyFactory(
+    private static Func<AgentCreationContext, AgentCreationResult> WrapProviderFactory(
+        Func<string, ChatMode, string, string?, AgentCreationResult> agentFactory
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agentFactory);
+        return ctx => agentFactory(ctx.ThreadId, ctx.Mode, ctx.ProviderId, ctx.DumpFile);
+    }
+
+    private static Func<AgentCreationContext, AgentCreationResult> WrapLegacyFactory(
         Func<string, ChatMode, string?, AgentCreationResult> agentFactory
     )
     {
         ArgumentNullException.ThrowIfNull(agentFactory);
-        return (threadId, mode, _, dump) => agentFactory(threadId, mode, dump);
+        return ctx => agentFactory(ctx.ThreadId, ctx.Mode, ctx.DumpFile);
     }
 
     /// <summary>
@@ -188,6 +239,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// Optional base file name for provider request/response recording.
     /// Only applied when creating a new agent instance.
     /// </param>
+    /// <param name="requestedWorkspaceId">
+    /// Workspace id requested by the caller (typically from the WS query string). Honored only
+    /// when the thread has no persisted workspace yet; otherwise the persisted value wins. May be
+    /// <c>null</c> to fall back to the <c>"default"</c> workspace.
+    /// </param>
     /// <exception cref="ProviderUnavailableException">
     /// Thrown when the resolved provider id (whether from persisted metadata or the
     /// caller's request) is no longer available in the current process.
@@ -196,17 +252,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string threadId,
         ChatMode mode,
         string? requestedProviderId,
-        string? requestResponseDumpFileName
+        string? requestResponseDumpFileName,
+        string? requestedWorkspaceId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
         ArgumentNullException.ThrowIfNull(mode);
 
-        // Resolve provider OUTSIDE the lock to avoid blocking other threadIds on file I/O.
-        // The lock below is acquired only after we know which provider to use, so concurrent
-        // first-creation calls for the same threadId still serialise on creation.
+        // Resolve provider and workspace OUTSIDE the lock to avoid blocking other threadIds on
+        // file I/O. The lock below is acquired only after we know which provider/workspace to use,
+        // so concurrent first-creation calls for the same threadId still serialise on creation.
         var resolvedProviderId = ResolveProviderId(threadId, requestedProviderId);
+        var resolvedWorkspaceId = ResolveWorkspaceId(threadId, requestedWorkspaceId);
 
         // Use per-key lock to prevent concurrent factory invocations for the same threadId.
         // ConcurrentDictionary.GetOrAdd does not guarantee the factory runs at most once,
@@ -218,7 +276,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         {
             if (!_agents.TryGetValue(threadId, out var existing))
             {
-                entry = CreateAgentEntry(threadId, mode, resolvedProviderId, requestResponseDumpFileName);
+                entry = CreateAgentEntry(
+                    threadId,
+                    mode,
+                    resolvedProviderId,
+                    requestResponseDumpFileName,
+                    resolvedWorkspaceId
+                );
                 _agents[threadId] = entry;
                 created = true;
             }
@@ -230,11 +294,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         if (created)
         {
-            // Persist the provider on first creation. Fire-and-forget — the WS connect
-            // path runs in a request scope, and a transient failure here only means the
-            // next reconnect will re-resolve from the registry default. We log warnings
-            // so silent persistence drift is visible.
+            // Persist the provider and workspace on first creation. Fire-and-forget — the WS
+            // connect path runs in a request scope, and a transient failure here only means the
+            // next reconnect will re-resolve from the registry default. We log warnings so silent
+            // persistence drift is visible.
             _ = PersistProviderIfNeededAsync(threadId, resolvedProviderId);
+            _ = PersistWorkspaceIfNeededAsync(threadId, resolvedWorkspaceId);
         }
 
         if (
@@ -254,7 +319,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the provider id that <see cref="GetOrCreateAgent(string, ChatMode, string?, string?)"/>
+    /// Returns the provider id that <see cref="GetOrCreateAgent(string, ChatMode, string?, string?, string?)"/>
     /// would use for <paramref name="threadId"/>, without creating an agent. Useful when a
     /// caller needs to surface "this thread is locked to provider X" to the UI.
     /// </summary>
@@ -319,6 +384,101 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Resolves the workspace id for <paramref name="threadId"/>: the persisted value wins (a
+    /// thread is locked to the workspace it was created with), then the requested value, then the
+    /// <c>"default"</c> sentinel. Mirrors <see cref="ResolveProviderId"/> but without availability
+    /// checks — any workspace id is acceptable.
+    /// </summary>
+    private string ResolveWorkspaceId(string threadId, string? requestedWorkspaceId)
+    {
+        var persisted = LoadPersistedWorkspaceId(threadId);
+        if (!string.IsNullOrWhiteSpace(persisted))
+        {
+            return persisted;
+        }
+
+        return !string.IsNullOrWhiteSpace(requestedWorkspaceId) ? requestedWorkspaceId : DefaultWorkspaceId;
+    }
+
+    private string? LoadPersistedWorkspaceId(string threadId)
+    {
+        if (_conversationStore == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var metadata = _conversationStore.LoadMetadataAsync(threadId).GetAwaiter().GetResult();
+            if (
+                metadata?.Properties != null
+                && metadata.Properties.TryGetValue(WorkspacePropertyKey, out var raw)
+                && TryNormalizeStringValue(raw, out var workspaceId)
+            )
+            {
+                return workspaceId;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to load persisted workspace for thread {ThreadId}; falling back to default",
+                threadId
+            );
+        }
+
+        return null;
+    }
+
+    private async Task PersistWorkspaceIfNeededAsync(string threadId, string workspaceId)
+    {
+        if (_conversationStore == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var existing = await _conversationStore.LoadMetadataAsync(threadId).ConfigureAwait(false);
+            var hasWorkspace = existing?.Properties?.ContainsKey(WorkspacePropertyKey) == true;
+            if (hasWorkspace)
+            {
+                return;
+            }
+
+            var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
+            properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
+
+            var updated = (
+                existing
+                ?? new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                }
+            ) with
+            {
+                Properties = properties,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+
+            await _conversationStore.SaveMetadataAsync(threadId, updated).ConfigureAwait(false);
+
+            _logger.LogInformation("Persisted workspace {WorkspaceId} for thread {ThreadId}", workspaceId, threadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to persist workspace {WorkspaceId} for thread {ThreadId}",
+                workspaceId,
+                threadId
+            );
+        }
+    }
+
     private string? LoadPersistedProviderId(string threadId)
     {
         if (_conversationStore == null)
@@ -369,6 +529,30 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
 
         providerId = value.Trim().ToLowerInvariant();
+        return true;
+    }
+
+    /// <summary>
+    /// Extracts a non-empty trimmed string from a persisted metadata value (raw string or a
+    /// <see cref="JsonElement"/> string). Unlike <see cref="TryNormalizeProviderId"/> the value is
+    /// NOT lowercased — workspace ids are opaque (GUIDs / the <c>"default"</c> sentinel).
+    /// </summary>
+    private static bool TryNormalizeStringValue(object raw, out string value)
+    {
+        var extracted = raw switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            _ => null,
+        };
+
+        if (string.IsNullOrWhiteSpace(extracted))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        value = extracted.Trim();
         return true;
     }
 
@@ -553,9 +737,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             mode.Name
         );
 
-        // Resolve provider before re-entering the lock — the same persisted provider must
-        // continue to be used after a mode-switch (mode-switch is not a provider switch).
+        // Resolve provider/workspace before re-entering the lock — the same persisted provider and
+        // workspace must continue to be used after a mode-switch (mode-switch is neither a provider
+        // nor a workspace switch).
         var resolvedProviderId = ResolveProviderId(threadId, requestedProviderId: null);
+        var resolvedWorkspaceId = ResolveWorkspaceId(threadId, requestedWorkspaceId: null);
 
         // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
         var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
@@ -564,7 +750,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         lock (lockObj)
         {
             _ = _agents.TryRemove(threadId, out oldEntry);
-            entry = CreateAgentEntry(threadId, mode, resolvedProviderId, requestResponseDumpFileName: null);
+            entry = CreateAgentEntry(
+                threadId,
+                mode,
+                resolvedProviderId,
+                requestResponseDumpFileName: null,
+                resolvedWorkspaceId
+            );
             _agents[threadId] = entry;
         }
 
@@ -582,19 +774,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string threadId,
         ChatMode mode,
         string providerId,
-        string? requestResponseDumpFileName
+        string? requestResponseDumpFileName,
+        string? workspaceId
     )
     {
         _logger.LogInformation(
-            "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName}) and provider {ProviderId}, dump recording enabled: {DumpEnabled}",
+            "Creating new agent for thread {ThreadId} with mode {ModeId} ({ModeName}), provider {ProviderId}, workspace {WorkspaceId}, dump recording enabled: {DumpEnabled}",
             threadId,
             mode.Id,
             mode.Name,
             providerId,
+            workspaceId ?? DefaultWorkspaceId,
             !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
         );
 
-        var result = _agentFactory(threadId, mode, providerId, requestResponseDumpFileName);
+        var result = _agentFactory(
+            new AgentCreationContext(threadId, mode, providerId, requestResponseDumpFileName, workspaceId)
+        );
         var agent = result.Agent;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
@@ -625,6 +821,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             Cts = cts,
             Mode = mode,
             ProviderId = providerId,
+            WorkspaceId = workspaceId,
             RequestResponseDumpFileName = requestResponseDumpFileName,
             OwnedResources = result.OwnedResources,
         };

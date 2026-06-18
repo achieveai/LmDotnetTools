@@ -3,7 +3,7 @@ using LmStreaming.Sample.Services;
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
-/// Unit tests for <see cref="SandboxGatewayOptions.ResolveWorkspace"/> — the pure base/leaf/full-path
+/// Unit tests for <see cref="SandboxGatewayOptions.ResolveWorkspace()"/> — the pure base/leaf/full-path
 /// resolution that drives <c>WORKSPACE_BASE_PATH</c>, the session workspace, and directory creation.
 /// Paths are built with <see cref="Path"/> APIs (never hardcoded separators) so the cases hold on any OS.
 /// </summary>
@@ -118,5 +118,53 @@ public class SandboxGatewayOptionsTests
         leaf.Should().Be("override-ws");
         resolvedBase.Should().Be(Path.GetDirectoryName(expectedFull));
         resolvedBase.Should().NotBe(options.WorkspaceBasePath, "WorkspacePath takes precedence over the legacy base");
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithOverride_TreatsOverrideAsLeafUnderBase()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
+        var options = new SandboxGatewayOptions { WorkspaceBasePath = basePath, Workspace = "proj" };
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace("projA");
+
+        resolvedBase.Should().Be(basePath);
+        leaf.Should().Be("projA");
+        full.Should().Be(Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(basePath, "projA"))));
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithNullOrEmptyOverride_MatchesParameterless()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
+        var options = new SandboxGatewayOptions { WorkspaceBasePath = basePath, Workspace = "proj" };
+
+        options.ResolveWorkspace(null).Should().Be(options.ResolveWorkspace());
+        options.ResolveWorkspace("   ").Should().Be(options.ResolveWorkspace());
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithEscapingOverride_Throws()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
+        var options = new SandboxGatewayOptions { WorkspaceBasePath = basePath, Workspace = "proj" };
+
+        var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithRootedOverride_Throws()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
+        var options = new SandboxGatewayOptions { WorkspaceBasePath = basePath, Workspace = "proj" };
+
+        // An absolute path under the temp root is rooted, so it must be rejected regardless of where
+        // it points.
+        var rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
+        var act = () => options.ResolveWorkspace(rooted);
+
+        act.Should().Throw<InvalidOperationException>();
     }
 }

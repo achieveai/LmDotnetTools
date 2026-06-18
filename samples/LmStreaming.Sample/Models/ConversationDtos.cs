@@ -16,6 +16,13 @@ public record ConversationSummary
     /// the per-conversation provider feature.
     /// </summary>
     public string? Provider { get; init; }
+
+    /// <summary>
+    /// Workspace id this thread is locked to. Set on first agent creation and persisted
+    /// in <c>ThreadMetadata.Properties["workspace"]</c>. Null for legacy threads predating
+    /// the per-conversation workspace feature.
+    /// </summary>
+    public string? Workspace { get; init; }
 }
 
 /// <summary>
