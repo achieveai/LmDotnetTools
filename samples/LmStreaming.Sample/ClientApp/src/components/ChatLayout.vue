@@ -240,19 +240,28 @@ async function handleSelectMode(modeId: string): Promise<void> {
     return;
   }
 
-  if (currentThreadId.value) {
-    // If there's an active conversation, switch the mode for it
+  // Only switch on the backend once the conversation has actually started (has a
+  // sidebar entry / first message sent). For a brand-new, messageless thread —
+  // even though handleNewChat has already assigned a threadId — apply the mode
+  // locally like provider and workspace. Otherwise the backend RecreateAgentForModeSwitch
+  // would pre-create the agent and bind its provider/workspace to defaults, so a
+  // workspace picked before the first message would be silently ignored.
+  const started =
+    !!currentThreadId.value &&
+    conversations.value.some((c) => c.threadId === currentThreadId.value);
+
+  if (started) {
     isSwitchingMode.value = true;
     try {
       await disconnectWebSocket();
-      await switchMode(currentThreadId.value, modeId);
+      await switchMode(currentThreadId.value!, modeId);
     } catch (e) {
       console.error('Failed to switch mode:', e);
     } finally {
       isSwitchingMode.value = false;
     }
   } else {
-    // Just select the mode for new conversations
+    // Messageless thread: defer agent creation to the first send.
     selectMode(modeId);
   }
 }
