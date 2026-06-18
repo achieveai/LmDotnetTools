@@ -29,6 +29,7 @@ const dropdownRef = ref<HTMLElement | null>(null);
 
 const formMode = ref<FormMode>('none');
 const formError = ref<string | null>(null);
+const submitting = ref(false);
 
 // Create form state
 const createName = ref('');
@@ -83,6 +84,7 @@ function closeDropdown(): void {
 function closeForm(): void {
   formMode.value = 'none';
   formError.value = null;
+  submitting.value = false;
 }
 
 function handleSelect(workspaceId: string): void {
@@ -137,6 +139,7 @@ function toggleCreateMarketplace(id: string): void {
 }
 
 function submitCreate(): void {
+  if (submitting.value) return;
   formError.value = null;
   const name = createName.value.trim();
   if (!name) {
@@ -144,12 +147,16 @@ function submitCreate(): void {
     return;
   }
   const directory = createDirectory.value.trim();
+  // Keep the form open and mark it in-flight. The parent awaits the API call and
+  // calls closeForm() on success or showFormError() on failure (which re-renders
+  // the inline error). Closing here would unmount the error element before the
+  // awaited rejection arrives, silently swallowing the message.
+  submitting.value = true;
   emit('create-workspace', {
     name,
     directoryRelPath: directory || undefined,
     marketplaces: [...createMarketplaces.value],
   });
-  closeForm();
 }
 
 // --- Edit form -----------------------------------------------------------
@@ -172,23 +179,26 @@ function toggleEditMarketplace(id: string): void {
 }
 
 function submitEdit(): void {
+  if (submitting.value) return;
   formError.value = null;
   if (!editWorkspaceId.value) return;
+  submitting.value = true;
   emit('update-workspace', editWorkspaceId.value, {
     marketplaces: [...editMarketplaces.value],
   });
-  closeForm();
 }
 
 /**
- * Allows the parent to surface an API error returned after a create/update
- * emit (the form has already closed by then; reopen-less inline display).
+ * Surfaces an API error returned by the parent after a create/update emit.
+ * The form is kept open (in-flight) until this or closeForm() is called, so the
+ * inline error element is still mounted and renders the message.
  */
 function showFormError(message: string): void {
   formError.value = message;
+  submitting.value = false;
 }
 
-defineExpose({ showFormError });
+defineExpose({ showFormError, closeForm });
 
 // --- Outside click / escape ---------------------------------------------
 
@@ -376,6 +386,7 @@ watch(
               type="submit"
               class="btn-primary"
               data-testid="workspace-create-submit"
+              :disabled="submitting"
             >
               Create
             </button>
@@ -444,6 +455,7 @@ watch(
               type="submit"
               class="btn-primary"
               data-testid="workspace-edit-submit"
+              :disabled="submitting"
             >
               Save
             </button>

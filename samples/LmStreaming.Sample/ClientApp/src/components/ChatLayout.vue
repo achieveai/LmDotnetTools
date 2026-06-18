@@ -151,6 +151,7 @@ function handleSelectWorkspace(workspaceId: string): void {
 async function handleCreateWorkspace(data: WorkspaceCreate): Promise<void> {
   try {
     await createWorkspace(data);
+    workspaceSelectorRef.value?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to create workspace';
     workspaceSelectorRef.value?.showFormError(message);
@@ -160,6 +161,7 @@ async function handleCreateWorkspace(data: WorkspaceCreate): Promise<void> {
 async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate): Promise<void> {
   try {
     await updateWorkspace(workspaceId, data);
+    workspaceSelectorRef.value?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
     workspaceSelectorRef.value?.showFormError(message);

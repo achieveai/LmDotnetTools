@@ -848,6 +848,24 @@ try
             // workspace. Null/empty → "default", identical to today.
             var workspaceId = context.Request.Query["workspaceId"].FirstOrDefault();
 
+            // Defensively normalize an unknown workspace id (stale UI, a deleted workspace, or
+            // hostile input) to "default". Otherwise the thread would lock to a non-existent
+            // workspace and a sandbox session would be cached/persisted under a bogus id while
+            // silently resolving to the default directory.
+            if (!string.IsNullOrWhiteSpace(workspaceId))
+            {
+                var workspaceStore = context.RequestServices.GetRequiredService<IWorkspaceStore>();
+                if (await workspaceStore.GetAsync(workspaceId, cancellationToken) is null)
+                {
+                    wsLogger.LogWarning(
+                        "Unknown workspace id {WorkspaceId} requested for thread {ThreadId}; falling back to default.",
+                        workspaceId,
+                        threadId
+                    );
+                    workspaceId = null;
+                }
+            }
+
             var recordEnabled =
                 app.Environment.IsDevelopment() && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
 
