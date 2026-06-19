@@ -23,7 +23,7 @@ public class MarketplacesController(
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] string? marketplaces, CancellationToken ct)
     {
-        var aliases = SandboxSessionRegistry.ParseMarketplaces(marketplaces);
+        var aliases = MarketplaceAliases.Parse(marketplaces);
         try
         {
             var catalog = await catalogClient.GetCatalogAsync(aliases, ct);

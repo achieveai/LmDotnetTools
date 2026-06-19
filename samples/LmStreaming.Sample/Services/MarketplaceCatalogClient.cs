@@ -70,13 +70,34 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
                     $"Sandbox gateway returned {(int)response.StatusCode} for the marketplace catalog: {body}");
             }
 
-            var catalog = await response
-                .Content.ReadFromJsonAsync<MarketplaceCatalog>(JsonOptions, ct)
-                .ConfigureAwait(false);
+            MarketplaceCatalog? catalog;
+            try
+            {
+                catalog = await response
+                    .Content.ReadFromJsonAsync<MarketplaceCatalog>(JsonOptions, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (JsonException ex)
+            {
+                // A reachable gateway that returns a 200 with an unparseable body (truncated JSON,
+                // an HTML error page from a proxy, a shape mismatch) is still "catalog unavailable".
+                // Fold it into the same contract — with a log — so the controller answers 503 and the
+                // SPA shows the offline state instead of an opaque, unlogged 500.
+                _logger.LogWarning(ex, "Marketplace catalog returned a 200 with an unparseable body.");
+                throw new MarketplaceCatalogUnavailableException(
+                    "Sandbox gateway returned a malformed marketplace catalog body.", ex);
+            }
 
-            // A 200 with a null/empty body is a contract violation; normalise to an empty catalog
-            // rather than handing callers a null.
-            return catalog ?? new MarketplaceCatalog([], []);
+            if (catalog is null)
+            {
+                // A 200 with a literal `null` body is a contract violation; normalise to an empty
+                // catalog rather than handing callers a null — but log it so a gateway bug that
+                // returns `null` is not silently rendered to the user as "no marketplaces configured".
+                _logger.LogWarning("Marketplace catalog request returned 200 with a null body; treating as empty.");
+                return new MarketplaceCatalog([], []);
+            }
+
+            return catalog;
         }
     }
 }

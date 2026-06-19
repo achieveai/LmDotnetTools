@@ -27,7 +27,22 @@ export async function listMarketplaces(marketplaces?: string[]): Promise<Marketp
     throw new MarketplaceGatewayUnavailableError();
   }
   if (!response.ok) {
-    throw new Error(`Failed to fetch marketplaces: ${response.statusText}`);
+    // Surface the status code (statusText is often empty under HTTP/2) and the server's structured
+    // `detail` when present, so the error state is actionable rather than a bare message.
+    const detail = await readErrorDetail(response);
+    throw new Error(
+      `Failed to fetch marketplaces (${response.status})${detail ? `: ${detail}` : ''}`
+    );
   }
   return response.json();
+}
+
+/** Best-effort extraction of the backend's `{ error, detail }` body; returns null if unreadable. */
+async function readErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json();
+    return body?.detail ?? body?.error ?? null;
+  } catch {
+    return null;
+  }
 }

@@ -51,6 +51,35 @@ describe('MarketplaceBrowser', () => {
     expect(wrapper.find('[data-testid="marketplace-browser-error"]').exists()).toBe(true);
   });
 
+  it('renders a per-marketplace error while sibling marketplaces still list plugins', async () => {
+    // The gateway can report a partial failure: one marketplace fails to load (error != null,
+    // empty plugins) while others succeed. This is distinct from the gateway-offline (503) state.
+    const mock = installMarketplacePreviewFetchMock({
+      catalog: {
+        selected: ['broken', 'healthy'],
+        marketplaces: [
+          { alias: 'broken', error: 'could not read marketplace.json', plugins: [] },
+          {
+            alias: 'healthy',
+            error: null,
+            plugins: [{ name: 'demo', version: '1.0.0', description: 'ok', skills: [], agents: [] }],
+          },
+        ],
+      },
+    });
+    restore = mock.restore;
+
+    const wrapper = mount(MarketplaceBrowser);
+    await flushPromises();
+
+    const brokenError = wrapper.find('[data-testid="marketplace-error-broken"]');
+    expect(brokenError.exists()).toBe(true);
+    expect(brokenError.text()).toContain('could not read marketplace.json');
+    // The healthy sibling is unaffected and still renders its plugin.
+    expect(wrapper.find('[data-testid="marketplace-plugin-demo"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="marketplace-error-healthy"]').exists()).toBe(false);
+  });
+
   it('shows the empty state when no marketplaces are configured', async () => {
     const mock = installMarketplacePreviewFetchMock({ catalog: { selected: [], marketplaces: [] } });
     restore = mock.restore;
