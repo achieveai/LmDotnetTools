@@ -875,7 +875,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // that already recovered explicitly are not double-restored.
         if (Store != null && !_historyRecovered)
         {
-            await RecoverAsync(ct);
+            _ = await RecoverAsync(ct);
         }
 
         await OnBeforeRunAsync();

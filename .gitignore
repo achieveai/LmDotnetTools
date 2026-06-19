@@ -63,3 +63,4 @@ scratchPad/*
 
 # Git worktrees (isolated workspaces — never track their contents)
 worktrees/
+.worktrees/

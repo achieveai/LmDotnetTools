@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Agents;
 
@@ -115,6 +116,75 @@ public class MultiTurnAgentPoolTests
         _ = pool.GetOrCreateAgent("thread-y", mode, requestedProviderId: "openai", requestResponseDumpFileName: null);
 
         providerSeen.Should().ContainSingle().Which.Should().Be("anthropic");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_LogsWarning_WhenRequestedProviderOverriddenByPersisted()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai", "anthropic"]);
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-override",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-override",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    "anthropic"
+                ),
+            }
+        );
+
+        var logger = new CapturingLogger<MultiTurnAgentPool>();
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
+            registry.ToReal(),
+            store,
+            logger
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-override", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+
+        var warning = logger
+            .Entries.Where(e => e.Level == LogLevel.Warning)
+            .Should()
+            .ContainSingle(e => e.Message.Contains("anthropic") && e.Message.Contains("test"))
+            .Subject;
+        warning.Message.Should().Contain("locked");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_DoesNotWarn_WhenRequestedProviderMatchesPersisted()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "anthropic"]);
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-match",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-match",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.ProviderPropertyKey,
+                    "anthropic"
+                ),
+            }
+        );
+
+        var logger = new CapturingLogger<MultiTurnAgentPool>();
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
+            registry.ToReal(),
+            store,
+            logger
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-match", mode, requestedProviderId: "anthropic", requestResponseDumpFileName: null);
+
+        logger.Entries.Where(e => e.Level == LogLevel.Warning).Should().BeEmpty();
     }
 
     [Fact]

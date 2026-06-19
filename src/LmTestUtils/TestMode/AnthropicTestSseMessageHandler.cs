@@ -278,6 +278,14 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 _logger.LogDebug("Resolved __TOOLS_LIST__ placeholder to: {ToolsList}", toolsList);
                 message.ExplicitText = toolsList;
             }
+            else if (message.ExplicitText != null && message.ExplicitText.StartsWith("__TOOL_SCHEMA__"))
+            {
+                var toolName = message.ExplicitText.Contains(':')
+                    ? message.ExplicitText.Split(':', 2)[1]
+                    : null;
+                message.ExplicitText = ExtractToolSchema(requestRoot, toolName);
+                _logger.LogDebug("Resolved __TOOL_SCHEMA__ placeholder for {ToolName}", toolName);
+            }
             else if (message.ExplicitText == "__REQUEST_URL__")
             {
                 message.ExplicitText = request.RequestUri?.ToString() ?? "No request URL";
@@ -737,5 +745,47 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         }
 
         return lines.Count == 0 ? "No tools available" : string.Join("\n", lines);
+    }
+
+    /// <summary>
+    ///     Extracts the description and parameter schema for a single named tool.
+    /// </summary>
+    private static string ExtractToolSchema(JsonElement root, string? toolName)
+    {
+        if (string.IsNullOrEmpty(toolName))
+        {
+            return "No tool name specified";
+        }
+
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return "No tools available";
+        }
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            // Anthropic format: { "name", "description", "input_schema" }
+            if (
+                tool.TryGetProperty("name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                && string.Equals(name.GetString(), toolName, StringComparison.Ordinal)
+            )
+            {
+                var description =
+                    tool.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                        ? desc.GetString()
+                        : null;
+                JsonElement? schema =
+                    tool.TryGetProperty("input_schema", out var inputSchema) ? inputSchema : null;
+                return ToolSchemaFormatter.ToMarkdown(toolName, description, schema);
+            }
+        }
+
+        return $"Tool '{toolName}' not found";
     }
 }
