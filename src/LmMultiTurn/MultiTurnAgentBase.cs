@@ -489,15 +489,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             throw new InvalidOperationException("No persistence store configured");
         }
 
-        // Mark recovery as attempted up front so RunAsync's startup recovery does not run it a
-        // second time (RestoreHistory appends, so a double-recover would duplicate history).
-        _historyRecovered = true;
-
-        // Load metadata first
+        // Load metadata first. We do NOT mark recovery complete until a load has finished
+        // (or is definitively empty); marking it up front would poison _historyRecovered if a
+        // transient store/IO/deserialization fault threw here, causing a later retry to skip
+        // recovery and start with empty history.
         var metadata = await Store.LoadMetadataAsync(ThreadId, ct);
         if (metadata == null)
         {
             Logger.LogDebug("No stored metadata found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
 
@@ -506,8 +506,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         if (persistedMessages.Count == 0)
         {
             Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
+
+        // Mark recovery complete before restoring so the guard prevents a second recover from
+        // appending history twice (RestoreHistory appends). At this point the load has
+        // succeeded, so the flag cannot be poisoned by a transient fault.
+        _historyRecovered = true;
 
         // Convert persisted messages back to IMessages
         var messages = MessagePersistenceConverter.FromPersistedMessages(persistedMessages);
@@ -875,7 +881,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // that already recovered explicitly are not double-restored.
         if (Store != null && !_historyRecovered)
         {
-            _ = await RecoverAsync(ct);
+            // History recovery is best-effort enrichment: a transient store/IO/deserialization
+            // fault must degrade to empty history, not crash agent startup. Genuine
+            // caller-cancellation still propagates.
+            try
+            {
+                _ = await RecoverAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _historyRecovered = false; // let a later explicit RecoverAsync retry
+                Logger.LogWarning(
+                    ex,
+                    "History recovery failed for thread {ThreadId}; starting with empty history",
+                    ThreadId);
+            }
         }
 
         await OnBeforeRunAsync();

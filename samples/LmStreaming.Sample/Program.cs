@@ -217,7 +217,9 @@ try
         sp.GetRequiredService<SandboxGatewayLifetime>(),
         sandboxOptions,
         sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
-        new HttpClient(),
+        // Bounds the gateway create/destroy calls; the create-POST runs sync-over-async on the
+        // WebSocket request thread, so the 100s default could stall it indefinitely.
+        new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
         authOptions,
         sp.GetRequiredService<AuthSharedSecret>()
     ));
