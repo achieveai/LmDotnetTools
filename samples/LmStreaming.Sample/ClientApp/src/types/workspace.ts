@@ -32,19 +32,11 @@ export interface WorkspaceUpdate {
 }
 
 /**
- * A marketplace that can be enabled on a workspace.
+ * A marketplace that can be enabled on a workspace. The options are sourced at runtime from the
+ * gateway catalog (GET /api/marketplaces); `id` is the marketplace alias the sandbox-create request
+ * expects, and `displayName` is what the multi-select renders.
  */
 export interface MarketplaceDescriptor {
   id: string;
   displayName: string;
 }
-
-/**
- * Static seed of selectable marketplaces. There is no API for this yet — this
- * constant is the single extension point the marketplace multi-select renders
- * from. Marketplace selection is presentation-only today (no runtime effect).
- */
-export const availableMarketplaces: MarketplaceDescriptor[] = [
-  { id: 'core', displayName: 'Core' },
-  { id: 'community', displayName: 'Community' },
-];

@@ -374,7 +374,10 @@ try
                         : workspaceId;
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
-                    var workspaceRef = new WorkspaceRef(effectiveWorkspaceId, workspace?.DirectoryRelPath);
+                    var workspaceRef = new WorkspaceRef(
+                        effectiveWorkspaceId,
+                        workspace?.DirectoryRelPath,
+                        workspace?.Marketplaces);
 
                     sandboxSession = sandboxRegistry.GetOrCreateSessionAsync(workspaceRef).GetAwaiter().GetResult();
                     var wsSuffix =

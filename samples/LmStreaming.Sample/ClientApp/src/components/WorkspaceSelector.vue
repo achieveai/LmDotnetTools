@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import type { Workspace, WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
-import { availableMarketplaces } from '@/types/workspace';
+import type {
+  Workspace,
+  WorkspaceCreate,
+  WorkspaceUpdate,
+  MarketplaceDescriptor,
+} from '@/types/workspace';
+import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
 
 const props = defineProps<{
   workspaces: Workspace[];
@@ -40,6 +45,28 @@ const createMarketplaces = ref<string[]>([]);
 // Edit form state
 const editWorkspaceId = ref<string | null>(null);
 const editMarketplaces = ref<string[]>([]);
+
+// Marketplace options sourced from the live gateway catalog (GET /api/marketplaces), replacing the
+// former static [core, community] seed. Empty when the gateway is offline (marketplacesUnavailable).
+const availableMarketplaces = ref<MarketplaceDescriptor[]>([]);
+const marketplacesUnavailable = ref(false);
+
+async function loadAvailableMarketplaces(): Promise<void> {
+  try {
+    const catalog = await listMarketplaces();
+    availableMarketplaces.value = catalog.marketplaces.map((m) => ({
+      id: m.alias,
+      displayName: m.alias,
+    }));
+    marketplacesUnavailable.value = false;
+  } catch (e) {
+    availableMarketplaces.value = [];
+    marketplacesUnavailable.value = e instanceof MarketplaceGatewayUnavailableError;
+    if (!(e instanceof MarketplaceGatewayUnavailableError)) {
+      console.error('Failed to load marketplaces:', e);
+    }
+  }
+}
 
 const isLocked = computed(() => !!props.lockedWorkspaceId);
 
@@ -117,6 +144,7 @@ function openCreateForm(): void {
   createDirectory.value = '';
   directoryTouched.value = false;
   createMarketplaces.value = [];
+  void loadAvailableMarketplaces();
 }
 
 watch(createName, (name) => {
@@ -167,6 +195,7 @@ function openEditForm(workspace: Workspace): void {
   formError.value = null;
   editWorkspaceId.value = workspace.id;
   editMarketplaces.value = [...workspace.marketplaces];
+  void loadAvailableMarketplaces();
 }
 
 function toggleEditMarketplace(id: string): void {
@@ -217,6 +246,7 @@ function handleKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   document.addEventListener('click', handleClickOutside);
   document.addEventListener('keydown', handleKeydown);
+  void loadAvailableMarketplaces();
 });
 
 onUnmounted(() => {
@@ -368,6 +398,13 @@ watch(
                 />
                 <span>{{ m.displayName }}</span>
               </label>
+              <p
+                v-if="availableMarketplaces.length === 0"
+                class="marketplace-empty"
+                data-testid="workspace-marketplaces-empty"
+              >
+                {{ marketplacesUnavailable ? 'Gateway offline — no marketplaces available.' : 'No marketplaces available.' }}
+              </p>
             </div>
           </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">
@@ -437,6 +474,13 @@ watch(
                 />
                 <span>{{ m.displayName }}</span>
               </label>
+              <p
+                v-if="availableMarketplaces.length === 0"
+                class="marketplace-empty"
+                data-testid="workspace-marketplaces-empty"
+              >
+                {{ marketplacesUnavailable ? 'Gateway offline — no marketplaces available.' : 'No marketplaces available.' }}
+              </p>
             </div>
           </div>
           <div v-if="formError" class="form-error" data-testid="workspace-form-error">

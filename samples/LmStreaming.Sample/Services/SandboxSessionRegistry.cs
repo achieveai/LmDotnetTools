@@ -36,8 +36,14 @@ public sealed record SandboxSession(string WorkspaceId, string SessionId, string
 /// <paramref name="Id"/> (the session-cache key) plus the optional directory leaf
 /// (<paramref name="DirectoryRelPath"/>) the session mounts. A null/blank
 /// <paramref name="DirectoryRelPath"/> falls back to the configured default workspace path.
+/// <paramref name="Marketplaces"/> are the plugin-marketplace aliases this workspace enables;
+/// when non-empty they drive the sandbox-create selection, otherwise the global
+/// <see cref="SandboxGatewayOptions.Marketplaces"/> default applies.
 /// </summary>
-public sealed record WorkspaceRef(string Id, string? DirectoryRelPath = null);
+public sealed record WorkspaceRef(
+    string Id,
+    string? DirectoryRelPath = null,
+    IReadOnlyList<string>? Marketplaces = null);
 
 /// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
@@ -256,7 +262,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
-        var marketplaces = MarketplaceAliases.Parse(_options.Marketplaces);
+        // Per-workspace marketplace selection wins; fall back to the global config default when the
+        // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
+        var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
+            ? workspaceRef.Marketplaces
+            : MarketplaceAliases.Parse(_options.Marketplaces);
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,

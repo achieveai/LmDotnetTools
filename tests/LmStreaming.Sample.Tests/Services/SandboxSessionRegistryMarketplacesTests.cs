@@ -73,6 +73,32 @@ public class SandboxSessionRegistryMarketplacesTests
         doc.RootElement.TryGetProperty("marketplaces", out _).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Workspace_marketplaces_override_the_global_config()
+    {
+        // Per-workspace selection is the whole point of the picker: a workspace that enables
+        // specific marketplaces must send those, regardless of the global default.
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = "official" };
+        var (registry, capture) = CreateRegistry(options);
+
+        _ = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["ClaudePlugins", "superpowers"]));
+
+        ReadMarketplaces(capture.Body).Should().Equal("ClaudePlugins", "superpowers");
+    }
+
+    [Fact]
+    public async Task Workspace_with_no_marketplaces_falls_back_to_global_config()
+    {
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = "official" };
+        var (registry, capture) = CreateRegistry(options);
+
+        _ = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-2", DirectoryRelPath: null, Marketplaces: []));
+
+        ReadMarketplaces(capture.Body).Should().Equal("official");
+    }
+
     private static IReadOnlyList<string> ReadMarketplaces(string? body)
     {
         using var doc = JsonDocument.Parse(body!);

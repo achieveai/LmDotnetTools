@@ -1,8 +1,21 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { mount, type VueWrapper } from '@vue/test-utils';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue';
 import type { Workspace } from '@/types/workspace';
+
+// The selector now sources its marketplace options from the gateway catalog. Mock the API so the
+// component renders deterministic, gateway-shaped options (aliases) instead of the old static seed.
+vi.mock('@/api/marketplacesApi', () => ({
+  MarketplaceGatewayUnavailableError: class extends Error {},
+  listMarketplaces: vi.fn(async () => ({
+    selected: ['ClaudePlugins', 'superpowers'],
+    marketplaces: [
+      { alias: 'ClaudePlugins', error: null, plugins: [] },
+      { alias: 'superpowers', error: null, plugins: [] },
+    ],
+  })),
+}));
 
 const workspaces: Workspace[] = [
   {
@@ -109,6 +122,34 @@ describe('WorkspaceSelector', () => {
       name: 'Demo Workspace',
       directoryRelPath: 'demo-workspace',
       marketplaces: [],
+    });
+  });
+
+  it('renders gateway-sourced marketplaces and emits the selected alias on create', async () => {
+    const wrapper = mountSelector();
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await flushPromises(); // let loadAvailableMarketplaces() resolve
+    await nextTick();
+
+    // Gateway aliases render; the old static seed (core/community) is gone.
+    expect(wrapper.find('[data-testid="workspace-create-marketplace-ClaudePlugins"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-create-marketplace-superpowers"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-create-marketplace-core"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Plugins WS');
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-create-marketplace-ClaudePlugins"]').trigger('change');
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('create-workspace');
+    expect(emitted).toBeTruthy();
+    expect(emitted![0][0]).toEqual({
+      name: 'Plugins WS',
+      directoryRelPath: 'plugins-ws',
+      marketplaces: ['ClaudePlugins'],
     });
   });
 });
