@@ -20,14 +20,27 @@ export function useMarketplaces() {
     () => catalog.value !== null && catalog.value.marketplaces.length === 0
   );
 
+  // Tracks the in-flight catalog fetch so a re-fetch (or unmount via cleanup) cancels the previous
+  // request rather than leaking it and racing to write a stale result/error.
+  let abortController: AbortController | null = null;
+
   /** (Re)loads the catalog, optionally narrowing to a subset of marketplace aliases. */
   async function load(aliases?: string[]): Promise<void> {
+    // Cancel any prior in-flight fetch before starting a new one.
+    abortController?.abort();
+    const controller = new AbortController();
+    abortController = controller;
+
     isLoading.value = true;
     isGatewayOffline.value = false;
     error.value = null;
     try {
-      catalog.value = await listMarketplaces(aliases);
+      catalog.value = await listMarketplaces(aliases, controller.signal);
     } catch (e) {
+      // A fetch we deliberately aborted must not surface as an error or clobber state.
+      if (controller.signal.aborted) {
+        return;
+      }
       catalog.value = null;
       if (e instanceof MarketplaceGatewayUnavailableError) {
         isGatewayOffline.value = true;
@@ -36,9 +49,18 @@ export function useMarketplaces() {
         console.error('Failed to load marketplaces:', e);
       }
     } finally {
-      isLoading.value = false;
+      // Only the latest request owns the loading flag; an aborted-and-superseded request must not
+      // flip it off out from under the request that replaced it.
+      if (abortController === controller) {
+        isLoading.value = false;
+      }
     }
   }
 
-  return { catalog, marketplaces, isLoading, isGatewayOffline, isEmpty, error, load };
+  /** Cancels any in-flight catalog fetch; call from the consumer's unmount hook. */
+  function cleanup(): void {
+    abortController?.abort();
+  }
+
+  return { catalog, marketplaces, isLoading, isGatewayOffline, isEmpty, error, load, cleanup };
 }

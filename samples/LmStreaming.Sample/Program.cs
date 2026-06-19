@@ -158,7 +158,9 @@ try
     // tests/E2E swap in a fake.
     _ = builder.Services.AddSingleton<IMarketplaceCatalogClient>(sp => new MarketplaceCatalogClient(
         sandboxOptions,
-        new HttpClient(),
+        // The gateway is frequently offline; a short timeout fails fast instead of holding the
+        // request for the default 100s while the catalog is a best-effort, read-only browse.
+        new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
 
@@ -253,6 +255,15 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
+    // Register the FileWorkspaceStore for workspace persistence. The seeded default workspace
+    // maps to today's configured sandbox leaf so the "default" workspace mounts the same directory
+    // it always did.
+    var workspacesPath = Path.Combine(AppContext.BaseDirectory, "workspaces");
+    var defaultWorkspaceLeaf = sandboxOptions.ResolveWorkspace().Leaf;
+    _ = builder.Services.AddSingleton<IWorkspaceStore>(
+        new FileWorkspaceStore(workspacesPath, defaultWorkspaceLeaf)
+    );
+
     // Register built-in (server-side) tool definitions for the tools API. The list is
     // computed for the boot default so the global tools API stays stable; per-conversation
     // built-in tools are derived from the resolved provider id at agent-creation time.
@@ -315,8 +326,14 @@ try
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
 
         var pool = new MultiTurnAgentPool(
-            (threadId, mode, providerId, requestResponseDumpFileName) =>
+            context =>
             {
+                var threadId = context.ThreadId;
+                var mode = context.Mode;
+                var providerId = context.ProviderId;
+                var requestResponseDumpFileName = context.DumpFile;
+                var workspaceId = context.WorkspaceId;
+
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
                 var normalizedProviderId = providerId.ToLowerInvariant();
@@ -351,7 +368,20 @@ try
                         );
                     }
 
-                    sandboxSession = sandboxRegistry.GetOrCreateSessionAsync("default").GetAwaiter().GetResult();
+                    // Resolve the chosen workspace (null/empty → "default", identical to before)
+                    // and mount its own directory. The store is resolved from the captured service
+                    // provider; the context carries the workspace id the thread locked in.
+                    var effectiveWorkspaceId = string.IsNullOrWhiteSpace(workspaceId)
+                        ? SandboxSessionRegistry.DefaultWorkspaceId
+                        : workspaceId;
+                    var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
+                    var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
+                    var workspaceRef = new WorkspaceRef(
+                        effectiveWorkspaceId,
+                        workspace?.DirectoryRelPath,
+                        workspace?.Marketplaces);
+
+                    sandboxSession = sandboxRegistry.GetOrCreateSessionAsync(workspaceRef).GetAwaiter().GetResult();
                     var wsSuffix =
                         "\n\nYour workspace directory is: "
                         + sandboxSession.HostPath
@@ -827,6 +857,29 @@ try
             // original provider regardless of what the client sends.
             var providerId = context.Request.Query["providerId"].FirstOrDefault();
 
+            // Optional per-conversation workspace override. Honored only when the thread has not
+            // yet locked in a workspace (first message); persisted threads keep their original
+            // workspace. Null/empty → "default", identical to today.
+            var workspaceId = context.Request.Query["workspaceId"].FirstOrDefault();
+
+            // Defensively normalize an unknown workspace id (stale UI, a deleted workspace, or
+            // hostile input) to "default". Otherwise the thread would lock to a non-existent
+            // workspace and a sandbox session would be cached/persisted under a bogus id while
+            // silently resolving to the default directory.
+            if (!string.IsNullOrWhiteSpace(workspaceId))
+            {
+                var workspaceStore = context.RequestServices.GetRequiredService<IWorkspaceStore>();
+                if (await workspaceStore.GetAsync(workspaceId, cancellationToken) is null)
+                {
+                    wsLogger.LogWarning(
+                        "Unknown workspace id {WorkspaceId} requested for thread {ThreadId}; falling back to default.",
+                        workspaceId,
+                        threadId
+                    );
+                    workspaceId = null;
+                }
+            }
+
             var recordEnabled =
                 app.Environment.IsDevelopment() && IsRecordingEnabled(context.Request.Query["record"].FirstOrDefault());
 
@@ -871,7 +924,8 @@ try
                     providerId,
                     requestResponseDumpFileName,
                     recordWriter,
-                    cancellationToken
+                    cancellationToken,
+                    workspaceId
                 );
             }
             finally

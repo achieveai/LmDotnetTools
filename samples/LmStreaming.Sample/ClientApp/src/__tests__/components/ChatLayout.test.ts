@@ -2,11 +2,25 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import ChatLayout from '@/components/ChatLayout.vue';
 
+interface ConversationSummary {
+  threadId: string;
+  title?: string;
+  preview?: string;
+  lastUpdated?: number;
+  provider?: string | null;
+  workspace?: string | null;
+}
+
 const sharedMocks = vi.hoisted(() => ({
   chatLoading: false,
   isSending: false,
   modesLoading: false,
   currentThreadId: 'thread-1' as string | null,
+  // Sidebar conversations. A thread present here is "started" (first message
+  // sent); an empty list with a non-null currentThreadId is a brand-new,
+  // messageless thread (handleNewChat assigns the id before the first send).
+  conversations: [] as ConversationSummary[],
+  selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
 }));
@@ -15,7 +29,7 @@ vi.mock('@/composables/useConversations', async () => {
   const { ref } = await import('vue');
   return {
     useConversations: () => ({
-      conversations: ref([]),
+      conversations: ref(sharedMocks.conversations),
       currentThreadId: ref(sharedMocks.currentThreadId),
       isLoading: ref(false),
       loadConversations: vi.fn(async () => {}),
@@ -64,6 +78,7 @@ vi.mock('@/composables/useChatModes', async () => {
       loadTools: vi.fn(async () => {}),
       selectMode: vi.fn((modeId: string) => {
         currentModeId.value = modeId;
+        sharedMocks.selectMode(modeId);
       }),
       switchMode: sharedMocks.switchMode,
       createMode: vi.fn(async () => {}),
@@ -120,6 +135,10 @@ describe('ChatLayout mode switching', () => {
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
+    // Default to a "started" thread (present in the sidebar) for the existing
+    // mode-switch tests. The regression tests below override this per-case.
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.selectMode.mockReset();
     sharedMocks.switchMode.mockReset();
     sharedMocks.disconnectWebSocket.mockReset();
   });
@@ -183,5 +202,69 @@ describe('ChatLayout mode switching', () => {
     await modeButton.trigger('click');
     expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
     expect(sharedMocks.switchMode).not.toHaveBeenCalled();
+  });
+});
+
+// Regression: selecting a mode before the first message is sent must NOT trigger
+// a backend agent recreation. handleNewChat assigns a threadId immediately, so a
+// non-null currentThreadId alone is not enough to mean "started" — the thread must
+// also have a sidebar entry. Otherwise a workspace picked before the first message
+// would be silently overwritten when the backend pre-binds the agent to defaults.
+describe('ChatLayout handleSelectMode start-gating regression', () => {
+  const mountWithModeSelector = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: {
+            props: ['disabled'],
+            template:
+              '<button data-test="mode-select" :disabled="disabled" @click="$emit(\'select-mode\', \'math-helper\')">Mode</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.selectMode.mockReset();
+    sharedMocks.switchMode.mockReset();
+    sharedMocks.disconnectWebSocket.mockReset();
+  });
+
+  it('applies mode locally (no backend switch) on a messageless thread', async () => {
+    // currentThreadId is set (handleNewChat assigned it) but the thread is NOT in
+    // the sidebar yet -> messageless -> defer to local selectMode.
+    sharedMocks.currentThreadId = 'thread-new';
+    sharedMocks.conversations = [];
+
+    const wrapper = mountWithModeSelector();
+    await flushPromises();
+    await wrapper.get('[data-test="mode-select"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectMode).toHaveBeenCalledWith('math-helper');
+    expect(sharedMocks.switchMode).not.toHaveBeenCalled();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+  });
+
+  it('switches mode on the backend once the thread has started', async () => {
+    // currentThreadId is set AND present in the sidebar (first message sent)
+    // -> started -> call backend switchMode.
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+
+    const wrapper = mountWithModeSelector();
+    await flushPromises();
+    await wrapper.get('[data-test="mode-select"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.switchMode).toHaveBeenCalledWith('thread-1', 'math-helper');
+    expect(sharedMocks.selectMode).not.toHaveBeenCalled();
   });
 });

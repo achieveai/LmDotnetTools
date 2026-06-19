@@ -13,15 +13,19 @@ export class MarketplaceGatewayUnavailableError extends Error {
  *
  * @param marketplaces Optional subset of marketplace aliases to request; when omitted the gateway
  *   applies its own default set.
+ * @param signal Optional AbortSignal so an in-flight fetch can be cancelled on unmount/re-fetch.
  * @throws {MarketplaceGatewayUnavailableError} when the gateway is offline (503) — callers should
  *   render an "offline" state rather than treating it as a hard failure.
  */
-export async function listMarketplaces(marketplaces?: string[]): Promise<MarketplaceCatalog> {
+export async function listMarketplaces(
+  marketplaces?: string[],
+  signal?: AbortSignal
+): Promise<MarketplaceCatalog> {
   const query =
     marketplaces && marketplaces.length > 0
       ? `?marketplaces=${encodeURIComponent(marketplaces.join(','))}`
       : '';
-  const response = await fetch(`/api/marketplaces${query}`);
+  const response = await fetch(`/api/marketplaces${query}`, { signal });
 
   if (response.status === 503) {
     throw new MarketplaceGatewayUnavailableError();

@@ -4,14 +4,17 @@ import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
 import { useProviders } from '@/composables/useProviders';
+import { useWorkspaces } from '@/composables/useWorkspaces';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
+import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
+import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
 
@@ -51,6 +54,19 @@ const {
   selectProvider,
 } = useProviders();
 
+// Workspace catalog + per-process selection for new conversations.
+const {
+  workspaces,
+  selectedWorkspaceId,
+  isLoading: workspacesLoading,
+  loadWorkspaces,
+  selectWorkspace,
+  createWorkspace,
+  updateWorkspace,
+} = useWorkspaces();
+
+const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
+
 // Initialize chat with getters for the current mode and provider ids.
 const {
   displayItems,
@@ -71,6 +87,7 @@ const {
 } = useChat({
   getModeId: () => currentModeId.value,
   getProviderId: () => selectedProviderId.value,
+  getWorkspaceId: () => selectedWorkspaceId.value,
 });
 
 async function handleCancel(): Promise<void> {
@@ -111,6 +128,48 @@ function handleSelectProvider(providerId: string): void {
   selectProvider(providerId);
 }
 
+/**
+ * Workspace id locked to the current thread, derived from the conversation
+ * summary (mirrors lockedProviderId). New conversations have no sidebar entry
+ * yet, so this resolves to null and the dropdown stays editable.
+ */
+const lockedWorkspaceId = computed<string | null>(() => {
+  if (!currentThreadId.value) return null;
+  const conversation = conversations.value.find((c) => c.threadId === currentThreadId.value);
+  return conversation?.workspace ?? null;
+});
+
+const workspaceSelectorDisabled = computed(
+  () => workspacesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+);
+
+function handleSelectWorkspace(workspaceId: string): void {
+  if (workspaceSelectorDisabled.value || lockedWorkspaceId.value) {
+    return;
+  }
+  selectWorkspace(workspaceId);
+}
+
+async function handleCreateWorkspace(data: WorkspaceCreate): Promise<void> {
+  try {
+    await createWorkspace(data);
+    workspaceSelectorRef.value?.closeForm();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to create workspace';
+    workspaceSelectorRef.value?.showFormError(message);
+  }
+}
+
+async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate): Promise<void> {
+  try {
+    await updateWorkspace(workspaceId, data);
+    workspaceSelectorRef.value?.closeForm();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to update workspace';
+    workspaceSelectorRef.value?.showFormError(message);
+  }
+}
+
 // Load conversations and modes on mount
 onMounted(async () => {
   // Load modes, tools, and providers in parallel with conversations
@@ -119,6 +178,7 @@ onMounted(async () => {
     loadModes(),
     loadTools(),
     loadProviders(),
+    loadWorkspaces(),
   ]);
 
   // If there are existing conversations, select the most recent one
@@ -182,19 +242,28 @@ async function handleSelectMode(modeId: string): Promise<void> {
     return;
   }
 
-  if (currentThreadId.value) {
-    // If there's an active conversation, switch the mode for it
+  // Only switch on the backend once the conversation has actually started (has a
+  // sidebar entry / first message sent). For a brand-new, messageless thread —
+  // even though handleNewChat has already assigned a threadId — apply the mode
+  // locally like provider and workspace. Otherwise the backend RecreateAgentForModeSwitch
+  // would pre-create the agent and bind its provider/workspace to defaults, so a
+  // workspace picked before the first message would be silently ignored.
+  const started =
+    !!currentThreadId.value &&
+    conversations.value.some((c) => c.threadId === currentThreadId.value);
+
+  if (started) {
     isSwitchingMode.value = true;
     try {
       await disconnectWebSocket();
-      await switchMode(currentThreadId.value, modeId);
+      await switchMode(currentThreadId.value!, modeId);
     } catch (e) {
       console.error('Failed to switch mode:', e);
     } finally {
       isSwitchingMode.value = false;
     }
   } else {
-    // Just select the mode for new conversations
+    // Messageless thread: defer agent creation to the first send.
     selectMode(modeId);
   }
 }
@@ -257,6 +326,7 @@ async function handleSend(text: string): Promise<void> {
       preview,
       lastUpdated: Date.now(),
       provider: selectedProviderId.value,
+      workspace: selectedWorkspaceId.value,
     });
 
     // Update backend metadata asynchronously
@@ -318,6 +388,17 @@ onBeforeUnmount(() => {
           </button>
           <h1>LmStreaming Chat</h1>
           <div class="header-actions">
+            <WorkspaceSelector
+              ref="workspaceSelectorRef"
+              :workspaces="workspaces"
+              :selected-workspace-id="selectedWorkspaceId"
+              :locked-workspace-id="lockedWorkspaceId"
+              :is-loading="workspacesLoading"
+              :disabled="workspaceSelectorDisabled"
+              @select-workspace="handleSelectWorkspace"
+              @create-workspace="handleCreateWorkspace"
+              @update-workspace="handleUpdateWorkspace"
+            />
             <ProviderSelector
               :providers="providers"
               :selected-provider-id="selectedProviderId"

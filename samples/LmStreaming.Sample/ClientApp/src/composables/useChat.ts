@@ -80,6 +80,12 @@ export interface UseChatOptions {
    * fall back to its configured default.
    */
   getProviderId?: () => string | null | undefined;
+  /**
+   * Resolves the workspace id to send on the WebSocket query string when the
+   * connection opens. Returning <c>null</c>/<c>undefined</c> lets the server
+   * fall back to its configured default.
+   */
+  getWorkspaceId?: () => string | null | undefined;
 }
 
 /**
@@ -131,7 +137,7 @@ export function getDisplayText(text: string): string {
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket', getModeId, getProviderId } = options;
+  const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId } = options;
   const recordEnabled = isRecordingEnabledFromPageQuery();
 
   // Core state
@@ -861,10 +867,12 @@ export function useChat(options: UseChatOptions = {}) {
     } else {
       const currentModeId = getModeId?.();
       const currentProviderId = getProviderId?.() ?? null;
+      const currentWorkspaceId = getWorkspaceId?.() ?? null;
       log.info('Creating new WebSocket connection', {
         threadId: effectiveThreadId,
         modeId: currentModeId,
         providerId: currentProviderId,
+        workspaceId: currentWorkspaceId,
         recordEnabled,
       });
 
@@ -882,6 +890,7 @@ export function useChat(options: UseChatOptions = {}) {
         threadId: effectiveThreadId,
         modeId: currentModeId,
         providerId: currentProviderId,
+        workspaceId: currentWorkspaceId,
         record: recordEnabled,
         ...callbacks,
         onAuthEvent: handleAuthEvent,

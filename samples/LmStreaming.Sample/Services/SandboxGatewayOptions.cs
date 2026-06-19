@@ -64,6 +64,51 @@ public sealed class SandboxGatewayOptions
     }
 
     /// <summary>
+    /// Resolves a per-workspace directory leaf into base/leaf/full-path. When
+    /// <paramref name="relPathOverride"/> is null/whitespace this is identical to
+    /// <see cref="ResolveWorkspace()"/>. Otherwise the configured base from
+    /// <see cref="ResolveWorkspace()"/> is reused and <paramref name="relPathOverride"/> is treated
+    /// as the workspace leaf. The override is rejected (via <see cref="InvalidOperationException"/>)
+    /// when it is rooted or escapes the base directory (e.g. <c>"../evil"</c>), so a chosen
+    /// workspace can never mount a directory outside the configured base.
+    /// </summary>
+    public (string? BasePath, string? Leaf, string? FullPath) ResolveWorkspace(string? relPathOverride)
+    {
+        if (string.IsNullOrWhiteSpace(relPathOverride))
+        {
+            return ResolveWorkspace();
+        }
+
+        var (basePath, _, _) = ResolveWorkspace();
+        if (string.IsNullOrWhiteSpace(basePath))
+        {
+            throw new InvalidOperationException(
+                "Cannot resolve a workspace override because no workspace base path is configured."
+            );
+        }
+
+        if (Path.IsPathRooted(relPathOverride))
+        {
+            throw new InvalidOperationException(
+                $"Workspace directory '{relPathOverride}' must be relative to the workspace base."
+            );
+        }
+
+        var baseFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(basePath));
+        var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(baseFull, relPathOverride)));
+
+        var baseWithSeparator = baseFull + Path.DirectorySeparatorChar;
+        if (!fullPath.StartsWith(baseWithSeparator, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Workspace directory '{relPathOverride}' escapes the workspace base directory."
+            );
+        }
+
+        return (basePath, relPathOverride, fullPath);
+    }
+
+    /// <summary>
     /// App id sent in the sandbox-create request.
     /// </summary>
     public string AppId { get; set; } = "lmstreaming-sample";

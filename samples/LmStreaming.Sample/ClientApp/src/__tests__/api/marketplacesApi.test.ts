@@ -26,7 +26,7 @@ describe('marketplacesApi.listMarketplaces', () => {
 
     await listMarketplaces();
 
-    expect(mock.fetchSpy).toHaveBeenCalledWith('/api/marketplaces');
+    expect(mock.fetchSpy).toHaveBeenCalledWith('/api/marketplaces', { signal: undefined });
   });
 
   it('passes a comma-separated, url-encoded marketplaces query', async () => {
@@ -36,7 +36,8 @@ describe('marketplacesApi.listMarketplaces', () => {
     await listMarketplaces(['official', 'claude_plugins']);
 
     expect(mock.fetchSpy).toHaveBeenCalledWith(
-      '/api/marketplaces?marketplaces=official%2Cclaude_plugins'
+      '/api/marketplaces?marketplaces=official%2Cclaude_plugins',
+      { signal: undefined }
     );
   });
 

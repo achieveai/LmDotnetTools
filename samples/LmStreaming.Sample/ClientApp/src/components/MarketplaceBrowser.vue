@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onBeforeUnmount, onMounted } from 'vue';
 import { useMarketplaces } from '@/composables/useMarketplaces';
 
-const { marketplaces, isLoading, isGatewayOffline, isEmpty, error, load } = useMarketplaces();
+const { marketplaces, isLoading, isGatewayOffline, isEmpty, error, load, cleanup } =
+  useMarketplaces();
 
 onMounted(() => load());
+// Cancel any in-flight catalog fetch when the browser is torn down.
+onBeforeUnmount(() => cleanup());
 </script>
 
 <template>

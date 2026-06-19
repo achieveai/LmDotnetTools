@@ -38,6 +38,9 @@ public class ConversationsController(
             Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
                 ? providerObj?.ToString()
                 : null,
+            Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
+                ? workspaceObj?.ToString()
+                : null,
         });
         return Ok(result);
     }

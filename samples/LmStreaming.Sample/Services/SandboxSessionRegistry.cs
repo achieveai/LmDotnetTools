@@ -32,6 +32,20 @@ public sealed record SubAgentSessionBinding(
 public sealed record SandboxSession(string WorkspaceId, string SessionId, string WorkspaceRelPath, string HostPath);
 
 /// <summary>
+/// Identifies the workspace a sandbox session is being requested for: the logical
+/// <paramref name="Id"/> (the session-cache key) plus the optional directory leaf
+/// (<paramref name="DirectoryRelPath"/>) the session mounts. A null/blank
+/// <paramref name="DirectoryRelPath"/> falls back to the configured default workspace path.
+/// <paramref name="Marketplaces"/> are the plugin-marketplace aliases this workspace enables;
+/// when non-empty they drive the sandbox-create selection, otherwise the global
+/// <see cref="SandboxGatewayOptions.Marketplaces"/> default applies.
+/// </summary>
+public sealed record WorkspaceRef(
+    string Id,
+    string? DirectoryRelPath = null,
+    IReadOnlyList<string>? Marketplaces = null);
+
+/// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
 /// workspace id, then destroyed on application shutdown when the DI container disposes this
 /// singleton.
@@ -50,7 +64,11 @@ public sealed record SandboxSession(string WorkspaceId, string SessionId, string
 /// </remarks>
 public sealed class SandboxSessionRegistry : IAsyncDisposable
 {
-    private const string DefaultWorkspaceId = "default";
+    /// <summary>
+    /// Logical id of the default workspace, which maps to the configured
+    /// <see cref="SandboxGatewayOptions.Workspace"/>. Also the seeded id used by the workspace store.
+    /// </summary>
+    public const string DefaultWorkspaceId = "default";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -143,30 +161,47 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the sandbox session for <paramref name="workspaceId"/>, creating it on first use.
-    /// Concurrent first-callers share a single creation; subsequent callers get the cached session.
+    /// Back-compat overload that creates (or returns) the session for <paramref name="workspaceId"/>
+    /// using the configured default workspace directory. Equivalent to passing a
+    /// <see cref="WorkspaceRef"/> with a null directory.
     /// </summary>
-    /// <param name="workspaceId">Logical workspace key. v1 only passes <c>"default"</c>.</param>
+    /// <param name="workspaceId">Logical workspace key.</param>
     /// <param name="ct">Cancellation token observed by the creating call.</param>
     public Task<SandboxSession> GetOrCreateSessionAsync(
         string workspaceId = DefaultWorkspaceId,
         CancellationToken ct = default
     )
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        return GetOrCreateSessionAsync(new WorkspaceRef(workspaceId), ct);
+    }
 
-        if (string.IsNullOrWhiteSpace(workspaceId))
-        {
-            workspaceId = DefaultWorkspaceId;
-        }
+    /// <summary>
+    /// Returns the sandbox session for <paramref name="workspaceRef"/>, creating it on first use.
+    /// The cache is keyed by <see cref="WorkspaceRef.Id"/>; on first creation the mounted directory
+    /// is resolved from <see cref="WorkspaceRef.DirectoryRelPath"/> (null/blank → configured
+    /// default). Concurrent first-callers share a single creation; subsequent callers get the
+    /// cached session (subsequent directory values are ignored — the first creation wins).
+    /// </summary>
+    /// <param name="workspaceRef">The workspace identity + directory to mount.</param>
+    /// <param name="ct">Cancellation token observed by the creating call.</param>
+    public Task<SandboxSession> GetOrCreateSessionAsync(
+        WorkspaceRef workspaceRef,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(workspaceRef);
+
+        var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
+        var effectiveRef = workspaceRef with { Id = workspaceId };
 
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
         // caller disconnecting), which would otherwise fail it for all concurrent waiters.
         var lazy = _sessions.GetOrAdd(
             workspaceId,
-            key => new Lazy<Task<SandboxSession>>(
-                () => CreateSessionAsync(key, CancellationToken.None),
+            _ => new Lazy<Task<SandboxSession>>(
+                () => CreateSessionAsync(effectiveRef, CancellationToken.None),
                 LazyThreadSafetyMode.ExecutionAndPublication
             )
         );
@@ -198,13 +233,15 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// POSTs a sandbox-create request to the gateway and maps the response to a
     /// <see cref="SandboxSession"/>.
     /// </summary>
-    private async Task<SandboxSession> CreateSessionAsync(string workspaceId, CancellationToken ct)
+    private async Task<SandboxSession> CreateSessionAsync(WorkspaceRef workspaceRef, CancellationToken ct)
     {
+        var workspaceId = workspaceRef.Id;
+
         // Surface the clear, actionable gateway error here (not at app startup) — this is the
         // first point at which Workspace Agent mode actually requires a healthy gateway.
         await _gateway.EnsureReadyAsync(ct).ConfigureAwait(false);
 
-        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace();
+        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
 
         // Ensure the workspace directory exists before the gateway mounts it — the gateway rejects a
@@ -225,7 +262,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
-        var marketplaces = MarketplaceAliases.Parse(_options.Marketplaces);
+        // Per-workspace marketplace selection wins; fall back to the global config default when the
+        // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
+        var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
+            ? workspaceRef.Marketplaces
+            : MarketplaceAliases.Parse(_options.Marketplaces);
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,
@@ -341,7 +382,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// background sweep of context files — sub-agents, skills, etc). Callers filter by
     /// <see cref="DiscoveredItem.Kind"/> for the kinds they care about.
     /// </summary>
-    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync"/>.</param>
+    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken)"/>.</param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     /// <returns>The discovered items. Empty when the gateway reports no discoveries; never null.</returns>
     /// <exception cref="InvalidOperationException">

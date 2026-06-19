@@ -11,6 +11,11 @@ export interface ConversationSummary {
    * threads predating the per-conversation provider feature.
    */
   provider?: string | null;
+  /**
+   * Workspace id this thread is locked to. Set on first agent creation; null for
+   * legacy threads predating the per-conversation workspace feature.
+   */
+  workspace?: string | null;
 }
 
 /**
