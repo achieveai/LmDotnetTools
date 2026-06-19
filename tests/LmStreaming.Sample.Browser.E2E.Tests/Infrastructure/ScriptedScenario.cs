@@ -38,11 +38,19 @@ public static class ScriptedScenario
         HttpMessageHandler handler,
         Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null,
         int? fixedPort = null,
-        IMarketplaceCatalogClient? catalogClient = null
+        IMarketplaceCatalogClient? catalogClient = null,
+        HttpMessageHandler? sandboxGatewayHandler = null,
+        SandboxGatewayOptions? sandboxOptions = null
     )
     {
         var builder = new ScriptedBuilder(handler, subAgentFactory);
-        var factory = new BrowserWebAppFactory(providerMode, builder, fixedPort, catalogClient);
+        var factory = new BrowserWebAppFactory(
+            providerMode,
+            builder,
+            fixedPort,
+            catalogClient,
+            sandboxGatewayHandler,
+            sandboxOptions);
         IBrowserContext? context = null;
         try
         {
