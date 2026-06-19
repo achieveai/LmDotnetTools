@@ -19,7 +19,7 @@ const sharedMocks = vi.hoisted(() => ({
   // Sidebar conversations. A thread present here is "started" (first message
   // sent); an empty list with a non-null currentThreadId is a brand-new,
   // messageless thread (handleNewChat assigns the id before the first send).
-  conversations: [] as Array<{ threadId: string }>,
+  conversations: [] as ConversationSummary[],
   selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),

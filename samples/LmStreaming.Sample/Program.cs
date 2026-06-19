@@ -158,7 +158,9 @@ try
     // tests/E2E swap in a fake.
     _ = builder.Services.AddSingleton<IMarketplaceCatalogClient>(sp => new MarketplaceCatalogClient(
         sandboxOptions,
-        new HttpClient(),
+        // The gateway is frequently offline; a short timeout fails fast instead of holding the
+        // request for the default 100s while the catalog is a best-effort, read-only browse.
+        new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
 

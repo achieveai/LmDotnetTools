@@ -410,6 +410,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         try
         {
+            // Sync-over-async: ResolveWorkspaceId runs on the synchronous agent-creation path and the
+            // metadata read is a fast local-store lookup, so we block here rather than threading async
+            // through every caller. The catch below keeps a failed read non-fatal (falls back to default).
             var metadata = _conversationStore.LoadMetadataAsync(threadId).GetAwaiter().GetResult();
             if (
                 metadata?.Properties != null
