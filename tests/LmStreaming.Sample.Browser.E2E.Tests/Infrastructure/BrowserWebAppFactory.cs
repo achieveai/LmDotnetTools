@@ -39,6 +39,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly ITestAgentBuilder? _builder;
     private readonly string _conversationPath;
     private readonly int? _fixedPort;
+    private readonly IMarketplaceCatalogClient? _catalogClient;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -50,7 +51,16 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// URL known <em>before</em> the host starts — such as the auth webhook for a real <c>git clone</c>
     /// egress test. Defaults to <c>null</c> (ephemeral) for every other scenario.
     /// </param>
-    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder? builder, int? fixedPort = null)
+    /// <param name="catalogClient">
+    /// Optional fake <see cref="IMarketplaceCatalogClient"/> for marketplace scenarios. When set it
+    /// replaces the gateway-backed client so the catalog renders with no live gateway; left null for
+    /// every other scenario (the real client stays registered and reports the gateway offline).
+    /// </param>
+    public BrowserWebAppFactory(
+        string providerMode,
+        ITestAgentBuilder? builder,
+        int? fixedPort = null,
+        IMarketplaceCatalogClient? catalogClient = null)
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -80,6 +90,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         _providerMode = providerMode;
         _builder = builder;
         _fixedPort = fixedPort;
+        _catalogClient = catalogClient;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -123,6 +134,15 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             {
                 services.RemoveAll<ITestAgentBuilder>();
                 services.AddSingleton(_builder);
+            }
+
+            // Swap the gateway-backed catalog client for a fake so marketplace scenarios run with
+            // no live gateway. Left untouched when null (non-marketplace tests keep the real client,
+            // which simply reports the gateway offline if asked).
+            if (_catalogClient is not null)
+            {
+                services.RemoveAll<IMarketplaceCatalogClient>();
+                services.AddSingleton(_catalogClient);
             }
         });
     }

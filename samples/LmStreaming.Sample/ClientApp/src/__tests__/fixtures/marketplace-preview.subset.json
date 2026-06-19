@@ -1,0 +1,102 @@
+{
+  "selected": [
+    "ClaudePlugins",
+    "claude-plugins-official",
+    "superpowers"
+  ],
+  "marketplaces": [
+    {
+      "alias": "ClaudePlugins",
+      "error": null,
+      "plugins": [
+        {
+          "name": "orleans-dev",
+          "version": "1.0.2",
+          "description": "Microsoft Orleans patterns, best practices, and code review for virtual actor model applications — covers grain design, concurrency, cross-grain communication, streams, and serialization.",
+          "skills": [
+            {
+              "name": "orleans-code-review",
+              "description": "Review Orleans code for correctness — loads orleans-patterns rules and systematically checks grain design, concurrency, communication, streams, and serialization",
+              "plugin": "orleans-dev",
+              "marketplace": "ClaudePlugins",
+              "path": "/marketplaces/ClaudePlugins/orleans-dev/skills/orleans-code-review/"
+            },
+            {
+              "name": "orleans-patterns",
+              "description": "Comprehensive Orleans patterns and rules — grain design, concurrency, cross-grain communication, streams, and serialization",
+              "plugin": "orleans-dev",
+              "marketplace": "ClaudePlugins",
+              "path": "/marketplaces/ClaudePlugins/orleans-dev/skills/orleans-patterns/"
+            }
+          ],
+          "agents": [
+            {
+              "name": "orleans-reviewer",
+              "description": "Senior Microsoft Orleans expert performing comprehensive code reviews — covers grain design, concurrency, cross-grain communication, streams, and serialization.",
+              "plugin": "orleans-dev",
+              "marketplace": "ClaudePlugins",
+              "path": "/marketplaces/ClaudePlugins/orleans-dev/agents/orleans-reviewer.md"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "claude-plugins-official",
+      "error": null,
+      "plugins": [
+        {
+          "name": "hookify",
+          "version": null,
+          "description": "Easily create custom hooks to prevent unwanted behaviors by analyzing conversation patterns or from explicit instructions. Define rules via simple markdown files.",
+          "skills": [
+            {
+              "name": "writing-rules",
+              "description": "This skill should be used when the user asks to \"create a hookify rule\", \"write a hook rule\", \"configure hookify\", \"add a hookify rule\", or needs guidance on hookify rule syntax and patterns.",
+              "plugin": "hookify",
+              "marketplace": "claude-plugins-official",
+              "path": "/marketplaces/claude-plugins-official/plugins/hookify/skills/writing-rules/"
+            }
+          ],
+          "agents": [
+            {
+              "name": "conversation-analyzer",
+              "description": "Use this agent when analyzing conversation transcripts to find behaviors worth preventing with hooks. Typical triggers include the /hookify command being invoked without arguments, or the user explicitly asking to look back at the current conversation and surface mistakes that should be prevented in the future. See \"When to invoke\" in the agent body for worked scenarios.",
+              "plugin": "hookify",
+              "marketplace": "claude-plugins-official",
+              "path": "/marketplaces/claude-plugins-official/plugins/hookify/agents/conversation-analyzer.md"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "alias": "superpowers",
+      "error": null,
+      "plugins": [
+        {
+          "name": "superpowers",
+          "version": "5.1.0",
+          "description": "Core skills library for Claude Code: TDD, debugging, collaboration patterns, and proven techniques",
+          "skills": [
+            {
+              "name": "subagent-driven-development",
+              "description": "Use when executing implementation plans with independent tasks in the current session",
+              "plugin": "superpowers",
+              "marketplace": "superpowers",
+              "path": "/marketplaces/superpowers/skills/subagent-driven-development/"
+            },
+            {
+              "name": "verification-before-completion",
+              "description": "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+              "plugin": "superpowers",
+              "marketplace": "superpowers",
+              "path": "/marketplaces/superpowers/skills/verification-before-completion/"
+            }
+          ],
+          "agents": []
+        }
+      ]
+    }
+  ]
+}
