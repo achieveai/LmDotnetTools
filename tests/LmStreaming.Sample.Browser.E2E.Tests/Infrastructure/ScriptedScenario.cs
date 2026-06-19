@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
+using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 
@@ -36,11 +37,12 @@ public static class ScriptedScenario
         string providerMode,
         HttpMessageHandler handler,
         Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null,
-        int? fixedPort = null
+        int? fixedPort = null,
+        IMarketplaceCatalogClient? catalogClient = null
     )
     {
         var builder = new ScriptedBuilder(handler, subAgentFactory);
-        var factory = new BrowserWebAppFactory(providerMode, builder, fixedPort);
+        var factory = new BrowserWebAppFactory(providerMode, builder, fixedPort, catalogClient);
         IBrowserContext? context = null;
         try
         {

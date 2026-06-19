@@ -16,6 +16,7 @@ import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
+import MarketplaceModal from './MarketplaceModal.vue';
 
 const {
   conversations,
@@ -98,6 +99,7 @@ provide('getResultForToolCall', getResultForToolCall);
 
 const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
+const marketplaceModalOpen = ref(false);
 const modeSwitchDisabled = computed(
   () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
 );
@@ -418,6 +420,14 @@ onBeforeUnmount(() => {
               @copy-mode="handleCopyMode"
             />
             <button
+              class="marketplace-btn"
+              data-testid="marketplace-button"
+              title="Browse marketplaces"
+              @click="marketplaceModalOpen = true"
+            >
+              Marketplaces
+            </button>
+            <button
               class="clear-btn"
               data-testid="clear-button"
               @click="clearMessages"
@@ -427,6 +437,11 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </header>
+
+        <MarketplaceModal
+          v-if="marketplaceModalOpen"
+          @close="marketplaceModalOpen = false"
+        />
 
         <MessageList :display-items="displayItems" :is-loading="chatLoading" />
 
@@ -524,6 +539,21 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+}
+
+.marketplace-btn {
+  padding: 8px 16px;
+  background: #2d6cdf;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.marketplace-btn:hover {
+  background: #2057bd;
 }
 
 .clear-btn {

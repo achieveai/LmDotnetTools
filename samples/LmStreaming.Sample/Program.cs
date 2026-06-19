@@ -153,6 +153,15 @@ try
     ));
     _ = builder.Services.AddHostedService(sp => sp.GetRequiredService<SandboxGatewayLifetime>());
 
+    // Read-only marketplace catalog proxy (GET /api/marketplaces). Best-effort: it never spawns the
+    // gateway, so the controller degrades to 503 when it's offline. Registered as an interface so
+    // tests/E2E swap in a fake.
+    _ = builder.Services.AddSingleton<IMarketplaceCatalogClient>(sp => new MarketplaceCatalogClient(
+        sandboxOptions,
+        new HttpClient(),
+        sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
+    ));
+
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions =
         builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();

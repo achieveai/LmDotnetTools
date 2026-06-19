@@ -256,12 +256,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
+        var marketplaces = ParseMarketplaces(_options.Marketplaces);
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,
             authProviders,
             network,
-            discovery
+            discovery,
+            marketplaces
+        );
+
+        _logger.LogInformation(
+            "Sandbox session marketplace selection: {Marketplaces}",
+            marketplaces is { Count: > 0 } ? string.Join(", ", marketplaces) : "(gateway default)"
         );
 
         _logger.LogInformation(
@@ -815,6 +822,25 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         );
     }
 
+    /// <summary>
+    /// Parses the comma-separated <see cref="SandboxGatewayOptions.Marketplaces"/> config into the
+    /// alias array sent on the sandbox-create request. Entries are trimmed and blanks dropped.
+    /// Returns <c>null</c> (not an empty list) when nothing is configured so the field is omitted and
+    /// the gateway applies its own default set — an empty array would instead select zero marketplaces.
+    /// </summary>
+    internal static IReadOnlyList<string>? ParseMarketplaces(string? configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        var aliases = configured
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        return aliases.Length > 0 ? aliases : null;
+    }
+
     // --- Gateway JSON contract (snake_case via JsonOptions) ---
 
     private sealed record CreateSandboxRequest(
@@ -822,7 +848,10 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         [property: JsonPropertyName("workspace")] string Workspace,
         [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
         [property: JsonPropertyName("network")] NetworkDto? Network,
-        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null
+        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null,
+        // Omitted when null (JsonOptions ignores nulls) so the gateway keeps its default-set
+        // behaviour; an empty/blank config must therefore parse to null, never an empty array.
+        [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces = null
     );
 
     /// <summary>Outbound <c>discovery</c> block telling the gateway where to deliver

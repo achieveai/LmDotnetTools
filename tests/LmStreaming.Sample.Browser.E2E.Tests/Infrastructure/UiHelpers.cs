@@ -133,4 +133,22 @@ public static class UiHelpers
         await page.Textarea().FillAsync(message);
         await page.SendButton().ClickAsync();
     }
+
+    /// <summary>Header button that opens the marketplace browser modal.</summary>
+    public static ILocator MarketplaceButton(this IPage page)
+    {
+        return page.GetByTestId("marketplace-button");
+    }
+
+    /// <summary>The marketplace browser modal backdrop (present only while open).</summary>
+    public static ILocator MarketplaceModal(this IPage page)
+    {
+        return page.GetByTestId("marketplace-modal");
+    }
+
+    /// <summary>Close (×) button inside the marketplace modal.</summary>
+    public static ILocator MarketplaceModalClose(this IPage page)
+    {
+        return page.GetByTestId("marketplace-modal-close");
+    }
 }

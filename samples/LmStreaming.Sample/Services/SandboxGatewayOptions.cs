@@ -148,6 +148,17 @@ public sealed class SandboxGatewayOptions
     public string? PluginsDirs { get; set; }
 
     /// <summary>
+    /// Optional subset of marketplace aliases to activate per sandbox session, as a comma-separated
+    /// list (e.g. <c>"official,claude_plugins"</c>). The aliases are the canonical names the gateway
+    /// derives from <see cref="PluginsDirs"/>; the authoritative set can be read from the gateway's
+    /// <c>GET /api/v1/marketplaces/preview</c> catalog. Sent as the <c>marketplaces</c> array on the
+    /// sandbox-create request. When unset (or blank) the field is omitted and the gateway applies its
+    /// own default set (<c>DEFAULT_MARKETPLACES</c>, unset ⇒ all). An unknown alias makes the gateway
+    /// reject the create with a 400 listing the available aliases.
+    /// </summary>
+    public string? Marketplaces { get; set; }
+
+    /// <summary>
     /// Absolute path to <c>egress-proxy.exe</c>. When this and <see cref="CaCertPath"/>/<see cref="CaKeyPath"/>
     /// are set, the app adopt-or-spawns the egress proxy so sandbox outbound traffic is policy-enforced and
     /// OAuth tokens can be injected (the auth-webhook path). Without it, the gateway tells sandboxes to use a
