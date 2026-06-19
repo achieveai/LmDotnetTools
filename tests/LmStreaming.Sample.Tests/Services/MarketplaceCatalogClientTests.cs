@@ -119,6 +119,47 @@ public class MarketplaceCatalogClientTests
         await act.Should().ThrowAsync<MarketplaceCatalogUnavailableException>();
     }
 
+    [Fact]
+    public async Task GetCatalogAsync_CallerCancellation_PropagatesWithoutWrapping()
+    {
+        // The catch filter intentionally lets CALLER cancellation propagate (only gateway-unreachable
+        // becomes MarketplaceCatalogUnavailableException). Pin that: a pre-canceled token must surface
+        // as OperationCanceledException, never masqueraded as "gateway offline".
+        var (client, _) = CreateClient(_ => Ok(CatalogJson));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = async () => await client.GetCatalogAsync(ct: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        await act.Should().NotThrowAsync<MarketplaceCatalogUnavailableException>();
+    }
+
+    [Fact]
+    public async Task GetCatalogAsync_NullBody_NormalizesToEmptyCatalog()
+    {
+        // A 200 with a literal JSON `null` body must become an empty catalog, not a null reference.
+        var (client, _) = CreateClient(_ => Ok("null"));
+
+        var catalog = await client.GetCatalogAsync();
+
+        catalog.Should().NotBeNull();
+        catalog.Selected.Should().BeEmpty();
+        catalog.Marketplaces.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetCatalogAsync_MalformedBody_ThrowsUnavailable()
+    {
+        // A reachable gateway that returns a 200 with unparseable JSON is still "unavailable" — it
+        // must fold into the 503 contract, not bubble a raw JsonException to a 500.
+        var (client, _) = CreateClient(_ => Ok("{ not valid json"));
+
+        var act = async () => await client.GetCatalogAsync();
+
+        await act.Should().ThrowAsync<MarketplaceCatalogUnavailableException>();
+    }
+
     private static HttpResponseMessage Ok(string json) =>
         new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 

@@ -225,7 +225,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
-        var marketplaces = ParseMarketplaces(_options.Marketplaces);
+        var marketplaces = MarketplaceAliases.Parse(_options.Marketplaces);
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,
@@ -791,24 +791,6 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         );
     }
 
-    /// <summary>
-    /// Parses the comma-separated <see cref="SandboxGatewayOptions.Marketplaces"/> config into the
-    /// alias array sent on the sandbox-create request. Entries are trimmed and blanks dropped.
-    /// Returns <c>null</c> (not an empty list) when nothing is configured so the field is omitted and
-    /// the gateway applies its own default set — an empty array would instead select zero marketplaces.
-    /// </summary>
-    internal static IReadOnlyList<string>? ParseMarketplaces(string? configured)
-    {
-        if (string.IsNullOrWhiteSpace(configured))
-        {
-            return null;
-        }
-
-        var aliases = configured
-            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-
-        return aliases.Length > 0 ? aliases : null;
-    }
 
     // --- Gateway JSON contract (snake_case via JsonOptions) ---
 
