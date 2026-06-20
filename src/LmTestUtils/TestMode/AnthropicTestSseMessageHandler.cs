@@ -266,6 +266,12 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
                 );
                 message.ExplicitText = systemPrompt;
             }
+            else if (message.ExplicitText == "__TOOLS_ECHO__")
+            {
+                var toolsEcho = ExtractToolsEcho(requestRoot);
+                _logger.LogDebug("Resolved __TOOLS_ECHO__ placeholder to: {ToolsEcho}", toolsEcho);
+                message.ExplicitText = toolsEcho;
+            }
             else if (message.ExplicitText == "__TOOLS_LIST__")
             {
                 var toolsList = ExtractToolsList(requestRoot);
@@ -701,6 +707,44 @@ public sealed class AnthropicTestSseMessageHandler : HttpMessageHandler
         }
 
         return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
+    }
+
+    /// <summary>
+    ///     Extracts each visible tool as <c>name: description</c>, newline-separated. Unlike
+    ///     <see cref="ExtractToolsList"/> (names only), this surfaces descriptions so a probe can
+    ///     inspect content embedded there — e.g. the sub-agent catalog baked into the "Agent" tool
+    ///     description. Anthropic wire format: <c>{ "name", "description", "input_schema" }</c>.
+    /// </summary>
+    private static string ExtractToolsEcho(JsonElement root)
+    {
+        if (!root.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return "No tools available";
+        }
+
+        var lines = new List<string>();
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (tool.ValueKind != JsonValueKind.Object
+                || !tool.TryGetProperty("name", out var name)
+                || name.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var toolName = name.GetString();
+            if (string.IsNullOrEmpty(toolName))
+            {
+                continue;
+            }
+
+            var description = tool.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
+                ? desc.GetString() ?? string.Empty
+                : string.Empty;
+            lines.Add($"{toolName}: {description}");
+        }
+
+        return lines.Count == 0 ? "No tools available" : string.Join("\n", lines);
     }
 
     /// <summary>

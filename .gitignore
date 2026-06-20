@@ -57,5 +57,10 @@ node_modules/
 # OAuth refresh/access token store (FileOAuthTokenStore) — never commit secrets
 **/oauth-tokens/
 
-# Local git worktrees
+# Scratchpad working directory (keep folder, ignore contents)
+scratchPad/*
+!scratchPad/.gitkeep
+
+# Git worktrees (isolated workspaces — never track their contents)
+worktrees/
 .worktrees/

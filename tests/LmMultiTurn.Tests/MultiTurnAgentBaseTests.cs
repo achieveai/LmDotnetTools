@@ -30,6 +30,9 @@ public class MultiTurnAgentBaseTests
         public string? LastRunId { get; private set; }
         public string? LastGenerationId { get; private set; }
 
+        /// <summary>Test-only window into the protected conversation history, used to assert recovery.</summary>
+        public IReadOnlyList<IMessage> SnapshotHistoryForTest() => GetHistorySnapshot();
+
         public TestMultiTurnAgent(
             string threadId,
             List<IMessage>? messagesToReturn = null,
@@ -649,6 +652,133 @@ public class MultiTurnAgentBaseTests
         receipt.QueuedAt.Should().BeOnOrBefore(afterSend);
 
         // Cleanup
+        await agent.DisposeAsync();
+    }
+
+    #endregion
+
+    #region History Recovery Tests
+
+    [Fact]
+    public async Task RunAsync_RecoversPersistedHistory_FromStore_WithoutExplicitRecoverCall()
+    {
+        // Regression: the agent pool builds a loop and starts it via RunAsync — it never calls
+        // RecoverAsync explicitly. After an app restart the in-memory history is empty, so unless
+        // RunAsync rehydrates the persisted conversation, the LLM loses ALL prior context even
+        // though every message is still on disk (symptom: "the model doesn't have older messages").
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-history-recovery";
+        const string runId = "prior-run";
+
+        var priorMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "Nice to meet you, Alice.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+        };
+        await store.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+        using var cts = new CancellationTokenSource();
+
+        // Act: start the loop exactly as the pool does — RunAsync, NOT an explicit RecoverAsync.
+        _ = agent.RunAsync(cts.Token);
+
+        // Recovery runs at loop startup; poll the working history until it rehydrates (or time out).
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (agent.SnapshotHistoryForTest().Count < priorMessages.Count && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Assert: the prior conversation is back in the loop's history, so the next turn resends
+        // it to the LLM.
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<TextMessage>().Select(m => m.Text)
+            .Should()
+            .Contain("My name is Alice.")
+            .And.Contain("Nice to meet you, Alice.");
+
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotReRecover_AfterExplicitRecoverAsync()
+    {
+        // Regression for the idempotency guard (_historyRecovered): RestoreHistory APPENDS, so if
+        // RunAsync re-ran recovery after a caller had already called RecoverAsync explicitly, the
+        // persisted history would be duplicated (2N messages instead of N). The guard must skip the
+        // second recovery so history stays at N.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-no-double-recover";
+        const string runId = "prior-run";
+
+        var priorMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "Nice to meet you, Alice.",
+                Role = Role.Assistant,
+                GenerationId = "g2",
+                RunId = runId,
+            },
+        };
+        await store.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+        using var cts = new CancellationTokenSource();
+
+        // Recover explicitly first (as a caller that pre-warms history would).
+        var recovered = await agent.RecoverAsync(cts.Token);
+        recovered.Should().BeTrue();
+        agent.SnapshotHistoryForTest().Count.Should().Be(priorMessages.Count);
+
+        // Act: start the loop. RunAsync's startup recovery must observe the guard and skip, so it
+        // does NOT append the same history a second time.
+        _ = agent.RunAsync(cts.Token);
+
+        // Give RunAsync's startup path a chance to (incorrectly) re-recover: poll until the loop is
+        // running, then confirm the count is still N (never 2N). Await-don't-sleep on the deadline.
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!agent.IsRunning && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Assert: history was NOT duplicated.
+        var history = agent.SnapshotHistoryForTest();
+        history.Count.Should().Be(priorMessages.Count);
+        history.OfType<TextMessage>().Count(m => m.Text == "My name is Alice.").Should().Be(1);
+        history.OfType<TextMessage>().Count(m => m.Text == "Nice to meet you, Alice.").Should().Be(1);
+
+        await cts.CancelAsync();
         await agent.DisposeAsync();
     }
 

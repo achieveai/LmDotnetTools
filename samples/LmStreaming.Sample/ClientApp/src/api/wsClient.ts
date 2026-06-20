@@ -31,6 +31,11 @@ export interface WebSocketClientOptions extends WebSocketClientCallbacks {
    * yet locked in a provider; persisted threads keep their original provider regardless.
    */
   providerId?: string | null;
+  /**
+   * Workspace id requested for this connection. Honored only when the thread has
+   * not yet locked in a workspace; persisted threads keep their original workspace.
+   */
+  workspaceId?: string | null;
   record?: boolean;
 }
 
@@ -85,7 +90,7 @@ function normalizeKeys(value: unknown): unknown {
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, providerId, record, onMessage, onDone, onError, onAuthEvent } = options;
+  const { baseUrl = '', threadId, modeId, providerId, workspaceId, record, onMessage, onDone, onError, onAuthEvent } = options;
 
   return new Promise((resolve, reject) => {
     const connectionId = generateConnectionId();
@@ -98,6 +103,9 @@ export function createWebSocketConnection(
     }
     if (providerId) {
       wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
+    }
+    if (workspaceId) {
+      wsUrl += `&workspaceId=${encodeURIComponent(workspaceId)}`;
     }
     if (record) {
       wsUrl += '&record=1';

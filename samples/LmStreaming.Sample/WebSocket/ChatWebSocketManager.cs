@@ -54,6 +54,10 @@ public sealed class ChatWebSocketManager
     /// </param>
     /// <param name="recordWriter">Optional writer for recording messages to a JSONL file</param>
     /// <param name="cancellationToken">Cancellation token</param>
+    /// <param name="workspaceId">
+    /// Optional workspace id requested by the client for this connection. Honored only when the
+    /// thread has no persisted workspace yet; otherwise the persisted value wins.
+    /// </param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
@@ -61,7 +65,8 @@ public sealed class ChatWebSocketManager
         string? providerId,
         string? requestResponseDumpFileName,
         StreamWriter? recordWriter,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? workspaceId = null)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
         var codexSessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
@@ -111,7 +116,8 @@ public sealed class ChatWebSocketManager
                     threadId,
                     resolvedMode,
                     providerId,
-                    requestResponseDumpFileName);
+                    requestResponseDumpFileName,
+                    workspaceId);
             }
             catch (ProviderUnavailableException ex)
             {

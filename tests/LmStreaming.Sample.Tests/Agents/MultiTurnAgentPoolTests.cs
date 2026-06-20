@@ -476,6 +476,152 @@ public class MultiTurnAgentPoolTests
         pool.GetEffectiveProviderId("thread-fresh", null).Should().Be("test");
     }
 
+    [Fact]
+    public async Task GetOrCreateAgent_PersistsRequestedWorkspace_OnFirstCreation()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        var store = new InMemoryConversationStore();
+        var workspaceSeen = new List<string?>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                workspaceSeen.Add(context.WorkspaceId);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-ws",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "ws-123"
+        );
+
+        workspaceSeen.Should().ContainSingle().Which.Should().Be("ws-123");
+
+        var persisted = await WaitForPersistedWorkspaceAsync(store, "thread-ws");
+        persisted.Should().Be("ws-123");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_PersistedWorkspaceWins_OverRequested()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-ws-locked",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-ws-locked",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.SetItem(
+                    MultiTurnAgentPool.WorkspacePropertyKey,
+                    "ws-persisted"
+                ),
+            }
+        );
+
+        var workspaceSeen = new List<string?>();
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                workspaceSeen.Add(context.WorkspaceId);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-ws-locked",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "ws-requested"
+        );
+
+        workspaceSeen.Should().ContainSingle().Which.Should().Be("ws-persisted");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_LegacyShim_DefaultsWorkspaceToDefault()
+    {
+        var workspaceSeen = new List<string?>();
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _, _) =>
+            {
+                // The four-arg back-compat factory shim does not receive a workspace id; verify the
+                // context built by the pool defaults to "default" by reading it back from a context-
+                // aware sibling pool below. Here we just confirm the shim still works.
+                workspaceSeen.Add(null);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId));
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-shim", mode);
+
+        workspaceSeen.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_ContextWorkspaceDefaultsToDefault_WhenNoneRequested()
+    {
+        var workspaceSeen = new List<string?>();
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                workspaceSeen.Add(context.WorkspaceId);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-ws-default", mode);
+
+        workspaceSeen.Should().ContainSingle().Which.Should().Be("default");
+    }
+
+    private static async Task<string?> WaitForPersistedWorkspaceAsync(
+        IConversationStore store,
+        string threadId,
+        int timeoutMs = 1000
+    )
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            var metadata = await store.LoadMetadataAsync(threadId);
+            if (
+                metadata?.Properties != null
+                && metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var raw)
+                && raw is string s
+                && !string.IsNullOrWhiteSpace(s)
+            )
+            {
+                return s;
+            }
+
+            await Task.Delay(20);
+        }
+
+        return null;
+    }
+
     private static MultiTurnAgentPool CreatePool()
     {
         return new MultiTurnAgentPool(

@@ -214,6 +214,15 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                 continue;
             }
 
+            // Check for tools_echo - returns names AND descriptions of all visible tools. Lets a
+            // probe inspect content carried in a tool's description (e.g. the sub-agent catalog
+            // embedded in the "Agent" tool description), which tools_list (names only) cannot see.
+            if (item.TryGetProperty("tools_echo", out _))
+            {
+                messages.Add(InstructionMessage.ForExplicitText("__TOOLS_ECHO__"));
+                continue;
+            }
+
             // Check for tool_schema - returns description + parameter schema for a single named tool
             if (item.TryGetProperty("tool_schema", out var toolSchemaEl) && toolSchemaEl.ValueKind == JsonValueKind.Object)
             {

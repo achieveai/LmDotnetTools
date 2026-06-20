@@ -137,11 +137,16 @@ public sealed class ContextDiscoveryController(
             return;
         }
 
-        if (!sessionRegistry.TryGetSubAgentBinding(body.SessionId, out var binding) || binding is null)
+        // Fan the discovery out to every conversation currently live on this session. Each
+        // conversation owns its own catalog source (so a NEW conversation starting later does not
+        // inherit another conversation's discoveries); a discovery that arrives while one or more
+        // conversations are live activates into each of them.
+        var bindings = sessionRegistry.GetSubAgentBindingsForSession(body.SessionId);
+        if (bindings.Count == 0)
         {
-            // The agent path hasn't been initialised for this session yet — built-ins/discovered
-            // entries are loaded the first time the loop is created. Once it is, subsequent
-            // discoveries land here and activate normally.
+            // No conversation has initialised the agent path for this session yet — built-ins/
+            // discovered entries are loaded the first time a loop is created. Once one is,
+            // subsequent discoveries land here and activate normally.
             logger.LogInformation(
                 "ContextDiscovery subagent {Name}: session {SessionId} has no agent binding yet; skipping activation.",
                 body.Name,
@@ -167,63 +172,74 @@ public sealed class ContextDiscoveryController(
             return;
         }
 
-        // Fast-path: if a template with this name is already registered (built-in seed OR a
-        // previous discovery for this session), skip the disk read entirely. Gateways may retry
-        // the same discovery event after a transient failure; without this gate two near-
-        // simultaneous webhooks would both parse the markdown only for one to win the
-        // first-wins TryRegister. The race is still correct (TryRegister resolves it) — this
-        // just closes the retry-storm window before it hits the filesystem.
-        if (binding.Source.Templates.ContainsKey(body.Name!))
-        {
-            return;
-        }
+        // Load the markdown at most once and register the resulting template into every live
+        // conversation's catalog. The loader is keyed by the session + path, not the conversation,
+        // so a single read is reused; the per-conversation step is only the first-wins TryRegister.
+        SubAgentTemplate? template = null;
+        var loaded = false;
 
-        SubAgentTemplate? template;
-        try
+        foreach (var binding in bindings)
         {
-            template = await subAgentLoader
-                .LoadOneAsync(session, item.ToDiscovered(), binding.AgentFactory, ct)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "ContextDiscovery subagent {Name}: loader threw while activating; skipping.",
-                body.Name);
-            return;
-        }
+            // Fast-path: if this conversation already has a template with this name (built-in seed
+            // OR a previous discovery on this conversation), skip it entirely.
+            if (binding.Source.Templates.ContainsKey(body.Name!))
+            {
+                continue;
+            }
 
-        if (template is null || string.IsNullOrWhiteSpace(template.Name))
-        {
-            // LoadOneAsync already logged the specific reason (path traversal, missing file,
-            // malformed markdown, …); a non-null template with a blank Name would indicate a
-            // mapping bug, so it's also dropped here rather than registered as garbage.
-            return;
-        }
+            if (!loaded)
+            {
+                loaded = true;
+                try
+                {
+                    template = await subAgentLoader
+                        .LoadOneAsync(session, item.ToDiscovered(), binding.AgentFactory, ct)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "ContextDiscovery subagent {Name}: loader threw while activating; skipping.",
+                        body.Name);
+                    return;
+                }
+            }
 
-        if (binding.Source.TryRegister(template.Name, template))
-        {
-            logger.LogInformation(
-                "ContextDiscovery subagent {Name}: activated for session {SessionId}.",
-                template.Name,
-                body.SessionId);
-        }
-        else
-        {
-            // First-wins collision with a built-in OR an earlier discovery on this same session.
-            // This matches WorkspaceSubAgentLoader.MergeBuiltInWins's trust boundary: discovered
-            // templates cannot shadow trusted built-ins, and a re-fire of the same discovery is a
-            // no-op rather than a re-register.
-            logger.LogInformation(
-                "ContextDiscovery subagent {Name}: session {SessionId} already has a template "
-                + "with that name; keeping the first.",
-                template.Name,
-                body.SessionId);
+            if (template is null || string.IsNullOrWhiteSpace(template.Name))
+            {
+                // LoadOneAsync already logged the specific reason (path traversal, missing file,
+                // malformed markdown, …); a non-null template with a blank Name would indicate a
+                // mapping bug, so it's also dropped here rather than registered as garbage.
+                return;
+            }
+
+            // Rebind the template to THIS conversation's agent factory. The template is loaded once
+            // (with the first conversation's factory), but each conversation must spawn the
+            // discovered sub-agent with its OWN provider — otherwise a sub-agent fanned into
+            // conversation B would run on conversation A's provider.
+            var conversationTemplate = template with { AgentFactory = binding.AgentFactory };
+
+            if (binding.Source.TryRegister(conversationTemplate.Name!, conversationTemplate))
+            {
+                logger.LogInformation(
+                    "ContextDiscovery subagent {Name}: activated for session {SessionId}.",
+                    conversationTemplate.Name,
+                    body.SessionId);
+            }
+            else
+            {
+                // First-wins collision with a built-in OR an earlier discovery on this conversation.
+                logger.LogInformation(
+                    "ContextDiscovery subagent {Name}: session {SessionId} already has a template "
+                    + "with that name; keeping the first.",
+                    template.Name,
+                    body.SessionId);
+            }
         }
     }
 }

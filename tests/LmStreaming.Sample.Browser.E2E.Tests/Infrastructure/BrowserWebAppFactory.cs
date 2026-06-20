@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Services.Auth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -39,6 +41,9 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly ITestAgentBuilder? _builder;
     private readonly string _conversationPath;
     private readonly int? _fixedPort;
+    private readonly IMarketplaceCatalogClient? _catalogClient;
+    private readonly HttpMessageHandler? _sandboxGatewayHandler;
+    private readonly SandboxGatewayOptions? _sandboxOptions;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -50,7 +55,29 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// URL known <em>before</em> the host starts — such as the auth webhook for a real <c>git clone</c>
     /// egress test. Defaults to <c>null</c> (ephemeral) for every other scenario.
     /// </param>
-    public BrowserWebAppFactory(string providerMode, ITestAgentBuilder? builder, int? fixedPort = null)
+    /// <param name="catalogClient">
+    /// Optional fake <see cref="IMarketplaceCatalogClient"/> for marketplace scenarios. When set it
+    /// replaces the gateway-backed client so the catalog renders with no live gateway; left null for
+    /// every other scenario (the real client stays registered and reports the gateway offline).
+    /// </param>
+    /// <param name="sandboxGatewayHandler">
+    /// Optional in-process stand-in for the sandbox gateway HTTP API. When set, the gateway lifetime
+    /// and <see cref="SandboxSessionRegistry"/> are rebuilt around it (and the workspace store is
+    /// isolated to a temp dir) so a Workspace-Agent turn provisions a sandbox without a live gateway —
+    /// letting the test capture the create-sandbox request. Left null for every other scenario.
+    /// </param>
+    /// <param name="sandboxOptions">
+    /// Test <see cref="SandboxGatewayOptions"/> paired with <paramref name="sandboxGatewayHandler"/>
+    /// (a temp <c>WorkspaceBasePath</c>, a closed-port <c>BaseUrl</c> so the gateway MCP transport
+    /// fails fast and degrades, etc.). Required when a handler is supplied; ignored otherwise.
+    /// </param>
+    public BrowserWebAppFactory(
+        string providerMode,
+        ITestAgentBuilder? builder,
+        int? fixedPort = null,
+        IMarketplaceCatalogClient? catalogClient = null,
+        HttpMessageHandler? sandboxGatewayHandler = null,
+        SandboxGatewayOptions? sandboxOptions = null)
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -77,9 +104,19 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             throw new ArgumentNullException(nameof(builder), "Scripted provider modes require an ITestAgentBuilder.");
         }
 
+        if (sandboxGatewayHandler is not null && sandboxOptions is null)
+        {
+            throw new ArgumentNullException(
+                nameof(sandboxOptions),
+                "A sandbox gateway handler requires test SandboxGatewayOptions (temp WorkspaceBasePath etc.).");
+        }
+
         _providerMode = providerMode;
         _builder = builder;
         _fixedPort = fixedPort;
+        _catalogClient = catalogClient;
+        _sandboxGatewayHandler = sandboxGatewayHandler;
+        _sandboxOptions = sandboxOptions;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -123,6 +160,50 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             {
                 services.RemoveAll<ITestAgentBuilder>();
                 services.AddSingleton(_builder);
+            }
+
+            // Swap the gateway-backed catalog client for a fake so marketplace scenarios run with
+            // no live gateway. Left untouched when null (non-marketplace tests keep the real client,
+            // which simply reports the gateway offline if asked).
+            if (_catalogClient is not null)
+            {
+                services.RemoveAll<IMarketplaceCatalogClient>();
+                services.AddSingleton(_catalogClient);
+            }
+
+            // Stand-in sandbox gateway: rebuild the gateway lifetime + registry around the capturing
+            // handler so a Workspace-Agent turn provisions a sandbox in-process (no live gateway), and
+            // isolate the workspace store to a temp dir so test-created workspaces never touch the
+            // shared on-disk store. RemoveAll + AddSingleton is last-wins; the hosted-service wrapper
+            // (registered as IHostedService) still resolves the replacement lifetime singleton.
+            if (_sandboxGatewayHandler is not null)
+            {
+                var sandboxOptions = _sandboxOptions!;
+
+                services.RemoveAll<SandboxGatewayOptions>();
+                services.AddSingleton(sandboxOptions);
+
+                services.RemoveAll<IWorkspaceStore>();
+                var workspacesPath = Path.Combine(
+                    Path.GetDirectoryName(_conversationPath)!,
+                    "workspaces");
+                services.AddSingleton<IWorkspaceStore>(
+                    new FileWorkspaceStore(workspacesPath, sandboxOptions.ResolveWorkspace().Leaf));
+
+                services.RemoveAll<SandboxGatewayLifetime>();
+                services.AddSingleton(sp => new SandboxGatewayLifetime(
+                    sp.GetRequiredService<SandboxGatewayOptions>(),
+                    sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
+                    new HttpClient(_sandboxGatewayHandler, disposeHandler: false)));
+
+                services.RemoveAll<SandboxSessionRegistry>();
+                services.AddSingleton(sp => new SandboxSessionRegistry(
+                    sp.GetRequiredService<SandboxGatewayLifetime>(),
+                    sp.GetRequiredService<SandboxGatewayOptions>(),
+                    sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
+                    new HttpClient(_sandboxGatewayHandler, disposeHandler: false),
+                    sp.GetRequiredService<AuthOptions>(),
+                    sp.GetRequiredService<AuthSharedSecret>()));
             }
         });
     }

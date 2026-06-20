@@ -35,6 +35,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
+
+    // Set once history has been (attempted to be) recovered from the store, so RunAsync's
+    // startup recovery and any explicit RecoverAsync call never double-restore (RestoreHistory
+    // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
+    private bool _historyRecovered;
     private volatile bool _isDisposed;
 
     #endregion
@@ -484,11 +489,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             throw new InvalidOperationException("No persistence store configured");
         }
 
-        // Load metadata first
+        // Load metadata first. We do NOT mark recovery complete until a load has finished
+        // (or is definitively empty); marking it up front would poison _historyRecovered if a
+        // transient store/IO/deserialization fault threw here, causing a later retry to skip
+        // recovery and start with empty history.
         var metadata = await Store.LoadMetadataAsync(ThreadId, ct);
         if (metadata == null)
         {
             Logger.LogDebug("No stored metadata found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
 
@@ -497,8 +506,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         if (persistedMessages.Count == 0)
         {
             Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
+            _historyRecovered = true;
             return false;
         }
+
+        // Mark recovery complete before restoring so the guard prevents a second recover from
+        // appending history twice (RestoreHistory appends). At this point the load has
+        // succeeded, so the flag cannot be poisoned by a transient fault.
+        _historyRecovered = true;
 
         // Convert persisted messages back to IMessages
         var messages = MessagePersistenceConverter.FromPersistedMessages(persistedMessages);
@@ -857,6 +872,35 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         // Ensure channel exists (recreate if it was completed by previous stop)
         EnsureChannelExists();
+
+        // Rehydrate persisted conversation history before the loop processes any input. The agent
+        // pool creates a loop and starts it via RunAsync without ever calling RecoverAsync, so
+        // without this an agent recreated after a restart (or a mode/provider switch, which also
+        // rebuilds the agent) begins with empty history and the LLM loses all prior context even
+        // though every message is still in the store. Idempotent via _historyRecovered, so callers
+        // that already recovered explicitly are not double-restored.
+        if (Store != null && !_historyRecovered)
+        {
+            // History recovery is best-effort enrichment: a transient store/IO/deserialization
+            // fault must degrade to empty history, not crash agent startup. Genuine
+            // caller-cancellation still propagates.
+            try
+            {
+                _ = await RecoverAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _historyRecovered = false; // let a later explicit RecoverAsync retry
+                Logger.LogWarning(
+                    ex,
+                    "History recovery failed for thread {ThreadId}; starting with empty history",
+                    ThreadId);
+            }
+        }
 
         await OnBeforeRunAsync();
 

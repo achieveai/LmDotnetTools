@@ -32,6 +32,20 @@ public sealed record SubAgentSessionBinding(
 public sealed record SandboxSession(string WorkspaceId, string SessionId, string WorkspaceRelPath, string HostPath);
 
 /// <summary>
+/// Identifies the workspace a sandbox session is being requested for: the logical
+/// <paramref name="Id"/> (the session-cache key) plus the optional directory leaf
+/// (<paramref name="DirectoryRelPath"/>) the session mounts. A null/blank
+/// <paramref name="DirectoryRelPath"/> falls back to the configured default workspace path.
+/// <paramref name="Marketplaces"/> are the plugin-marketplace aliases this workspace enables;
+/// when non-empty they drive the sandbox-create selection, otherwise the global
+/// <see cref="SandboxGatewayOptions.Marketplaces"/> default applies.
+/// </summary>
+public sealed record WorkspaceRef(
+    string Id,
+    string? DirectoryRelPath = null,
+    IReadOnlyList<string>? Marketplaces = null);
+
+/// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
 /// workspace id, then destroyed on application shutdown when the DI container disposes this
 /// singleton.
@@ -50,7 +64,11 @@ public sealed record SandboxSession(string WorkspaceId, string SessionId, string
 /// </remarks>
 public sealed class SandboxSessionRegistry : IAsyncDisposable
 {
-    private const string DefaultWorkspaceId = "default";
+    /// <summary>
+    /// Logical id of the default workspace, which maps to the configured
+    /// <see cref="SandboxGatewayOptions.Workspace"/>. Also the seeded id used by the workspace store.
+    /// </summary>
+    public const string DefaultWorkspaceId = "default";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -61,13 +79,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Lazy<Task<SandboxSession>>> _sessions = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Per-session sub-agent binding (template source + agent factory) the loop uses to populate
-    /// the Agent tool's <c>subagent_type</c> enum and that the context-discovery webhook mutates
-    /// when the gateway reports a newly discovered subagent. Keyed by gateway session id (NOT
-    /// workspace id) so the webhook — which carries the session id, not the workspace id — can
-    /// look up the same instance the loop is reading from.
+    /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
+    /// tool's <c>subagent_type</c> enum and that the context-discovery webhook mutates when the
+    /// gateway reports a newly discovered subagent.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SubAgentSessionBinding> _subAgentBindings =
+    /// <remarks>
+    /// Keyed by gateway session id and THEN by conversation (agent-pool thread) id. All
+    /// conversations share ONE sandbox session (v1 always uses the <c>"default"</c> workspace),
+    /// but each conversation owns its OWN catalog source so a sub-agent discovered/registered
+    /// while one conversation is live does not bleed into a NEW conversation that starts later.
+    /// The outer key is the session id (what the webhook carries) so it can fan a discovery out to
+    /// every conversation currently live on that session.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, SubAgentSessionBinding>> _subAgentBindings =
         new(StringComparer.Ordinal);
 
     /// <summary>
@@ -137,30 +161,47 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the sandbox session for <paramref name="workspaceId"/>, creating it on first use.
-    /// Concurrent first-callers share a single creation; subsequent callers get the cached session.
+    /// Back-compat overload that creates (or returns) the session for <paramref name="workspaceId"/>
+    /// using the configured default workspace directory. Equivalent to passing a
+    /// <see cref="WorkspaceRef"/> with a null directory.
     /// </summary>
-    /// <param name="workspaceId">Logical workspace key. v1 only passes <c>"default"</c>.</param>
+    /// <param name="workspaceId">Logical workspace key.</param>
     /// <param name="ct">Cancellation token observed by the creating call.</param>
     public Task<SandboxSession> GetOrCreateSessionAsync(
         string workspaceId = DefaultWorkspaceId,
         CancellationToken ct = default
     )
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        return GetOrCreateSessionAsync(new WorkspaceRef(workspaceId), ct);
+    }
 
-        if (string.IsNullOrWhiteSpace(workspaceId))
-        {
-            workspaceId = DefaultWorkspaceId;
-        }
+    /// <summary>
+    /// Returns the sandbox session for <paramref name="workspaceRef"/>, creating it on first use.
+    /// The cache is keyed by <see cref="WorkspaceRef.Id"/>; on first creation the mounted directory
+    /// is resolved from <see cref="WorkspaceRef.DirectoryRelPath"/> (null/blank → configured
+    /// default). Concurrent first-callers share a single creation; subsequent callers get the
+    /// cached session (subsequent directory values are ignored — the first creation wins).
+    /// </summary>
+    /// <param name="workspaceRef">The workspace identity + directory to mount.</param>
+    /// <param name="ct">Cancellation token observed by the creating call.</param>
+    public Task<SandboxSession> GetOrCreateSessionAsync(
+        WorkspaceRef workspaceRef,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(workspaceRef);
+
+        var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
+        var effectiveRef = workspaceRef with { Id = workspaceId };
 
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
         // caller disconnecting), which would otherwise fail it for all concurrent waiters.
         var lazy = _sessions.GetOrAdd(
             workspaceId,
-            key => new Lazy<Task<SandboxSession>>(
-                () => CreateSessionAsync(key, CancellationToken.None),
+            _ => new Lazy<Task<SandboxSession>>(
+                () => CreateSessionAsync(effectiveRef, CancellationToken.None),
                 LazyThreadSafetyMode.ExecutionAndPublication
             )
         );
@@ -192,13 +233,15 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// POSTs a sandbox-create request to the gateway and maps the response to a
     /// <see cref="SandboxSession"/>.
     /// </summary>
-    private async Task<SandboxSession> CreateSessionAsync(string workspaceId, CancellationToken ct)
+    private async Task<SandboxSession> CreateSessionAsync(WorkspaceRef workspaceRef, CancellationToken ct)
     {
+        var workspaceId = workspaceRef.Id;
+
         // Surface the clear, actionable gateway error here (not at app startup) — this is the
         // first point at which Workspace Agent mode actually requires a healthy gateway.
         await _gateway.EnsureReadyAsync(ct).ConfigureAwait(false);
 
-        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace();
+        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
 
         // Ensure the workspace directory exists before the gateway mounts it — the gateway rejects a
@@ -219,12 +262,23 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
+        // Per-workspace marketplace selection wins; fall back to the global config default when the
+        // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
+        var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
+            ? workspaceRef.Marketplaces
+            : MarketplaceAliases.Parse(_options.Marketplaces);
         var request = new CreateSandboxRequest(
             new AppRef(_options.AppId),
             workspaceRelPath,
             authProviders,
             network,
-            discovery
+            discovery,
+            marketplaces
+        );
+
+        _logger.LogInformation(
+            "Sandbox session marketplace selection: {Marketplaces}",
+            marketplaces is { Count: > 0 } ? string.Join(", ", marketplaces) : "(gateway default)"
         );
 
         _logger.LogInformation(
@@ -328,7 +382,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// background sweep of context files — sub-agents, skills, etc). Callers filter by
     /// <see cref="DiscoveredItem.Kind"/> for the kinds they care about.
     /// </summary>
-    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync"/>.</param>
+    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken)"/>.</param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     /// <returns>The discovered items. Empty when the gateway reports no discoveries; never null.</returns>
     /// <exception cref="InvalidOperationException">
@@ -369,34 +423,49 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the <see cref="SubAgentSessionBinding"/> for <paramref name="sessionId"/>, creating
-    /// one on first access — seeded with <paramref name="seed"/> and remembering
+    /// Returns the <see cref="SubAgentSessionBinding"/> for the
+    /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
+    /// first access — seeded with <paramref name="seed"/> and remembering
     /// <paramref name="agentFactory"/> for the discovery webhook's spawn-time wiring. Subsequent
-    /// calls return the existing binding unchanged; the binding is single-instance per session for
-    /// the registry's lifetime so the loop and the discovery webhook always share state.
+    /// calls for the same pair return the existing binding unchanged.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Bindings are scoped per CONVERSATION, not per session: all conversations share one sandbox
+    /// session, but each gets its own catalog source seeded only with the static built-ins, so a
+    /// sub-agent discovered/registered while one conversation is live does NOT leak into a new
+    /// conversation that starts later. The webhook fans live discoveries out via
+    /// <see cref="GetSubAgentBindingsForSession"/>.
+    /// </para>
+    /// <para>
     /// The seed lets the pool factory plant the built-in templates as the initial entries before
     /// the loop wires the source into <see cref="SubAgentToolProvider"/>/<see cref="SubAgentManager"/>.
+    /// </para>
     /// </remarks>
     public SubAgentSessionBinding GetOrAddSubAgentBinding(
         string sessionId,
+        string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> seed,
         Func<IStreamingAgent> agentFactory)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
         ArgumentNullException.ThrowIfNull(seed);
         ArgumentNullException.ThrowIfNull(agentFactory);
 
-        var binding = _subAgentBindings.GetOrAdd(
+        var conversations = _subAgentBindings.GetOrAdd(
             sessionId,
+            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal));
+
+        var binding = conversations.GetOrAdd(
+            conversationId,
             _ => new SubAgentSessionBinding(new MutableSubAgentTemplateSource(seed), agentFactory));
 
-        // Reconcile the seed every call: a later pool factory invocation for the same session may
-        // present additional built-in templates that weren't present on the first call. TryRegister
-        // is first-wins, so previously seeded entries (and any discovered templates registered by
-        // the webhook in between) are preserved — the trust boundary holds.
+        // Reconcile the seed every call: a later pool factory invocation for the same conversation
+        // may present additional built-in templates that weren't present on the first call.
+        // TryRegister is first-wins, so previously seeded entries (and any discovered templates
+        // registered by the webhook in between) are preserved — the trust boundary holds.
         foreach (var kvp in seed)
         {
             _ = binding.Source.TryRegister(kvp.Key, kvp.Value);
@@ -406,22 +475,47 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Tries to look up the sub-agent binding previously registered for <paramref name="sessionId"/>
-    /// via <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/>
-    /// set to null) when no binding exists — the discovery webhook treats that as a best-effort
-    /// no-op rather than an error, since the session may not have routed through the agent path
-    /// yet.
+    /// Tries to look up the sub-agent binding previously registered for the
+    /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair via
+    /// <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/> set to
+    /// null) when no binding exists — the discovery webhook treats that as a best-effort no-op
+    /// rather than an error, since the conversation may not have routed through the agent path yet.
     /// </summary>
-    public bool TryGetSubAgentBinding(string sessionId, out SubAgentSessionBinding? binding)
+    public bool TryGetSubAgentBinding(string sessionId, string conversationId, out SubAgentSessionBinding? binding)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(sessionId))
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(conversationId))
         {
             binding = null;
             return false;
         }
 
-        return _subAgentBindings.TryGetValue(sessionId, out binding);
+        if (_subAgentBindings.TryGetValue(sessionId, out var conversations))
+        {
+            return conversations.TryGetValue(conversationId, out binding);
+        }
+
+        binding = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns every conversation's sub-agent binding currently registered for
+    /// <paramref name="sessionId"/>. Used by the context-discovery webhook to fan a discovered
+    /// sub-agent out to every conversation that is live on the shared session. Empty when no
+    /// conversation has initialised the agent path for the session yet.
+    /// </summary>
+    public IReadOnlyList<SubAgentSessionBinding> GetSubAgentBindingsForSession(string sessionId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return [];
+        }
+
+        return _subAgentBindings.TryGetValue(sessionId, out var conversations)
+            ? [.. conversations.Values]
+            : [];
     }
 
     /// <summary>
@@ -500,6 +594,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         foreach (var set in _sessionThreads.Values)
         {
             _ = set.TryRemove(threadId, out _);
+        }
+
+        // Release the conversation's per-conversation sub-agent binding (keyed by conversation ==
+        // thread id). One is created per chat, so without this they accumulate unbounded for the
+        // process lifetime.
+        foreach (var conversations in _subAgentBindings.Values)
+        {
+            _ = conversations.TryRemove(threadId, out _);
         }
     }
 
@@ -730,6 +832,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         );
     }
 
+
     // --- Gateway JSON contract (snake_case via JsonOptions) ---
 
     private sealed record CreateSandboxRequest(
@@ -737,7 +840,10 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         [property: JsonPropertyName("workspace")] string Workspace,
         [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
         [property: JsonPropertyName("network")] NetworkDto? Network,
-        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null
+        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null,
+        // Omitted when null (JsonOptions ignores nulls) so the gateway keeps its default-set
+        // behaviour; an empty/blank config must therefore parse to null, never an empty array.
+        [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces = null
     );
 
     /// <summary>Outbound <c>discovery</c> block telling the gateway where to deliver
