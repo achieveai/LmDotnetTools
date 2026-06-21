@@ -17,7 +17,7 @@ internal static class BuiltInSubAgentTemplates
     /// Default concurrent sub-agent cap applied wherever these templates are wrapped in a
     /// <see cref="SubAgentOptions"/>.
     /// </summary>
-    public const int DefaultMaxConcurrentSubAgents = 5;
+    internal const int DefaultMaxConcurrentSubAgents = 5;
 
     /// <summary>
     /// Builds a fresh dictionary of the built-in templates. Each template reuses
