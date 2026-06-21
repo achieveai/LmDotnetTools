@@ -309,7 +309,9 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         probeCts.CancelAfter(SessionLivenessProbeTimeout);
         try
         {
-            using var response = await _httpClient.GetAsync(requestUri, probeCts.Token).ConfigureAwait(false);
+            using var response = await _httpClient
+                .GetAsync(requestUri, HttpCompletionOption.ResponseHeadersRead, probeCts.Token)
+                .ConfigureAwait(false);
             return response.StatusCode != HttpStatusCode.NotFound;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -320,7 +322,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         {
             // Probe timeout or transient error → assume alive so a flaky/slow gateway never churns a
             // healthy session (recreating wouldn't help if the gateway is unreachable anyway).
-            _logger.LogDebug(
+            _logger.LogInformation(
                 ex,
                 "Liveness probe for sandbox session {SessionId} failed or timed out; assuming the session is still alive.",
                 sessionId
