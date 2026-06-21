@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -69,6 +70,12 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// <see cref="SandboxGatewayOptions.Workspace"/>. Also the seeded id used by the workspace store.
     /// </summary>
     public const string DefaultWorkspaceId = "default";
+
+    /// <summary>
+    /// Upper bound on the gateway session-liveness probe so a wedged gateway degrades to "assume
+    /// alive" quickly rather than blocking the turn for the full shared-client timeout.
+    /// </summary>
+    private static readonly TimeSpan SessionLivenessProbeTimeout = TimeSpan.FromSeconds(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -227,6 +234,129 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
             throw;
         }
+    }
+
+    /// <summary>
+    /// Like <see cref="GetOrCreateSessionAsync(string, CancellationToken)"/>, but additionally
+    /// verifies the cached session still exists on the gateway and transparently recreates it when
+    /// it does not. See the <see cref="WorkspaceRef"/> overload for the full rationale.
+    /// </summary>
+    public Task<SandboxSession> GetOrCreateLiveSessionAsync(
+        string workspaceId = DefaultWorkspaceId,
+        CancellationToken ct = default
+    )
+    {
+        return GetOrCreateLiveSessionAsync(new WorkspaceRef(workspaceId), ct);
+    }
+
+    /// <summary>
+    /// Returns a sandbox session for <paramref name="workspaceRef"/> that is guaranteed to still be
+    /// known to the gateway. The in-memory cache (<see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken)"/>)
+    /// is reused as-is while the session is healthy, but the gateway evicts idle sessions on its own
+    /// schedule — after which every call for that id returns <c>404 "Session not found"</c>. Reusing
+    /// the dead handle silently strips the session's marketplace-provided tools (e.g.
+    /// <c>sandbox-Skill</c>). On a definitive 404 this method drops the stale cache entry and
+    /// recreates the session with the same workspace + marketplace selection, so callers always get a
+    /// live session with the full tool set. Non-404 probe failures are treated as "still ours" to
+    /// avoid churning a healthy session when the gateway is briefly unreachable.
+    /// </summary>
+    public async Task<SandboxSession> GetOrCreateLiveSessionAsync(
+        WorkspaceRef workspaceRef,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(workspaceRef);
+
+        var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
+        var effectiveRef = workspaceRef with { Id = workspaceId };
+
+        var session = await GetOrCreateSessionAsync(effectiveRef, ct).ConfigureAwait(false);
+        if (await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false))
+        {
+            return session;
+        }
+
+        _logger.LogWarning(
+            "Sandbox gateway no longer recognizes session {SessionId} for workspace {WorkspaceId} "
+                + "(likely evicted after idle); recreating it so marketplace tools are restored.",
+            session.SessionId,
+            workspaceId
+        );
+
+        InvalidateSession(workspaceId, session);
+        return await GetOrCreateSessionAsync(effectiveRef, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Probes the gateway for <paramref name="sessionId"/>. Returns <c>false</c> only on a definitive
+    /// <c>404</c> (the gateway has forgotten the session); any other status — success OR a transient
+    /// error — is reported as alive so a flaky gateway never triggers needless recreation.
+    /// </summary>
+    private async Task<bool> IsSessionAliveAsync(string sessionId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return false;
+        }
+
+        var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{sessionId}";
+
+        // Cap the probe well under the shared client timeout: a wedged (non-404) gateway must not
+        // stall the turn — degrade quickly to "assume alive" instead. The linked token still honours
+        // a genuine caller cancellation.
+        using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        probeCts.CancelAfter(SessionLivenessProbeTimeout);
+        try
+        {
+            using var response = await _httpClient.GetAsync(requestUri, probeCts.Token).ConfigureAwait(false);
+            return response.StatusCode != HttpStatusCode.NotFound;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // genuine caller cancellation — propagate
+        }
+        catch (Exception ex)
+        {
+            // Probe timeout or transient error → assume alive so a flaky/slow gateway never churns a
+            // healthy session (recreating wouldn't help if the gateway is unreachable anyway).
+            _logger.LogDebug(
+                ex,
+                "Liveness probe for sandbox session {SessionId} failed or timed out; assuming the session is still alive.",
+                sessionId
+            );
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Drops a dead session from both caches so the next request recreates it. Removes the
+    /// per-workspace creation entry and the reverse id mapping (the latter only when it still points
+    /// at <paramref name="session"/>, so a concurrent recreation is never clobbered).
+    /// </summary>
+    private void InvalidateSession(string workspaceId, SandboxSession session)
+    {
+        // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
+        // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
+        // would clobber a fresh session a concurrent caller may have just installed, orphaning it on
+        // the gateway and causing churn.
+        if (
+            _sessions.TryGetValue(workspaceId, out var lazy)
+            && lazy.IsValueCreated
+            && lazy.Value.IsCompletedSuccessfully
+            && ReferenceEquals(lazy.Value.Result, session)
+        )
+        {
+            _ = ((ICollection<KeyValuePair<string, Lazy<Task<SandboxSession>>>>)_sessions).Remove(
+                new KeyValuePair<string, Lazy<Task<SandboxSession>>>(workspaceId, lazy)
+            );
+        }
+
+        // Reverse map removal is already exact: only drops the entry when it still points at this
+        // dead session, so a concurrent recreation's mapping is never clobbered.
+        _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+            new KeyValuePair<string, SandboxSession>(session.SessionId, session)
+        );
     }
 
     /// <summary>

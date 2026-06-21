@@ -383,7 +383,11 @@ try
                         workspace?.DirectoryRelPath,
                         workspace?.Marketplaces);
 
-                    sandboxSession = sandboxRegistry.GetOrCreateSessionAsync(workspaceRef).GetAwaiter().GetResult();
+                    // Use the liveness-checked variant: the gateway evicts idle sessions on its own
+                    // schedule, and reusing a cached-but-evicted handle silently strips the session's
+                    // marketplace-provided tools (e.g. sandbox-Skill). This recreates the session on a
+                    // gateway 404 so the agent always gets the full tool set without a process restart.
+                    sandboxSession = sandboxRegistry.GetOrCreateLiveSessionAsync(workspaceRef).GetAwaiter().GetResult();
                     var wsSuffix =
                         "\n\nYour workspace directory is: "
                         + sandboxSession.HostPath
