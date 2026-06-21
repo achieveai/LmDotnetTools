@@ -1,12 +1,16 @@
 using LmStreaming.Sample.Models;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace LmStreaming.Sample.Persistence;
 
 /// <summary>
-/// Provides built-in system-defined chat modes.
+/// Provides built-in system-defined chat modes loaded from Prompts.yaml.
 /// </summary>
 public static class SystemChatModes
 {
+    private const string PromptsFileName = "Prompts.yaml";
+
     /// <summary>
     /// The default mode ID.
     /// </summary>
@@ -25,95 +29,7 @@ public static class SystemChatModes
     /// <summary>
     /// Gets all system-defined chat modes.
     /// </summary>
-    public static IReadOnlyList<ChatMode> All { get; } =
-    [
-        new ChatMode
-        {
-            Id = DefaultModeId,
-            Name = "General Assistant",
-            Description = "A helpful assistant with access to all available tools.",
-            SystemPrompt =
-                "You are a helpful assistant with access to weather, calculator, and web search tools. Be concise and helpful in your responses.",
-            EnabledTools = null, // All tools enabled
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-        new ChatMode
-        {
-            Id = "math-helper",
-            Name = "Math Helper",
-            Description = "A focused assistant for mathematical calculations.",
-            SystemPrompt =
-                "You are a math assistant. Help users with calculations and mathematical problems. Use the calculator tool when needed. Be precise and show your work.",
-            EnabledTools = ["calculate"],
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-        new ChatMode
-        {
-            Id = "weather-assistant",
-            Name = "Weather Assistant",
-            Description = "An assistant specialized in weather information.",
-            SystemPrompt =
-                "You are a weather assistant. Help users get weather information for any location. Use the weather tool to provide accurate forecasts. Be friendly and informative.",
-            EnabledTools = ["get_weather"],
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-        new ChatMode
-        {
-            Id = "research-assistant",
-            Name = "Research Assistant",
-            Description =
-                "An assistant that can search the web for up-to-date information using server-side web search.",
-            SystemPrompt =
-                "You are a research assistant with access to web search. When the user asks questions that require up-to-date information, current events, or facts you're unsure about, use your web search capability to find accurate answers. Cite your sources when providing information from web searches.",
-            EnabledTools = ["calculate", "get_weather", "web_search"],
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-        new ChatMode
-        {
-            Id = MedicalKnowledgeModeId,
-            Name = "Medical Knowledge Assistant",
-            Description =
-                "A medical knowledge assistant that can search textbooks and reference materials to answer clinical questions.",
-            SystemPrompt =
-                "You are a medical knowledge assistant with access to textbook search tools. "
-                + "When answering questions, use the book search tools to find relevant passages from medical textbooks. "
-                + "Cite the source (book, chapter, page) for each fact you reference. "
-                + "Be precise, evidence-based, and acknowledge uncertainty when the literature is unclear.",
-            EnabledTools = [], // No local/built-in tools; only MCP book search tools
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-        new ChatMode
-        {
-            Id = WorkspaceAgentModeId,
-            Name = "Workspace Agent",
-            Description =
-                "Operates on a sandboxed workspace — reads/edits files and runs commands through the isolated sandbox.",
-            SystemPrompt =
-                "You are a workspace agent operating on a sandboxed working directory (its absolute path is given to you below). "
-                + "You MUST use the sandbox tools (Read, Write, Edit, Glob, Grep, Bash, PowerShell) for ALL file and command operations in that workspace; never assume file contents or guess command output. "
-                + "Path rules: the shell tools (Bash, PowerShell) already start IN the workspace directory, so relative paths work there. "
-                + "The file tools (Read, Write, Edit, Glob, Grep) require ABSOLUTE paths under the workspace directory — pass the workspace's absolute path as the base (and use the 'path' argument to scope Glob/Grep). "
-                + "Always Read a file before you Write or Edit it; to create a NEW file, Read it first (it will report 'not found') and then Write — this satisfies the read-before-write safeguard. "
-                + "The workspace is shared and persists across the entire conversation, so be careful with destructive commands (deleting, overwriting, or force operations) and confirm intent before running them. "
-                + "When a relevant Skill is listed in the available tools (for example a repo-explorer skill), prefer invoking the Skill tool to follow its documented procedure rather than improvising your own steps. "
-                + "When using PowerShell, pass a distinct context_id per independent task so that parallel work does not share the same current directory or environment. "
-                + "Work step-by-step: explore the workspace before editing, always read a file before writing or editing it, and summarize what you changed when you are done.",
-            EnabledTools = [], // No local sample tools; tools come from the sandbox MCP server
-            IsSystemDefined = true,
-            CreatedAt = 0,
-            UpdatedAt = 0,
-        },
-    ];
+    public static IReadOnlyList<ChatMode> All { get; } = LoadModes();
 
     /// <summary>
     /// Gets a system mode by ID.
@@ -133,5 +49,123 @@ public static class SystemChatModes
     public static bool IsSystemMode(string modeId)
     {
         return All.Any(m => m.Id == modeId);
+    }
+
+    private static IReadOnlyList<ChatMode> LoadModes()
+    {
+        var filePath = ResolvePromptsPath();
+        var yaml = File.ReadAllText(filePath);
+        var deserializer = new DeserializerBuilder()
+            .WithNamingConvention(CamelCaseNamingConvention.Instance)
+            .Build();
+
+        var document = deserializer.Deserialize<SystemChatModeDocument>(yaml)
+            ?? throw new InvalidOperationException($"{PromptsFileName} did not contain any chat mode definitions.");
+
+        if (document.ChatModes is null || document.ChatModes.Count == 0)
+        {
+            throw new InvalidOperationException($"{PromptsFileName} must define at least one chat mode.");
+        }
+
+        var now = 0L;
+        var modes = document.ChatModes.Select(m => new ChatMode
+        {
+            Id = Require(m.Id, "id"),
+            Name = Require(m.Name, "name"),
+            Description = m.Description,
+            SystemPrompt = Require(m.SystemPrompt, "systemPrompt"),
+            EnabledTools = m.EnabledTools,
+            IsSystemDefined = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ToList();
+
+        ValidateRequiredMode(modes, DefaultModeId);
+        ValidateRequiredMode(modes, MedicalKnowledgeModeId);
+        ValidateRequiredMode(modes, WorkspaceAgentModeId);
+
+        var duplicateIds = modes
+            .GroupBy(m => m.Id, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (duplicateIds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{PromptsFileName} contains duplicate chat mode ids: {string.Join(", ", duplicateIds)}.");
+        }
+
+        return modes;
+    }
+
+    private static string ResolvePromptsPath()
+    {
+        foreach (var start in EnumerateSearchRoots())
+        {
+            var direct = Path.Combine(start, PromptsFileName);
+            if (File.Exists(direct))
+            {
+                return direct;
+            }
+
+            var sourcePath = Path.Combine(start, "samples", "LmStreaming.Sample", PromptsFileName);
+            if (File.Exists(sourcePath))
+            {
+                return sourcePath;
+            }
+        }
+
+        throw new FileNotFoundException(
+            $"Could not find {PromptsFileName}. Expected it beside the LmStreaming.Sample binaries "
+            + "or at samples/LmStreaming.Sample/Prompts.yaml under the repository root.");
+    }
+
+    private static IEnumerable<string> EnumerateSearchRoots()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var root in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            var current = new DirectoryInfo(root);
+            for (var i = 0; current is not null && i < 10; i++, current = current.Parent)
+            {
+                if (seen.Add(current.FullName))
+                {
+                    yield return current.FullName;
+                }
+            }
+        }
+    }
+
+    private static string Require(string? value, string fieldName)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? throw new InvalidOperationException($"{PromptsFileName} contains a chat mode with a missing {fieldName}.")
+            : value;
+    }
+
+    private static void ValidateRequiredMode(IReadOnlyCollection<ChatMode> modes, string modeId)
+    {
+        if (!modes.Any(m => string.Equals(m.Id, modeId, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException($"{PromptsFileName} must define the required system mode '{modeId}'.");
+        }
+    }
+
+    private sealed record SystemChatModeDocument
+    {
+        public List<SystemChatModeDefinition>? ChatModes { get; init; }
+    }
+
+    private sealed record SystemChatModeDefinition
+    {
+        public string? Id { get; init; }
+
+        public string? Name { get; init; }
+
+        public string? Description { get; init; }
+
+        public string? SystemPrompt { get; init; }
+
+        public List<string>? EnabledTools { get; init; }
     }
 }

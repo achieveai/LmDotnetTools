@@ -24,17 +24,56 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
         }
 
         var start = content.IndexOf(InstructionStartTag, StringComparison.Ordinal);
-        var end = content.IndexOf(InstructionEndTag, StringComparison.Ordinal);
-
-        if (start < 0 || end <= start)
+        if (start < 0)
         {
             _logger.LogDebug("Instruction tags not found in content");
             return null;
         }
 
-        var json = content
-            .Substring(start + InstructionStartTag.Length, end - start - InstructionStartTag.Length)
-            .Trim();
+        // Find the end tag that closes THIS chain, accounting for nested chains — e.g. a
+        // sub-agent prompt (its own <|instruction_start|>…<|instruction_end|>) embedded inside a
+        // parent's Agent tool-call args. A naive "first end tag" match stops at the inner end tag
+        // and truncates the outer JSON. Walk the tags with a depth counter so the outer chain's
+        // own closing tag is selected. For a single chain or several sequential (non-nested)
+        // chains, depth stays 0 and this picks the first end tag — identical to the old behavior.
+        var contentStart = start + InstructionStartTag.Length;
+        var depth = 0;
+        var cursor = contentStart;
+        var end = -1;
+        while (cursor < content.Length)
+        {
+            var nextStart = content.IndexOf(InstructionStartTag, cursor, StringComparison.Ordinal);
+            var nextEnd = content.IndexOf(InstructionEndTag, cursor, StringComparison.Ordinal);
+
+            if (nextEnd < 0)
+            {
+                break; // no closing tag for the current depth
+            }
+
+            if (nextStart >= 0 && nextStart < nextEnd)
+            {
+                depth++;
+                cursor = nextStart + InstructionStartTag.Length;
+            }
+            else if (depth > 0)
+            {
+                depth--;
+                cursor = nextEnd + InstructionEndTag.Length;
+            }
+            else
+            {
+                end = nextEnd;
+                break;
+            }
+        }
+
+        if (end < 0)
+        {
+            _logger.LogDebug("Instruction tags not found in content");
+            return null;
+        }
+
+        var json = content[contentStart..end].Trim();
 
         try
         {

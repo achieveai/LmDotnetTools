@@ -97,6 +97,36 @@ WeatherToolPill maps each to an emoji. Send this prompt repeatedly to see differ
 
 ---
 
+## Sub-Agent Delegation (Nested Instruction Chains)
+
+Drive the full parent → `Agent` tool → sub-agent flow from a SINGLE pasted message. The parent's
+chain calls the `Agent` tool, and the `prompt` argument is itself a complete instruction chain that
+drives the sub-agent. The sub-agent here calls `calculate`, then replies `hi from agent` — which
+comes back as the `Agent` tool result.
+
+Requires `test` or `test-anthropic` mode and a chat mode where `calculate` and the `Agent` tool are
+available (e.g. **General Assistant** — the sub-agent inherits the parent's tools). Built-in
+sub-agent types: `general-purpose`, `researcher`.
+
+**Escaping rule (important):** the inner chain's `<|instruction_start|>` / `<|instruction_end|>`
+tags stay **literal**; only the inner JSON **quotes** are escaped as `\"`. The parser matches tags
+by depth, so the inner `<|instruction_end|>` no longer truncates the outer chain.
+
+Parent delegates → sub-agent uses one tool then replies "hi from agent" → parent wraps up:
+<|instruction_start|>{"instruction_chain":[{"id":"parent","id_message":"Delegate to sub-agent","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"sub-tool\",\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":2,\"operation\":\"add\",\"b\":3}}]}]},{\"id\":\"sub-text\",\"messages\":[{\"text\":\"hi from agent\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent2","id_message":"Wrap up","messages":[{"text":"Parent done: sub-agent finished."}]}]}<|instruction_end|>
+
+Expected UI:
+1. An `Agent` tool-call pill. Expand it — **Arguments** shows the nested chain, **Result** shows
+   `hi from agent` (the sub-agent's reply, returned synchronously as the tool result).
+2. Final assistant text: `Parent done: sub-agent finished.`
+
+The sub-agent's own `calculate` call runs inside the sub-agent and is not streamed to the parent
+chat; the `hi from agent` result is the proof it executed the nested chain end to end.
+
+Nested-tag handling lives in `src/LmTestUtils/TestMode/InstructionChainParser.cs`.
+
+---
+
 ## Mode Filtering Test Prompts
 
 Use these to verify that modes correctly restrict available tools.
@@ -175,6 +205,74 @@ Expected tool lists per mode:
 - General Assistant: calculate, get_weather, web_search
 - Math Helper: calculate
 - Weather Assistant: get_weather
+
+---
+
+## Tool Description & Parameter Verification
+
+`tools_list` returns only tool *names*. To inspect what a tool actually does and what
+arguments it takes, use `tools_echo` (names + descriptions) or `tool_schema` (a single
+tool's description **and** full parameter schema).
+
+### Echo All Tool Descriptions (`tools_echo`)
+
+Returns the name AND description of every visible tool (no parameter schema):
+<|instruction_start|>{"instruction_chain":[{"id":"tools-echo","id_message":"Echoing tool descriptions","messages":[{"tools_echo":{}}]}]}<|instruction_end|>
+
+### Tool Schema — Description + Parameters (`tool_schema`)
+
+Returns a single named tool's description and its parameter schema, rendered as Markdown
+(`# name` / `## Description` / `## Schema` with an indented JSON block):
+<|instruction_start|>{"instruction_chain":[{"id":"tool-schema-calc","id_message":"Calculate tool schema","messages":[{"tool_schema":{"name":"calculate"}}]}]}<|instruction_end|>
+
+Weather tool schema:
+<|instruction_start|>{"instruction_chain":[{"id":"tool-schema-weather","id_message":"Weather tool schema","messages":[{"tool_schema":{"name":"get_weather"}}]}]}<|instruction_end|>
+
+Unknown tool name (returns a "not found" message):
+<|instruction_start|>{"instruction_chain":[{"id":"tool-schema-missing","id_message":"Missing tool schema","messages":[{"tool_schema":{"name":"does_not_exist"}}]}]}<|instruction_end|>
+
+Example output for `tool_schema` with `"name":"calculate"`:
+```
+# calculate
+
+## Description
+
+Perform basic arithmetic operations: add, subtract, multiply, divide
+
+## Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "a": { "type": "number", "description": "First number" },
+    "operation": { "type": "string", "description": "Operation: 'add', 'subtract', 'multiply', or 'divide'" },
+    "b": { "type": "number", "description": "Second number" }
+  },
+  "required": ["a", "operation", "b"]
+}
+```
+```
+
+Note: `tool_schema` and `tools_echo` resolve in the `test` (OpenAI) and `test-anthropic`
+modes. The `codex` (OpenAI Responses) mock path supports `tools_list` and `system_prompt_echo`
+but does **not** resolve `tool_schema` or `tools_echo`.
+
+---
+
+## Request Metadata Verification
+
+Echo the outbound request details the mock handler received. Useful for confirming routing,
+headers, and request parameters.
+
+Request URL:
+<|instruction_start|>{"instruction_chain":[{"id":"req-url","id_message":"Echo request URL","messages":[{"request_url_echo":{}}]}]}<|instruction_end|>
+
+Request headers:
+<|instruction_start|>{"instruction_chain":[{"id":"req-headers","id_message":"Echo request headers","messages":[{"request_headers_echo":{}}]}]}<|instruction_end|>
+
+Selected request body params (omit `fields` to echo all):
+<|instruction_start|>{"instruction_chain":[{"id":"req-params","id_message":"Echo request params","messages":[{"request_params_echo":{"fields":["model","max_tokens"]}}]}]}<|instruction_end|>
 
 ---
 

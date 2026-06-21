@@ -25,6 +25,9 @@
     <PackageReference Include="Serilog.Exceptions" Version="8.4.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Prompts.yaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
   <PropertyGroup>
     <!-- Opt-in build of the Vue SPA during `dotnet build`. Disabled by default so everyday
          backend builds stay fast; CI and Browser E2E tests set this to true. -->
