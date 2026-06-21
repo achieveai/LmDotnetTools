@@ -58,6 +58,39 @@ public class InstructionChainParserTests
     }
 
     [Fact]
+    public void ExtractInstructionChain_WithNestedChainInToolArgs_ShouldNotTruncateAtInnerEndTag()
+    {
+        // A parent chain whose Agent tool-call carries a *nested* instruction chain inside its
+        // `prompt` argument (the sub-agent's own directive). A naive "first end tag" match would
+        // stop at the inner <|instruction_end|> and truncate the outer JSON, returning null.
+        // The depth-aware scan must select the OUTER closing tag and parse the parent intact.
+        const string innerChain =
+            """<|instruction_start|>{"instruction_chain":[{"id":"sub-tool","messages":[{"tool_call":[{"name":"calculate","args":{"a":2,"operation":"add","b":3}}]}]},{"id":"sub-text","messages":[{"text":"hi from agent"}]}]}<|instruction_end|>""";
+
+        // Embed the inner chain as a JSON string value with ONLY its quotes escaped — the
+        // <|instruction_start|>/<|instruction_end|> tags stay LITERAL, exactly as a user types
+        // them. This is the real nesting case (literal inner end tag before the outer end tag).
+        var escapedInner = innerChain.Replace("\"", "\\\"", StringComparison.Ordinal);
+        var content =
+            "<|instruction_start|>{\"instruction_chain\":[{\"id\":\"parent\",\"messages\":[{\"tool_call\":[{\"name\":\"Agent\",\"args\":{\"subagent_type\":\"general-purpose\",\"prompt\":\""
+            + escapedInner
+            + "\"}}]}]}]}<|instruction_end|>";
+
+        // Act
+        var result = _parser.ExtractInstructionChain(content);
+
+        // Assert — the parent parsed (not truncated to null) and its tool call preserved the
+        // full nested chain verbatim so the sub-agent can later parse it.
+        Assert.NotNull(result);
+        Assert.Single(result);
+        var toolCalls = result[0].Messages[0].ToolCalls;
+        Assert.NotNull(toolCalls);
+        Assert.Equal("Agent", toolCalls![0].Name);
+        Assert.Contains("<|instruction_start|>", toolCalls[0].ArgsJson);
+        Assert.Contains("hi from agent", toolCalls[0].ArgsJson);
+    }
+
+    [Fact]
     public void ExtractInstructionChain_WithReasoningAndTextMessage_ShouldParseSuccessfully()
     {
         // Arrange
