@@ -1393,38 +1393,7 @@ public partial class Program
         WorkspaceSubAgentLoader workspaceLoader,
         Microsoft.Extensions.Logging.ILogger logger)
     {
-        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
-        {
-            ["general-purpose"] = new SubAgentTemplate
-            {
-                Name = "General-purpose agent",
-                Description = "Autonomous worker for multi-step tasks: research, search, and follow-through.",
-                WhenToUse =
-                    "Delegate self-contained tasks that need several tool calls or focused investigation "
-                    + "so the parent context stays clean. Not for trivial one-shot answers.",
-                SystemPrompt =
-                    "You are a general-purpose sub-agent working on behalf of a parent agent. "
-                    + "Complete the delegated task end to end using the tools available to you, then "
-                    + "return a concise final answer that fully captures your findings — the parent only "
-                    + "sees your final message, not your intermediate steps.",
-                AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
-            },
-            ["researcher"] = new SubAgentTemplate
-            {
-                Name = "Researcher",
-                Description = "Focused investigator that gathers information and summarizes findings.",
-                WhenToUse =
-                    "Delegate open-ended investigation across sources when you need a distilled summary "
-                    + "rather than raw results. Prefer general-purpose for tasks that also mutate state.",
-                SystemPrompt =
-                    "You are a research sub-agent. Investigate the delegated question thoroughly using the "
-                    + "tools available to you, cross-check what you find, and return a clear, well-structured "
-                    + "summary. The parent only sees your final message, so make it self-contained.",
-                AgentFactory = providerAgentFactory,
-                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
-            },
-        };
+        var templates = BuiltInSubAgentTemplates.Create(providerAgentFactory);
 
         // When a sandbox session is available, merge in any sub-agents the gateway has
         // discovered in the workspace. Collision policy: BUILT-IN WINS — a discovered template
@@ -1440,7 +1409,11 @@ public partial class Program
             WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
         }
 
-        return new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = 5 };
+        return new SubAgentOptions
+        {
+            Templates = templates,
+            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+        };
     }
 
     /// <summary>

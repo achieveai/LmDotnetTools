@@ -6,8 +6,9 @@ namespace LmStreaming.Sample.Services;
 
 /// <summary>
 /// Default <see cref="ITestAgentBuilder"/> implementation used when no test override is registered.
-/// Preserves the historical inline handler construction (3 words/chunk, 300 ms delay) and never
-/// provides sub-agent options, so production wiring is identical to pre-refactor behavior.
+/// Preserves the historical inline handler construction (3 words/chunk, 300 ms delay) and exposes
+/// the shared built-in sub-agent catalog so the test providers (<c>test</c> / <c>test-anthropic</c>)
+/// register the <c>Agent</c> sub-agent tool exactly like the real middleware providers.
 /// </summary>
 internal sealed class DefaultTestAgentBuilder : ITestAgentBuilder
 {
@@ -35,6 +36,10 @@ internal sealed class DefaultTestAgentBuilder : ITestAgentBuilder
         ILoggerFactory loggerFactory,
         Func<IStreamingAgent> providerAgentFactory)
     {
-        return null;
+        return new SubAgentOptions
+        {
+            Templates = BuiltInSubAgentTemplates.Create(providerAgentFactory),
+            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+        };
     }
 }
