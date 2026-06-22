@@ -79,6 +79,17 @@ public sealed class MarketplaceSubAgentLoader
                 "Marketplace catalog unavailable; continuing without marketplace sub-agents.");
             return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
         }
+        catch (Exception ex)
+        {
+            // Defensive backstop matching WorkspaceSubAgentLoader: the catalog client should only
+            // surface MarketplaceCatalogUnavailableException, but an unexpected failure (e.g. an
+            // ObjectDisposedException during shutdown, or a non-cancellation HttpRequestException)
+            // must NOT abort agent creation — enrichment is best-effort.
+            _logger.LogWarning(
+                ex,
+                "Unexpected error fetching marketplace catalog; continuing without marketplace sub-agents.");
+            return new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
+        }
 
         return MapCatalog(catalog, agentFactory, _logger);
     }

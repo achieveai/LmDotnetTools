@@ -1464,21 +1464,39 @@ public partial class Program
         IWorkspaceStore workspaceStore,
         Microsoft.Extensions.Logging.ILogger logger)
     {
-        var discovered = await workspaceLoader
-            .LoadAsync(sandboxSession, providerAgentFactory)
+        // Workspace file-discovery and the marketplace catalog are independent gateway round-trips.
+        // Fetch them concurrently so the (sync-over-async) blocking window is one round-trip, not two.
+        // Both loaders are best-effort (log + return empty on failure), so neither task faults; the
+        // dictionary is mutated only AFTER both complete, so the in-order merge stays single-threaded.
+        var discoveredTask = workspaceLoader.LoadAsync(sandboxSession, providerAgentFactory);
+        var marketplaceTask = LoadMarketplaceSubAgentsAsync(
+            marketplaceLoader, workspaceStore, sandboxSession.WorkspaceId, providerAgentFactory, logger);
+
+        await Task.WhenAll(discoveredTask, marketplaceTask).ConfigureAwait(false);
+
+        // Merge in precedence order: built-in (already present) > workspace file > marketplace.
+        WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discoveredTask.Result, logger);
+        MarketplaceSubAgentLoader.MergeFillGaps(templates, marketplaceTask.Result, logger);
+    }
+
+    /// <summary>
+    /// Resolves the workspace's enabled marketplaces and loads their catalog agents as one awaitable,
+    /// so it can run concurrently with workspace file-discovery in
+    /// <see cref="EnrichWithWorkspaceCatalogAsync"/>. Best-effort throughout.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadMarketplaceSubAgentsAsync(
+        MarketplaceSubAgentLoader marketplaceLoader,
+        IWorkspaceStore workspaceStore,
+        string workspaceId,
+        Func<IStreamingAgent> providerAgentFactory,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        var marketplaces = await ResolveWorkspaceMarketplacesAsync(workspaceStore, workspaceId, logger)
             .ConfigureAwait(false);
 
-        WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
-
-        var marketplaces = await ResolveWorkspaceMarketplacesAsync(
-                workspaceStore, sandboxSession.WorkspaceId, logger)
-            .ConfigureAwait(false);
-
-        var fromMarketplace = await marketplaceLoader
+        return await marketplaceLoader
             .LoadAsync(marketplaces, providerAgentFactory)
             .ConfigureAwait(false);
-
-        MarketplaceSubAgentLoader.MergeFillGaps(templates, fromMarketplace, logger);
     }
 
     /// <summary>
