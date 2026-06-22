@@ -117,7 +117,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 parentHandlers: handlers,
                 options: subAgentOptions,
                 source: source,
-                logger: logger);
+                logger: logger,
+                // Sub-agents whose template/override sets no model inherit the parent's model, so a
+                // built-in template doesn't fall back to the provider's stale hardcoded default.
+                parentModelId: DefaultOptions.ModelId);
 
             var toolProvider = new SubAgentToolProvider(
                 _subAgentManager,

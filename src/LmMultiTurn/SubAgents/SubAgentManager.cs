@@ -19,6 +19,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
+    private readonly string? _parentModelId;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
@@ -35,7 +36,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         IDictionary<string, ToolHandler> parentHandlers,
         SubAgentOptions options,
         MutableSubAgentTemplateSource source,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string? parentModelId = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -49,6 +51,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         _options = options;
         _source = source;
         _logger = logger ?? NullLogger.Instance;
+        // The parent's model, inherited by sub-agents whose template/override sets none (see
+        // ResolveSubAgentOptions). Null when the parent has no model (e.g. CLI-backed parents).
+        _parentModelId = parentModelId;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -448,10 +453,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         var providerAgent = template.AgentFactory();
 
-        // Apply the per-spawn model override (if any) on top of the template defaults.
-        var defaultOptions = string.IsNullOrWhiteSpace(modelOverride)
-            ? template.DefaultOptions
-            : (template.DefaultOptions ?? new GenerateReplyOptions()) with { ModelId = modelOverride };
+        // Resolve the sub-agent's options with model inheritance (override > template > parent).
+        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId);
 
         // Determine conversation store
         var storeFactory =
@@ -488,6 +491,34 @@ public sealed class SubAgentManager : IAsyncDisposable
             maxTurnsPerRun: template.MaxTurnsPerRun,
             store: store,
             logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger));
+    }
+
+    /// <summary>
+    /// Resolves the sub-agent's <see cref="GenerateReplyOptions"/> with model inheritance: an explicit
+    /// per-spawn <paramref name="modelOverride"/> wins, else the template's own
+    /// <see cref="GenerateReplyOptions.ModelId"/>, else the PARENT agent's model
+    /// (<paramref name="parentModelId"/>). The parent fallback stops a template that sets no model
+    /// (e.g. the built-in sub-agents) from letting the provider agent use its hardcoded default model,
+    /// which often isn't valid on the parent's backend (observed: a sub-agent sending
+    /// <c>claude-3-sonnet-20240229</c> to a backend that only serves the parent's model → HTTP 400
+    /// <c>model_not_supported</c>). Any other template option fields are preserved. Returns null only
+    /// when no model is available anywhere AND the template carried no options, so the previous
+    /// "inherit the provider's own defaults" behavior is unchanged when there is genuinely nothing to set.
+    /// </summary>
+    internal static GenerateReplyOptions? ResolveSubAgentOptions(
+        GenerateReplyOptions? templateDefaults,
+        string? modelOverride,
+        string? parentModelId)
+    {
+        var model = !string.IsNullOrWhiteSpace(modelOverride)
+            ? modelOverride
+            : !string.IsNullOrWhiteSpace(templateDefaults?.ModelId)
+                ? templateDefaults!.ModelId
+                : parentModelId;
+
+        return string.IsNullOrWhiteSpace(model)
+            ? templateDefaults
+            : (templateDefaults ?? new GenerateReplyOptions()) with { ModelId = model };
     }
 
     /// <summary>
