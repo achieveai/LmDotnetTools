@@ -510,10 +510,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? modelOverride,
         string? parentModelId)
     {
+        var templateModel = templateDefaults?.ModelId;
         var model = !string.IsNullOrWhiteSpace(modelOverride)
             ? modelOverride
-            : !string.IsNullOrWhiteSpace(templateDefaults?.ModelId)
-                ? templateDefaults!.ModelId
+            : !string.IsNullOrWhiteSpace(templateModel)
+                ? templateModel
                 : parentModelId;
 
         return string.IsNullOrWhiteSpace(model)
