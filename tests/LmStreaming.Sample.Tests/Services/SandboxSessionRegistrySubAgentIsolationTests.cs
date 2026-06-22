@@ -1,6 +1,5 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Auth;
@@ -60,7 +59,7 @@ public class SandboxSessionRegistrySubAgentIsolationTests
 
         // Probe what B's LLM would actually see: the Agent tool description (the catalog the
         // tools_echo probe surfaces) must not mention A's discovered sub-agent.
-        var agentDescriptionForB = RenderAgentToolDescription(bindingB.Source);
+        var agentDescriptionForB = SubAgentToolDescriptionProbe.Render(bindingB.Source);
         agentDescriptionForB.Should().Contain("researcher");
         agentDescriptionForB.Should().NotContain(
             "alpha_discovered",
@@ -117,34 +116,6 @@ public class SandboxSessionRegistrySubAgentIsolationTests
             .Should().BeFalse("a torn-down conversation's binding must be freed, not retained for the process lifetime");
         binding.Should().BeNull();
         registry.GetSubAgentBindingsForSession(SessionId).Should().BeEmpty();
-    }
-
-    /// <summary>
-    /// Renders the Agent tool's description exactly as the parent LLM would receive it, so the
-    /// assertion probes the real catalog text (the same string the <c>tools_echo</c> mock-LLM
-    /// primitive echoes), not just the backing dictionary.
-    /// </summary>
-    private static string RenderAgentToolDescription(MutableSubAgentTemplateSource source)
-    {
-        var parentMock = new Mock<IMultiTurnAgent>();
-        parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new SendReceipt("receipt", null, DateTimeOffset.UtcNow));
-
-        var manager = new SubAgentManager(
-            parentAgent: parentMock.Object,
-            parentContracts: [],
-            parentHandlers: new Dictionary<string, ToolHandler>(),
-            options: new SubAgentOptions { Templates = source.Templates, MaxConcurrentSubAgents = 5 },
-            source: source);
-
-        var provider = new SubAgentToolProvider(manager, source);
-        var agent = provider.GetFunctions().First(f => f.Contract.Name == "Agent");
-        return agent.Contract.Description ?? string.Empty;
     }
 
     private static SubAgentTemplate Template(string name, string description) =>

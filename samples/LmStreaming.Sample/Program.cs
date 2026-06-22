@@ -229,6 +229,11 @@ try
     // them into SubAgentTemplate so they show up as spawnable types in the Agent tool catalog.
     _ = builder.Services.AddSingleton<WorkspaceSubAgentLoader>();
 
+    // Marketplace sub-agent bridge. Maps the agents the UI's marketplace browser lists (the
+    // gateway's read-only catalog) into spawnable templates, filling any gap left by workspace
+    // file-discovery so a browsable marketplace agent is also a usable Agent tool subagent_type.
+    _ = builder.Services.AddSingleton<MarketplaceSubAgentLoader>();
+
     // Sandbox context-file (CLAUDE.md / AGENTS.md) injection. The formatter owns the
     // <context-discovery> wrapper tag shared by the boot-time system prompt and the mid-session
     // user-turn injection; the injector wires gateway webhook deliveries into every live agent
@@ -678,9 +683,13 @@ try
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
                     // path — the CLI providers (codex/claude/copilot and their *-mock variants)
-                    // returned earlier and have no sub-agent hook, so they are out of scope. Test
-                    // modes go through the ITestAgentBuilder DI seam (scripted templates for E2E);
-                    // the real providers get the production template catalog. In both cases the
+                    // returned earlier and have no sub-agent hook, so they are out of scope. Mock
+                    // providers (test/test-anthropic) go through the ITestAgentBuilder DI seam for
+                    // their base catalog (scripted templates for E2E); real providers start from the
+                    // shared built-ins. BOTH then get the same workspace + marketplace enrichment when
+                    // a sandbox session is active, so the Agent tool advertises an identical catalog
+                    // regardless of provider — and the mock-only instruction-chain tool_schema probe
+                    // can validate the workspace-discovered/marketplace sub-agents. In all cases the
                     // template AgentFactory reuses agentFactory(normalizedProviderId) so each spawn
                     // builds a FRESH provider agent on the same backend as the parent.
                     var isTestMode =
@@ -690,18 +699,20 @@ try
                     // seam exposed by the pool's agent factory contract, and this runs on the
                     // pool-creation path (no ASP.NET SynchronizationContext) so a .Result here
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
-                    // active; otherwise BuildProductionSubAgentOptionsAsync returns synchronously.
+                    // active; otherwise it completes synchronously.
                     Func<IStreamingAgent> subAgentFactory = () => agentFactory(normalizedProviderId);
-                    var subAgentOptions = isTestMode
-                        ? sp.GetRequiredService<ITestAgentBuilder>()
-                            .CreateSubAgentOptions(loggerFactory, subAgentFactory)
-                        : BuildProductionSubAgentOptionsAsync(
-                                subAgentFactory,
-                                sandboxSession,
-                                sp.GetRequiredService<WorkspaceSubAgentLoader>(),
-                                loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
-                            .GetAwaiter()
-                            .GetResult();
+                    var subAgentOptions = BuildSubAgentOptionsAsync(
+                            isTestMode,
+                            sp.GetRequiredService<ITestAgentBuilder>(),
+                            loggerFactory,
+                            subAgentFactory,
+                            sandboxSession,
+                            sp.GetRequiredService<WorkspaceSubAgentLoader>(),
+                            sp.GetRequiredService<MarketplaceSubAgentLoader>(),
+                            sp.GetRequiredService<IWorkspaceStore>(),
+                            loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
+                        .GetAwaiter()
+                        .GetResult();
 
                     // When a sandbox session is active, share the catalog with the session
                     // registry so the context-discovery webhook can activate newly discovered
@@ -1380,40 +1391,120 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Builds the production sub-agent orchestration options for the real middleware
-    ///     providers (OpenAI / Anthropic / Copilot-backed). Each template reuses the parent's
-    ///     provider via <paramref name="providerAgentFactory"/> — invoked per spawn so every
-    ///     sub-agent gets a FRESH provider agent on the same backend — and carries its own
-    ///     system prompt and turn budget. The CLI providers (codex/claude/copilot) have no
-    ///     sub-agent hook and are out of scope, so this is only called from the middleware path.
+    ///     Builds the sub-agent orchestration options for a chat agent, used by BOTH the real
+    ///     middleware providers (OpenAI / Anthropic / Copilot-backed) AND the mock providers
+    ///     (<c>test</c> / <c>test-anthropic</c>). The base catalog differs by provider kind — mock
+    ///     providers go through the <see cref="ITestAgentBuilder"/> seam (built-ins by default, or
+    ///     scripted templates injected by E2E); real providers start from the shared built-ins — but
+    ///     the workspace enrichment is identical for both, so the <c>Agent</c> tool advertises the
+    ///     same workspace + marketplace catalog regardless of provider. That parity is what lets the
+    ///     instruction-chain <c>tools_echo</c> / <c>tool_schema</c> probe (mock-only) validate the
+    ///     workspace-discovered and marketplace sub-agents. Each template reuses
+    ///     <paramref name="providerAgentFactory"/> — invoked per spawn so every sub-agent gets a
+    ///     FRESH provider agent on the same backend as the parent.
     /// </summary>
-    private static async Task<SubAgentOptions> BuildProductionSubAgentOptionsAsync(
+    private static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
+        bool isTestMode,
+        ITestAgentBuilder testAgentBuilder,
+        ILoggerFactory loggerFactory,
         Func<IStreamingAgent> providerAgentFactory,
         SandboxSession? sandboxSession,
         WorkspaceSubAgentLoader workspaceLoader,
+        MarketplaceSubAgentLoader marketplaceLoader,
+        IWorkspaceStore workspaceStore,
         Microsoft.Extensions.Logging.ILogger logger)
     {
-        var templates = BuiltInSubAgentTemplates.Create(providerAgentFactory);
+        // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
+        // or scripted templates an E2E test injected); real providers start from the shared built-ins.
+        var baseOptions = isTestMode
+            ? testAgentBuilder.CreateSubAgentOptions(loggerFactory, providerAgentFactory)
+            : new SubAgentOptions
+            {
+                Templates = BuiltInSubAgentTemplates.Create(providerAgentFactory),
+                MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+            };
 
-        // When a sandbox session is available, merge in any sub-agents the gateway has
-        // discovered in the workspace. Collision policy: BUILT-IN WINS — a discovered template
-        // cannot shadow one of the hardcoded entries above. Failures inside the loader are
-        // already logged and surfaced as an empty dictionary, so this call cannot throw and
-        // never aborts the agent-creation path.
-        if (sandboxSession is not null)
+        // No sandbox session (e.g. a non-workspace chat, or an E2E scenario with no gateway) means
+        // nothing to discover — keep the base catalog exactly as-is so injected E2E templates and the
+        // plain built-in surface are untouched.
+        if (baseOptions is null || sandboxSession is null)
         {
-            var discovered = await workspaceLoader
-                .LoadAsync(sandboxSession, providerAgentFactory)
-                .ConfigureAwait(false);
-
-            WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
+            return baseOptions;
         }
 
-        return new SubAgentOptions
+        var templates = new Dictionary<string, SubAgentTemplate>(baseOptions.Templates, StringComparer.Ordinal);
+        await EnrichWithWorkspaceCatalogAsync(
+                templates, providerAgentFactory, sandboxSession, workspaceLoader, marketplaceLoader, workspaceStore, logger)
+            .ConfigureAwait(false);
+
+        return baseOptions with { Templates = templates };
+    }
+
+    /// <summary>
+    ///     Layers workspace-discovered and marketplace sub-agents onto a base catalog
+    ///     <paramref name="templates"/> in three tiers of decreasing trust/richness, each only
+    ///     filling keys the prior tier left open:
+    ///     <list type="number">
+    ///       <item>Base catalog (built-ins / scripted) — already present, always wins.</item>
+    ///       <item>Workspace-discovered files — the gateway found a real agent markdown in the
+    ///         workspace; it carries the agent's full instruction body. The base catalog still wins.</item>
+    ///       <item>Marketplace catalog — agents the UI's marketplace browser lists but that were never
+    ///         materialised as workspace files. Best-effort prompt only, so they FILL GAPS left by the
+    ///         tiers above. This is what makes a browsable marketplace agent a spawnable subagent_type.</item>
+    ///     </list>
+    ///     Every loader is best-effort (logs + returns empty on failure), so none of this can throw or
+    ///     abort agent creation.
+    /// </summary>
+    private static async Task EnrichWithWorkspaceCatalogAsync(
+        IDictionary<string, SubAgentTemplate> templates,
+        Func<IStreamingAgent> providerAgentFactory,
+        SandboxSession sandboxSession,
+        WorkspaceSubAgentLoader workspaceLoader,
+        MarketplaceSubAgentLoader marketplaceLoader,
+        IWorkspaceStore workspaceStore,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        var discovered = await workspaceLoader
+            .LoadAsync(sandboxSession, providerAgentFactory)
+            .ConfigureAwait(false);
+
+        WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discovered, logger);
+
+        var marketplaces = await ResolveWorkspaceMarketplacesAsync(
+                workspaceStore, sandboxSession.WorkspaceId, logger)
+            .ConfigureAwait(false);
+
+        var fromMarketplace = await marketplaceLoader
+            .LoadAsync(marketplaces, providerAgentFactory)
+            .ConfigureAwait(false);
+
+        MarketplaceSubAgentLoader.MergeFillGaps(templates, fromMarketplace, logger);
+    }
+
+    /// <summary>
+    /// Resolves the marketplace aliases enabled for <paramref name="workspaceId"/> so the marketplace
+    /// sub-agent bridge only exposes agents from marketplaces this workspace actually enabled. Returns
+    /// null (gateway default set) when the workspace is unknown or enables none, and never throws —
+    /// catalog enrichment is best-effort.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>?> ResolveWorkspaceMarketplacesAsync(
+        IWorkspaceStore workspaceStore,
+        string workspaceId,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        try
         {
-            Templates = templates,
-            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
-        };
+            var workspace = await workspaceStore.GetAsync(workspaceId).ConfigureAwait(false);
+            return workspace?.Marketplaces is { Count: > 0 } selected ? selected : null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to resolve marketplaces for workspace {WorkspaceId}; using the gateway default set.",
+                workspaceId);
+            return null;
+        }
     }
 
     /// <summary>
