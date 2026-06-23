@@ -1,3 +1,6 @@
 {
-    "vitest.disableWorkspaceWarning": true
+    "vitest.disableWorkspaceWarning": true,
+    "dotrush.roslyn.projectOrSolutionFiles": [
+        "${workspaceFolder}/LmDotnetTools.sln"
+    ]
 }
