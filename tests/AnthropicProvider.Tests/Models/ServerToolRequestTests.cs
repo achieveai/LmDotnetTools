@@ -245,6 +245,80 @@ public class ServerToolRequestTests
     }
 
     [Fact]
+    public void FromMessages_WithEmptyIdServerToolResult_DropsItFromRequest()
+    {
+        // Regression (Kimi 400 "tool_call_id  is not found"): the empty-id server_tool_use that an
+        // Anthropic-compatible provider omits the id for is dropped on replay. Its matching
+        // server-tool RESULT lands in history as a singular ToolCallResultMessage with the same
+        // empty id. Without a guard it survives as an orphan tool_result whose tool_use_id is blank,
+        // which is rejected on replay just like the orphan call. The empty-id result must be dropped
+        // while the valid call+result survive.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Search the web." },
+            // The finalized call with a real (synthetic) id.
+            new ToolCallMessage
+            {
+                ToolCallId = "srvtoolu_synth_1_abc",
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"news"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // Empty-id orphan result (the matching result for the dropped empty-id preview call).
+            new ToolCallResultMessage
+            {
+                ToolCallId = "",
+                ToolName = "web_search",
+                Result = "[]",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // The finalized result with the real id.
+            new ToolCallResultMessage
+            {
+                ToolCallId = "srvtoolu_synth_1_abc",
+                ToolName = "web_search",
+                Result = "[]",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new TextMessage { Role = Role.User, Text = "Thanks." },
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            BuiltInTools = [new AnthropicWebSearchTool()],
+        };
+
+        var request = AnthropicRequest.FromMessages(messages, options);
+        var json = JsonSerializer.Serialize(request, _jsonOptions);
+        var doc = JsonDocument.Parse(json);
+
+        var toolResultIds = new List<string?>();
+        foreach (var msg in doc.RootElement.GetProperty("messages").EnumerateArray())
+        {
+            if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.TryGetProperty("type", out var t) && t.GetString() == "tool_result")
+                {
+                    toolResultIds.Add(block.TryGetProperty("tool_use_id", out var id) ? id.GetString() : null);
+                }
+            }
+        }
+
+        // Exactly the finalized result survives — no empty/blank tool_use_id ever reaches the wire.
+        Assert.Equal(new[] { "srvtoolu_synth_1_abc" }, toolResultIds);
+        Assert.DoesNotContain(toolResultIds, string.IsNullOrWhiteSpace);
+    }
+
+    [Fact]
     public void FromMessages_FullKimiLikeFlow_ProducesCorrectMergedWireJson()
     {
         // Full IMessage sequence: User text, Assistant text + ToolCallMessage (server),
