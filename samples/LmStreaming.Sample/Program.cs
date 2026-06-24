@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
@@ -709,11 +710,17 @@ try
                         ? allBuiltInTools
                         : ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
 
-                    // Enable extended thinking for Anthropic-compatible providers
+                    // Surface model reasoning. Anthropic-format providers (incl. the Copilot-backed
+                    // sonnet/haiku — the Copilot proxy accepts the thinking parameter, verified by
+                    // CopilotAnthropicLiveTests.Thinking_param_is_accepted_by_copilot_backend) get
+                    // extended thinking; the OpenAI Responses providers (gpt-5.5/gpt-5.5-mini) get a
+                    // reasoning summary. Without this, Copilot-backed models returned no thinking blocks.
                     var extraProperties = ImmutableDictionary<string, object?>.Empty;
                     if (
                         string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "sonnet", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "haiku", StringComparison.Ordinal)
                     )
                     {
                         var budgetTokens = int.TryParse(
@@ -723,6 +730,16 @@ try
                             ? parsed
                             : 2048;
                         extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
+                    }
+                    else if (
+                        string.Equals(normalizedProviderId, "gpt-5.5", StringComparison.Ordinal)
+                        || string.Equals(normalizedProviderId, "gpt-5.5-mini", StringComparison.Ordinal)
+                    )
+                    {
+                        extraProperties = extraProperties.Add(
+                            "Reasoning",
+                            new ResponseReasoningOptions { Summary = "auto" }
+                        );
                     }
 
                     // Sub-agent orchestration options. Only the middleware providers reach this

@@ -147,6 +147,54 @@ public sealed class CopilotAnthropicLiveTests
         exception!.Message.Should().MatchRegex("(?i)web search.*not supported|not supported.*web search|unsupported");
     }
 
+    /// <summary>
+    ///     Canary: does the GitHub Copilot proxy ACCEPT the Anthropic extended-thinking parameter?
+    ///     Copilot rejects some Anthropic features (see the web_search canary), so before enabling
+    ///     extended thinking for the Copilot-backed sonnet/haiku providers in LmStreaming.Sample we
+    ///     must confirm the backend honors it rather than 400-ing every request. This test sends a
+    ///     normal turn WITH a <c>Thinking</c> budget and asserts the request succeeds and returns
+    ///     assistant text. If Copilot ever starts REJECTING thinking, this test fails — the signal to
+    ///     gate thinking off for sonnet/haiku (the same way web_search is gated off).
+    /// </summary>
+    [SkippableFact]
+    public async Task Thinking_param_is_accepted_by_copilot_backend()
+    {
+        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var cancellationToken = cts.Token;
+
+        var model = await _fixture.ResolveAnthropicModelAsync(cancellationToken);
+        _output.WriteLine($"Anthropic model: {model}");
+
+        var agent = CopilotAnthropicAgentFactory.Create(
+            "copilot-anthropic-thinking",
+            _fixture.TokenProvider,
+            _fixture.Session,
+            _fixture.Options
+        );
+
+        // Extended thinking requires temperature == 1 and max_tokens > thinking budget.
+        var reply = await agent.GenerateReplyAsync(
+            [new TextMessage { Role = Role.User, Text = "Think step by step, then answer: what is 17 * 23?" }],
+            new GenerateReplyOptions
+            {
+                ModelId = model,
+                MaxToken = 4096,
+                Temperature = 1,
+                ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty.Add(
+                    "Thinking",
+                    new AnthropicThinking(1024)
+                ),
+            },
+            cancellationToken
+        );
+
+        var text = ExtractText(reply);
+        var thinking = reply.OfType<TextMessage>().Any(m => m.IsThinking);
+        _output.WriteLine($"Accepted. thinkingPresent={thinking} reply={text}");
+        text.Should().NotBeNullOrWhiteSpace("Copilot should accept the Anthropic thinking parameter and still answer");
+    }
+
     private static string ExtractText(IEnumerable<IMessage> messages)
     {
         var builder = new StringBuilder();
