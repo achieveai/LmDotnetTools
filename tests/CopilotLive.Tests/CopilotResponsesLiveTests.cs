@@ -2,6 +2,7 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
 using Xunit.Abstractions;
 
@@ -120,6 +121,71 @@ public sealed class CopilotResponsesLiveTests
         var text = ExtractText(reply);
         _output.WriteLine($"Reply: {text}");
         text.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    ///     Canary: does the Copilot Responses backend RETURN reasoning summaries when asked? Requests
+    ///     reasoning via <c>ExtraProperties["Reasoning"]</c> and checks for reasoning frames. If this
+    ///     passes, the GPT-5.5 thinking pill works end-to-end (request → backend → parser → UI). If it
+    ///     fails with zero reasoning, the Copilot proxy strips reasoning summaries server-side (not
+    ///     fixable client-side) — the signal to document it rather than chase the parser.
+    /// </summary>
+    [SkippableFact]
+    public async Task Reasoning_summary_is_returned_by_copilot_responses_backend()
+    {
+        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var cancellationToken = cts.Token;
+
+        // Reasoning summaries only come from a reasoning-capable model; pin gpt-5.5 (the fixture's
+        // default resolves to a nano model that does not reason).
+        const string model = "gpt-5.5";
+        _output.WriteLine($"OpenAI model: {model}");
+
+        using var agent = CopilotResponsesAgentFactory.Create(
+            "copilot-responses-reasoning",
+            _fixture.TokenProvider,
+            CopilotResponsesTransport.Sse,
+            _fixture.Session,
+            _fixture.Options
+        );
+
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "Think step by step, then answer: what is 17 * 23?" }],
+            new GenerateReplyOptions
+            {
+                ModelId = model,
+                MaxToken = 2048,
+                ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty.Add(
+                    "Reasoning",
+                    new ResponseReasoningOptions { Summary = "auto" }
+                ),
+            },
+            cancellationToken
+        );
+
+        var reasoningUpdates = 0;
+        var finalReasoning = 0;
+        var reasoningText = new StringBuilder();
+        await foreach (var message in stream.WithCancellation(cancellationToken))
+        {
+            if (message is ReasoningUpdateMessage ru)
+            {
+                reasoningUpdates++;
+                _ = reasoningText.Append(ru.Reasoning);
+            }
+            else if (message is ReasoningMessage)
+            {
+                finalReasoning++;
+            }
+        }
+
+        _output.WriteLine(
+            $"reasoningUpdates={reasoningUpdates} finalReasoning={finalReasoning} reasoning=\"{reasoningText}\""
+        );
+        (reasoningUpdates + finalReasoning)
+            .Should()
+            .BeGreaterThan(0, "Copilot Responses should return a reasoning summary when reasoning is requested");
     }
 
     private static string ExtractText(IEnumerable<IMessage> messages)
