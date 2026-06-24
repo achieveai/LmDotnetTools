@@ -384,11 +384,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         int turnNumber,
         CancellationToken ct)
     {
-        // Use defaultOptions as template, override run-specific fields
+        // Use defaultOptions as template, override run-specific fields.
+        // GenerationId carries the run's generation so providers stamp it (via WithIds) onto every
+        // emitted message, overriding any opaque per-message id a provider would otherwise set
+        // (BUG H1). This is the value run_assignment advertises, keeping the client merge key
+        // kind-runId-generationId-messageOrderIdx consistent across the whole run.
         var options = DefaultOptions with
         {
             RunId = runId,
             ThreadId = ThreadId,
+            GenerationId = generationId,
         };
 
         // Build messages list with system prompt prepended (if configured)

@@ -214,11 +214,26 @@ public static class MessageExtensions
     }
 
     /// <summary>
-    ///     Updates the message with run, parent run, and thread IDs from the options.
+    ///     Updates the message with run, parent run, and thread IDs from the options, and — when
+    ///     the run advertises a <see cref="GenerateReplyOptions.GenerationId" /> — overrides the
+    ///     message's GenerationId with the run's.
     /// </summary>
+    /// <remarks>
+    ///     BUG H1 seam. Providers stamp their own GenerationId on each message; reasoning providers
+    ///     (e.g. GPT-5.5 via Copilot/OpenAI) stamp a distinct OPAQUE encrypted response/reasoning
+    ///     token per message, so the values fan out across many ids that the run never advertised.
+    ///     The client merges messages by (kind, runId, generationId, messageOrderIdx); a mismatched
+    ///     generationId silently drops tool calls and results. This is the single provider-agnostic
+    ///     seam every provider already calls to apply run identity, so the run's GenerationId is
+    ///     overridden here — every provider (including Anthropic) benefits with no provider edits.
+    ///     When the run supplies no GenerationId the provider's value is preserved (no behavior
+    ///     change for non-run callers).
+    /// </remarks>
     public static IMessage WithIds(this IMessage message, GenerateReplyOptions? options)
     {
-        return options == null ? message : message.WithIds(options.RunId, options.ParentRunId, options.ThreadId);
+        return options == null
+            ? message
+            : message.WithIds(options.RunId, options.ParentRunId, options.ThreadId, options.GenerationId);
     }
 
     /// <summary>
@@ -226,20 +241,102 @@ public static class MessageExtensions
     /// </summary>
     public static IMessage WithIds(this IMessage message, string? runId, string? parentRunId, string? threadId)
     {
+        return message.WithIds(runId, parentRunId, threadId, generationId: null);
+    }
+
+    /// <summary>
+    ///     Updates the message with run, parent run, and thread IDs, optionally overriding the
+    ///     message's GenerationId with the run's <paramref name="generationId" /> when it is
+    ///     non-empty. See the <see cref="WithIds(IMessage, GenerateReplyOptions?)" /> remarks for
+    ///     why the run's GenerationId must win over the provider's per-message id (BUG H1).
+    /// </summary>
+    public static IMessage WithIds(
+        this IMessage message,
+        string? runId,
+        string? parentRunId,
+        string? threadId,
+        string? generationId
+    )
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        // Preserve the provider's GenerationId unless the run advertises one to stamp.
+        var genId = string.IsNullOrEmpty(generationId) ? message.GenerationId : generationId;
+
         return message switch
         {
-            TextMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            TextUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            TextWithCitationsMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolCallMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolCallUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolCallResultMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolsCallMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolsCallUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ToolsCallResultMessage m => m with { RunId = runId, ThreadId = threadId },
-            ReasoningMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            ReasoningUpdateMessage m => m with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId },
-            UsageMessage m => m with { RunId = runId, ThreadId = threadId },
+            TextMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            TextUpdateMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            TextWithCitationsMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolCallMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolCallUpdateMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolCallResultMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolsCallMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolsCallUpdateMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ToolsCallResultMessage m => m with { RunId = runId, ThreadId = threadId, GenerationId = genId },
+            ReasoningMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            ReasoningUpdateMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
+            UsageMessage m => m with { RunId = runId, ThreadId = threadId, GenerationId = genId },
             _ => message,
         };
     }
