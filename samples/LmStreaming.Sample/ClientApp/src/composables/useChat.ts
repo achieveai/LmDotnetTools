@@ -854,13 +854,21 @@ export function useChat(options: UseChatOptions = {}) {
   ): Promise<void> {
     const effectiveThreadId = getOrCreateThreadId();
     
-    // Check if we have an open connection
-    if (wsConnection && wsConnection.isConnected && wsConnection.socket.readyState === WebSocket.OPEN) {
-      log.info('Reusing existing WebSocket connection', { 
+    // Check if we have an open connection that belongs to the current thread.
+    // A socket bound to a previously-viewed conversation must not be reused for a
+    // different thread (e.g. after switching conversations); close it and fall
+    // through to create a fresh connection with the current callbacks instead.
+    if (
+      wsConnection &&
+      wsConnection.isConnected &&
+      wsConnection.socket.readyState === WebSocket.OPEN &&
+      wsConnection.threadId === threadId.value
+    ) {
+      log.info('Reusing existing WebSocket connection', {
         connectionId: wsConnection.connectionId,
-        threadId: wsConnection.threadId 
+        threadId: wsConnection.threadId
       });
-      
+
       // Send message on existing connection
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection, text);
@@ -1042,9 +1050,21 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
 
+        // Ensure the parsed message carries the persisted identity fields so the
+        // merge key matches what live streaming computes for the same logical message.
+        parsedMessage.runId = parsedMessage.runId ?? pm.runId;
+        parsedMessage.parentRunId = parsedMessage.parentRunId ?? pm.parentRunId ?? undefined;
+        parsedMessage.generationId = parsedMessage.generationId ?? pm.generationId ?? undefined;
+        parsedMessage.messageOrderIdx = parsedMessage.messageOrderIdx ?? pm.messageOrderIdx ?? undefined;
+
+        // Index rehydrated messages by the same merge key used by live streaming
+        // (kind-runId-generationId-messageOrderIdx) so a subsequent streaming update
+        // sharing that identity merges in place instead of creating a duplicate bubble.
+        const mergeKey = getMergeKey(parsedMessage);
+
         // Create chat message
         const chatMessage: InternalChatMessage = {
-          id: pm.id,
+          id: mergeKey,
           role,
           status: 'completed',
           content: parsedMessage,
@@ -1056,8 +1076,8 @@ export function useChat(options: UseChatOptions = {}) {
           isStreaming: false,
         };
 
-        messageIndex.value.set(pm.id, chatMessage);
-        messageOrder.value.push(pm.id);
+        messageIndex.value.set(mergeKey, chatMessage);
+        messageOrder.value.push(mergeKey);
       } catch (e) {
         log.warn('Failed to parse persisted message', { messageId: pm.id, error: e });
       }

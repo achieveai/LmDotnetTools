@@ -14,6 +14,14 @@ vi.mock('@/api/wsClient', () => ({
   closeWebSocketConnection: wsMocks.closeWebSocketConnection,
 }));
 
+const conversationsMocks = vi.hoisted(() => ({
+  loadConversationMessages: vi.fn(),
+}));
+
+vi.mock('@/api/conversationsApi', () => ({
+  loadConversationMessages: conversationsMocks.loadConversationMessages,
+}));
+
 describe('isTestInstruction', () => {
   it('should return true for messages with both start and end markers', () => {
     const text = '<|instruction_start|>{"instruction_chain": []}<|instruction_end|>';
@@ -200,5 +208,116 @@ describe('useChat deferred-auth prompts', () => {
 
     chat.dismissAuthRequest('github');
     expect(chat.pendingAuthRequests.value).toHaveLength(0);
+  });
+});
+
+describe('useChat rehydration merge-key (BUG A)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  it('merges a streaming Text update into a rehydrated message instead of duplicating it', async () => {
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'persisted-1',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1000,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial',
+        }),
+      },
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default' });
+
+    await chat.loadMessagesFromBackend('thread-x');
+
+    // Rehydrated message should render exactly one assistant text bubble.
+    const afterLoad = chat.displayItems.value.filter(
+      (i) => i.type === 'assistant-message'
+    );
+    expect(afterLoad).toHaveLength(1);
+
+    await chat.sendMessage('continue');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    // Finalizing Text message shares the SAME run/generation/messageOrderIdx as the rehydrated one.
+    options.onMessage({
+      $type: MessageType.Text,
+      role: 'assistant',
+      text: 'partial and more',
+      runId: 'run-1',
+      generationId: 'gen-1',
+      messageOrderIdx: 0,
+      threadId: 'thread-x',
+    });
+
+    const bubbles = chat.displayItems.value.filter(
+      (i) => i.type === 'assistant-message'
+    );
+    expect(bubbles).toHaveLength(1);
+    expect(
+      (bubbles[0] as { content?: { text?: string } }).content?.text
+    ).toBe('partial and more');
+  });
+});
+
+describe('useChat socket reuse honors thread (BUG B)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${options.threadId}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  it('does not reuse a socket bound to a different thread', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+
+    await chat.sendMessage('to thread A');
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+    const threadAConnection = await wsMocks.createWebSocketConnection.mock.results[0]?.value;
+    expect(threadAConnection.threadId).toBeDefined();
+
+    // Switch to a different thread (conversation switch).
+    chat.setThreadId('thread-B');
+
+    await chat.sendMessage('to thread B');
+
+    // The stale thread-A socket must NOT be reused for the thread-B send: a fresh
+    // connection bound to thread-B must be created instead.
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2);
+    const threadBOptions = wsMocks.createWebSocketConnection.mock.calls[1]?.[0];
+    expect(threadBOptions.threadId).toBe('thread-B');
+
+    // The stale connection should have been closed, not messaged.
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(threadAConnection);
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalledWith(
+      threadAConnection,
+      'to thread B'
+    );
   });
 });
