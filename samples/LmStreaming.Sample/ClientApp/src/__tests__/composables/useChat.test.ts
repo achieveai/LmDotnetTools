@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDisplayText, isTestInstruction, useChat } from '@/composables/useChat';
 import { MessageType } from '@/types';
 
@@ -282,6 +282,10 @@ describe('useChat rehydration merge-key (BUG A)', () => {
 
 describe('useChat socket reuse honors thread (BUG B)', () => {
   beforeEach(() => {
+    // happy-dom does not define a WebSocket global; the production reuse guard and the mock
+    // socket both read WebSocket.OPEN, so stub the readyState constants for this block.
+    vi.stubGlobal('WebSocket', { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+
     wsMocks.createWebSocketConnection.mockReset();
     wsMocks.sendWebSocketMessage.mockReset();
     wsMocks.closeWebSocketConnection.mockReset();
@@ -292,6 +296,10 @@ describe('useChat socket reuse honors thread (BUG B)', () => {
       threadId: options.threadId,
       isConnected: true,
     }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('does not reuse a socket bound to a different thread', async () => {
