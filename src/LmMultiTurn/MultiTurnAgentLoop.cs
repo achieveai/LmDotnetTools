@@ -384,11 +384,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         int turnNumber,
         CancellationToken ct)
     {
-        // Use defaultOptions as template, override run-specific fields
+        // Use defaultOptions as template, override run-specific fields.
+        // GenerationId carries the run's generation so providers stamp it (via WithIds) onto every
+        // emitted message, overriding any opaque per-message id a provider would otherwise set
+        // (BUG H1). This is the value run_assignment advertises, keeping the client merge key
+        // kind-runId-generationId-messageOrderIdx consistent across the whole run.
         var options = DefaultOptions with
         {
             RunId = runId,
             ThreadId = ThreadId,
+            GenerationId = generationId,
         };
 
         // Build messages list with system prompt prepended (if configured)
@@ -503,6 +508,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         CancellationToken ct)
     {
         var result = await ExecuteToolCallAsync(toolCall, ct);
+
+        // Stamp ordering onto the result so the client merge/order logic (keyed partly on
+        // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
+        // bypassing the MessageTransformation middleware that stamps ordering on streamed messages,
+        // so without this the result reaches subscribers with MessageOrderIdx == null. The result
+        // immediately follows its tool call, so it takes the call's index + 1 (a different message
+        // kind than the call, so no merge-key collision with the next call at the same index).
+        if (result.MessageOrderIdx == null && toolCall.MessageOrderIdx is { } callOrderIdx)
+        {
+            result = result with { MessageOrderIdx = callOrderIdx + 1 };
+        }
 
         if (result.IsDeferred)
         {

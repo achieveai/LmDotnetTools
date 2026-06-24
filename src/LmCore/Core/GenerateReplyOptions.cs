@@ -75,6 +75,16 @@ public record GenerateReplyOptions
     public string? RunId { get; init; }
 
     /// <summary>
+    ///     Generation ID for the current run. Identifies a single agent generation within a run
+    ///     and is the value advertised by the run assignment. Every message emitted while
+    ///     processing this run must carry this GenerationId so consumers can merge messages by
+    ///     (kind, runId, generationId, messageOrderIdx), regardless of the opaque ids a provider
+    ///     may stamp on individual messages.
+    /// </summary>
+    [JsonIgnore]
+    public string? GenerationId { get; init; }
+
+    /// <summary>
     ///     Parent Run ID for branching/time travel (creates git-like lineage).
     /// </summary>
     [JsonIgnore]
@@ -147,6 +157,10 @@ public record GenerateReplyOptions
             BuiltInTools = other.BuiltInTools ?? BuiltInTools,
             ToolChoice = other.ToolChoice ?? ToolChoice,
             ContainerId = other.ContainerId ?? ContainerId,
+            RunId = other.RunId ?? RunId,
+            ParentRunId = other.ParentRunId ?? ParentRunId,
+            ThreadId = other.ThreadId ?? ThreadId,
+            GenerationId = other.GenerationId ?? GenerationId,
             PromptCaching = other.PromptCaching != PromptCachingMode.Off ? other.PromptCaching : PromptCaching,
             RequestResponseDumpFileName = other.RequestResponseDumpFileName ?? RequestResponseDumpFileName,
             ExtraProperties = mergedExtraProps,

@@ -182,6 +182,86 @@ public class MultiTurnAgentLoopTests
         await cts.CancelAsync();
     }
 
+    // BUG H3b: tool_call_result messages must carry a non-null MessageOrderIdx consistent with
+    // their ordering, so the client merge/order logic (keyed partly on messageOrderIdx) does not
+    // drop them. The loop publishes locally-executed tool results out-of-band (not through the
+    // MessageTransformation middleware that stamps ordering), so without an explicit stamp they
+    // reach subscribers with MessageOrderIdx == null.
+    [Fact]
+    public async Task ExecuteRunAsync_LocalToolResult_CarriesMessageOrderIdx()
+    {
+        // Arrange
+        // GenerationId present so the pipeline assigns ordering, as it does for a real run.
+        var toolCallMessage = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\": \"Seattle\"}",
+            ToolCallId = "call_123",
+            Role = Role.Assistant,
+            GenerationId = "gen1",
+        };
+        var finalMessage = new TextMessage { Text = "Done!", Role = Role.Assistant, GenerationId = "gen1" };
+
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                callCount++;
+                return Task.FromResult(
+                    callCount == 1
+                        ? ToAsyncEnumerable([toolCallMessage])
+                        : ToAsyncEnumerable([finalMessage]));
+            });
+
+        var registry = new FunctionRegistry();
+        var weatherContract = new FunctionContract
+        {
+            Name = "get_weather",
+            Description = "Get weather for a location",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "location",
+                    Description = "The location to get weather for",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+            ],
+        };
+        registry.AddFunction(weatherContract, (_, _, _) =>
+            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        // Assert — the published tool result carries a non-null MessageOrderIdx.
+        var results = messages.OfType<ToolCallResultMessage>().ToList();
+        results.Should().NotBeEmpty();
+        results.Should().OnlyContain(r => r.MessageOrderIdx != null);
+
+        await cts.CancelAsync();
+    }
+
     [Fact]
     public async Task ExecuteRunAsync_WithProviderServerToolCall_DoesNotExecuteLocalToolHandler()
     {
