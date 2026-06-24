@@ -73,18 +73,23 @@ public sealed class OpenAiResponsesEventStreamWriterTests
         itemEvents.Should().HaveCount(2);
         itemEvents[0].OutputIndex.Should().Be(0);
         itemEvents[0].Item.GetProperty("type").GetString().Should().Be("reasoning");
-        itemEvents[0]
-            .Item.GetProperty("summary")
-            .EnumerateArray()
-            .Should()
-            .ContainSingle()
-            .Which.GetProperty("text")
-            .GetString()
-            .Should()
-            .NotBeNullOrWhiteSpace();
+        // Faithful to real providers: the reasoning item opens with an EMPTY summary array — the
+        // human-readable text arrives via response.reasoning_summary_text.delta/.done events, not
+        // the item's summary. (This is the grammar the provider parser must handle.)
+        itemEvents[0].Item.GetProperty("summary").EnumerateArray().Should().BeEmpty();
 
         itemEvents[1].OutputIndex.Should().Be(1);
         itemEvents[1].Item.GetProperty("type").GetString().Should().Be("message");
+
+        // The summary streams as delta events whose concatenation equals the terminal done text.
+        events.OfType<ResponseReasoningSummaryTextDeltaEvent>().Should().NotBeEmpty();
+        var summaryDone = events.OfType<ResponseReasoningSummaryTextDoneEvent>().Should().ContainSingle().Subject;
+        summaryDone.Text.Should().NotBeNullOrWhiteSpace();
+        summaryDone.OutputIndex.Should().Be(0);
+        string
+            .Concat(events.OfType<ResponseReasoningSummaryTextDeltaEvent>().Select(e => e.Delta))
+            .Should()
+            .Be(summaryDone.Text);
     }
 
     [Fact]

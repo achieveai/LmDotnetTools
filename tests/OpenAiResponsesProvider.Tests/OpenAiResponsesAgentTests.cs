@@ -110,6 +110,13 @@ public sealed class OpenAiResponsesAgentTests
         reasoning.Reasoning.Should().NotBeNullOrWhiteSpace();
         reasoning.MessageOrderIdx.Should().Be(0);
 
+        // Whole-flow coverage: the summary streamed as reasoning_summary_text.delta events (surfaced
+        // as ReasoningUpdateMessage) through the mock SSE handler before the terminal reasoning
+        // message; the deltas must concatenate to the final reasoning text.
+        var reasoningUpdates = collected.OfType<ReasoningUpdateMessage>().ToList();
+        reasoningUpdates.Should().NotBeEmpty("the reasoning summary must stream incrementally through the SSE pipe");
+        string.Concat(reasoningUpdates.Select(u => u.Reasoning)).Should().Be(reasoning.Reasoning);
+
         var finalText = collected.OfType<TextMessage>().Single();
         finalText.Text.Should().Be("final answer");
         finalText.MessageOrderIdx.Should().Be(1);
