@@ -752,6 +752,29 @@ public record AnthropicRequest
                 content.RemoveAt(i + 1);
             }
         }
+
+        // Any thinking block still lacking a signature after merging cannot be replayed: Anthropic
+        // (and compatible backends like Kimi, which emit thinking text but no signature) reject a
+        // signatureless thinking block in multi-turn history with 400 "invalid_request_error".
+        // Demote those to plain text so the reasoning context is kept without breaking the request;
+        // drop empty ones outright.
+        for (var i = content.Count - 1; i >= 0; i--)
+        {
+            var block = content[i];
+            if (block.Type != "thinking" || !string.IsNullOrEmpty(block.ThinkingSignature))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(block.Thinking))
+            {
+                content[i] = new AnthropicContent { Type = "text", Text = block.Thinking };
+            }
+            else
+            {
+                content.RemoveAt(i);
+            }
+        }
     }
 
     private static string GetJsonType(JsonSchemaObject schemaObject)
