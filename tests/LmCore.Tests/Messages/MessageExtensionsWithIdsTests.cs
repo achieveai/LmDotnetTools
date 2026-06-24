@@ -1,9 +1,85 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 
 public class MessageExtensionsWithIdsTests
 {
+    // The run's GenerationId must be stamped across EVERY WithIds arm — especially the
+    // update/result/usage arms (TextUpdateMessage, ToolCallUpdateMessage, ToolsCallUpdateMessage,
+    // ToolCallResultMessage, ToolsCallResultMessage, ReasoningUpdateMessage, UsageMessage). A
+    // future arm that forgets GenerationId silently breaks client merge-key grouping, so cover
+    // every variant here parameterized rather than sampling a few.
+    public static TheoryData<string, IMessage> MessageVariants()
+    {
+        const string opaque = "provider-opaque-id";
+        return new TheoryData<string, IMessage>
+        {
+            { nameof(TextMessage), new TextMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque } },
+            { nameof(TextUpdateMessage), new TextUpdateMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque } },
+            {
+                nameof(TextWithCitationsMessage),
+                new TextWithCitationsMessage { Text = "t", Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(ToolCallMessage),
+                new ToolCallMessage { ToolCallId = "c1", FunctionName = "f", FunctionArgs = "{}", Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(ToolCallUpdateMessage),
+                new ToolCallUpdateMessage { ToolCallId = "c1", FunctionName = "f", FunctionArgs = "{}", Role = Role.Assistant, IsUpdate = true, GenerationId = opaque }
+            },
+            {
+                nameof(ToolCallResultMessage),
+                new ToolCallResultMessage { ToolCallId = "c1", ToolName = "f", Result = "{}", Role = Role.User, GenerationId = opaque }
+            },
+            {
+                nameof(ToolsCallMessage),
+                new ToolsCallMessage { Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(ToolsCallUpdateMessage),
+                new ToolsCallUpdateMessage { Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(ToolsCallResultMessage),
+                new ToolsCallResultMessage { Role = Role.User, ToolCallResults = [new ToolCallResult("c1", "{}")], GenerationId = opaque }
+            },
+            {
+                nameof(ReasoningMessage),
+                new ReasoningMessage { Reasoning = "r", Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(ReasoningUpdateMessage),
+                new ReasoningUpdateMessage { Reasoning = "r", Role = Role.Assistant, GenerationId = opaque }
+            },
+            {
+                nameof(UsageMessage),
+                new UsageMessage { Usage = new Usage { PromptTokens = 1, CompletionTokens = 1, TotalTokens = 2 }, Role = Role.Assistant, GenerationId = opaque }
+            },
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(MessageVariants))]
+    public void WithIds_StampsRunGenerationId_AcrossAllArms(string variantName, IMessage message)
+    {
+        const string runGenerationId = "0123456789abcdef0123456789abcdef";
+        const string runId = "run-1";
+        var options = new GenerateReplyOptions { RunId = runId, GenerationId = runGenerationId };
+
+        var updated = message.WithIds(options);
+
+        Assert.Equal(runGenerationId, updated.GenerationId);
+        Assert.Equal(runId, updated.RunId);
+        // The arm preserved its concrete type (no fall-through to the default '_ => message' case)
+        // — a missing switch arm would return the original instance unchanged.
+        Assert.True(
+            message.GetType() == updated.GetType(),
+            $"{variantName} must be handled by a dedicated WithIds arm preserving its type"
+        );
+    }
+
     // BUG H1: every message emitted within a run must carry the run's GenerationId (the value
     // advertised by run_assignment), NOT the opaque per-message response/reasoning id a provider
     // stamps. WithIds(options) is the provider-agnostic seam every provider already calls to apply
