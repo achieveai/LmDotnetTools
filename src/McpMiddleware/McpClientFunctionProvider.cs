@@ -58,11 +58,18 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <param name="logger">Optional logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpClientFunctionProvider</returns>
+    /// <param name="omitServerPrefix">
+    ///     When <c>true</c>, tools are exposed under their bare names (e.g. <c>bash</c>) rather than
+    ///     <c>{serverName}-{toolName}</c>. A bare name is only prefixed with its server id when the
+    ///     same tool name is exposed by more than one server in <paramref name="mcpClients" />
+    ///     (collision-only fallback). Defaults to <c>false</c> (always prefix).
+    /// </param>
     public static async Task<McpClientFunctionProvider> CreateAsync(
         Dictionary<string, McpClient> mcpClients,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
-        CancellationToken cancellationToken = default
+        CancellationToken cancellationToken = default,
+        bool omitServerPrefix = false
     )
     {
         ArgumentNullException.ThrowIfNull(mcpClients);
@@ -70,18 +77,54 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         logger ??= NullLogger<McpClientFunctionProvider>.Instance;
 
         logger.LogInformation(
-            "Creating MCP client function provider: ClientCount={ClientCount}, ClientIds={ClientIds}",
+            "Creating MCP client function provider: ClientCount={ClientCount}, ClientIds={ClientIds}, OmitServerPrefix={OmitServerPrefix}",
             mcpClients.Count,
-            string.Join(", ", mcpClients.Keys)
+            string.Join(", ", mcpClients.Keys),
+            omitServerPrefix
         );
 
         // Cache tool listings once per client to avoid redundant ListToolsAsync calls
         var toolsByServer = await FetchToolsByServerAsync(mcpClients, logger, cancellationToken);
 
-        // Extract function contracts and create both text-only and multimodal handler maps
-        var functionContracts = ExtractFunctionContractsFromCache(toolsByServer, logger);
-        var functionMap = CreateFunctionMapFromCache(mcpClients, toolsByServer, logger);
-        var multiModalMap = CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger);
+        // Extract function contracts and create both text-only and multimodal handler maps.
+        // When omitting the server prefix, drive contracts and both handler maps from a single
+        // naming map so their names stay consistent (the contract name doubles as the dispatch key).
+        IEnumerable<FunctionContract> functionContracts;
+        IDictionary<string, Func<string, Task<string>>> functionMap;
+        IDictionary<string, Func<string, Task<ToolCallResult>>> multiModalMap;
+        if (omitServerPrefix)
+        {
+            var namingMap = BuildOmitPrefixNamingMap(toolsByServer, logger);
+            functionContracts = await ExtractFunctionContractsWithNamingMapAsync(
+                mcpClients,
+                toolsByServer,
+                namingMap,
+                toolFilter: null,
+                logger,
+                cancellationToken
+            );
+            functionMap = await CreateFunctionMapWithNamingMapAsync(
+                mcpClients,
+                toolsByServer,
+                namingMap,
+                toolFilter: null,
+                logger,
+                cancellationToken
+            );
+            multiModalMap = CreateMultiModalFunctionMapWithNamingMap(
+                mcpClients,
+                toolsByServer,
+                namingMap,
+                toolFilter: null,
+                logger
+            );
+        }
+        else
+        {
+            functionContracts = ExtractFunctionContractsFromCache(toolsByServer, logger);
+            functionMap = CreateFunctionMapFromCache(mcpClients, toolsByServer, logger);
+            multiModalMap = CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger);
+        }
 
         // Create function descriptors with both text-only and multimodal handlers
         var functions = new List<FunctionDescriptor>();
@@ -820,6 +863,53 @@ public partial class McpClientFunctionProvider : IFunctionProvider
 
         logger.LogWarning("Could not detect MIME type from bytes and no fallback provided");
         return "application/octet-stream";
+    }
+
+    /// <summary>
+    ///     Builds the (serverId, toolName) → registered-name map for the prefix-omitted registration.
+    ///     A tool keeps its bare sanitized name when that name is unique across all servers; when the
+    ///     same sanitized name is exposed by more than one server it falls back to
+    ///     <c>{serverId}-{toolName}</c> so both tools stay callable.
+    /// </summary>
+    private static Dictionary<(string serverId, string toolName), string> BuildOmitPrefixNamingMap(
+        Dictionary<string, List<McpClientTool>> toolsByServer,
+        ILogger<McpClientFunctionProvider> logger
+    )
+    {
+        // Count how many servers expose each sanitized bare name (one server never lists a name twice).
+        var bareNameCounts = new Dictionary<string, int>();
+        foreach (var (_, tools) in toolsByServer)
+        {
+            foreach (var tool in tools)
+            {
+                var bareName = SanitizeToolName(tool.Name);
+                bareNameCounts[bareName] = bareNameCounts.GetValueOrDefault(bareName) + 1;
+            }
+        }
+
+        var namingMap = new Dictionary<(string serverId, string toolName), string>();
+        foreach (var (serverId, tools) in toolsByServer)
+        {
+            foreach (var tool in tools)
+            {
+                var bareName = SanitizeToolName(tool.Name);
+                var collides = bareNameCounts[bareName] > 1;
+                var registeredName = collides ? $"{SanitizeToolName(serverId)}-{bareName}" : bareName;
+                namingMap[(serverId, tool.Name)] = registeredName;
+
+                if (collides)
+                {
+                    logger.LogWarning(
+                        "Tool name collision while omitting server prefix: ToolName={ToolName} is exposed by "
+                            + "multiple servers; registering as {RegisteredName} to keep it callable",
+                        bareName,
+                        registeredName
+                    );
+                }
+            }
+        }
+
+        return namingMap;
     }
 
     /// <summary>

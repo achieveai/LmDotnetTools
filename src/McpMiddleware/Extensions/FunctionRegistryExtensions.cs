@@ -50,18 +50,31 @@ public static class FunctionRegistryExtensions
     /// <param name="providerName">Optional provider name</param>
     /// <param name="logger">Optional logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
+    /// <param name="omitServerPrefix">
+    ///     When <c>true</c>, tools are exposed under their bare names (e.g. <c>bash</c>) instead of
+    ///     <c>{serverName}-{toolName}</c>. Names are only prefixed with their server id when two
+    ///     servers expose the same tool name (collision-only prefixing). Defaults to <c>false</c>,
+    ///     which keeps the historical always-prefix behavior.
+    /// </param>
     /// <returns>The function registry for chaining</returns>
     public static async Task<FunctionRegistry> AddMcpClientsAsync(
         this FunctionRegistry registry,
         Dictionary<string, McpClient> mcpClients,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
-        CancellationToken cancellationToken = default
+        CancellationToken cancellationToken = default,
+        bool omitServerPrefix = false
     )
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(mcpClients);
-        var provider = await McpClientFunctionProvider.CreateAsync(mcpClients, providerName, logger, cancellationToken);
+        var provider = await McpClientFunctionProvider.CreateAsync(
+            mcpClients,
+            providerName,
+            logger,
+            cancellationToken,
+            omitServerPrefix
+        );
 
         _ = registry.AddProvider(provider);
         return registry;

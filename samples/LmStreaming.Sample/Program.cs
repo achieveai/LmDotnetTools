@@ -23,6 +23,7 @@ using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
@@ -593,8 +594,25 @@ try
 
                 var providerAgent = agentFactory(normalizedProviderId);
 
-                // Clone the shared registry per-agent to avoid mutation, filtering by mode
-                var (allContracts, allHandlers) = functionRegistry.Build();
+                // Per-conversation tool registry: clone the shared (stateless) sample tools and
+                // layer a FRESH TaskManager on top so every chat gets its own isolated todo list
+                // (add-task / list-tasks / update-task / add-note / ...). Only the API-driven
+                // middleware providers (OpenAI/Anthropic/test/test-anthropic) reach here — the CLI
+                // providers (codex/claude/copilot and their *-mock variants) returned earlier and
+                // ship their own task tracking, so they stay on the shared SampleTools-only registry.
+                var conversationRegistry = new FunctionRegistry();
+                var (sharedContracts, sharedHandlers) = functionRegistry.Build();
+                foreach (var sharedContract in sharedContracts)
+                {
+                    if (sharedHandlers.TryGetValue(sharedContract.Name, out var sharedHandler))
+                    {
+                        _ = conversationRegistry.AddFunction(sharedContract, sharedHandler, "SampleTools");
+                    }
+                }
+                _ = conversationRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
+
+                // Clone the per-conversation registry per-agent to avoid mutation, filtering by mode
+                var (allContracts, allHandlers) = conversationRegistry.Build();
                 var enabledToolSet = mode.EnabledTools?.ToHashSet();
                 var filteredRegistry = new FunctionRegistry();
                 foreach (var contract in allContracts)
@@ -627,6 +645,13 @@ try
                 }
                 else if (isWorkspaceMode)
                 {
+                    // Workspace Agent gets its own per-conversation task tracker alongside the
+                    // sandbox tools — the same way a coding agent carries a todo list. The mode's
+                    // empty enabledTools list filtered the registry copy out above, and the tracker
+                    // is independent of the sandbox, so add it here unconditionally; it stays usable
+                    // even when the sandbox MCP endpoint is offline (degraded mode below).
+                    _ = filteredRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
+
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header.
                     var sandboxClients = ConnectHttpMcpClient(
@@ -634,7 +659,10 @@ try
                         "sandbox",
                         $"{sandboxLifetime.GatewayBaseUrl}/mcp",
                         new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId },
-                        loggerFactory
+                        loggerFactory,
+                        // Expose sandbox tools under their natural names (bash, edit, …) rather than
+                        // sandbox-bash; the gateway is the sole MCP server here, so no collisions.
+                        omitServerPrefix: true
                     );
                     if (sandboxClients.Count > 0)
                     {
@@ -669,9 +697,17 @@ try
                 {
                     var modelId = GetModelIdForProvider(normalizedProviderId);
 
-                    // Filter built-in (server-side) tools based on mode's enabled tools
+                    // Filter built-in (server-side) tools based on mode's enabled tools.
+                    // Workspace Agent mode curates its FUNCTION tools via the sandbox MCP gateway and
+                    // so sets enabledTools: [] — but that empty allow-list would also strip server-side
+                    // built-ins like Anthropic web_search. A workspace agent benefits from web search,
+                    // so keep the built-ins unfiltered in workspace mode (this only affects the
+                    // Anthropic-format providers, since GetBuiltInToolsForProvider returns null for the
+                    // rest). Other modes still gate built-ins through their enabledTools list.
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
-                    var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
+                    var filteredBuiltInTools = isWorkspaceMode
+                        ? allBuiltInTools
+                        : ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
 
                     // Enable extended thinking for Anthropic-compatible providers
                     var extraProperties = ImmutableDictionary<string, object?>.Empty;
@@ -1388,6 +1424,13 @@ public partial class Program
     /// <summary>
     ///     Gets the built-in (server-side) tools based on the provider mode.
     ///     These are tools that execute on the provider's servers (e.g., Anthropic web_search).
+    ///     Enabled for the providers backed by the real Anthropic Messages API — the live
+    ///     <c>anthropic</c> provider and the <c>test-anthropic</c> mock.
+    ///     NOT enabled for the Copilot-backed Claude models (<c>sonnet</c> / <c>haiku</c>): even
+    ///     though they speak the Anthropic Messages format, the GitHub Copilot backend rejects the
+    ///     server-side web_search tool with HTTP 400
+    ///     (<c>{"error":{"message":"The use of the web search tool is not supported.","code":"unsupported_value"}}</c>),
+    ///     which would break every request. Re-enable here if/when Copilot adds support.
     /// </summary>
     private static List<object>? GetBuiltInToolsForProvider(string providerMode)
     {
@@ -1960,7 +2003,8 @@ public partial class Program
         string name,
         string endpoint,
         IReadOnlyDictionary<string, string> headers,
-        ILoggerFactory loggerFactory
+        ILoggerFactory loggerFactory,
+        bool omitServerPrefix = false
     )
     {
         var createdClients = new List<McpClient>();
@@ -1982,7 +2026,10 @@ public partial class Program
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
-            _ = registry.AddMcpClientsAsync(mcpClients, name).GetAwaiter().GetResult();
+            _ = registry
+                .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
+                .GetAwaiter()
+                .GetResult();
 
             logger.LogInformation("Connected to MCP server '{Name}' at {Endpoint}", name, endpoint);
         }
