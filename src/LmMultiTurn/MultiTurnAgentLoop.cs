@@ -509,6 +509,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     {
         var result = await ExecuteToolCallAsync(toolCall, ct);
 
+        // Stamp ordering onto the result so the client merge/order logic (keyed partly on
+        // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
+        // bypassing the MessageTransformation middleware that stamps ordering on streamed messages,
+        // so without this the result reaches subscribers with MessageOrderIdx == null. The result
+        // immediately follows its tool call, so it takes the call's index + 1 (a different message
+        // kind than the call, so no merge-key collision with the next call at the same index).
+        if (result.MessageOrderIdx == null && toolCall.MessageOrderIdx is { } callOrderIdx)
+        {
+            result = result with { MessageOrderIdx = callOrderIdx + 1 };
+        }
+
         if (result.IsDeferred)
         {
             // Register the deferred entry BEFORE making the placeholder visible to history
