@@ -280,6 +280,71 @@ describe('useChat rehydration merge-key (BUG A)', () => {
   });
 });
 
+describe('useChat rehydration duplicate merge-key (BLOCKER 1)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Stream persistence can hold several records that collapse to the SAME logical merge key
+  // (e.g. an intermediate TextUpdate-derived record and the finalizing Text, same
+  // run/generation/messageOrderIdx). The old loader pushed EVERY record into messageOrder, so the
+  // shared key accumulated multiple entries while messageIndex overwrote — the same final message
+  // then rendered/sorted multiple times. The loader must append to messageOrder only on first
+  // insert and merge/overwrite the existing entry afterwards.
+  it('appends one messageOrder entry when two persisted records share a merge key', async () => {
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'persisted-1',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1000,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial',
+        }),
+      },
+      {
+        id: 'persisted-2',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1001,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial and final',
+        }),
+      },
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.loadMessagesFromBackend('thread-x');
+
+    // Both records collapse to ONE merge key → exactly one rendered bubble, holding the last value.
+    const bubbles = chat.displayItems.value.filter((i) => i.type === 'assistant-message');
+    expect(bubbles).toHaveLength(1);
+    expect((bubbles[0] as { content?: { text?: string } }).content?.text).toBe('partial and final');
+  });
+});
+
 describe('useChat socket reuse honors thread (BUG B)', () => {
   beforeEach(() => {
     // happy-dom does not define a WebSocket global; the production reuse guard and the mock
@@ -364,5 +429,35 @@ describe('useChat concurrent tool-call grouping', () => {
       (pills[0] as { items: unknown[] }).items,
       'each concurrent tool call is its own pill, not collapsed'
     ).toHaveLength(3);
+  });
+
+  // TEST 4: the aggregate single-call ToolsCallMessage branch of getMergeKey. Some providers finalize
+  // each concurrent call as its own MessageType.ToolsCall (one tool_call) sharing
+  // run/generation/messageOrderIdx and differing only by tool_calls[0].tool_call_id. These must NOT
+  // collide on the messageOrderIdx-only key — each must render as a distinct pill.
+  it('renders single-call ToolsCallMessages with distinct tool_call_id as distinct pills', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('do two calculations');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', runId: 'run-1', generationId: 'gen-1', messageOrderIdx: 0 };
+    options.onMessage({
+      ...base,
+      $type: MessageType.ToolsCall,
+      tool_calls: [{ tool_call_id: 'call_1', function_name: 'calculate', function_args: '{"a":1}' }],
+    });
+    options.onMessage({
+      ...base,
+      $type: MessageType.ToolsCall,
+      tool_calls: [{ tool_call_id: 'call_2', function_name: 'calculate', function_args: '{"a":2}' }],
+    });
+
+    const pills = chat.displayItems.value.filter((i) => i.type === 'pill');
+    expect(pills, 'aggregate single-call messages stay in ONE pillbox').toHaveLength(1);
+    expect(
+      (pills[0] as { items: unknown[] }).items,
+      'two single-call ToolsCallMessages with distinct ids must not collide'
+    ).toHaveLength(2);
   });
 });

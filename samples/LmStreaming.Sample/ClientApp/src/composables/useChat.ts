@@ -1080,8 +1080,16 @@ export function useChat(options: UseChatOptions = {}) {
           isStreaming: false,
         };
 
+        // Stream persistence can hold several records that collapse to one logical merge key
+        // (e.g. an intermediate update record beside the finalizing message, same
+        // run/generation/messageOrderIdx). Append to messageOrder only on FIRST insert; otherwise
+        // overwrite the existing messageIndex entry in place so the final record wins WITHOUT
+        // accumulating a duplicate key that would render/sort the same message multiple times.
+        const isFirstInsert = !messageIndex.value.has(mergeKey);
         messageIndex.value.set(mergeKey, chatMessage);
-        messageOrder.value.push(mergeKey);
+        if (isFirstInsert) {
+          messageOrder.value.push(mergeKey);
+        }
       } catch (e) {
         log.warn('Failed to parse persisted message', { messageId: pm.id, error: e });
       }
