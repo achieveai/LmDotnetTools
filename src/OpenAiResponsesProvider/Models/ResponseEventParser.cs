@@ -114,6 +114,28 @@ public static class ResponseEventParser
                     Arguments = obj["arguments"]?.GetValue<string>() ?? string.Empty,
                 },
 
+            ResponseEventTypes.ReasoningSummaryTextDelta =>
+                new ResponseReasoningSummaryTextDeltaEvent
+                {
+                    Type = type,
+                    SequenceNumber = seq,
+                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                    SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
+                    Delta = obj["delta"]?.GetValue<string>() ?? string.Empty,
+                },
+
+            ResponseEventTypes.ReasoningSummaryTextDone =>
+                new ResponseReasoningSummaryTextDoneEvent
+                {
+                    Type = type,
+                    SequenceNumber = seq,
+                    ItemId = obj["item_id"]?.GetValue<string>() ?? string.Empty,
+                    OutputIndex = obj["output_index"]?.GetValue<int>() ?? 0,
+                    SummaryIndex = obj["summary_index"]?.GetValue<int>() ?? 0,
+                    Text = obj["text"]?.GetValue<string>() ?? string.Empty,
+                },
+
             _ => new GenericResponseEvent
             {
                 Type = type,
@@ -174,6 +196,18 @@ public static class ResponseEventParser
                 obj["item_id"] = fcdone.ItemId;
                 obj["output_index"] = fcdone.OutputIndex;
                 obj["arguments"] = fcdone.Arguments;
+                break;
+            case ResponseReasoningSummaryTextDeltaEvent rsd:
+                obj["item_id"] = rsd.ItemId;
+                obj["output_index"] = rsd.OutputIndex;
+                obj["summary_index"] = rsd.SummaryIndex;
+                obj["delta"] = rsd.Delta;
+                break;
+            case ResponseReasoningSummaryTextDoneEvent rsdone:
+                obj["item_id"] = rsdone.ItemId;
+                obj["output_index"] = rsdone.OutputIndex;
+                obj["summary_index"] = rsdone.SummaryIndex;
+                obj["text"] = rsdone.Text;
                 break;
             case GenericResponseEvent generic when generic.ExtraProperties is { } extras:
                 foreach (var kvp in extras)

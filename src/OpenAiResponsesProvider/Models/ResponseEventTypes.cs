@@ -24,6 +24,13 @@ public static class ResponseEventTypes
     public const string FunctionCallArgumentsDelta = "response.function_call_arguments.delta";
     public const string FunctionCallArgumentsDone = "response.function_call_arguments.done";
 
+    // Reasoning-summary streaming. Reasoning-capable models (e.g. GPT-5.5) deliver their
+    // human-readable reasoning summary via these dedicated events — NOT inside the reasoning
+    // output_item's "summary" array, which is empty while streaming. Without handling these,
+    // requested reasoning summaries are silently dropped (no thinking blocks).
+    public const string ReasoningSummaryTextDelta = "response.reasoning_summary_text.delta";
+    public const string ReasoningSummaryTextDone = "response.reasoning_summary_text.done";
+
     /// <summary>
     ///     Client→server frame requesting a response generation. Currently the only
     ///     client-originated frame the mock host accepts.

@@ -204,6 +204,34 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
                     break;
 
+                case ResponseReasoningSummaryTextDeltaEvent reasoningDelta:
+                    // Reasoning summary streams as its own event channel (the reasoning output_item's
+                    // summary array stays empty until done) — surface each delta as a reasoning update.
+                    yield return new ReasoningUpdateMessage
+                    {
+                        Reasoning = reasoningDelta.Delta,
+                        Visibility = ReasoningVisibility.Plain,
+                        Role = Role.Assistant,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        MessageOrderIdx = reasoningDelta.OutputIndex,
+                    };
+
+                    break;
+
+                case ResponseReasoningSummaryTextDoneEvent reasoningDone:
+                    yield return new ReasoningMessage
+                    {
+                        Reasoning = reasoningDone.Text,
+                        Visibility = ReasoningVisibility.Plain,
+                        Role = Role.Assistant,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        MessageOrderIdx = reasoningDone.OutputIndex,
+                    };
+
+                    break;
+
                 case ResponseOutputTextDeltaEvent deltaEvent:
                     if (!textBuffers.TryGetValue(deltaEvent.OutputIndex, out var textBuf))
                     {
