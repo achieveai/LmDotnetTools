@@ -97,17 +97,21 @@ function getMergeKey(msg: Message): string {
   const messageOrderIdx = msg.messageOrderIdx ?? 0;
   const mergeKind = getMergeKind(msg);
   
-  // For tool call updates, include toolCallIdx
-  if (isToolCallUpdateMessage(msg) || isToolsCallUpdateMessage(msg)) {
-    if (isToolCallUpdateMessage(msg)) {
-      // Individual tool call - use tool_call_id as unique identifier
-      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
-    } else {
-      // ToolsCallUpdate - use messageOrderIdx only (tools are accumulated in array)
-      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-    }
+  // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent
+  // tool calls in one turn share runId/generationId/messageOrderIdx and differ only by tool_call_id
+  // (e.g. GPT-5.5 via the OpenAI Responses API); without it they collapse into a single pill.
+  if (isToolCallUpdateMessage(msg) || isToolCallMessage(msg)) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
   }
-  
+
+  // A finalized single-call ToolsCallMessage is the same case wrapped in the aggregate type —
+  // disambiguate by its tool_call_id too. Multi-call aggregates already carry every call in one
+  // message (rendered as N pills), so they key on messageOrderIdx only.
+  if (isToolsCallMessage(msg) && msg.tool_calls?.length === 1 && msg.tool_calls[0]?.tool_call_id) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
+  }
+
+  // ToolsCallUpdate accumulates tools into one array → key on messageOrderIdx only.
   return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
 }
 

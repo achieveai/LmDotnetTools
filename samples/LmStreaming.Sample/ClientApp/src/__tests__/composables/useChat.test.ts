@@ -329,3 +329,40 @@ describe('useChat socket reuse honors thread (BUG B)', () => {
     );
   });
 });
+
+describe('useChat concurrent tool-call grouping', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // GPT-5.5 (OpenAI Responses) emits several finalized tool_call messages in one turn that share
+  // runId/generationId/messageOrderIdx and differ only by tool_call_id. They must render as
+  // distinct pills inside ONE pillbox — not collapse into a single pill via a colliding merge key.
+  it('renders concurrent tool calls in one turn as distinct pills under one pillbox', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('do three calculations');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', runId: 'run-1', generationId: 'gen-1', messageOrderIdx: 0 };
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'calculate', function_args: '{"a":12,"b":30}' });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_2', function_name: 'calculate', function_args: '{"a":100,"b":45}' });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_3', function_name: 'calculate', function_args: '{"a":6,"b":7}' });
+
+    const pills = chat.displayItems.value.filter((i) => i.type === 'pill');
+    expect(pills, 'concurrent calls stay in ONE pillbox').toHaveLength(1);
+    expect(
+      (pills[0] as { items: unknown[] }).items,
+      'each concurrent tool call is its own pill, not collapsed'
+    ).toHaveLength(3);
+  });
+});
