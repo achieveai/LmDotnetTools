@@ -207,10 +207,13 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                 case ResponseReasoningSummaryTextDeltaEvent reasoningDelta:
                     // Reasoning summary streams as its own event channel (the reasoning output_item's
                     // summary array stays empty until done) — surface each delta as a reasoning update.
+                    // These are provider SUMMARIES, not full chain-of-thought: emit them as
+                    // ReasoningVisibility.Summary so an Anthropic-format replay serializes them as text
+                    // (AnthropicRequest's Summary branch) instead of an unsigned thinking block (400).
                     yield return new ReasoningUpdateMessage
                     {
                         Reasoning = reasoningDelta.Delta,
-                        Visibility = ReasoningVisibility.Plain,
+                        Visibility = ReasoningVisibility.Summary,
                         Role = Role.Assistant,
                         FromAgent = fromAgent,
                         GenerationId = generationId,
@@ -223,7 +226,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                     yield return new ReasoningMessage
                     {
                         Reasoning = reasoningDone.Text,
-                        Visibility = ReasoningVisibility.Plain,
+                        Visibility = ReasoningVisibility.Summary,
                         Role = Role.Assistant,
                         FromAgent = fromAgent,
                         GenerationId = generationId,
@@ -415,6 +418,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             if (builder.Length > 0)
             {
                 reasoning = builder.ToString();
+                // The summary array carries the provider's human-readable SUMMARY, not full
+                // chain-of-thought — mark it Summary so it never replays as an unsigned Anthropic
+                // thinking block (the encrypted_content path below stays Encrypted).
+                visibility = ReasoningVisibility.Summary;
                 return true;
             }
         }

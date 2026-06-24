@@ -106,15 +106,19 @@ public sealed class OpenAiResponsesAgentTests
 
         var reasoning = collected.OfType<ReasoningMessage>().Single();
         reasoning.Role.Should().Be(Role.Assistant);
-        reasoning.Visibility.Should().Be(ReasoningVisibility.Plain);
+        // The reasoning here comes from the provider's reasoning_summary_text stream — a SUMMARY,
+        // not full chain-of-thought — so it must carry Summary visibility (otherwise an Anthropic
+        // replay serializes it as an unsigned thinking block and is rejected with 400).
+        reasoning.Visibility.Should().Be(ReasoningVisibility.Summary);
         reasoning.Reasoning.Should().NotBeNullOrWhiteSpace();
         reasoning.MessageOrderIdx.Should().Be(0);
 
         // Whole-flow coverage: the summary streamed as reasoning_summary_text.delta events (surfaced
         // as ReasoningUpdateMessage) through the mock SSE handler before the terminal reasoning
-        // message; the deltas must concatenate to the final reasoning text.
+        // message; the deltas must concatenate to the final reasoning text and share its visibility.
         var reasoningUpdates = collected.OfType<ReasoningUpdateMessage>().ToList();
         reasoningUpdates.Should().NotBeEmpty("the reasoning summary must stream incrementally through the SSE pipe");
+        reasoningUpdates.Should().OnlyContain(u => u.Visibility == ReasoningVisibility.Summary);
         string.Concat(reasoningUpdates.Select(u => u.Reasoning)).Should().Be(reasoning.Reasoning);
 
         var finalText = collected.OfType<TextMessage>().Single();

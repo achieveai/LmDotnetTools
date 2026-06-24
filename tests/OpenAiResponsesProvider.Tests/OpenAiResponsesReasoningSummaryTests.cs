@@ -94,11 +94,61 @@ public sealed class OpenAiResponsesReasoningSummaryTests
         }
 
         // Streaming deltas surface as reasoning updates...
-        messages.OfType<ReasoningUpdateMessage>().Should().NotBeEmpty("reasoning summary deltas must stream as updates");
+        var updates = messages.OfType<ReasoningUpdateMessage>().ToList();
+        updates.Should().NotBeEmpty("reasoning summary deltas must stream as updates");
         // ...and the completed summary as a final reasoning message carrying the full text.
         var finalReasoning = messages.OfType<ReasoningMessage>().ToList();
         finalReasoning.Should().ContainSingle("the summary stream completes with one reasoning message");
         finalReasoning[0].Reasoning.Should().Be("Let me think.");
         finalReasoning[0].GenerationId.Should().Be("run-1");
+
+        // These are provider SUMMARIES, not full chain-of-thought. Persisting them as Plain makes an
+        // Anthropic-format replay serialize them as UNSIGNED thinking blocks (rejected with 400). They
+        // must carry ReasoningVisibility.Summary so AnthropicRequest emits them as text instead.
+        updates.Should().OnlyContain(
+            u => u.Visibility == ReasoningVisibility.Summary,
+            "reasoning summary deltas are provider summaries, not unsigned thinking"
+        );
+        finalReasoning[0].Visibility.Should().Be(ReasoningVisibility.Summary);
+    }
+
+    // The reasoning output_item's summary[].text array is the same provider-summary content as the
+    // streaming summary events; TryExtractReasoning must classify it as Summary (encrypted_content
+    // stays Encrypted) so it never replays as an unsigned Anthropic thinking block.
+    [Fact]
+    public async Task Agent_emits_summary_visibility_from_reasoning_item_summary_array()
+    {
+        var reasoningItem = System.Text.Json.JsonDocument.Parse(
+            "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step one\"}]}"
+        ).RootElement;
+
+        ResponseEvent[] events =
+        [
+            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCreated },
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemDone,
+                OutputIndex = 0,
+                Item = reasoningItem,
+            },
+            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCompleted },
+        ];
+
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(events));
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "go" }],
+            new GenerateReplyOptions { GenerationId = "run-1" }
+        );
+
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        var reasoning = messages.OfType<ReasoningMessage>().ToList();
+        reasoning.Should().ContainSingle();
+        reasoning[0].Reasoning.Should().Be("step one");
+        reasoning[0].Visibility.Should().Be(ReasoningVisibility.Summary);
     }
 }
