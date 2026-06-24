@@ -828,7 +828,7 @@ public class ServerToolStreamParserTests
     public void ProcessEvent_ServerToolUse_WithoutId_GeneratesSyntheticId()
     {
         // Regression test: Kimi doesn't send 'id' on server_tool_use blocks.
-        // The parser should handle missing IDs gracefully (empty string in ToolCallMessage).
+        // The parser synthesizes a non-empty id at content_block_start so it can be matched and replayed.
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
@@ -847,11 +847,12 @@ public class ServerToolStreamParserTests
 
         var startMessages = parser.ProcessEvent("event", startData);
 
-        // ToolCallUpdateMessage emitted at content_block_start
+        // ToolCallUpdateMessage emitted at content_block_start with a synthesized, non-empty id
         Assert.Single(startMessages);
         var msg = Assert.IsType<ToolCallUpdateMessage>(startMessages[0]);
         Assert.Equal("web_search", msg.FunctionName);
         Assert.Equal(ExecutionTarget.ProviderServer, msg.ExecutionTarget);
+        Assert.False(string.IsNullOrEmpty(msg.ToolCallId), "synthetic id must be assigned at content_block_start");
         var args = JsonDocument.Parse(msg.FunctionArgs ?? "{}").RootElement;
         Assert.Equal("hello", args.GetProperty("query").GetString());
     }
@@ -859,8 +860,9 @@ public class ServerToolStreamParserTests
     [Fact]
     public void ProcessEvent_ServerToolUse_WithoutId_ResultResolvesSyntheticId()
     {
-        // Regression test: when server_tool_use has no id, tool call and result
-        // should use empty string and still resolve via tool name matching.
+        // Regression (Kimi): when server_tool_use has no id, the parser synthesizes a non-empty id
+        // at content_block_start and the result (even with an empty tool_use_id) resolves to that
+        // SAME id. An empty id on either block makes replay fail with "tool_call_id is not found".
         var parser = new AnthropicStreamParser();
         parser.ProcessEvent("event", BuildMessageStart());
 
@@ -878,8 +880,9 @@ public class ServerToolStreamParserTests
         }));
 
         var toolCall = Assert.IsType<ToolCallUpdateMessage>(Assert.Single(startMessages));
+        Assert.False(string.IsNullOrEmpty(toolCall.ToolCallId), "streaming update id must not be empty");
 
-        // Now send the result with empty tool_use_id — it should resolve to empty as well
+        // Now send the result with empty tool_use_id — it should resolve to the call's synthetic id
         var resultData = JsonSerializer.Serialize(new
         {
             type = "content_block_start",
@@ -895,7 +898,67 @@ public class ServerToolStreamParserTests
 
         Assert.Single(resultMessages);
         var result = Assert.IsType<ToolCallResultMessage>(resultMessages[0]);
-        Assert.Equal("", result.ToolCallId);
+        Assert.False(string.IsNullOrEmpty(result.ToolCallId), "result id must not be empty");
+        Assert.Equal(toolCall.ToolCallId, result.ToolCallId);
+    }
+
+    [Fact]
+    public void ProcessEvent_ServerToolUse_WithoutId_NoMessageHasEmptyToolCallId()
+    {
+        // Regression (Kimi 400 "tool_call_id  is not found"): a server_tool_use stream that omits
+        // the id must never yield ANY message with an empty ToolCallId, and the streaming update,
+        // the finalized call, and the result must all share the same id so replay round-trips.
+        var parser = new AnthropicStreamParser();
+        var all = new List<IMessage>();
+
+        all.AddRange(parser.ProcessEvent("event", BuildMessageStart()));
+
+        // server_tool_use content_block_start WITHOUT an id
+        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_start",
+            index = 0,
+            content_block = new { type = "server_tool_use", name = "web_search" },
+        })));
+        // input streamed as a delta, then the block stops (finalize)
+        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_delta",
+            index = 0,
+            delta = new { type = "input_json_delta", partial_json = "{\"query\":\"x\"}" },
+        })));
+        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_stop",
+            index = 0,
+        })));
+        // web_search_tool_result with an empty tool_use_id (Kimi behavior)
+        all.AddRange(parser.ProcessEvent("event", JsonSerializer.Serialize(new
+        {
+            type = "content_block_start",
+            index = 1,
+            content_block = new
+            {
+                type = "web_search_tool_result",
+                tool_use_id = "",
+                content = new { type = "web_search_result", results = Array.Empty<object>() },
+            },
+        })));
+
+        var serverToolCallIds = all
+            .Where(m => m is ToolCallUpdateMessage u && u.ExecutionTarget == ExecutionTarget.ProviderServer)
+            .Select(m => ((ToolCallUpdateMessage)m).ToolCallId)
+            .Concat(all.OfType<ToolCallMessage>()
+                .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+                .Select(m => m.ToolCallId))
+            .Concat(all.OfType<ToolCallResultMessage>()
+                .Where(m => m.ExecutionTarget == ExecutionTarget.ProviderServer)
+                .Select(m => m.ToolCallId))
+            .ToList();
+
+        Assert.NotEmpty(serverToolCallIds);
+        Assert.All(serverToolCallIds, id => Assert.False(string.IsNullOrEmpty(id), "no server tool message may have an empty id"));
+        Assert.Single(serverToolCallIds.Distinct());
     }
 
     /// <summary>

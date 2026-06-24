@@ -337,6 +337,14 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
+                // Anchor the model to the real current date. Injected once at the single mode entry
+                // point so every derived system prompt (workspace suffix, medical context, etc.)
+                // carries it. Without it, models fall back to a training-era date, distrust
+                // correctly-dated web_search results as "future"/unreliable, and loop.
+                mode = mode with
+                {
+                    SystemPrompt = SystemPromptAugmenter.PrependCurrentDate(mode.SystemPrompt, DateTimeOffset.UtcNow),
+                };
                 var providerId = context.ProviderId;
                 var requestResponseDumpFileName = context.DumpFile;
                 var workspaceId = context.WorkspaceId;

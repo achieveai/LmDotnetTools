@@ -404,33 +404,42 @@ public record AnthropicRequest
         }
         else if (message is ToolCallMessage singularToolCallMsg)
         {
-            var contentType = singularToolCallMsg.ExecutionTarget == ExecutionTarget.ProviderServer
-                ? "server_tool_use"
-                : "tool_use";
-            anthropicMessage.Content.Add(
-                new AnthropicContent
-                {
-                    Type = contentType,
-                    Id = singularToolCallMsg.ToolCallId,
-                    Name = singularToolCallMsg.FunctionName,
-                    Input = SafeDeserializeArgs(singularToolCallMsg.FunctionArgs),
-                }
-            );
+            // Drop empty-id server_tool_use blocks. Anthropic-compatible providers that omit the
+            // id (e.g. Kimi) can leave a duplicate, empty-id streaming preview in persisted history
+            // beside the finalized call; replaying it fails with "tool_call_id is not found".
+            if (!IsEmptyIdServerToolCall(singularToolCallMsg.ExecutionTarget, singularToolCallMsg.ToolCallId))
+            {
+                var contentType = singularToolCallMsg.ExecutionTarget == ExecutionTarget.ProviderServer
+                    ? "server_tool_use"
+                    : "tool_use";
+                anthropicMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = contentType,
+                        Id = singularToolCallMsg.ToolCallId,
+                        Name = singularToolCallMsg.FunctionName,
+                        Input = SafeDeserializeArgs(singularToolCallMsg.FunctionArgs),
+                    }
+                );
+            }
         }
         else if (message is ToolCallUpdateMessage toolCallUpdateMsg
             && toolCallUpdateMsg.ExecutionTarget == ExecutionTarget.ProviderServer)
         {
             // ToolCallUpdateMessage is the streaming equivalent of ToolCallMessage for server tools.
             // When it appears in history (without the joiner middleware), serialize it as server_tool_use.
-            anthropicMessage.Content.Add(
-                new AnthropicContent
-                {
-                    Type = "server_tool_use",
-                    Id = toolCallUpdateMsg.ToolCallId,
-                    Name = toolCallUpdateMsg.FunctionName,
-                    Input = SafeDeserializeArgs(toolCallUpdateMsg.FunctionArgs),
-                }
-            );
+            if (!IsEmptyIdServerToolCall(toolCallUpdateMsg.ExecutionTarget, toolCallUpdateMsg.ToolCallId))
+            {
+                anthropicMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "server_tool_use",
+                        Id = toolCallUpdateMsg.ToolCallId,
+                        Name = toolCallUpdateMsg.FunctionName,
+                        Input = SafeDeserializeArgs(toolCallUpdateMsg.FunctionArgs),
+                    }
+                );
+            }
         }
         else if (message is ToolCallResultMessage singularToolResultMsg)
         {
@@ -451,6 +460,11 @@ public record AnthropicRequest
             // Handle tool calls in assistant messages
             foreach (var toolCall in toolsCallMsg.ToolCalls)
             {
+                if (IsEmptyIdServerToolCall(toolCall.ExecutionTarget, toolCall.ToolCallId))
+                {
+                    continue;
+                }
+
                 var contentType = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use";
                 anthropicMessage.Content.Add(
                     new AnthropicContent
@@ -506,6 +520,11 @@ public record AnthropicRequest
                 )
             )
             {
+                if (IsEmptyIdServerToolCall(toolCall.ExecutionTarget, toolCall.ToolCallId))
+                {
+                    continue;
+                }
+
                 var toolResultBlocks = ToAnthropicToolResultContentBlocks(
                     toolResult.ContentBlocks, toolResult.IsError);
                 yield return (
@@ -527,6 +546,16 @@ public record AnthropicRequest
             }
         }
     }
+
+    /// <summary>
+    ///     A server-side (provider-executed) tool call with no id. These appear when an
+    ///     Anthropic-compatible provider omits the server_tool_use id and a duplicate, empty-id
+    ///     streaming preview lands in persisted history. Replaying a <c>server_tool_use</c> block
+    ///     with an empty id makes the provider reject the request ("tool_call_id is not found"),
+    ///     so such blocks are dropped when rebuilding the request.
+    /// </summary>
+    private static bool IsEmptyIdServerToolCall(ExecutionTarget executionTarget, string? toolCallId) =>
+        executionTarget == ExecutionTarget.ProviderServer && string.IsNullOrWhiteSpace(toolCallId);
 
     /// <summary>
     ///     Combines function contracts and built-in tools into a single list for the API request.

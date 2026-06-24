@@ -174,6 +174,77 @@ public class ServerToolRequestTests
     }
 
     [Fact]
+    public void FromMessages_WithEmptyIdServerToolCall_DropsItFromRequest()
+    {
+        // Regression (Kimi 400 "tool_call_id  is not found"): an Anthropic-compatible provider that
+        // omits the server_tool_use id leaves a duplicate, empty-id streaming preview in persisted
+        // history beside the finalized call. Replaying a server_tool_use block with an empty id is
+        // rejected, so the empty-id duplicate must be dropped while the valid call+result survive.
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Search the web." },
+            // Empty-id duplicate (the streaming preview that landed in history).
+            new ToolCallMessage
+            {
+                ToolCallId = "",
+                FunctionName = "web_search",
+                FunctionArgs = "",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // The finalized call with a real (synthetic) id.
+            new ToolCallMessage
+            {
+                ToolCallId = "srvtoolu_synth_1_abc",
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"news"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "srvtoolu_synth_1_abc",
+                ToolName = "web_search",
+                Result = "[]",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new TextMessage { Role = Role.User, Text = "Thanks." },
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            BuiltInTools = [new AnthropicWebSearchTool()],
+        };
+
+        var request = AnthropicRequest.FromMessages(messages, options);
+        var json = JsonSerializer.Serialize(request, _jsonOptions);
+        var doc = JsonDocument.Parse(json);
+
+        var serverToolUseIds = new List<string?>();
+        foreach (var msg in doc.RootElement.GetProperty("messages").EnumerateArray())
+        {
+            if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.TryGetProperty("type", out var t) && t.GetString() == "server_tool_use")
+                {
+                    serverToolUseIds.Add(block.TryGetProperty("id", out var id) ? id.GetString() : null);
+                }
+            }
+        }
+
+        // Exactly the finalized call survives — no empty/blank id ever reaches the wire.
+        Assert.Equal(new[] { "srvtoolu_synth_1_abc" }, serverToolUseIds);
+        Assert.DoesNotContain(serverToolUseIds, string.IsNullOrWhiteSpace);
+    }
+
+    [Fact]
     public void FromMessages_FullKimiLikeFlow_ProducesCorrectMergedWireJson()
     {
         // Full IMessage sequence: User text, Assistant text + ToolCallMessage (server),

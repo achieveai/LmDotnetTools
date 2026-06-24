@@ -14,6 +14,9 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 /// </summary>
 public class AnthropicStreamParser
 {
+    /// <summary>Prefix for synthetic server_tool_use ids generated when a provider omits the id.</summary>
+    private const string SyntheticServerToolIdPrefix = "srvtoolu_synth_";
+
     private readonly Dictionary<int, StreamingContentBlock> _contentBlocks = [];
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger _logger;
@@ -229,8 +232,12 @@ public class AnthropicStreamParser
         // The final ToolCallMessage with accumulated args is emitted at content_block_stop.
         if (blockType == "server_tool_use")
         {
-            // Store tool_use_id for correlating with results (may be empty — synthetic ID generated at stop)
-            _contentBlocks[index].ToolUseId = _contentBlocks[index].Id ?? string.Empty;
+            // Some Anthropic-compatible providers (e.g. Kimi) omit the server_tool_use id.
+            // Synthesize it HERE so the streaming update, the finalized ToolCallMessage, and the
+            // result all carry the SAME non-empty id. Emitting an empty id at this point produces
+            // a duplicate, empty-id tool_call message in history that fails replay with
+            // "tool_call_id is not found".
+            EnsureServerToolUseId(_contentBlocks[index]);
 
             var serverToolUpdate = new ToolCallUpdateMessage
             {
@@ -751,21 +758,9 @@ public class AnthropicStreamParser
     /// </summary>
     private List<IMessage> FinalizeServerToolUseBlock(StreamingContentBlock block)
     {
-        // Generate a synthetic ID if none provided (e.g., Kimi doesn't send id for server_tool_use)
-        if (string.IsNullOrEmpty(block.Id))
-        {
-            block.Id = $"srvtoolu_synth_{block.Index}_{Guid.NewGuid():N}";
-            _logger.LogDebug(
-                "Generated synthetic ID {SyntheticId} for server_tool_use block {Index} (provider did not send id)",
-                block.Id,
-                block.Index
-            );
-        }
-
-        if (string.IsNullOrEmpty(block.ToolUseId))
-        {
-            block.ToolUseId = block.Id;
-        }
+        // Safety net: synthesize the id if it was not already assigned at content_block_start
+        // (e.g., a provider that only reveals the missing id by the time the block stops).
+        EnsureServerToolUseId(block);
 
         // If input_json_delta accumulated a complete object, it overwrites any content_block_start input.
         // Otherwise, block.Input retains whatever was set at content_block_start (or null).
@@ -1016,11 +1011,16 @@ public class AnthropicStreamParser
         // The final ToolCallMessage with accumulated args is emitted at content_block_stop.
         if (contentBlock is AnthropicResponseServerToolUseContent serverToolUseContent)
         {
-            _contentBlocks[index].ToolUseId = serverToolUseContent.Id;
+            _contentBlocks[index].Id = serverToolUseContent.Id;
+            // Synthesize a stable id when the provider omits it (see untyped path above) so the
+            // streaming update, the finalized call, and the result all share one non-empty id.
+            EnsureServerToolUseId(_contentBlocks[index]);
 
             var serverToolUpdate = new ToolCallUpdateMessage
             {
-                ToolCallId = serverToolUseContent.Id,
+                // Id is non-null here: assigned from serverToolUseContent.Id above and guaranteed by
+                // EnsureServerToolUseId, so the null-forgiving operator would be redundant (IDE0370).
+                ToolCallId = _contentBlocks[index].Id,
                 Index = index,
                 FunctionName = serverToolUseContent.Name,
                 // For streaming server_tool_use blocks, do not emit "{}" as a placeholder.
@@ -1467,6 +1467,30 @@ public class AnthropicStreamParser
         public string GetRawJson()
         {
             return _jsonBuffer.ToString();
+        }
+    }
+
+    /// <summary>
+    ///     Ensures a server_tool_use block has a non-empty id, synthesizing a stable one when the
+    ///     provider omits it (e.g. Kimi). Keeps <see cref="StreamingContentBlock.Id"/> and
+    ///     <see cref="StreamingContentBlock.ToolUseId"/> consistent so the streaming update, the
+    ///     finalized ToolCallMessage, and the matching result all carry the same id. Idempotent.
+    /// </summary>
+    private void EnsureServerToolUseId(StreamingContentBlock block)
+    {
+        if (string.IsNullOrEmpty(block.Id))
+        {
+            block.Id = $"{SyntheticServerToolIdPrefix}{block.Index}_{Guid.NewGuid():N}";
+            _logger.LogDebug(
+                "Generated synthetic ID {SyntheticId} for server_tool_use block {Index} (provider did not send id)",
+                block.Id,
+                block.Index
+            );
+        }
+
+        if (string.IsNullOrEmpty(block.ToolUseId))
+        {
+            block.ToolUseId = block.Id;
         }
     }
 
