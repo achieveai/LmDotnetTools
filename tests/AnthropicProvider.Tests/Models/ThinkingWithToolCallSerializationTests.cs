@@ -222,8 +222,10 @@ public class ThinkingWithToolCallSerializationTests
     }
 
     /// <summary>
-    ///     Tests that two consecutive Plain reasoning messages produce two separate thinking
-    ///     blocks and are NOT incorrectly merged (merge requires text+signature pair).
+    ///     Two consecutive Plain reasoning messages with no signature stay SEPARATE (the merge
+    ///     requires a text+signature pair, which isn't present here). Because neither acquires a
+    ///     signature, both are demoted to <c>text</c> blocks — an unsigned <c>thinking</c> block is
+    ///     rejected on replay (e.g. Kimi: <c>400 invalid_request_error</c>), so it must never be sent.
     /// </summary>
     [Fact]
     public void FromMessages_DoesNotMerge_WhenBothThinkingBlocksHaveText()
@@ -252,19 +254,21 @@ public class ThinkingWithToolCallSerializationTests
         var assistantMsg = request.Messages[1];
         Assert.Equal("assistant", assistantMsg.Role);
 
-        // Should have 3 content blocks: two separate thinking blocks + text
+        // Three content blocks: the two unsigned reasoning blocks stay SEPARATE (not merged) but
+        // are demoted to text (no signature → not a valid thinking block on replay), then the answer.
         Assert.Equal(3, assistantMsg.Content.Count);
 
-        Assert.Equal("thinking", assistantMsg.Content[0].Type);
-        Assert.Equal("First thought", assistantMsg.Content[0].Thinking);
-        Assert.Null(assistantMsg.Content[0].ThinkingSignature);
+        Assert.Equal("text", assistantMsg.Content[0].Type);
+        Assert.Equal("First thought", assistantMsg.Content[0].Text);
 
-        Assert.Equal("thinking", assistantMsg.Content[1].Type);
-        Assert.Equal("Second thought", assistantMsg.Content[1].Thinking);
-        Assert.Null(assistantMsg.Content[1].ThinkingSignature);
+        Assert.Equal("text", assistantMsg.Content[1].Type);
+        Assert.Equal("Second thought", assistantMsg.Content[1].Text);
 
         Assert.Equal("text", assistantMsg.Content[2].Type);
         Assert.Equal("Answer.", assistantMsg.Content[2].Text);
+
+        // Crucially: no unsigned thinking block survives (that's what the backend rejects).
+        Assert.DoesNotContain(assistantMsg.Content, c => c.Type == "thinking" && string.IsNullOrEmpty(c.ThinkingSignature));
     }
 
     /// <summary>

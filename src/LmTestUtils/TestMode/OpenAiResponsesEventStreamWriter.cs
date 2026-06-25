@@ -85,7 +85,7 @@ public static class OpenAiResponsesEventStreamWriter
         if (plan.ReasoningLength is int reasoningLength && reasoningLength > 0)
         {
             var reasoningText = string.Join(' ', GenerateLoremWords(reasoningLength));
-            AppendReasoningOutput(events, ref seq, outputIndex, reasoningText);
+            AppendReasoningOutput(events, ref seq, outputIndex, reasoningText, effectiveChunkSize);
             outputIndex++;
         }
 
@@ -138,15 +138,20 @@ public static class OpenAiResponsesEventStreamWriter
         List<ResponseEvent> events,
         ref int seq,
         int outputIndex,
-        string reasoningText
+        string reasoningText,
+        int wordsPerChunk
     )
     {
         var itemId = $"rs_{Guid.NewGuid():N}";
+        // Faithful to real reasoning-capable models: the reasoning item opens (and closes) with an
+        // EMPTY summary array; the human-readable summary streams via reasoning_summary_text.delta
+        // events and is finalized by reasoning_summary_text.done. Emitting the text inside the
+        // item's summary (the old shape) would not exercise the provider's streaming parser.
         var itemJson = new JsonObject
         {
             ["id"] = itemId,
             ["type"] = "reasoning",
-            ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = reasoningText }),
+            ["summary"] = new JsonArray(),
         };
 
         events.Add(
@@ -156,6 +161,33 @@ public static class OpenAiResponsesEventStreamWriter
                 SequenceNumber = seq++,
                 OutputIndex = outputIndex,
                 Item = ToJsonElement(itemJson),
+            }
+        );
+
+        foreach (var chunk in ChunkWords(reasoningText, wordsPerChunk))
+        {
+            events.Add(
+                new ResponseReasoningSummaryTextDeltaEvent
+                {
+                    Type = ResponseEventTypes.ReasoningSummaryTextDelta,
+                    SequenceNumber = seq++,
+                    ItemId = itemId,
+                    OutputIndex = outputIndex,
+                    SummaryIndex = 0,
+                    Delta = chunk,
+                }
+            );
+        }
+
+        events.Add(
+            new ResponseReasoningSummaryTextDoneEvent
+            {
+                Type = ResponseEventTypes.ReasoningSummaryTextDone,
+                SequenceNumber = seq++,
+                ItemId = itemId,
+                OutputIndex = outputIndex,
+                SummaryIndex = 0,
+                Text = reasoningText,
             }
         );
 

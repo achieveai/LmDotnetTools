@@ -443,17 +443,25 @@ public record AnthropicRequest
         }
         else if (message is ToolCallResultMessage singularToolResultMsg)
         {
-            var toolResultBlocks = ToAnthropicToolResultContentBlocks(
-                singularToolResultMsg.ContentBlocks, singularToolResultMsg.IsError);
-            anthropicMessage.Content.Add(
-                new AnthropicContent
-                {
-                    Type = "tool_result",
-                    ToolUseId = singularToolResultMsg.ToolCallId,
-                    Content = toolResultBlocks != null ? null : singularToolResultMsg.Result,
-                    ToolResultContentBlocks = toolResultBlocks,
-                }
-            );
+            // Drop the orphan result of a dropped empty-id server_tool_use. When an
+            // Anthropic-compatible provider (e.g. Kimi) omits the server_tool_use id, the empty-id
+            // call is dropped above; its matching empty-id server-tool result must be dropped too,
+            // otherwise it survives as a tool_result with a blank tool_use_id and replay fails with
+            // "tool_call_id is not found".
+            if (!IsEmptyIdServerToolCall(singularToolResultMsg.ExecutionTarget, singularToolResultMsg.ToolCallId))
+            {
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    singularToolResultMsg.ContentBlocks, singularToolResultMsg.IsError);
+                anthropicMessage.Content.Add(
+                    new AnthropicContent
+                    {
+                        Type = "tool_result",
+                        ToolUseId = singularToolResultMsg.ToolCallId,
+                        Content = toolResultBlocks != null ? null : singularToolResultMsg.Result,
+                        ToolResultContentBlocks = toolResultBlocks,
+                    }
+                );
+            }
         }
         else if (message is ToolsCallMessage toolsCallMsg && toolsCallMsg.ToolCalls?.Any() == true)
         {
@@ -742,6 +750,29 @@ public record AnthropicRequest
             {
                 content[i] = curr with { ThinkingSignature = next.ThinkingSignature };
                 content.RemoveAt(i + 1);
+            }
+        }
+
+        // Any thinking block still lacking a signature after merging cannot be replayed: Anthropic
+        // (and compatible backends like Kimi, which emit thinking text but no signature) reject a
+        // signatureless thinking block in multi-turn history with 400 "invalid_request_error".
+        // Demote those to plain text so the reasoning context is kept without breaking the request;
+        // drop empty ones outright.
+        for (var i = content.Count - 1; i >= 0; i--)
+        {
+            var block = content[i];
+            if (block.Type != "thinking" || !string.IsNullOrEmpty(block.ThinkingSignature))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(block.Thinking))
+            {
+                content[i] = new AnthropicContent { Type = "text", Text = block.Thinking };
+            }
+            else
+            {
+                content.RemoveAt(i);
             }
         }
     }

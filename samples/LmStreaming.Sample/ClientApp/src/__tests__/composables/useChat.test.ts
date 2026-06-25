@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDisplayText, isTestInstruction, useChat } from '@/composables/useChat';
 import { MessageType } from '@/types';
 
@@ -12,6 +12,14 @@ vi.mock('@/api/wsClient', () => ({
   createWebSocketConnection: wsMocks.createWebSocketConnection,
   sendWebSocketMessage: wsMocks.sendWebSocketMessage,
   closeWebSocketConnection: wsMocks.closeWebSocketConnection,
+}));
+
+const conversationsMocks = vi.hoisted(() => ({
+  loadConversationMessages: vi.fn(),
+}));
+
+vi.mock('@/api/conversationsApi', () => ({
+  loadConversationMessages: conversationsMocks.loadConversationMessages,
 }));
 
 describe('isTestInstruction', () => {
@@ -200,5 +208,256 @@ describe('useChat deferred-auth prompts', () => {
 
     chat.dismissAuthRequest('github');
     expect(chat.pendingAuthRequests.value).toHaveLength(0);
+  });
+});
+
+describe('useChat rehydration merge-key (BUG A)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  it('merges a streaming Text update into a rehydrated message instead of duplicating it', async () => {
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'persisted-1',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1000,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial',
+        }),
+      },
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default' });
+
+    await chat.loadMessagesFromBackend('thread-x');
+
+    // Rehydrated message should render exactly one assistant text bubble.
+    const afterLoad = chat.displayItems.value.filter(
+      (i) => i.type === 'assistant-message'
+    );
+    expect(afterLoad).toHaveLength(1);
+
+    await chat.sendMessage('continue');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    // Finalizing Text message shares the SAME run/generation/messageOrderIdx as the rehydrated one.
+    options.onMessage({
+      $type: MessageType.Text,
+      role: 'assistant',
+      text: 'partial and more',
+      runId: 'run-1',
+      generationId: 'gen-1',
+      messageOrderIdx: 0,
+      threadId: 'thread-x',
+    });
+
+    const bubbles = chat.displayItems.value.filter(
+      (i) => i.type === 'assistant-message'
+    );
+    expect(bubbles).toHaveLength(1);
+    expect(
+      (bubbles[0] as { content?: { text?: string } }).content?.text
+    ).toBe('partial and more');
+  });
+});
+
+describe('useChat rehydration duplicate merge-key (BLOCKER 1)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Stream persistence can hold several records that collapse to the SAME logical merge key
+  // (e.g. an intermediate TextUpdate-derived record and the finalizing Text, same
+  // run/generation/messageOrderIdx). The old loader pushed EVERY record into messageOrder, so the
+  // shared key accumulated multiple entries while messageIndex overwrote — the same final message
+  // then rendered/sorted multiple times. The loader must append to messageOrder only on first
+  // insert and merge/overwrite the existing entry afterwards.
+  it('appends one messageOrder entry when two persisted records share a merge key', async () => {
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'persisted-1',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1000,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial',
+        }),
+      },
+      {
+        id: 'persisted-2',
+        threadId: 'thread-x',
+        runId: 'run-1',
+        generationId: 'gen-1',
+        messageOrderIdx: 0,
+        timestamp: 1001,
+        messageType: 'text',
+        role: 'assistant',
+        messageJson: JSON.stringify({
+          $type: MessageType.Text,
+          role: 'assistant',
+          text: 'partial and final',
+        }),
+      },
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.loadMessagesFromBackend('thread-x');
+
+    // Both records collapse to ONE merge key → exactly one rendered bubble, holding the last value.
+    const bubbles = chat.displayItems.value.filter((i) => i.type === 'assistant-message');
+    expect(bubbles).toHaveLength(1);
+    expect((bubbles[0] as { content?: { text?: string } }).content?.text).toBe('partial and final');
+  });
+});
+
+describe('useChat socket reuse honors thread (BUG B)', () => {
+  beforeEach(() => {
+    // happy-dom does not define a WebSocket global; the production reuse guard and the mock
+    // socket both read WebSocket.OPEN, so stub the readyState constants for this block.
+    vi.stubGlobal('WebSocket', { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${options.threadId}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not reuse a socket bound to a different thread', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+
+    await chat.sendMessage('to thread A');
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+    const threadAConnection = await wsMocks.createWebSocketConnection.mock.results[0]?.value;
+    expect(threadAConnection.threadId).toBeDefined();
+
+    // Switch to a different thread (conversation switch).
+    chat.setThreadId('thread-B');
+
+    await chat.sendMessage('to thread B');
+
+    // The stale thread-A socket must NOT be reused for the thread-B send: a fresh
+    // connection bound to thread-B must be created instead.
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2);
+    const threadBOptions = wsMocks.createWebSocketConnection.mock.calls[1]?.[0];
+    expect(threadBOptions.threadId).toBe('thread-B');
+
+    // The stale connection should have been closed, not messaged.
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(threadAConnection);
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalledWith(
+      threadAConnection,
+      'to thread B'
+    );
+  });
+});
+
+describe('useChat concurrent tool-call grouping', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // GPT-5.5 (OpenAI Responses) emits several finalized tool_call messages in one turn that share
+  // runId/generationId/messageOrderIdx and differ only by tool_call_id. They must render as
+  // distinct pills inside ONE pillbox — not collapse into a single pill via a colliding merge key.
+  it('renders concurrent tool calls in one turn as distinct pills under one pillbox', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('do three calculations');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', runId: 'run-1', generationId: 'gen-1', messageOrderIdx: 0 };
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'calculate', function_args: '{"a":12,"b":30}' });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_2', function_name: 'calculate', function_args: '{"a":100,"b":45}' });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_3', function_name: 'calculate', function_args: '{"a":6,"b":7}' });
+
+    const pills = chat.displayItems.value.filter((i) => i.type === 'pill');
+    expect(pills, 'concurrent calls stay in ONE pillbox').toHaveLength(1);
+    expect(
+      (pills[0] as { items: unknown[] }).items,
+      'each concurrent tool call is its own pill, not collapsed'
+    ).toHaveLength(3);
+  });
+
+  // TEST 4: the aggregate single-call ToolsCallMessage branch of getMergeKey. Some providers finalize
+  // each concurrent call as its own MessageType.ToolsCall (one tool_call) sharing
+  // run/generation/messageOrderIdx and differing only by tool_calls[0].tool_call_id. These must NOT
+  // collide on the messageOrderIdx-only key — each must render as a distinct pill.
+  it('renders single-call ToolsCallMessages with distinct tool_call_id as distinct pills', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('do two calculations');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', runId: 'run-1', generationId: 'gen-1', messageOrderIdx: 0 };
+    options.onMessage({
+      ...base,
+      $type: MessageType.ToolsCall,
+      tool_calls: [{ tool_call_id: 'call_1', function_name: 'calculate', function_args: '{"a":1}' }],
+    });
+    options.onMessage({
+      ...base,
+      $type: MessageType.ToolsCall,
+      tool_calls: [{ tool_call_id: 'call_2', function_name: 'calculate', function_args: '{"a":2}' }],
+    });
+
+    const pills = chat.displayItems.value.filter((i) => i.type === 'pill');
+    expect(pills, 'aggregate single-call messages stay in ONE pillbox').toHaveLength(1);
+    expect(
+      (pills[0] as { items: unknown[] }).items,
+      'two single-call ToolsCallMessages with distinct ids must not collide'
+    ).toHaveLength(2);
   });
 });

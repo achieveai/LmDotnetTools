@@ -50,13 +50,30 @@ export interface WebSocketConnection {
 }
 
 /**
+ * Identity fields that arrive in snake_case on some wire shapes (tool-call JSON) but are read in
+ * camelCase by the client merge key (`kind-runId-generationId-messageOrderIdx`). Without a
+ * snake_case → camelCase alias these messages fall back to 'default' and fail to group with their
+ * camelCase siblings. (tool_call_id is consumed directly in snake_case by getMergeKey, so it does
+ * not need aliasing here.)
+ */
+const SNAKE_CASE_IDENTITY_ALIASES: Readonly<Record<string, string>> = {
+  generation_id: 'generationId',
+  run_id: 'runId',
+  parent_run_id: 'parentRunId',
+  message_order_idx: 'messageOrderIdx',
+};
+
+/**
  * Server emits PascalCase JSON (System.Text.Json default policy) but TS Message types
  * are camelCase. Normalize at the deserialize boundary so downstream handlers don't
  * need per-field dual-casing reads. Recurses into nested objects/arrays. Preserves the
- * original PascalCase keys alongside the camelCase aliases (write-once, never overwrite)
- * so any handler that already reads PascalCase still works during migration.
+ * original keys alongside the camelCase aliases (write-once, never overwrite) so any handler
+ * that already reads the original casing still works during migration. Handles both PascalCase
+ * (leading-uppercase) and a known set of snake_case identity fields.
+ *
+ * Exported for unit testing of the aliasing contract.
  */
-function normalizeKeys(value: unknown): unknown {
+export function normalizeKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(normalizeKeys);
   }
@@ -78,6 +95,11 @@ function normalizeKeys(value: unknown): unknown {
           out[camel] = normalized;
         }
       }
+    }
+    // Add camelCase alias for known snake_case identity fields (write-once).
+    const snakeAlias = SNAKE_CASE_IDENTITY_ALIASES[k];
+    if (snakeAlias && !(snakeAlias in out)) {
+      out[snakeAlias] = normalized;
     }
   }
   return out;

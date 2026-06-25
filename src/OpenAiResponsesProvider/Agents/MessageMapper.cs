@@ -29,6 +29,19 @@ internal static class MessageMapper
             MapMessage(message, instructionsBuilder, inputItems);
         }
 
+        // Reasoning-capable models only return reasoning summaries when asked. Mirror the Anthropic
+        // "Thinking" convention: a ResponseReasoningOptions placed in ExtraProperties["Reasoning"]
+        // (e.g. { Summary = "auto" }) is mapped onto the request so thinking blocks come back.
+        ResponseReasoningOptions? reasoning = null;
+        if (
+            options?.ExtraProperties != null
+            && options.ExtraProperties.TryGetValue("Reasoning", out var reasoningObj)
+            && reasoningObj is ResponseReasoningOptions reasoningValue
+        )
+        {
+            reasoning = reasoningValue;
+        }
+
         IReadOnlyList<ResponseToolSpec>? tools = null;
         if (options?.Functions is { Length: > 0 } functions)
         {
@@ -55,6 +68,7 @@ internal static class MessageMapper
             MaxOutputTokens = options?.MaxToken,
             Tools = tools,
             ToolChoice = options?.ToolChoice is null ? null : JsonValue.Create(options.ToolChoice),
+            Reasoning = reasoning,
         };
     }
 

@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
@@ -709,21 +710,10 @@ try
                         ? allBuiltInTools
                         : ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
 
-                    // Enable extended thinking for Anthropic-compatible providers
-                    var extraProperties = ImmutableDictionary<string, object?>.Empty;
-                    if (
-                        string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
-                        || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal)
-                    )
-                    {
-                        var budgetTokens = int.TryParse(
-                            Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
-                            out var parsed
-                        )
-                            ? parsed
-                            : 2048;
-                        extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
-                    }
+                    // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
+                    // testable helper so the per-provider wiring is regression-guarded; see
+                    // ProgramReasoningExtraPropertiesTests.
+                    var extraProperties = BuildReasoningExtraProperties(normalizedProviderId);
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
                     // path — the CLI providers (codex/claude/copilot and their *-mock variants)
@@ -1039,6 +1029,44 @@ finally
 
 public partial class Program
 {
+    /// <summary>
+    ///     Maps a normalized provider id to the reasoning/thinking request options that surface a
+    ///     model's reasoning. Anthropic-format providers (incl. the Copilot-backed sonnet/haiku — the
+    ///     Copilot proxy accepts the thinking parameter, verified by
+    ///     CopilotAnthropicLiveTests.Thinking_param_is_accepted_by_copilot_backend) get an extended-
+    ///     thinking budget; the OpenAI Responses providers (gpt-5.5/gpt-5.5-mini) get a reasoning-
+    ///     summary request (CopilotResponsesLiveTests confirms gpt-5.5 returns reasoning). Other
+    ///     providers get none. Without this wiring, Copilot-backed models return no thinking blocks.
+    /// </summary>
+    internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(string normalizedProviderId)
+    {
+        var extraProperties = ImmutableDictionary<string, object?>.Empty;
+        if (
+            string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
+            || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal)
+            || string.Equals(normalizedProviderId, "sonnet", StringComparison.Ordinal)
+            || string.Equals(normalizedProviderId, "haiku", StringComparison.Ordinal)
+        )
+        {
+            var budgetTokens = int.TryParse(
+                Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
+                out var parsed
+            )
+                ? parsed
+                : 2048;
+            extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
+        }
+        else if (
+            string.Equals(normalizedProviderId, "gpt-5.5", StringComparison.Ordinal)
+            || string.Equals(normalizedProviderId, "gpt-5.5-mini", StringComparison.Ordinal)
+        )
+        {
+            extraProperties = extraProperties.Add("Reasoning", new ResponseReasoningOptions { Summary = "auto" });
+        }
+
+        return extraProperties;
+    }
+
     /// <summary>
     ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     /// </summary>

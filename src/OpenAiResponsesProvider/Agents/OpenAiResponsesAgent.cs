@@ -58,7 +58,9 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         var stream = await GenerateReplyStreamingAsync(messages, options, cancellationToken).ConfigureAwait(false);
 
         var aggregateText = new StringBuilder();
-        var generationId = Guid.NewGuid().ToString("N");
+        var generationId = string.IsNullOrEmpty(options?.GenerationId)
+            ? Guid.NewGuid().ToString("N")
+            : options.GenerationId;
         var resultMessages = new List<IMessage>();
 
         await foreach (var update in stream.ConfigureAwait(false))
@@ -121,16 +123,23 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         );
 
         var eventStream = _client.StreamResponseAsync(request, cancellationToken);
-        return Task.FromResult(EventStreamToMessages(eventStream, Name, cancellationToken));
+        return Task.FromResult(EventStreamToMessages(eventStream, Name, options?.GenerationId, cancellationToken));
     }
 
     private static async IAsyncEnumerable<IMessage> EventStreamToMessages(
         IAsyncEnumerable<ResponseEvent> events,
         string fromAgent,
+        string? runGenerationId,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
-        var generationId = Guid.NewGuid().ToString("N");
+        // Prefer the run's GenerationId so every message emitted in a run shares one id — the client
+        // merge key is kind-runId-generationId-messageOrderIdx, and the provider's opaque per-response
+        // id never matches the run, which breaks tool-call grouping (the pillbox bug). Fall back to a
+        // synthetic id only when the run advertises none.
+        var generationId = string.IsNullOrEmpty(runGenerationId)
+            ? Guid.NewGuid().ToString("N")
+            : runGenerationId;
         var pendingFunctionCalls = new Dictionary<string, PendingFunctionCall>(StringComparer.Ordinal);
         var textBuffers = new Dictionary<int, StringBuilder>();
         // Tool calls already surfaced, keyed by call_id, so the delta-correlated path and the
@@ -144,7 +153,12 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             switch (ev)
             {
                 case ResponseLifecycleEvent lifecycle when lifecycle.Type == ResponseEventTypes.ResponseCreated:
-                    if (TryReadString(lifecycle.Response, "id", out var responseId))
+                    // Only adopt the provider's opaque response id when the run advertised no
+                    // GenerationId; otherwise the run's id must win so messages stay groupable.
+                    if (
+                        string.IsNullOrEmpty(runGenerationId)
+                        && TryReadString(lifecycle.Response, "id", out var responseId)
+                    )
                     {
                         generationId = responseId;
                     }
@@ -187,6 +201,37 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                             MessageOrderIdx = itemEvent.OutputIndex,
                         };
                     }
+
+                    break;
+
+                case ResponseReasoningSummaryTextDeltaEvent reasoningDelta:
+                    // Reasoning summary streams as its own event channel (the reasoning output_item's
+                    // summary array stays empty until done) — surface each delta as a reasoning update.
+                    // These are provider SUMMARIES, not full chain-of-thought: emit them as
+                    // ReasoningVisibility.Summary so an Anthropic-format replay serializes them as text
+                    // (AnthropicRequest's Summary branch) instead of an unsigned thinking block (400).
+                    yield return new ReasoningUpdateMessage
+                    {
+                        Reasoning = reasoningDelta.Delta,
+                        Visibility = ReasoningVisibility.Summary,
+                        Role = Role.Assistant,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        MessageOrderIdx = reasoningDelta.OutputIndex,
+                    };
+
+                    break;
+
+                case ResponseReasoningSummaryTextDoneEvent reasoningDone:
+                    yield return new ReasoningMessage
+                    {
+                        Reasoning = reasoningDone.Text,
+                        Visibility = ReasoningVisibility.Summary,
+                        Role = Role.Assistant,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        MessageOrderIdx = reasoningDone.OutputIndex,
+                    };
 
                     break;
 
@@ -373,6 +418,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             if (builder.Length > 0)
             {
                 reasoning = builder.ToString();
+                // The summary array carries the provider's human-readable SUMMARY, not full
+                // chain-of-thought — mark it Summary so it never replays as an unsigned Anthropic
+                // thinking block (the encrypted_content path below stays Encrypted).
+                visibility = ReasoningVisibility.Summary;
                 return true;
             }
         }

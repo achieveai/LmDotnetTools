@@ -146,3 +146,42 @@ public sealed record ResponseFunctionCallArgumentsDoneEvent : ResponseEvent
     [JsonPropertyName("arguments")]
     public string Arguments { get; init; } = string.Empty;
 }
+
+/// <summary>
+///     <c>response.reasoning_summary_text.delta</c>: incremental token of a reasoning summary.
+///     Reasoning-capable models stream their human-readable summary through these events; the
+///     reasoning output_item's <c>summary</c> array is empty until the stream completes.
+/// </summary>
+public sealed record ResponseReasoningSummaryTextDeltaEvent : ResponseEvent
+{
+    [JsonPropertyName("item_id")]
+    public string ItemId { get; init; } = string.Empty;
+
+    [JsonPropertyName("output_index")]
+    public int OutputIndex { get; init; }
+
+    [JsonPropertyName("summary_index")]
+    public int SummaryIndex { get; init; }
+
+    [JsonPropertyName("delta")]
+    public string Delta { get; init; } = string.Empty;
+}
+
+/// <summary>
+///     <c>response.reasoning_summary_text.done</c>: terminal frame for a reasoning summary part —
+///     carries the full concatenated summary <c>text</c>.
+/// </summary>
+public sealed record ResponseReasoningSummaryTextDoneEvent : ResponseEvent
+{
+    [JsonPropertyName("item_id")]
+    public string ItemId { get; init; } = string.Empty;
+
+    [JsonPropertyName("output_index")]
+    public int OutputIndex { get; init; }
+
+    [JsonPropertyName("summary_index")]
+    public int SummaryIndex { get; init; }
+
+    [JsonPropertyName("text")]
+    public string Text { get; init; } = string.Empty;
+}

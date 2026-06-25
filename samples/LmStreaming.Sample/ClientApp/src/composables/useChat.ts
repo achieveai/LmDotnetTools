@@ -97,17 +97,21 @@ function getMergeKey(msg: Message): string {
   const messageOrderIdx = msg.messageOrderIdx ?? 0;
   const mergeKind = getMergeKind(msg);
   
-  // For tool call updates, include toolCallIdx
-  if (isToolCallUpdateMessage(msg) || isToolsCallUpdateMessage(msg)) {
-    if (isToolCallUpdateMessage(msg)) {
-      // Individual tool call - use tool_call_id as unique identifier
-      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
-    } else {
-      // ToolsCallUpdate - use messageOrderIdx only (tools are accumulated in array)
-      return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-    }
+  // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent
+  // tool calls in one turn share runId/generationId/messageOrderIdx and differ only by tool_call_id
+  // (e.g. GPT-5.5 via the OpenAI Responses API); without it they collapse into a single pill.
+  if (isToolCallUpdateMessage(msg) || isToolCallMessage(msg)) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
   }
-  
+
+  // A finalized single-call ToolsCallMessage is the same case wrapped in the aggregate type —
+  // disambiguate by its tool_call_id too. Multi-call aggregates already carry every call in one
+  // message (rendered as N pills), so they key on messageOrderIdx only.
+  if (isToolsCallMessage(msg) && msg.tool_calls?.length === 1 && msg.tool_calls[0]?.tool_call_id) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
+  }
+
+  // ToolsCallUpdate accumulates tools into one array → key on messageOrderIdx only.
   return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
 }
 
@@ -854,13 +858,21 @@ export function useChat(options: UseChatOptions = {}) {
   ): Promise<void> {
     const effectiveThreadId = getOrCreateThreadId();
     
-    // Check if we have an open connection
-    if (wsConnection && wsConnection.isConnected && wsConnection.socket.readyState === WebSocket.OPEN) {
-      log.info('Reusing existing WebSocket connection', { 
+    // Check if we have an open connection that belongs to the current thread.
+    // A socket bound to a previously-viewed conversation must not be reused for a
+    // different thread (e.g. after switching conversations); close it and fall
+    // through to create a fresh connection with the current callbacks instead.
+    if (
+      wsConnection &&
+      wsConnection.isConnected &&
+      wsConnection.socket.readyState === WebSocket.OPEN &&
+      wsConnection.threadId === threadId.value
+    ) {
+      log.info('Reusing existing WebSocket connection', {
         connectionId: wsConnection.connectionId,
-        threadId: wsConnection.threadId 
+        threadId: wsConnection.threadId
       });
-      
+
       // Send message on existing connection
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection, text);
@@ -1042,9 +1054,21 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
 
+        // Ensure the parsed message carries the persisted identity fields so the
+        // merge key matches what live streaming computes for the same logical message.
+        parsedMessage.runId = parsedMessage.runId ?? pm.runId;
+        parsedMessage.parentRunId = parsedMessage.parentRunId ?? pm.parentRunId ?? undefined;
+        parsedMessage.generationId = parsedMessage.generationId ?? pm.generationId ?? undefined;
+        parsedMessage.messageOrderIdx = parsedMessage.messageOrderIdx ?? pm.messageOrderIdx ?? undefined;
+
+        // Index rehydrated messages by the same merge key used by live streaming
+        // (kind-runId-generationId-messageOrderIdx) so a subsequent streaming update
+        // sharing that identity merges in place instead of creating a duplicate bubble.
+        const mergeKey = getMergeKey(parsedMessage);
+
         // Create chat message
         const chatMessage: InternalChatMessage = {
-          id: pm.id,
+          id: mergeKey,
           role,
           status: 'completed',
           content: parsedMessage,
@@ -1056,8 +1080,16 @@ export function useChat(options: UseChatOptions = {}) {
           isStreaming: false,
         };
 
-        messageIndex.value.set(pm.id, chatMessage);
-        messageOrder.value.push(pm.id);
+        // Stream persistence can hold several records that collapse to one logical merge key
+        // (e.g. an intermediate update record beside the finalizing message, same
+        // run/generation/messageOrderIdx). Append to messageOrder only on FIRST insert; otherwise
+        // overwrite the existing messageIndex entry in place so the final record wins WITHOUT
+        // accumulating a duplicate key that would render/sort the same message multiple times.
+        const isFirstInsert = !messageIndex.value.has(mergeKey);
+        messageIndex.value.set(mergeKey, chatMessage);
+        if (isFirstInsert) {
+          messageOrder.value.push(mergeKey);
+        }
       } catch (e) {
         log.warn('Failed to parse persisted message', { messageId: pm.id, error: e });
       }
