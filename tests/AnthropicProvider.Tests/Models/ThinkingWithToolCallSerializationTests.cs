@@ -319,4 +319,130 @@ public class ThinkingWithToolCallSerializationTests
         Assert.DoesNotContain("\"thinking\":", sigOnlyJson);
         Assert.Contains("\"signature\":\"sig-blob\"", sigOnlyJson);
     }
+
+    /// <summary>
+    ///     Regression: a signature-only ("Encrypted") reasoning block with NO adjacent thinking-text
+    ///     block to merge with must be DROPPED — never emitted as a <c>thinking</c> block with an empty
+    ///     <c>thinking</c> field. This happens whenever the thinking-text and signature halves get
+    ///     separated (e.g. a tool_use block lands between them, so the adjacent-merge can't combine
+    ///     them), or when only the signature survived in history. Anthropic/Copilot reject the stranded
+    ///     block with <c>400 "messages.N.content.M.thinking.thinking: Field required"</c>. The previous
+    ///     cleanup only demoted/dropped <em>signatureless</em> blocks, leaving this orphan stranded.
+    /// </summary>
+    [Fact]
+    public void FromMessages_DropsOrphanedSignatureOnlyThinkingBlock()
+    {
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Hi" },
+            // Signature-only reasoning, immediately followed by a non-thinking block: nothing to merge with.
+            new ReasoningMessage
+            {
+                Reasoning = "sig-encrypted-blob",
+                Visibility = ReasoningVisibility.Encrypted,
+                Role = Role.Assistant,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Answer." },
+        };
+
+        var request = AnthropicRequest.FromMessages(messages);
+
+        // No thinking block with an empty 'thinking' field may survive — that's exactly what the
+        // backend rejects with "thinking.thinking: Field required".
+        var allContent = request.Messages.SelectMany(m => m.Content).ToList();
+        Assert.DoesNotContain(allContent, c => c.Type == "thinking" && string.IsNullOrEmpty(c.Thinking));
+    }
+
+    /// <summary>
+    ///     Regression mirroring the real Workspace-Agent failure: an assistant turn whose thinking
+    ///     text and signature get split by tool_use blocks. The plain-text half is demoted to text and
+    ///     the signature-only half must be dropped, so no empty <c>thinking</c> block reaches the wire.
+    /// </summary>
+    [Fact]
+    public void FromMessages_ThinkingSplitByToolUse_DropsEmptyThinkingBlock()
+    {
+        var toolCall = new ToolCall
+        {
+            FunctionName = "Skill",
+            FunctionArgs = "{}",
+            ToolCallId = "toolu_skill_1",
+            ToolCallIdx = 0,
+        };
+        var aggregate = new ToolsCallAggregateMessage(
+            new ToolsCallMessage { ToolCalls = [toolCall], GenerationId = "gen1" },
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult("toolu_skill_1", "ok")],
+                GenerationId = "gen1",
+            },
+            "assistant"
+        );
+
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Set up the repos." },
+            new TextMessage { Role = Role.Assistant, Text = "I'll help with that." },
+            aggregate, // tool_use lands between the assistant text and the trailing signature block
+            new ReasoningMessage
+            {
+                Reasoning = "sig-encrypted-blob",
+                Visibility = ReasoningVisibility.Encrypted,
+                Role = Role.Assistant,
+            },
+            new TextMessage { Role = Role.Assistant, Text = "Done." },
+        };
+
+        var request = AnthropicRequest.FromMessages(messages);
+
+        var allContent = request.Messages.SelectMany(m => m.Content).ToList();
+        Assert.DoesNotContain(allContent, c => c.Type == "thinking" && string.IsNullOrEmpty(c.Thinking));
+    }
+
+    /// <summary>
+    ///     Regression: an assistant turn whose history interleaves text/thinking AFTER its tool_use
+    ///     blocks must be reordered so the tool_use blocks are LAST. Anthropic rejects a turn with a
+    ///     text block after a tool_use with 400 "tool_use ids were found without tool_result blocks
+    ///     immediately after" — even when the matching tool_result blocks ARE present in the next
+    ///     message. Streaming/merge order can place demoted-thinking or trailing text after the calls.
+    /// </summary>
+    [Fact]
+    public void FromMessages_OrdersToolUseLast_WhenTextFollowsToolUseInSameTurn()
+    {
+        // CompositeMessage flattens these into ONE assistant message: text, tool_use, text.
+        var composite = new CompositeMessage
+        {
+            Messages =
+            [
+                new TextMessage { Role = Role.Assistant, Text = "The user wants to set up two repos." },
+                new ToolCallMessage
+                {
+                    FunctionName = "Skill",
+                    FunctionArgs = "{}",
+                    ToolCallId = "toolu_skill_1",
+                    ToolCallIdx = 0,
+                },
+                new TextMessage { Role = Role.Assistant, Text = "I'll help you set up those repos." },
+            ],
+            Role = Role.Assistant,
+            GenerationId = "gen1",
+        };
+
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Set up the repos." },
+            composite,
+        };
+
+        var request = AnthropicRequest.FromMessages(messages);
+
+        var assistant = request.Messages.First(m =>
+            m.Role == "assistant" && m.Content.Any(c => c.Type is "tool_use" or "server_tool_use"));
+
+        // No text/thinking block may appear after any tool_use block (Anthropic requires tool_use last).
+        var firstToolIdx = assistant.Content.FindIndex(c => c.Type is "tool_use" or "server_tool_use");
+        var lastNonToolIdx = assistant.Content.FindLastIndex(c => c.Type is not ("tool_use" or "server_tool_use"));
+        Assert.True(
+            firstToolIdx > lastNonToolIdx,
+            $"tool_use must come after all text/thinking blocks; got: [{string.Join(", ", assistant.Content.Select(c => c.Type))}]");
+    }
 }
