@@ -76,21 +76,28 @@ assume it uniquely identifies one logical message:
    **concatenate** onto the earlier turn's growing string; `finalize()` only runs per-run, never
    per-turn).
 
-In a multi-turn run this identity is **NOT unique by default**: `generationId` is **run-scoped**
-(constant across all turns — `MultiTurnAgentLoop` threads one id to every turn, `WithIds` stamps it;
-see #105/H1), while `messageOrderIdx` **resets every turn** (`MessageTransformationMiddleware` makes
-a fresh `OrderingState` per streaming invocation). So turn N and turn N+1 collide. **Tool calls
-survive** because their key also carries `tool_call_id`; **reasoning and text have no per-instance id
-and collapse** — this is the only reason they regress while tool calls don't.
+**Server-side root fix (shipped):** `MultiTurnAgentLoop.ExecuteRunTurnsAsync` now mints a **per-turn
+(per-generation) `generationId`** — turn 1 reuses the run's id (so `run_assignment`'s advertised id
+matches the first turn and single-turn runs are unchanged), turns 2+ get a fresh `Guid`. Each turn's
+messages still share one id (so a turn's `tool_call` + `tool_call_result` group together — the
+#105/H1 requirement) while turns stay distinct, so `(generationId, messageOrderIdx)` no longer
+collides across turns. Pillbox grouping is arrival-order based on the client (not `generationId`), so
+this doesn't change grouping; `run_assignment.generationId` / `run_completed.generationId` are not
+load-bearing on the client (only logged / used to stamp error messages). Coverage:
+`LmMultiTurn.Tests` → `ExecuteRunAsync_MultiTurn_AssignsDistinctGenerationIdPerTurn`. Backstory: prior
+to this, `generationId` was **run-scoped** (constant across all turns — #105/H1 over-corrected from
+per-message to per-run), while `messageOrderIdx` **resets every turn**, so turn N and N+1 collided;
+tool calls survived (key carries `tool_call_id`), reasoning/text collapsed.
 
-Client defense (current fix): a per-message **content turn epoch** in `useChat` (bumps when
-text/reasoning resumes after an intervening tool call), threaded into BOTH consumers — the merge key
-(`…-t{seq}`) and the merger accumulator key (`genId::t{seq}`). Regression coverage:
-`ClientApp/src/__tests__/composables/useChat.test.ts` (multi-turn reasoning + text interleaving) and
-`useMessageMerger.test.ts` (per-turn `turnSeq` separation). The durable root fix is server-side and
-deferred: prefer a **per-turn (per-generation) `generationId`** over run-scoped, or make
-`messageOrderIdx` monotonic across the run (riskier — two stamping paths: the middleware + the
-loop's H3b out-of-band tool-result stamping).
+**Client defense (kept — defense-in-depth + backward compat):** a per-message **content turn epoch**
+in `useChat` (bumps when text/reasoning resumes after an intervening tool call), threaded into BOTH
+consumers — the merge key (`…-t{seq}`) and the merger accumulator key (`genId::t{seq}`). Do **not**
+remove it: conversations **already persisted** before the server fix still carry the run-scoped
+collision on disk, so the rehydration path relies on the epoch to render reloaded multi-turn
+thinking/text distinctly. Regression coverage:
+`ClientApp/src/__tests__/composables/useChat.test.ts` (multi-turn reasoning, text interleaving,
+**merge-key invariant guard**, **rehydration multi-turn identity**) and `useMessageMerger.test.ts`
+(per-turn `turnSeq` separation).
 
 **Rules when touching message identity (these caused the regression once already):**
 - Changing the scope of an identity field (e.g. `generationId`) requires auditing **every** consumer

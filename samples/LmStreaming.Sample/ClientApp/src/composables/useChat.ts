@@ -111,14 +111,15 @@ function getMergeKey(msg: Message, turnSeq = 0): string {
     return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
   }
 
-  // Reasoning and text have no per-instance id (unlike tool_call_id). The backend reuses
-  // (generationId, messageOrderIdx) for them across the turns of ONE run — #105/H1 stamps the run's
-  // generationId onto every message, and the per-turn messageOrderIdx counter restarts each turn —
-  // so turn N and turn N+1 content collide: later turns' thinking/text collapse onto the first
-  // block (text between tool calls ends up pinned to the top instead of interleaving). Fold in a
-  // caller-supplied turn epoch (contentTurnEpoch in useChat, bumped when content resumes after
-  // intervening non-content) to keep each turn a distinct block. Mirrors the tool_call_id
-  // disambiguation above.
+  // Reasoning and text have no per-instance id (unlike tool_call_id). The server now mints a
+  // per-turn generationId (MultiTurnAgentLoop.ExecuteRunTurnsAsync), so live streams keep turns
+  // distinct on their own. But conversations PERSISTED before that fix still carry the old
+  // run-scoped shape on disk — one generationId across every turn with messageOrderIdx reset each
+  // turn — so turn N and N+1 content would collide on reload (later turns' thinking/text collapsing
+  // onto the first block, text between tool calls pinned to the top instead of interleaving). Fold
+  // in a caller-supplied turn epoch (contentTurnEpoch in useChat, bumped when content resumes after
+  // intervening non-content) so each turn stays a distinct block regardless. Defense-in-depth that
+  // also covers that on-disk legacy data. Mirrors the tool_call_id disambiguation above.
   if (
     isReasoningMessage(msg) || isReasoningUpdateMessage(msg) ||
     isTextMessage(msg) || isTextUpdateMessage(msg)
@@ -179,10 +180,11 @@ export function useChat(options: UseChatOptions = {}) {
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
 
-  // Content turn epoch (BUG #8 + text interleaving). The backend reuses (generationId,
-  // messageOrderIdx) for reasoning AND text across the turns of one run, so without a per-turn
-  // discriminator later turns' thinking/text collapse onto the first block (e.g. text between tool
-  // calls gets pinned to the top instead of interleaving). These are plain closure vars (no
+  // Content turn epoch (BUG #8 + text interleaving). The server now mints a per-turn generationId so
+  // live streams are unambiguous, but this stays as defense-in-depth AND to render conversations
+  // PERSISTED before that fix — whose reasoning/text reuse one run-scoped generationId with
+  // messageOrderIdx reset each turn — without later turns collapsing onto the first block (e.g. text
+  // between tool calls pinned to the top instead of interleaving). These are plain closure vars (no
   // reactivity needed) tracking arrival order: bump the epoch whenever content (text/reasoning)
   // resumes after intervening non-content (a tool call), then fold it into the content merge key via
   // getMergeKey AND the merger accumulator key via processUpdate. Reset on conversation clear/load.

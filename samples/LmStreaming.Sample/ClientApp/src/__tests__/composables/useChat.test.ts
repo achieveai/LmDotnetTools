@@ -280,6 +280,85 @@ describe('useChat rehydration merge-key (BUG A)', () => {
   });
 });
 
+describe('useChat rehydration multi-turn identity (reload keeps turns distinct)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Helper: build a PersistedMessage row carrying the wire identity fields the loader reads.
+  function persisted(
+    id: string,
+    timestamp: number,
+    message: Record<string, unknown>,
+    identity: { runId: string; generationId: string; messageOrderIdx: number }
+  ) {
+    return {
+      id,
+      threadId: 'thread-x',
+      runId: identity.runId,
+      generationId: identity.generationId,
+      messageOrderIdx: identity.messageOrderIdx,
+      timestamp,
+      messageType: String(message.$type),
+      role: String(message.role),
+      messageJson: JSON.stringify(message),
+    };
+  }
+
+  // The live-stream path is covered by the multi-turn reasoning/text describes above; this is the
+  // REHYDRATION counterpart (the open PR-review item). loadMessagesFromBackend replays the same
+  // content turn epoch in persisted order, so reloading an OLD conversation — whose persisted records
+  // share the run's generationId with messageOrderIdx reset each turn (the #105/H1 shape on disk) —
+  // must still render each turn's reasoning/text as a distinct, correctly-ordered block, exactly like
+  // live streaming. Without the epoch replay, reloaded multi-turn thinking/text would collapse onto
+  // the first block after a conversation switch.
+  it('renders distinct per-turn reasoning and text when reloading a colliding-identity history', async () => {
+    const id = { runId: 'run-1', generationId: 'gen-run-1', messageOrderIdx: 0 };
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      // Turn 1: reasoning(moi1) + text(moi2) + tool call(moi3)
+      persisted('p1', 1000, { $type: MessageType.Reasoning, role: 'assistant', reasoning: 'R1', visibility: 1 }, { ...id, messageOrderIdx: 1 }),
+      persisted('p2', 1001, { $type: MessageType.Text, role: 'assistant', text: 'A1' }, { ...id, messageOrderIdx: 2 }),
+      persisted('p3', 1002, { $type: MessageType.ToolCall, role: 'assistant', tool_call_id: 'call_1', function_name: 'Read', function_args: '{}' }, { ...id, messageOrderIdx: 3 }),
+      // Turn 2: identity RESETS (same generationId, moi back to 1/2/3) — the on-disk collision.
+      persisted('p4', 1003, { $type: MessageType.Reasoning, role: 'assistant', reasoning: 'R2', visibility: 1 }, { ...id, messageOrderIdx: 1 }),
+      persisted('p5', 1004, { $type: MessageType.Text, role: 'assistant', text: 'A2' }, { ...id, messageOrderIdx: 2 }),
+      persisted('p6', 1005, { $type: MessageType.ToolCall, role: 'assistant', tool_call_id: 'call_2', function_name: 'Edit', function_args: '{}' }, { ...id, messageOrderIdx: 3 }),
+    ]);
+
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.loadMessagesFromBackend('thread-x');
+
+    const items = chat.displayItems.value;
+    const reasonings = items
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+    const texts = items
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+    const toolIds = items
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ tool_calls?: Array<{ tool_call_id?: string }> }> }).items)
+      .map((m) => m.tool_calls?.[0]?.tool_call_id)
+      .filter((id): id is string => typeof id === 'string');
+
+    expect(reasonings, 'reloaded reasoning must stay distinct per turn').toEqual(['R1', 'R2']);
+    expect(texts, 'reloaded text must stay distinct per turn').toEqual(['A1', 'A2']);
+    expect(toolIds, 'reloaded tool calls must stay distinct').toEqual(['call_1', 'call_2']);
+  });
+});
+
 describe('useChat rehydration duplicate merge-key (BLOCKER 1)', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();
@@ -562,6 +641,72 @@ describe('useChat multi-turn text interleaving (BUG: text between tool calls col
       .filter((i) => i.type === 'assistant-message')
       .map((i) => (i as { content: { text?: string } }).content.text);
     expect(texts).toEqual(['First answer.', 'Second answer.']);
+  });
+});
+
+describe('useChat merge-key invariant guard (distinct logical messages never collapse)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Executable form of the documented invariant (CLAUDE.md "Message identity across turns",
+  // post-mortem prevention #3): two logically distinct messages must NEVER collapse onto one rendered
+  // block. This guard drives the worst case the wire can present — every turn reusing ONE
+  // generationId with messageOrderIdx reset each turn (the #105/H1 run-scoped collision) — across a
+  // mixed reasoning + text + tool-call sequence over 3 turns, and asserts that all 9 logical messages
+  // survive as their own distinct, correctly-ordered blocks. The backend now mints a per-turn
+  // generationId (its own regression test lives in LmMultiTurn.Tests), so this guards the CLIENT
+  // defense layer by simulating the collision directly: if the client turn epoch ever regresses, the
+  // collapsed turns make these arrays short/duplicated and this fails.
+  function reasoningTextsIn(items: ReturnType<typeof useChat>['displayItems']['value']): string[] {
+    return items
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+  }
+  function toolCallIdsIn(items: ReturnType<typeof useChat>['displayItems']['value']): (string | undefined)[] {
+    return items
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ tool_calls?: Array<{ tool_call_id?: string }> }> }).items)
+      .map((m) => m.tool_calls?.[0]?.tool_call_id)
+      .filter((id): id is string => typeof id === 'string');
+  }
+  function assistantTextsIn(items: ReturnType<typeof useChat>['displayItems']['value']): string[] {
+    return items
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+  }
+
+  it('preserves all 9 mixed messages across 3 turns under a fully colliding (generationId, messageOrderIdx) stream', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('mixed multi-turn task');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    // Every message of every turn shares ONE generationId; messageOrderIdx resets each turn
+    // (reasoning=1, text=2, tool call=3). Without a per-turn discriminator turn N and N+1 collide.
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1' };
+    for (const turn of [1, 2, 3]) {
+      options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: `R${turn}`, visibility: 1, messageOrderIdx: 1 });
+      options.onMessage({ ...base, $type: MessageType.Text, text: `A${turn}`, messageOrderIdx: 2 });
+      options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: `call_${turn}`, function_name: 'Do', function_args: '{}', messageOrderIdx: 3 });
+    }
+
+    const items = chat.displayItems.value;
+    // All three of each kind survive in chronological order — none collapsed onto turn 1's block.
+    expect(reasoningTextsIn(items), 'each turn reasoning is its own block').toEqual(['R1', 'R2', 'R3']);
+    expect(assistantTextsIn(items), 'each turn text is its own bubble').toEqual(['A1', 'A2', 'A3']);
+    expect(toolCallIdsIn(items), 'each turn tool call is its own pill').toEqual(['call_1', 'call_2', 'call_3']);
   });
 });
 

@@ -262,6 +262,92 @@ public class MultiTurnAgentLoopTests
         await cts.CancelAsync();
     }
 
+    // Multi-turn message identity: each agentic TURN within a run must advertise a DISTINCT
+    // generationId via options.GenerationId. The client merge key is
+    // kind-runId-generationId-messageOrderIdx and messageOrderIdx resets every turn (a fresh
+    // OrderingState per streaming invocation), so a run-scoped generationId makes turn N and turn N+1
+    // collide — later turns' reasoning/text collapse onto the first block (#105/H1 over-corrected
+    // from per-message to per-run; per-turn is the correct middle). A per-turn generationId stays
+    // consistent WITHIN a turn (so a turn's tool_call + tool_call_result still share an id — the
+    // #105 grouping requirement) while keeping turns distinct.
+    [Fact]
+    public async Task ExecuteRunAsync_MultiTurn_AssignsDistinctGenerationIdPerTurn()
+    {
+        // Arrange: turn 1 emits a tool call (forces a 2nd turn); turn 2 emits final text.
+        var toolCallMessage = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\": \"Seattle\"}",
+            ToolCallId = "call_123",
+            Role = Role.Assistant,
+        };
+        var finalMessage = new TextMessage { Text = "Done!", Role = Role.Assistant };
+
+        var capturedGenerationIds = new List<string?>();
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, options, _) =>
+            {
+                capturedGenerationIds.Add(options.GenerationId);
+                callCount++;
+                return Task.FromResult(
+                    callCount == 1
+                        ? ToAsyncEnumerable([toolCallMessage])
+                        : ToAsyncEnumerable([finalMessage]));
+            });
+
+        var registry = new FunctionRegistry();
+        var weatherContract = new FunctionContract
+        {
+            Name = "get_weather",
+            Description = "Get weather for a location",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "location",
+                    Description = "The location to get weather for",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true,
+                },
+            ],
+        };
+        registry.AddFunction(weatherContract, (_, _, _) =>
+            Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        // Assert — two turns ran, each advertised a non-empty generationId, and they DIFFER.
+        capturedGenerationIds.Should().HaveCount(2, "the tool call should force a second turn");
+        capturedGenerationIds.Should().OnlyContain(g => !string.IsNullOrEmpty(g),
+            "every turn must advertise a run generationId so WithIds can stamp it onto messages");
+        capturedGenerationIds[0].Should().NotBe(capturedGenerationIds[1],
+            "each agentic turn must advertise a DISTINCT generationId so the client merge key "
+            + "(kind-runId-generationId-messageOrderIdx) stays unique across turns when messageOrderIdx resets");
+
+        await cts.CancelAsync();
+    }
+
     [Fact]
     public async Task ExecuteRunAsync_WithProviderServerToolCall_DoesNotExecuteLocalToolHandler()
     {
