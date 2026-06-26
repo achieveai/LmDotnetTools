@@ -91,7 +91,7 @@ export interface UseChatOptions {
 /**
  * Generate merge key for message updates
  */
-function getMergeKey(msg: Message, reasoningTurnSeq = 0): string {
+function getMergeKey(msg: Message, turnSeq = 0): string {
   const runId = msg.runId || 'default';
   const generationId = msg.generationId || 'default';
   const messageOrderIdx = msg.messageOrderIdx ?? 0;
@@ -111,15 +111,19 @@ function getMergeKey(msg: Message, reasoningTurnSeq = 0): string {
     return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
   }
 
-  // Reasoning has no per-instance id (unlike tool_call_id). The backend reuses
-  // (generationId, messageOrderIdx) for reasoning across the turns of ONE run — #105/H1 stamps the
-  // run's generationId onto every message, and the per-turn messageOrderIdx counter restarts each
-  // turn — so turn N and turn N+1 thinking collide and later turns collapse onto the first block.
-  // Fold in a caller-supplied turn epoch (reasoningTurnEpoch in useChat, bumped when reasoning
-  // resumes after intervening non-reasoning content) to keep each turn a distinct block. Mirrors the
-  // tool_call_id disambiguation above.
-  if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-t${reasoningTurnSeq}`;
+  // Reasoning and text have no per-instance id (unlike tool_call_id). The backend reuses
+  // (generationId, messageOrderIdx) for them across the turns of ONE run — #105/H1 stamps the run's
+  // generationId onto every message, and the per-turn messageOrderIdx counter restarts each turn —
+  // so turn N and turn N+1 content collide: later turns' thinking/text collapse onto the first
+  // block (text between tool calls ends up pinned to the top instead of interleaving). Fold in a
+  // caller-supplied turn epoch (contentTurnEpoch in useChat, bumped when content resumes after
+  // intervening non-content) to keep each turn a distinct block. Mirrors the tool_call_id
+  // disambiguation above.
+  if (
+    isReasoningMessage(msg) || isReasoningUpdateMessage(msg) ||
+    isTextMessage(msg) || isTextUpdateMessage(msg)
+  ) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-t${turnSeq}`;
   }
 
   // ToolsCallUpdate accumulates tools into one array → key on messageOrderIdx only.
@@ -175,35 +179,44 @@ export function useChat(options: UseChatOptions = {}) {
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
 
-  // Reasoning turn epoch (BUG #8). The backend reuses (generationId, messageOrderIdx) for reasoning
-  // across the turns of one run, so without a per-turn discriminator later turns' thinking blocks
-  // collapse onto the first. These are plain closure vars (no reactivity needed) tracking arrival
-  // order: bump the epoch whenever reasoning resumes after intervening non-reasoning content, then
-  // fold it into the reasoning merge key via getMergeKey. Reset on conversation clear/load.
-  let reasoningTurnEpoch = 0;
-  let sawContentSinceReasoning = true; // seed true so the very first reasoning opens epoch 1
+  // Content turn epoch (BUG #8 + text interleaving). The backend reuses (generationId,
+  // messageOrderIdx) for reasoning AND text across the turns of one run, so without a per-turn
+  // discriminator later turns' thinking/text collapse onto the first block (e.g. text between tool
+  // calls gets pinned to the top instead of interleaving). These are plain closure vars (no
+  // reactivity needed) tracking arrival order: bump the epoch whenever content (text/reasoning)
+  // resumes after intervening non-content (a tool call), then fold it into the content merge key via
+  // getMergeKey AND the merger accumulator key via processUpdate. Reset on conversation clear/load.
+  let contentTurnEpoch = 0;
+  let sawNonContentSinceContent = true; // seed true so the very first content opens epoch 1
 
-  /**
-   * Advance and return the reasoning turn epoch for a message in arrival order. Consecutive
-   * reasoning messages (a turn's thinking parts + their finalization) share one epoch; any
-   * intervening non-reasoning content (tool call, text, user message) marks the next reasoning as a
-   * new turn. Non-reasoning messages only record that boundary.
-   */
-  function reasoningEpochFor(msg: Message): number {
-    if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) {
-      if (sawContentSinceReasoning) {
-        reasoningTurnEpoch++;
-        sawContentSinceReasoning = false;
-      }
-      return reasoningTurnEpoch;
-    }
-    sawContentSinceReasoning = true;
-    return reasoningTurnEpoch;
+  function isContentMessage(msg: Message): boolean {
+    return (
+      isReasoningMessage(msg) || isReasoningUpdateMessage(msg) ||
+      isTextMessage(msg) || isTextUpdateMessage(msg)
+    );
   }
 
-  function resetReasoningEpoch(): void {
-    reasoningTurnEpoch = 0;
-    sawContentSinceReasoning = true;
+  /**
+   * Advance and return the content turn epoch for a message in arrival order. Consecutive content
+   * messages of one turn (its thinking + text parts and their finalizations) share one epoch; any
+   * intervening non-content (a tool call) marks the next content message as a new turn. Non-content
+   * messages only record that boundary.
+   */
+  function contentTurnSeqFor(msg: Message): number {
+    if (isContentMessage(msg)) {
+      if (sawNonContentSinceContent) {
+        contentTurnEpoch++;
+        sawNonContentSinceContent = false;
+      }
+      return contentTurnEpoch;
+    }
+    sawNonContentSinceContent = true;
+    return contentTurnEpoch;
+  }
+
+  function resetContentTurnEpoch(): void {
+    contentTurnEpoch = 0;
+    sawNonContentSinceContent = true;
   }
 
   // Tool results map: tool_call_id -> ToolCallResultMessage
@@ -757,12 +770,15 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // Advance the content turn epoch in arrival order (BUG #8 + text interleaving) so multi-turn
+    // thinking/text does not collapse onto the first block; non-content kinds just record the turn
+    // boundary. The SAME sequence scopes both the merger accumulator (so deltas don't concatenate
+    // across turns) and the display merge key (so each turn is a distinct, correctly-ordered block).
+    const turnSeq = contentTurnSeqFor(msg);
+
     // Process through merger (handles both updates and complete messages)
-    const mergedMessage = isUpdate ? processUpdate(msg) : msg;
-    // Advance the reasoning turn epoch in arrival order (BUG #8) so multi-turn thinking does not
-    // collapse onto the first block; non-reasoning kinds just record the turn boundary.
-    const reasoningSeq = reasoningEpochFor(msg);
-    const mergeKey = getMergeKey(msg, reasoningSeq);
+    const mergedMessage = isUpdate ? processUpdate(msg, turnSeq) : msg;
+    const mergeKey = getMergeKey(msg, turnSeq);
 
     // Find or create message in index
     let chatMessage = messageIndex.value.get(mergeKey);
@@ -995,7 +1011,7 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
-    resetReasoningEpoch();
+    resetContentTurnEpoch();
     reset();
 
     // Close WebSocket connection
@@ -1063,7 +1079,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageIndex.value.clear();
     messageOrder.value = [];
     toolResults.value.clear();
-    resetReasoningEpoch();
+    resetContentTurnEpoch();
     reset();
 
     // Set the thread ID
@@ -1111,10 +1127,10 @@ export function useChat(options: UseChatOptions = {}) {
         // Index rehydrated messages by the same merge key used by live streaming
         // (kind-runId-generationId-messageOrderIdx) so a subsequent streaming update
         // sharing that identity merges in place instead of creating a duplicate bubble. Replay the
-        // reasoning turn epoch (BUG #8) in persisted order so reloaded multi-turn thinking renders
-        // as distinct blocks too, matching what live streaming computes.
-        const reasoningSeq = reasoningEpochFor(parsedMessage);
-        const mergeKey = getMergeKey(parsedMessage, reasoningSeq);
+        // content turn epoch (BUG #8 + text interleaving) in persisted order so reloaded multi-turn
+        // thinking/text renders as distinct, correctly-ordered blocks too, matching live streaming.
+        const turnSeq = contentTurnSeqFor(parsedMessage);
+        const mergeKey = getMergeKey(parsedMessage, turnSeq);
 
         // Create chat message
         const chatMessage: InternalChatMessage = {

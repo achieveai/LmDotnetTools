@@ -488,6 +488,83 @@ describe('useChat multi-turn reasoning (BUG #8 thinking collapse)', () => {
   });
 });
 
+describe('useChat multi-turn text interleaving (BUG: text between tool calls collapses to top)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Project displayItems to a compact shape: assistant text bubbles and tool-call pills in order.
+  function layout(items: ReturnType<typeof useChat>['displayItems']['value']): string[] {
+    return items
+      .filter((i) => i.type === 'assistant-message' || i.type === 'pill')
+      .map((i) =>
+        i.type === 'assistant-message'
+          ? `text:${(i as { content: { text?: string } }).content.text}`
+          : `pill:${(i as { items: Array<{ tool_calls?: Array<{ tool_call_id?: string }> }> }).items
+              .map((m) => m.tool_calls?.[0]?.tool_call_id)
+              .join(',')}`
+      );
+  }
+
+  // The backend narrates with text BETWEEN tool calls across turns; every turn shares the run's
+  // generationId (#105/H1) and resets messageOrderIdx, so turn N and turn N+1 text collide on the
+  // client merge key AND the merger accumulator. Before the fix the text collapsed into a single
+  // block pinned to the top (first-insert position) instead of interleaving with the tool pills.
+  it('interleaves streamed text with the tool calls of each turn instead of collapsing at the top', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('multi-step with narration');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1' };
+
+    // Turn 1: streamed narration (moi 0) then a tool call (moi 1).
+    options.onMessage({ ...base, $type: MessageType.TextUpdate, text: 'Let me ', messageOrderIdx: 0, chunkIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.TextUpdate, text: 'read the file.', messageOrderIdx: 0, chunkIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.Text, text: 'Let me read the file.', messageOrderIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'Read', function_args: '{}', messageOrderIdx: 1 });
+
+    // Turn 2: narration reuses moi 0 (reset) with NEW content, then another tool call.
+    options.onMessage({ ...base, $type: MessageType.TextUpdate, text: 'Now I will ', messageOrderIdx: 0, chunkIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.TextUpdate, text: 'edit it.', messageOrderIdx: 0, chunkIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.Text, text: 'Now I will edit it.', messageOrderIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_2', function_name: 'Edit', function_args: '{}', messageOrderIdx: 1 });
+
+    expect(layout(chat.displayItems.value)).toEqual([
+      'text:Let me read the file.',
+      'pill:call_1',
+      'text:Now I will edit it.',
+      'pill:call_2',
+    ]);
+  });
+
+  it('keeps finalized (non-streamed) text distinct per turn when generationId+messageOrderIdx collide', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('finalized text per turn');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1' };
+    options.onMessage({ ...base, $type: MessageType.Text, text: 'First answer.', messageOrderIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'Read', function_args: '{}', messageOrderIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.Text, text: 'Second answer.', messageOrderIdx: 0 });
+
+    const texts = chat.displayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text);
+    expect(texts).toEqual(['First answer.', 'Second answer.']);
+  });
+});
+
 describe('useChat concurrent tool-call grouping', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();
