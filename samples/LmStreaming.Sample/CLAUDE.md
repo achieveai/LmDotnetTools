@@ -66,3 +66,36 @@ Regression coverage (all CI-runnable): `LmCore.Tests/Middleware/MessageTransform
 `OpenAiResponsesProvider.Tests/OpenAiResponsesAgentTests` (drives the real mock OpenAI `/responses`
 SSE stream through the pipeline). Add new duplicate-render checks at these levels first; a browser
 scenario in `Browser.E2E.Tests` is the optional top-of-pyramid.
+
+## Message identity across turns (why multi-turn thinking/text "collapses to the top")
+The merge key `kind-runId-generationId-messageOrderIdx` has **TWO** client consumers, and BOTH
+assume it uniquely identifies one logical message:
+1. `useChat.getMergeKey` — the display/dedup key (collision ⇒ later turns overwrite the first block,
+   pinned to first-insert position = the top).
+2. `useMessageMerger` — the streaming accumulator key (collision ⇒ a later turn's `*_update` deltas
+   **concatenate** onto the earlier turn's growing string; `finalize()` only runs per-run, never
+   per-turn).
+
+In a multi-turn run this identity is **NOT unique by default**: `generationId` is **run-scoped**
+(constant across all turns — `MultiTurnAgentLoop` threads one id to every turn, `WithIds` stamps it;
+see #105/H1), while `messageOrderIdx` **resets every turn** (`MessageTransformationMiddleware` makes
+a fresh `OrderingState` per streaming invocation). So turn N and turn N+1 collide. **Tool calls
+survive** because their key also carries `tool_call_id`; **reasoning and text have no per-instance id
+and collapse** — this is the only reason they regress while tool calls don't.
+
+Client defense (current fix): a per-message **content turn epoch** in `useChat` (bumps when
+text/reasoning resumes after an intervening tool call), threaded into BOTH consumers — the merge key
+(`…-t{seq}`) and the merger accumulator key (`genId::t{seq}`). Regression coverage:
+`ClientApp/src/__tests__/composables/useChat.test.ts` (multi-turn reasoning + text interleaving) and
+`useMessageMerger.test.ts` (per-turn `turnSeq` separation). The durable root fix is server-side and
+deferred: prefer a **per-turn (per-generation) `generationId`** over run-scoped, or make
+`messageOrderIdx` monotonic across the run (riskier — two stamping paths: the middleware + the
+loop's H3b out-of-band tool-result stamping).
+
+**Rules when touching message identity (these caused the regression once already):**
+- Changing the scope of an identity field (e.g. `generationId`) requires auditing **every** consumer
+  — there are two here, not one.
+- Any fix that changes message identity MUST ship a **multi-turn (2+ turns) end-to-end client** test
+  (`useChat`/`displayItems`). Unit/single-turn green ≠ correct; the bug is emergent across turns.
+- "Consistent across the whole run" is a **two-field** claim: pinning `generationId` silently
+  requires `messageOrderIdx` to be run-unique. State and test both halves.
