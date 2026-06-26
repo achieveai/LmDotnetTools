@@ -203,6 +203,38 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         return (registry, calls);
     }
 
+    /// <summary>
+    /// Regression: when the gateway is reachable for the /health adopt probe but then REFUSES the
+    /// create POST (down / restarting — <c>SocketException 10061</c> surfaced as
+    /// <see cref="HttpRequestException"/>), the registry must surface a handled
+    /// <see cref="SandboxSessionUnavailableException"/> so the WebSocket / mode-switch layers answer a
+    /// clean error — not let the raw exception crash the request with an unhandled 500.
+    /// </summary>
+    [Fact]
+    public async Task GetOrCreateSessionAsync_GatewayConnectionRefusedOnCreate_ThrowsSandboxUnavailable()
+    {
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = null };
+        // Health probe answers 200 (adopt), but the create POST connection is refused.
+        var gateway = new SandboxGatewayLifetime(
+            options,
+            NullLogger<SandboxGatewayLifetime>.Instance,
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))));
+        var auth = new AuthOptions();
+        var registry = new SandboxSessionRegistry(
+            gateway,
+            options,
+            NullLogger<SandboxSessionRegistry>.Instance,
+            new HttpClient(new StubHandler(_ =>
+                throw new HttpRequestException(
+                    "No connection could be made because the target machine actively refused it."))),
+            auth,
+            new AuthSharedSecret(auth));
+
+        var act = async () => await registry.GetOrCreateSessionAsync();
+
+        await act.Should().ThrowAsync<SandboxSessionUnavailableException>();
+    }
+
     // Thread-safe: the concurrency test fires parallel liveness GETs (and a recreate POST) through
     // the stub handler from multiple threads at once.
     private sealed class CallLog

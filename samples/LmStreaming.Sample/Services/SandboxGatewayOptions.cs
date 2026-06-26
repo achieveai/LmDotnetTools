@@ -12,9 +12,12 @@ public sealed class SandboxGatewayOptions
     public const string SectionName = "SandboxGateway";
 
     /// <summary>
-    /// Base URL of the gateway the app connects to.
+    /// Base URL of the gateway the app connects to. Uses the IPv4 loopback literal (not
+    /// <c>localhost</c>) on purpose: the gateway binds <c>BIND_ADDRESS=127.0.0.1</c> (IPv4 only),
+    /// while <c>localhost</c> resolves to <c>::1</c> first on Windows — the IPv6 connect then
+    /// black-holes and burns the full HttpClient timeout before falling back to IPv4.
     /// </summary>
-    public string BaseUrl { get; set; } = "http://localhost:3000";
+    public string BaseUrl { get; set; } = "http://127.0.0.1:3000";
 
     /// <summary>
     /// Workspace path relative to <see cref="WorkspaceBasePath"/>, mounted as the sandbox

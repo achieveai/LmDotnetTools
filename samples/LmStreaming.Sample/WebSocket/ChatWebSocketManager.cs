@@ -131,6 +131,21 @@ public sealed class ChatWebSocketManager
                 await SendProviderUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
+            catch (SandboxSessionUnavailableException ex)
+            {
+                // Workspace Agent mode creates the sandbox session during agent setup; a gateway
+                // rejection (e.g. an invalid network policy) or an unreachable gateway must surface
+                // as a structured client error, not crash the connection with an unhandled 500.
+                _logger.LogWarning(
+                    ex,
+                    "Sandbox unavailable for thread {ThreadId} (workspace {WorkspaceId}, gateway status {StatusCode})",
+                    threadId,
+                    workspaceId,
+                    ex.StatusCode);
+
+                await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
+                return;
+            }
 
             // Create linked cancellation for connection lifetime
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -379,6 +394,45 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Provider unavailable",
+            CancellationToken.None);
+    }
+
+    private async Task SendSandboxUnavailableErrorAsync(
+        RegisteredWebSocketConnection connection,
+        SandboxSessionUnavailableException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var summary = ex.StatusCode is { } status
+            ? $"Workspace Agent is unavailable: the sandbox gateway rejected the session (HTTP {status})."
+            : "Workspace Agent is unavailable: the sandbox gateway could not be reached.";
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "sandbox_unavailable",
+            ["statusCode"] = ex.StatusCode,
+            // Keep the gateway's own message in the client error — this is a developer sample and the
+            // detail (e.g. which network-policy rule was rejected) is exactly what's needed to act.
+            ["message"] = $"{summary} {ex.Message}",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        // Close through the wrapper so the single-write-path contract holds (closing is outbound).
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Sandbox unavailable",
             CancellationToken.None);
     }
 }
