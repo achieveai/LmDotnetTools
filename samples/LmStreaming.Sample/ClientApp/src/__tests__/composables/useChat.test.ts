@@ -395,6 +395,99 @@ describe('useChat socket reuse honors thread (BUG B)', () => {
   });
 });
 
+describe('useChat multi-turn reasoning (BUG #8 thinking collapse)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Proven from recording thread-1782467009826-a6pnxeu (GPT-5.5/Copilot, 24 turns): every turn's
+  // finalized reasoning shares the RUN's generationId (#105/H1 stamps the run generationId on every
+  // message) and the per-turn messageOrderIdx counter resets each turn, so turn N and turn N+1
+  // reasoning collide on (generationId, messageOrderIdx). Tool calls avoid this because their merge
+  // key already carries tool_call_id; reasoning had no per-instance discriminator, so later turns'
+  // thinking collapsed onto the first ~2 blocks. Each turn's reasoning must render as its own block.
+  function reasoningTextsIn(items: ReturnType<typeof useChat>['displayItems']['value']): string[] {
+    return items
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+  }
+
+  it('renders each turn reasoning as a distinct block when generationId+messageOrderIdx collide across turns', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('do a multi-step task');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    // runId omitted (null on the wire → 'default'); generationId is the run's, constant across turns.
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1' };
+
+    // Turn 1: reasoning (moi 1) then a tool call (moi 3).
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Turn 1: read the file', visibility: 1, messageOrderIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'Read', function_args: '{}', messageOrderIdx: 3 });
+
+    // Turn 2: reasoning REUSES generationId + messageOrderIdx=1 (the collision) with new content.
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Turn 2: edit the file', visibility: 1, messageOrderIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_2', function_name: 'Edit', function_args: '{}', messageOrderIdx: 3 });
+
+    // Turn 3: same collision again.
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Turn 3: run the tests', visibility: 1, messageOrderIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_3', function_name: 'Bash', function_args: '{}', messageOrderIdx: 3 });
+
+    const texts = reasoningTextsIn(chat.displayItems.value);
+    expect(texts, 'every turn reasoning must survive, not collapse onto the first').toEqual([
+      'Turn 1: read the file',
+      'Turn 2: edit the file',
+      'Turn 3: run the tests',
+    ]);
+  });
+
+  it('does not fragment a single turn streaming reasoning: updates then finalize stay one block', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('stream then finalize');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1', messageOrderIdx: 0 };
+    // Streamed reasoning deltas then the finalizing reasoning, all same generationId+messageOrderIdx
+    // (the within-turn merge case). The turn epoch must NOT advance between them.
+    options.onMessage({ ...base, $type: MessageType.ReasoningUpdate, reasoning: 'Think', visibility: 1, chunkIdx: 0 });
+    options.onMessage({ ...base, $type: MessageType.ReasoningUpdate, reasoning: 'ing...', visibility: 1, chunkIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Thinking...', visibility: 1 });
+
+    const texts = reasoningTextsIn(chat.displayItems.value);
+    expect(texts, 'streamed + finalized reasoning of one turn render as a single block').toEqual(['Thinking...']);
+  });
+
+  it('keeps two reasoning blocks within ONE turn (distinct messageOrderIdx) and does not bump turn epoch mid-turn', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('multi-part thinking');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    expect(options).toBeDefined();
+
+    const base = { role: 'assistant', generationId: 'gen-run-1', threadId: 'thread-1' };
+    // One turn, two distinct reasoning parts (moi 1 and 2), then a tool call.
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Part A', visibility: 1, messageOrderIdx: 1 });
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Part B', visibility: 1, messageOrderIdx: 2 });
+    options.onMessage({ ...base, $type: MessageType.ToolCall, tool_call_id: 'call_1', function_name: 'Read', function_args: '{}', messageOrderIdx: 3 });
+    // Next turn reuses moi 1 with new content.
+    options.onMessage({ ...base, $type: MessageType.Reasoning, reasoning: 'Part C', visibility: 1, messageOrderIdx: 1 });
+
+    const texts = reasoningTextsIn(chat.displayItems.value);
+    expect(texts).toEqual(['Part A', 'Part B', 'Part C']);
+  });
+});
+
 describe('useChat concurrent tool-call grouping', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();
