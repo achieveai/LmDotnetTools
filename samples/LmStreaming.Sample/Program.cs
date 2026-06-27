@@ -663,7 +663,10 @@ try
                         loggerFactory,
                         // Expose sandbox tools under their natural names (bash, edit, …) rather than
                         // sandbox-bash; the gateway is the sole MCP server here, so no collisions.
-                        omitServerPrefix: true
+                        omitServerPrefix: true,
+                        // Collapse the "container has no sandbox user" Docker-exec failure class into a
+                        // single actionable message so the model stops retrying it (see SandboxToolHealth).
+                        handlerDecorator: SandboxToolHealth.Wrap
                     );
                     if (sandboxClients.Count > 0)
                     {
@@ -698,17 +701,17 @@ try
                 {
                     var modelId = GetModelIdForProvider(normalizedProviderId);
 
-                    // Filter built-in (server-side) tools based on mode's enabled tools.
-                    // Workspace Agent mode curates its FUNCTION tools via the sandbox MCP gateway and
-                    // so sets enabledTools: [] — but that empty allow-list would also strip server-side
-                    // built-ins like Anthropic web_search. A workspace agent benefits from web search,
-                    // so keep the built-ins unfiltered in workspace mode (this only affects the
-                    // Anthropic-format providers, since GetBuiltInToolsForProvider returns null for the
-                    // rest). Other modes still gate built-ins through their enabledTools list.
+                    // Built-in (server-side) tools are selected by the MODE — never injected per
+                    // provider or via a per-mode override. A mode declares its server-side built-ins in
+                    // EnabledBuiltInTools (e.g. Workspace Agent => ["web_search"], decoupled from its
+                    // empty function-tool allow-list); when that is null we fall back to EnabledTools for
+                    // backward compat (e.g. Research Assistant lists web_search there). A mode that
+                    // enables nothing gets no built-ins. This keeps tool availability mode-driven and
+                    // leaves each provider's core behavior unchanged — we never add a tool the active
+                    // mode didn't ask for.
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
-                    var filteredBuiltInTools = isWorkspaceMode
-                        ? allBuiltInTools
-                        : ModeToolFilter.FilterBuiltInTools(allBuiltInTools, mode.EnabledTools);
+                    var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
+                    var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
                     // testable helper so the per-provider wiring is regression-guarded; see
@@ -2032,7 +2035,8 @@ public partial class Program
         string endpoint,
         IReadOnlyDictionary<string, string> headers,
         ILoggerFactory loggerFactory,
-        bool omitServerPrefix = false
+        bool omitServerPrefix = false,
+        Func<ToolHandler, ToolHandler>? handlerDecorator = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -2054,10 +2058,35 @@ public partial class Program
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
-            _ = registry
-                .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
-                .GetAwaiter()
-                .GetResult();
+            if (handlerDecorator is null)
+            {
+                _ = registry
+                    .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            else
+            {
+                // Register the MCP tools into a scratch registry first so each tool handler can be
+                // wrapped (e.g. the sandbox container-health guard) before it reaches the agent. The
+                // wrapped tools are then exposed on the target registry as explicit functions; the
+                // scratch registry has no other provider for `name`, so there is nothing to conflict
+                // with. The McpClient stays owned by the caller (returned for disposal), so the
+                // wrapped handlers keep working.
+                var scratch = new FunctionRegistry();
+                _ = scratch
+                    .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
+                    .GetAwaiter()
+                    .GetResult();
+                var (contracts, handlers) = scratch.Build();
+                foreach (var contract in contracts)
+                {
+                    if (handlers.TryGetValue(contract.Name, out var handler))
+                    {
+                        _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                    }
+                }
+            }
 
             logger.LogInformation("Connected to MCP server '{Name}' at {Endpoint}", name, endpoint);
         }

@@ -185,6 +185,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 Description = sourceMode.Description,
                 SystemPrompt = sourceMode.SystemPrompt,
                 EnabledTools = sourceMode.EnabledTools,
+                EnabledBuiltInTools = sourceMode.EnabledBuiltInTools,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

@@ -26,9 +26,18 @@ public record ChatMode
     public required string SystemPrompt { get; init; }
 
     /// <summary>
-    /// List of enabled tool names. If null, all tools are enabled.
+    /// List of enabled (function/MCP) tool names. If null, all tools are enabled.
     /// </summary>
     public IReadOnlyList<string>? EnabledTools { get; init; }
+
+    /// <summary>
+    /// List of enabled server-side built-in tool names (e.g. <c>web_search</c>). Kept separate from
+    /// <see cref="EnabledTools"/> so a mode can curate its function tools elsewhere (e.g. Workspace
+    /// Agent sets <c>EnabledTools = []</c> and resolves function tools via the sandbox MCP gateway)
+    /// while still declaring which server-side built-ins it wants. When null, built-in selection
+    /// falls back to <see cref="EnabledTools"/> for backward compatibility.
+    /// </summary>
+    public IReadOnlyList<string>? EnabledBuiltInTools { get; init; }
 
     /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.

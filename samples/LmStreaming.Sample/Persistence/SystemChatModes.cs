@@ -75,6 +75,7 @@ public static class SystemChatModes
             Description = m.Description,
             SystemPrompt = Require(m.SystemPrompt, "systemPrompt"),
             EnabledTools = m.EnabledTools,
+            EnabledBuiltInTools = m.EnabledBuiltInTools,
             IsSystemDefined = true,
             CreatedAt = now,
             UpdatedAt = now,
@@ -167,5 +168,7 @@ public static class SystemChatModes
         public string? SystemPrompt { get; init; }
 
         public List<string>? EnabledTools { get; init; }
+
+        public List<string>? EnabledBuiltInTools { get; init; }
     }
 }

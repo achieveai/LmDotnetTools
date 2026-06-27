@@ -75,4 +75,9 @@ chatModes:
       current directory or environment. Work step-by-step: explore the workspace before
       editing, always read before editing, verify the result, and summarize what you
       changed when done.
+    # Function tools are curated via the sandbox MCP gateway (so enabledTools is empty), but the
+    # workspace agent still benefits from server-side web search. Declared here (NOT in enabledTools)
+    # so built-in selection stays decoupled from the function-tool allow-list.
     enabledTools: []
+    enabledBuiltInTools:
+      - web_search
