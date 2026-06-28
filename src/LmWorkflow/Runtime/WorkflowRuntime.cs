@@ -15,10 +15,19 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 ///     a single lock so the loop-thread tool handlers and the stream-observer task never corrupt state.
 /// </summary>
 /// <remarks>
-///     This is the minimal V1 surface: a linear <c>start → procedural(single authored agent task) →
-///     terminal</c> path with a single blocking spawn. forEach fan-out, background spawns, joins, loops,
-///     and validation re-prompts are intentionally out of scope (P4) but the shape (per-task status,
-///     correlation maps, error markers) is built so P4 can extend it.
+///     <para>
+///         Beyond the linear P3 slice this surface supports <b>forEach fan-out</b> (one unit per array
+///         element), <b>background sub-agent correlation</b> (a spawn receipt is correlated by its
+///         <c>agent_id</c>, and the eventual injected result validated when it arrives), <b>join surfacing</b>
+///         (an <c>all</c>/<c>any</c> progress view for the controller), and <b>bounded validation retries</b>.
+///     </para>
+///     <para>
+///         The runtime stays deliberately light: it never initiates its own tool calls. Validation retries
+///         follow a "controller re-spawns; runtime bounds the attempts" model — when a unit's result fails
+///         and its attempt budget is not yet exhausted the runtime marks the unit <c>pending</c> again and
+///         surfaces the error, which re-surfaces the unit in <c>nextExpectedAction</c> so the controller
+///         re-spawns it; only when the budget is exhausted is the unit terminally failed.
+///     </para>
 /// </remarks>
 public sealed class WorkflowRuntime
 {
@@ -29,14 +38,21 @@ public sealed class WorkflowRuntime
         TaskCreationOptions.RunContinuationsAsynchronously
     );
 
-    // Correlation: the surfaced unit name -> its task ref (populated by ComposeNextExpectedAction), and
-    // the observed Agent tool_call_id -> the same task ref (populated by RegisterSpawn).
+    // Correlation: the surfaced unit name -> its task ref (populated by ComposeNextExpectedAction), the
+    // observed Agent tool_call_id -> the same task ref (populated by RegisterSpawn), and the background
+    // spawn receipt agent_id -> the same task ref (populated by ObserveSpawnResult).
     private readonly Dictionary<string, TaskRef> _tasksByName = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskRef> _tasksByToolCallId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TaskRef> _tasksByAgentId = new(StringComparer.Ordinal);
 
     // Per-task status and the last composed spawn unit, both keyed by the unit name.
     private readonly Dictionary<string, WorkflowTaskStatus> _status = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SpawnUnit> _composed = new(StringComparer.Ordinal);
+
+    // Per-unit validation-retry bookkeeping: how many times a unit's result has failed (attempts) and the
+    // most recent failure reason (surfaced to the controller so it can re-author the re-spawned unit).
+    private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _lastError = new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
     private readonly List<string> _unmatched = [];
@@ -138,8 +154,11 @@ public sealed class WorkflowRuntime
 
             _tasksByName.Clear();
             _tasksByToolCallId.Clear();
+            _tasksByAgentId.Clear();
             _status.Clear();
             _composed.Clear();
+            _attempts.Clear();
+            _lastError.Clear();
             _unmatched.Clear();
         }
     }
@@ -225,10 +244,11 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>
-    ///     Observes the result of a correlated spawn: an error result, non-JSON, or a schema-invalid result
-    ///     records an <c>{ "_error": ... }</c> marker into outputs and marks the task failed; a valid result
-    ///     is recorded into <c>outputs[nodeId][taskId]</c>, its writes applied to state, and the task marked
-    ///     validated. An unknown <paramref name="toolCallId"/> is surfaced as "unmatched" rather than dropped.
+    ///     Observes the result of a correlated <b>blocking</b> spawn (P3 path): an error result, non-JSON, or
+    ///     a schema-invalid result is routed through the validation-retry policy (re-surfaced as pending while
+    ///     the attempt budget allows, otherwise terminally failed with an <c>{ "_error": ... }</c> marker); a
+    ///     valid result is recorded into <c>outputs[nodeId][taskId]</c>, its writes applied to state, and the
+    ///     task marked validated. An unknown <paramref name="toolCallId"/> is surfaced as "unmatched".
     /// </summary>
     public void ObserveResult(string toolCallId, string resultText, bool isError)
     {
@@ -242,49 +262,66 @@ public sealed class WorkflowRuntime
                 return;
             }
 
+            ObserveAnswerNoLock(taskRef, resultText, isError);
+        }
+    }
+
+    /// <summary>
+    ///     Observes the result of a correlated <c>Agent</c> tool call, distinguishing a <b>background spawn
+    ///     receipt</b> from a <b>blocking answer</b>. An error is failed; a receipt
+    ///     (<c>{ "status": "spawned", "agent_id": ... }</c>) records the <c>agent_id → task</c> correlation and
+    ///     defers validation until the injected result arrives (<see cref="ObserveInjectedResult"/>); anything
+    ///     else is treated as a blocking answer and validated/recorded immediately. An unknown
+    ///     <paramref name="toolCallId"/> is surfaced as "unmatched".
+    /// </summary>
+    public void ObserveSpawnResult(string toolCallId, string resultText, bool isError)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+
+        lock (_lock)
+        {
+            if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
+            {
+                _unmatched.Add(toolCallId);
+                return;
+            }
+
             if (isError)
             {
-                MarkFailedNoLock(taskRef, $"sub-agent returned an error: {resultText}");
+                HandleFailureNoLock(taskRef, $"sub-agent returned an error: {resultText}");
                 return;
             }
 
-            JsonNode? parsed;
-            try
+            if (TryReadSpawnReceipt(resultText, out var agentId))
             {
-                parsed = JsonNode.Parse(resultText);
-            }
-            catch (JsonException ex)
-            {
-                MarkFailedNoLock(taskRef, $"task output is not valid JSON: {ex.Message}");
+                // Background spawn: correlate by the receipt agent_id and wait for the injected result.
+                _tasksByAgentId[agentId] = taskRef;
                 return;
             }
 
-            if (parsed is null)
+            ValidateAndRecordNoLock(taskRef, resultText);
+        }
+    }
+
+    /// <summary>
+    ///     Observes the injected background-completion result for a sub-agent, correlated by the receipt
+    ///     <paramref name="agentId"/> recorded in <see cref="ObserveSpawnResult"/>. Validates and records (or
+    ///     fails) exactly as the blocking path does. An unknown <paramref name="agentId"/> is surfaced as
+    ///     "unmatched" rather than dropped.
+    /// </summary>
+    public void ObserveInjectedResult(string agentId, string resultText, bool isError)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(agentId);
+
+        lock (_lock)
+        {
+            if (!_tasksByAgentId.TryGetValue(agentId, out var taskRef))
             {
-                MarkFailedNoLock(taskRef, "task output parsed to a null JSON value.");
+                _unmatched.Add(agentId);
                 return;
             }
 
-            if (taskRef.OutputSchema is { } schema)
-            {
-                var validation = _schemaValidator.ValidateDetailed(resultText, schema.ToJsonString());
-                if (!validation.IsValid)
-                {
-                    MarkFailedNoLock(
-                        taskRef,
-                        "task output failed schema validation: " + string.Join("; ", validation.Errors)
-                    );
-                    return;
-                }
-            }
-
-            RecordOutputNoLock(taskRef, parsed);
-            if (taskRef.Writes is { } writes)
-            {
-                StateWriter.Apply(State, writes, parsed);
-            }
-
-            _status[taskRef.Name] = WorkflowTaskStatus.Validated;
+            ObserveAnswerNoLock(taskRef, resultText, isError);
         }
     }
 
@@ -411,6 +448,30 @@ public sealed class WorkflowRuntime
                 ["nextExpectedAction"] = NextActionsToJsonNoLock(nextActions),
             };
 
+            // For the active procedural node, surface the join progress (a SURFACE for the controller — the
+            // runtime never auto-advances) and, if a unit has terminally failed, the node's onFailure route.
+            if (CurrentNodeId is { } nodeId && FindNodeNoLock(nodeId) is ProceduralNode procedural)
+            {
+                var activeUnits = ActiveUnitsNoLock(procedural);
+                result["join"] = BuildJoinNoLock(procedural, activeUnits);
+                if (OnFailureRouteNoLock(procedural, activeUnits) is { } route)
+                {
+                    result["onFailure"] = route;
+                }
+            }
+
+            // Surface per-unit validation/parse errors so the controller can re-author a re-surfaced unit.
+            if (_lastError.Count > 0)
+            {
+                var errors = new JsonObject();
+                foreach (var (name, error) in _lastError)
+                {
+                    errors[name] = error;
+                }
+
+                result["taskErrors"] = errors;
+            }
+
             if (IncludesChannel(projection, "state"))
             {
                 result["state"] = State.DeepClone();
@@ -468,46 +529,88 @@ public sealed class WorkflowRuntime
             || CurrentNodeId is null
             || FindNodeNoLock(CurrentNodeId) is not ProceduralNode node
             || node.TasksMode != TasksMode.Authored
-            || node.TaskList is not { Count: 1 } tasks
-        )
-        {
-            return [];
-        }
-
-        var task = tasks[0];
-        if (
-            task.Delegate != DelegateKind.Agent
-            || string.IsNullOrEmpty(task.SubagentType)
-            || !string.IsNullOrEmpty(task.ForEach)
+            || node.TaskList is not { Count: > 0 } tasks
         )
         {
             return [];
         }
 
         var visit = _visits.TryGetValue(node.Id, out var count) ? count : 1;
-        var name = $"{node.Id}:{visit}:{task.Id}";
-        var prompt = ComposePrompt(task, BuildContextNoLock(null, null, null));
-        var unit = new SpawnUnit
+        var units = new List<SpawnUnit>();
+        foreach (var task in tasks)
         {
-            Name = name,
-            SubagentType = task.SubagentType,
-            Prompt = prompt,
-            OutputSchema = task.OutputSchema?.DeepClone(),
-        };
+            if (task.Delegate != DelegateKind.Agent || string.IsNullOrEmpty(task.SubagentType))
+            {
+                continue;
+            }
 
-        _tasksByName[name] = new TaskRef
+            if (string.IsNullOrEmpty(task.ForEach))
+            {
+                ComposeUnitNoLock(node, visit, task, index: null, item: null, count: null, units);
+                continue;
+            }
+
+            // forEach fan-out: resolve the source binding to an array and spawn one unit per element.
+            if (BuildContextNoLock(null, null, null).Resolve(task.ForEach) is not JsonArray source)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < source.Count; i++)
+            {
+                ComposeUnitNoLock(node, visit, task, i, source[i], source.Count, units);
+            }
+        }
+
+        return units;
+    }
+
+    /// <summary>
+    ///     Registers one task occurrence (a non-forEach unit when <paramref name="index"/> is <c>null</c>, or a
+    ///     single forEach element otherwise): records its <see cref="TaskRef"/> and seeds a <c>pending</c>
+    ///     status so the unit counts toward the node's join totals, then surfaces it (rendering its prompt with
+    ///     the loop locals) only when it is still <c>pending</c> — an <c>in_flight</c>/<c>validated</c>/terminal
+    ///     <c>failed</c> unit is registered but not re-surfaced, so polling <c>GetWorkflow</c> never re-spawns it.
+    /// </summary>
+    private void ComposeUnitNoLock(
+        ProceduralNode node,
+        int visit,
+        WorkflowTask task,
+        int? index,
+        JsonNode? item,
+        int? count,
+        List<SpawnUnit> units
+    )
+    {
+        var taskRef = new TaskRef
         {
             NodeId = node.Id,
             Visit = visit,
             TaskId = task.Id,
-            Index = null,
+            Index = index,
             OutputSchema = task.OutputSchema,
             Writes = task.Writes,
+            OnFailure = task.OnFailure,
+            MaxValidationRetries = task.MaxValidationRetries,
         };
-        _ = _status.TryAdd(name, WorkflowTaskStatus.Pending);
-        _composed[name] = unit;
 
-        return [unit];
+        _tasksByName[taskRef.Name] = taskRef;
+        _ = _status.TryAdd(taskRef.Name, WorkflowTaskStatus.Pending);
+
+        if (_status[taskRef.Name] != WorkflowTaskStatus.Pending)
+        {
+            return;
+        }
+
+        var unit = new SpawnUnit
+        {
+            Name = taskRef.Name,
+            SubagentType = task.SubagentType!,
+            Prompt = ComposePrompt(task, BuildContextNoLock(item, index, count)),
+            OutputSchema = task.OutputSchema?.DeepClone(),
+        };
+        _composed[taskRef.Name] = unit;
+        units.Add(unit);
     }
 
     private string ComposePrompt(WorkflowTask task, BindingContext context)
@@ -531,18 +634,99 @@ public sealed class WorkflowRuntime
         return string.Join("\n\n", parts);
     }
 
-    private void RecordOutputNoLock(TaskRef taskRef, JsonNode value)
+    /// <summary>
+    ///     Shared "blocking answer" handling for the P3 tool-result path and the injected-result path: an
+    ///     error fails the task; otherwise the answer is validated and recorded.
+    /// </summary>
+    private void ObserveAnswerNoLock(TaskRef taskRef, string resultText, bool isError)
     {
-        if (Outputs[taskRef.NodeId] is not JsonObject nodeOutputs)
+        if (isError)
         {
-            nodeOutputs = [];
-            Outputs[taskRef.NodeId] = nodeOutputs;
+            HandleFailureNoLock(taskRef, $"sub-agent returned an error: {resultText}");
+            return;
         }
 
-        nodeOutputs[taskRef.TaskId] = value.DeepClone();
+        ValidateAndRecordNoLock(taskRef, resultText);
     }
 
-    private void MarkFailedNoLock(TaskRef taskRef, string error)
+    /// <summary>
+    ///     Parses, schema-validates, records and applies the writes of a successful task answer. Any
+    ///     parse/validation failure is routed through <see cref="HandleFailureNoLock"/> (which decides between
+    ///     a retry and a terminal failure). On success the unit is marked validated and its last error cleared.
+    /// </summary>
+    private void ValidateAndRecordNoLock(TaskRef taskRef, string resultText)
+    {
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(resultText);
+        }
+        catch (JsonException ex)
+        {
+            HandleFailureNoLock(taskRef, $"task output is not valid JSON: {ex.Message}");
+            return;
+        }
+
+        if (parsed is null)
+        {
+            HandleFailureNoLock(taskRef, "task output parsed to a null JSON value.");
+            return;
+        }
+
+        if (taskRef.OutputSchema is { } schema)
+        {
+            var validation = _schemaValidator.ValidateDetailed(resultText, schema.ToJsonString());
+            if (!validation.IsValid)
+            {
+                HandleFailureNoLock(
+                    taskRef,
+                    "task output failed schema validation: " + string.Join("; ", validation.Errors)
+                );
+                return;
+            }
+        }
+
+        WriteOutputSlotNoLock(taskRef, parsed);
+        if (taskRef.Writes is { } writes)
+        {
+            StateWriter.Apply(State, writes, parsed);
+        }
+
+        _status[taskRef.Name] = WorkflowTaskStatus.Validated;
+        _ = _lastError.Remove(taskRef.Name);
+    }
+
+    /// <summary>
+    ///     Applies the "controller re-spawns; runtime bounds the attempts" retry policy. The attempt counter
+    ///     for the unit is incremented; while it stays within <see cref="WorkflowTask.MaxValidationRetries"/>
+    ///     the unit is marked <c>pending</c> again (so it re-surfaces in <c>nextExpectedAction</c>), its error
+    ///     surfaced, and its spawn correlation cleared so the next spawn re-correlates. Once the budget is
+    ///     exhausted the unit is terminally failed and an <c>{ "_error": ... }</c> marker recorded into outputs.
+    /// </summary>
+    private void HandleFailureNoLock(TaskRef taskRef, string error)
+    {
+        var attempts = (_attempts.TryGetValue(taskRef.Name, out var prior) ? prior : 0) + 1;
+        _attempts[taskRef.Name] = attempts;
+        _lastError[taskRef.Name] = error;
+
+        if (attempts <= taskRef.MaxValidationRetries)
+        {
+            _status[taskRef.Name] = WorkflowTaskStatus.Pending;
+            ClearCorrelationNoLock(taskRef.Name);
+            return;
+        }
+
+        WriteOutputSlotNoLock(taskRef, new JsonObject { ["_error"] = error });
+        _status[taskRef.Name] = WorkflowTaskStatus.Failed;
+    }
+
+    /// <summary>
+    ///     Writes <paramref name="value"/> into the output slot for <paramref name="taskRef"/>: a forEach unit
+    ///     (one with an <see cref="TaskRef.Index"/>) lands at its index in an array under
+    ///     <c>outputs[nodeId][taskId]</c> (the array is grown/padded with nulls so out-of-order completions
+    ///     land correctly); a non-forEach unit is written directly as the scalar/object value.
+    /// </summary>
+    private void WriteOutputSlotNoLock(TaskRef taskRef, JsonNode value)
     {
         if (Outputs[taskRef.NodeId] is not JsonObject nodeOutputs)
         {
@@ -550,8 +734,87 @@ public sealed class WorkflowRuntime
             Outputs[taskRef.NodeId] = nodeOutputs;
         }
 
-        nodeOutputs[taskRef.TaskId] = new JsonObject { ["_error"] = error };
-        _status[taskRef.Name] = WorkflowTaskStatus.Failed;
+        if (taskRef.Index is not { } index)
+        {
+            nodeOutputs[taskRef.TaskId] = value.DeepClone();
+            return;
+        }
+
+        if (nodeOutputs[taskRef.TaskId] is not JsonArray array)
+        {
+            array = [];
+            nodeOutputs[taskRef.TaskId] = array;
+        }
+
+        while (array.Count <= index)
+        {
+            array.Add(null);
+        }
+
+        array[index] = value.DeepClone();
+    }
+
+    /// <summary>Removes any tool-call-id / agent-id correlation pointing at the unit named <paramref name="unitName"/>.</summary>
+    private void ClearCorrelationNoLock(string unitName)
+    {
+        RemoveByUnit(_tasksByToolCallId, unitName);
+        RemoveByUnit(_tasksByAgentId, unitName);
+
+        static void RemoveByUnit(Dictionary<string, TaskRef> map, string unitName)
+        {
+            foreach (var key in map.Where(kv => kv.Value.Name == unitName).Select(kv => kv.Key).ToList())
+            {
+                _ = map.Remove(key);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Detects a background spawn receipt (<c>{ "status": "spawned", "agent_id": "..." }</c>) and extracts
+    ///     its <paramref name="agentId"/>. Anything else (including a blocking JSON answer that happens to be an
+    ///     object) returns <c>false</c>.
+    /// </summary>
+    private static bool TryReadSpawnReceipt(string resultText, out string agentId)
+    {
+        agentId = string.Empty;
+        if (string.IsNullOrWhiteSpace(resultText))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(resultText);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (
+                !doc.RootElement.TryGetProperty("status", out var status)
+                || status.ValueKind != JsonValueKind.String
+                || status.GetString() != "spawned"
+            )
+            {
+                return false;
+            }
+
+            if (
+                !doc.RootElement.TryGetProperty("agent_id", out var id)
+                || id.ValueKind != JsonValueKind.String
+                || string.IsNullOrEmpty(id.GetString())
+            )
+            {
+                return false;
+            }
+
+            agentId = id.GetString()!;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private bool IsDeclaredEdgeNoLock(string from, string to) =>
@@ -594,6 +857,58 @@ public sealed class WorkflowRuntime
 
         return statuses;
     }
+
+    /// <summary>The registered units for the active visit of <paramref name="node"/> (the join's working set).</summary>
+    private List<TaskRef> ActiveUnitsNoLock(ProceduralNode node)
+    {
+        var visit = _visits.TryGetValue(node.Id, out var count) ? count : 1;
+        return [.. _tasksByName.Values.Where(t => t.NodeId == node.Id && t.Visit == visit)];
+    }
+
+    /// <summary>
+    ///     Computes the controller-facing join surface for the active node: counts by status plus a
+    ///     <c>satisfied</c> flag (mode <c>all</c> → every unit validated; mode <c>any</c> → at least one).
+    /// </summary>
+    private JsonObject BuildJoinNoLock(ProceduralNode node, IReadOnlyList<TaskRef> units)
+    {
+        var validated = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Validated);
+        var failed = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Failed);
+        var inFlight = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.InFlight);
+
+        var mode = node.JoinPolicy?.Mode ?? JoinMode.All;
+        var total = units.Count;
+        var satisfied = mode == JoinMode.Any ? validated >= 1 : total > 0 && validated == total;
+
+        return new JsonObject
+        {
+            ["mode"] = mode == JoinMode.Any ? "any" : "all",
+            ["total"] = total,
+            ["validated"] = validated,
+            ["failed"] = failed,
+            ["inFlight"] = inFlight,
+            ["satisfied"] = satisfied,
+        };
+    }
+
+    /// <summary>
+    ///     The node id the controller should route to when a unit of the active node has terminally failed:
+    ///     the failed task's <see cref="WorkflowTask.OnFailure"/> if set, else the node's
+    ///     <see cref="ProceduralNode.OnFailure"/>; <c>null</c> when nothing has failed or no route exists.
+    /// </summary>
+    private string? OnFailureRouteNoLock(ProceduralNode node, IReadOnlyList<TaskRef> units)
+    {
+        var failed = units.FirstOrDefault(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Failed);
+        if (failed is null)
+        {
+            return null;
+        }
+
+        var route = failed.OnFailure ?? node.OnFailure;
+        return string.IsNullOrEmpty(route) ? null : route;
+    }
+
+    private WorkflowTaskStatus StatusOfNoLock(string unitName) =>
+        _status.TryGetValue(unitName, out var status) ? status : WorkflowTaskStatus.Pending;
 
     private static JsonArray NextActionsToJsonNoLock(IReadOnlyList<SpawnUnit> units)
     {
@@ -649,8 +964,9 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     Correlation record for one authored task occurrence: which node/visit/task it belongs to, the
-    ///     optional forEach index (always <c>null</c> in the V1-minimal slice), and the schema/writes the
-    ///     observed result is validated against and applied through.
+    ///     optional forEach index (<c>null</c> for a non-forEach unit, the element index for a fan-out unit),
+    ///     the schema/writes the observed result is validated against and applied through, the per-task
+    ///     <see cref="WorkflowTask.OnFailure"/> route, and the validation-retry budget.
     /// </summary>
     private sealed record TaskRef
     {
@@ -660,6 +976,8 @@ public sealed class WorkflowRuntime
         public int? Index { get; init; }
         public JsonNode? OutputSchema { get; init; }
         public WriteSpec? Writes { get; init; }
+        public string? OnFailure { get; init; }
+        public int MaxValidationRetries { get; init; }
 
         public string Name =>
             Index is { } index ? $"{NodeId}:{Visit}:{TaskId}:{index}" : $"{NodeId}:{Visit}:{TaskId}";

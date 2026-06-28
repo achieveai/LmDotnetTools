@@ -128,9 +128,11 @@ public static class WorkflowSession
     }
 
     /// <summary>
-    ///     Correlates the two stream events that matter: an <c>Agent</c> tool call (registers the spawn by
-    ///     the runtime-surfaced unit name) and its tool result (records/validates the task output). Every
-    ///     other message is ignored.
+    ///     Correlates the stream events that matter: an <c>Agent</c> tool call (registers the spawn by the
+    ///     runtime-surfaced unit name); its tool result (a blocking answer is validated/recorded, a background
+    ///     receipt records the <c>agent_id</c> correlation); and an injected <c>&lt;sub-agent&gt;</c> user
+    ///     message (the background completion, validated/recorded by its agent id). Every other message is
+    ///     ignored.
     /// </summary>
     private static void Observe(WorkflowRuntime runtime, IMessage message)
     {
@@ -147,7 +149,16 @@ public static class WorkflowSession
 
             case ToolCallResultMessage { ToolCallId: { } resultId } result
                 when runtime.IsRegisteredSpawn(resultId):
-                runtime.ObserveResult(resultId, result.Result, result.IsError);
+                runtime.ObserveSpawnResult(resultId, result.Result, result.IsError);
+                break;
+
+            case TextMessage { Role: Role.User, Text: { } text }
+                when text.TrimStart().StartsWith("<sub-agent", StringComparison.Ordinal):
+                if (SubAgentResultParser.TryParse(text, out var agentId, out var payload, out var isError))
+                {
+                    runtime.ObserveInjectedResult(agentId, payload, isError);
+                }
+
                 break;
 
             default:
