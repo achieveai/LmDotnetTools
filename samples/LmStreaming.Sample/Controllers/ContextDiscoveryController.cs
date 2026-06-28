@@ -39,6 +39,7 @@ public sealed class ContextDiscoveryController(
     SandboxSessionRegistry sessionRegistry,
     WorkspaceSubAgentLoader subAgentLoader,
     ContextDiscoveryInjector contextInjector,
+    ContextDiscoveryDiagnostics diagnostics,
     ILogger<ContextDiscoveryController> logger) : ControllerBase
 {
     /// <summary>
@@ -72,6 +73,11 @@ public sealed class ContextDiscoveryController(
             body.Description,
             body.SessionId,
             body.Truncated);
+
+        // Record the arrival for the diagnostics endpoint BEFORE the kind-specific handling (which is
+        // best-effort and may no-op). This is what lets an operator confirm webhooks are reaching the
+        // app at all — the count staying at zero is the signature of an unreachable callback host.
+        diagnostics.RecordReceived(body.SessionId, body.Kind, body.Path ?? body.Name);
 
         if (string.Equals(body.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
         {

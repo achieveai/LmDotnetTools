@@ -24,7 +24,8 @@ public class ContextDiscoveryControllerTests
         string? authorizationHeader,
         SandboxSessionRegistry? registry = null,
         WorkspaceSubAgentLoader? loader = null,
-        ContextDiscoveryInjector? injector = null)
+        ContextDiscoveryInjector? injector = null,
+        ContextDiscoveryDiagnostics? diagnostics = null)
     {
         var sharedSecret = new AuthSharedSecret(new AuthOptions
         {
@@ -34,12 +35,14 @@ public class ContextDiscoveryControllerTests
         registry ??= CreateEmptyRegistry();
         loader ??= new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
         injector ??= CreateNoopInjector(registry);
+        diagnostics ??= new ContextDiscoveryDiagnostics();
 
         var controller = new ContextDiscoveryController(
             sharedSecret,
             registry,
             loader,
             injector,
+            diagnostics,
             NullLogger<ContextDiscoveryController>.Instance);
 
         var httpContext = new DefaultHttpContext();
@@ -215,6 +218,51 @@ public class ContextDiscoveryControllerTests
         registry
             .TryMarkDiscoverySeen("session-dispatch", "context_file", "CLAUDE.md")
             .Should().BeFalse("the injector should have already marked this entry as seen during dispatch");
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CorrectSecret_ContextFile_RecordsArrivalInDiagnostics()
+    {
+        // The diagnostics endpoint reads these counts to prove webhooks are actually arriving.
+        var diagnostics = new ContextDiscoveryDiagnostics();
+        var controller = CreateController(authorizationHeader: Secret, diagnostics: diagnostics);
+
+        var result = await controller.NotifyAsync(
+            new ContextDiscoveryPayload
+            {
+                SessionId = "session-diag",
+                Kind = "context_file",
+                Path = "CLAUDE.md",
+                Content = "body",
+            },
+            CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        var snapshot = diagnostics.Snapshot();
+        snapshot.Should().ContainKey("session-diag");
+        snapshot["session-diag"].Count.Should().Be(1);
+        snapshot["session-diag"].LastPath.Should().Be("CLAUDE.md");
+    }
+
+    [Fact]
+    public async Task NotifyAsync_Unauthorized_DoesNotRecordArrival()
+    {
+        // An unauthenticated call must never be counted — otherwise the diagnostic would mask a
+        // gateway that can't authenticate as if discoveries were flowing.
+        var diagnostics = new ContextDiscoveryDiagnostics();
+        var controller = CreateController(authorizationHeader: "wrong-secret", diagnostics: diagnostics);
+
+        _ = await controller.NotifyAsync(
+            new ContextDiscoveryPayload
+            {
+                SessionId = "session-diag",
+                Kind = "context_file",
+                Path = "CLAUDE.md",
+                Content = "body",
+            },
+            CancellationToken.None);
+
+        diagnostics.Snapshot().Should().BeEmpty();
     }
 
     [Fact]

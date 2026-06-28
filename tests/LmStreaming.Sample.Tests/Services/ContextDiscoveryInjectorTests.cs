@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Auth;
+using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -287,90 +288,6 @@ public class ContextDiscoveryInjectorTests
                 new HttpClient(new StubHandler(Unused)),
                 new AuthOptions(),
                 new AuthSharedSecret(new AuthOptions()));
-        }
-    }
-
-    private sealed class RecordingMultiTurnAgent : IMultiTurnAgent
-    {
-        private readonly List<IMessage> _sent = [];
-        private readonly Lock _lock = new();
-
-        public RecordingMultiTurnAgent(string threadId)
-        {
-            ThreadId = threadId;
-        }
-
-        public string ThreadId { get; }
-
-        public string? CurrentRunId { get; set; }
-
-        public bool IsRunning { get; set; } = true;
-
-        public bool ThrowOnSend { get; set; }
-
-        public IReadOnlyList<IMessage> SentMessages
-        {
-            get
-            {
-                lock (_lock)
-                {
-                    return [.. _sent];
-                }
-            }
-        }
-
-        public ValueTask<SendReceipt> SendAsync(
-            List<IMessage> messages,
-            string? inputId = null,
-            string? parentRunId = null,
-            CancellationToken ct = default)
-        {
-            if (ThrowOnSend)
-            {
-                throw new InvalidOperationException("send failed");
-            }
-
-            lock (_lock)
-            {
-                _sent.AddRange(messages);
-            }
-
-            var receiptId = inputId ?? Guid.NewGuid().ToString("N");
-            return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
-        }
-
-#pragma warning disable CS1998, IDE0391
-        public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
-            UserInput userInput,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
-        {
-            _ = userInput;
-            _ = ct;
-            yield break;
-        }
-
-        public async IAsyncEnumerable<IMessage> SubscribeAsync(
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
-        {
-            _ = ct;
-            yield break;
-        }
-#pragma warning restore CS1998, IDE0391
-
-        public Task RunAsync(CancellationToken ct = default)
-        {
-            return Task.Delay(Timeout.InfiniteTimeSpan, ct);
-        }
-
-        public Task StopAsync(TimeSpan? timeout = null)
-        {
-            _ = timeout;
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            return ValueTask.CompletedTask;
         }
     }
 

@@ -242,6 +242,10 @@ try
     // thread bound to the same sandbox session.
     _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
     _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
+    // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
+    // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
+    // unreachable callback host).
+    _ = builder.Services.AddSingleton<ContextDiscoveryDiagnostics>();
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
