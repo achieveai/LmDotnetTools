@@ -140,7 +140,10 @@ public sealed class WorkflowValidator
         }
     }
 
-    // Rule 7: V1 restrictions (reduce nodes, runtime/hybrid tasks, quorum joins, non-agent delegates, upsert writes).
+    // Rule 7: V1 restrictions (reduce nodes, runtime/hybrid tasks, quorum joins, non-agent delegates,
+    // upsert writes). Also gates the forward-compat authoring props that are accepted by the model but
+    // never honored in V1 (task.parallel, node.maxParallel, joinPolicy.threshold, writes.key) so they
+    // fail loudly instead of silently no-op'ing.
     private static void ValidateV1Restrictions(
         IReadOnlyList<WorkflowNode> nodes,
         List<string> errors
@@ -178,6 +181,19 @@ public sealed class WorkflowValidator
                 );
             }
 
+            if (procedural.MaxParallel is not null)
+            {
+                errors.Add($"Node '{procedural.Id}' sets maxParallel, which is not supported in V1.");
+            }
+
+            if (procedural.JoinPolicy?.Threshold is not null)
+            {
+                errors.Add(
+                    $"Node '{procedural.Id}' sets joinPolicy.threshold, which only applies to the "
+                        + "deferred quorum join and is not supported in V1."
+                );
+            }
+
             foreach (var task in procedural.TaskList ?? [])
             {
                 if (task.Delegate != DelegateKind.Agent)
@@ -188,11 +204,27 @@ public sealed class WorkflowValidator
                     );
                 }
 
+                if (task.Parallel)
+                {
+                    errors.Add(
+                        $"Task '{task.Id}' sets parallel=true, which is not supported in V1 "
+                            + "(forEach runs sequentially)."
+                    );
+                }
+
                 if (task.Writes is { Mode: WriteMode.Upsert })
                 {
                     errors.Add(
                         $"Task '{task.Id}' in node '{procedural.Id}' uses writes mode 'upsert' "
                             + "which is not supported in V1."
+                    );
+                }
+
+                if (task.Writes?.Key is not null)
+                {
+                    errors.Add(
+                        $"Task '{task.Id}' sets writes.key, which only applies to the deferred "
+                            + "upsert mode and is not supported in V1."
                     );
                 }
             }

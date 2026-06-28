@@ -40,7 +40,6 @@ internal static class WorkflowFixtures
               "title": "Summarize each document",
               "tasksMode": "authored",
               "joinPolicy": { "mode": "all" },
-              "maxParallel": 3,
               "onFailure": "term_failed",
               "taskList": [
                 {
@@ -49,7 +48,6 @@ internal static class WorkflowFixtures
                   "delegate": "agent",
                   "subagent_type": "summarizer",
                   "forEach": "state.documents",
-                  "parallel": true,
                   "promptTemplate": "Summarize: {{item}}",
                   "outputSchema": { "$ref": "#/$defs/Summary" },
                   "writes": { "from": "summary", "to": "state.summaries", "mode": "append" },

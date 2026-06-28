@@ -555,6 +555,104 @@ public class WorkflowValidatorTests
             .Contain(e => e.Contains("upsert") && e.Contains("not supported in V1"));
     }
 
+    [Fact]
+    public void TaskParallel_IsRejectedAsNotSupportedInV1()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "parallel fan-out",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["p"] },
+                {
+                  "id": "p", "type": "procedural", "title": "P", "joinPolicy": { "mode": "all" }, "next": ["t"],
+                  "taskList": [
+                    { "id": "a", "delegate": "agent", "subagent_type": "x", "forEach": "state.items", "parallel": true, "promptTemplate": "y" }
+                  ]
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        AssertInvalid(
+            json,
+            "Task 'a' sets parallel=true, which is not supported in V1 (forEach runs sequentially)."
+        );
+    }
+
+    [Fact]
+    public void NodeMaxParallel_IsRejectedAsNotSupportedInV1()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "maxParallel cap",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["p"] },
+                {
+                  "id": "p", "type": "procedural", "title": "P", "joinPolicy": { "mode": "all" }, "maxParallel": 3, "next": ["t"],
+                  "taskList": [
+                    { "id": "a", "delegate": "agent", "subagent_type": "x", "promptTemplate": "y" }
+                  ]
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        AssertInvalid(json, "Node 'p' sets maxParallel, which is not supported in V1.");
+    }
+
+    [Fact]
+    public void JoinPolicyThreshold_IsRejectedAsNotSupportedInV1()
+    {
+        // Uses mode 'all' (not 'quorum') so only the threshold gate fires, keeping the assertion targeted.
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "join threshold",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["p"] },
+                {
+                  "id": "p", "type": "procedural", "title": "P", "joinPolicy": { "mode": "all", "threshold": 0.5 }, "next": ["t"],
+                  "taskList": [
+                    { "id": "a", "delegate": "agent", "subagent_type": "x", "promptTemplate": "y" }
+                  ]
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        AssertInvalid(
+            json,
+            "Node 'p' sets joinPolicy.threshold, which only applies to the deferred quorum join and is not supported in V1."
+        );
+    }
+
+    [Fact]
+    public void WritesKey_IsRejectedAsNotSupportedInV1()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "writes key",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["p"] },
+                {
+                  "id": "p", "type": "procedural", "title": "P", "joinPolicy": { "mode": "all" }, "next": ["t"],
+                  "taskList": [
+                    { "id": "a", "delegate": "agent", "subagent_type": "x", "promptTemplate": "y", "writes": { "to": "state.x", "key": "id" } }
+                  ]
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        AssertInvalid(
+            json,
+            "Task 'a' sets writes.key, which only applies to the deferred upsert mode and is not supported in V1."
+        );
+    }
+
     // ---- ValidateAndThrow ----------------------------------------------------------------------
 
     [Fact]

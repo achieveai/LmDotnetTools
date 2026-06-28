@@ -231,6 +231,10 @@ public static partial class ConditionEvaluator
         value = 0;
         return node.GetValueKind() switch
         {
+            // Serialize-then-parse rather than JsonValue.TryGetValue<double>(): on net8/net9 that method
+            // returns false for an int-backed JsonValue (e.g. JsonValue.Create(5)), which would silently
+            // flip a numeric comparison to an ordinal-string compare. ToJsonString() always emits the
+            // numeric token, so parsing it covers both JsonElement- and CLR-backed numbers.
             JsonValueKind.Number => double.TryParse(
                 node.ToJsonString(),
                 NumberStyles.Float,

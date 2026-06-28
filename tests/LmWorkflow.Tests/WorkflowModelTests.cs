@@ -37,15 +37,54 @@ public class WorkflowModelTests
         var procedural = def.Nodes.OfType<ProceduralNode>().First();
         procedural.TasksMode.Should().Be(TasksMode.Authored);
         procedural.JoinPolicy.Mode.Should().Be(JoinMode.All);
-        procedural.MaxParallel.Should().Be(3);
 
         var task = procedural.TaskList.Should().ContainSingle().Subject;
         task.Delegate.Should().Be(DelegateKind.Agent);
         task.SubagentType.Should().Be("summarizer");
         task.ForEach.Should().Be("state.documents");
-        task.Parallel.Should().BeTrue();
         task.Writes!.Mode.Should().Be(WriteMode.Append);
         task.Writes.To.Should().Be("state.summaries");
+    }
+
+    [Fact]
+    public void Deserialize_KeepsForwardCompatAuthoringFields_EvenThoughValidatorRejectsThem()
+    {
+        // node.maxParallel and task.parallel are forward-compat model properties: the V1 validator rejects
+        // them, but the model must still round-trip them so a future runtime can honor them without a
+        // schema change. This is a pure deserialization assertion that never runs through the validator.
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "objective": "forward-compat authoring fields",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["p"] },
+                {
+                  "id": "p",
+                  "type": "procedural",
+                  "title": "P",
+                  "maxParallel": 3,
+                  "next": ["t"],
+                  "taskList": [
+                    {
+                      "id": "a",
+                      "delegate": "agent",
+                      "subagent_type": "x",
+                      "forEach": "state.items",
+                      "parallel": true,
+                      "promptTemplate": "do {{item}}"
+                    }
+                  ]
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        var def = WorkflowJson.Deserialize(json);
+
+        var procedural = def.Nodes.OfType<ProceduralNode>().Single();
+        procedural.MaxParallel.Should().Be(3);
+        procedural.TaskList!.Single().Parallel.Should().BeTrue();
     }
 
     [Fact]
