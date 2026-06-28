@@ -428,7 +428,128 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Contains(textMessages, t => ((ICanGetText)t).GetText() == "gen2 complete");
     }
 
+    [Fact]
+    public async Task InvokeStreamingAsync_SkipsEmptyServerToolCall_AndItsEmptyResult()
+    {
+        // The "empty web_search loop": a provider/model emits a web_search server_tool_use with empty
+        // {} input. The Anthropic parser streams it as ToolCallUpdateMessage(s) for the joiner to build
+        // into a single ToolCallMessage (see AnthropicStreamParser.FinalizeServerToolUseBlock). The
+        // joiner must NOT create that message for an empty server-tool call, and must drop its orphaned
+        // empty result — so neither half is persisted or replayed.
+        var stream = new List<IMessage>
+        {
+            // content_block_start: server_tool_use web_search, no input yet.
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "srvtoolu_1",
+                Index = 0,
+                FunctionName = "web_search",
+                FunctionArgs = null,
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // content_block_stop: finalized with empty {} input.
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "srvtoolu_1",
+                Index = 0,
+                FunctionName = "web_search",
+                FunctionArgs = "{}",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // The empty server-tool result paired with the (skipped) call.
+            new ToolCallResultMessage
+            {
+                ToolCallId = "srvtoolu_1",
+                ToolName = "web_search",
+                Result = "[]",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            // The model's actual answer.
+            new TextMessage { Text = "Here is the answer.", Role = Role.Assistant, GenerationId = "g1" },
+        };
+
+        var results = await RunThroughJoinerAsync(stream);
+
+        Assert.DoesNotContain(results, m => m is ToolCallMessage);
+        Assert.DoesNotContain(results, m => m is ToolCallResultMessage);
+        Assert.Contains(results, m => m is TextMessage t && t.Text == "Here is the answer.");
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_KeepsRealQueryBearingServerToolCall_AndResult()
+    {
+        // A genuine, query-bearing web_search must build normally — call and result both survive.
+        var stream = new List<IMessage>
+        {
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "srvtoolu_2",
+                Index = 0,
+                FunctionName = "web_search",
+                FunctionArgs = null,
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "srvtoolu_2",
+                Index = 0,
+                FunctionName = "web_search",
+                FunctionArgs = """{"query":"latest news"}""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "srvtoolu_2",
+                ToolName = "web_search",
+                Result = """[{"type":"web_search_result","url":"https://example.com","title":"News"}]""",
+                ExecutionTarget = ExecutionTarget.ProviderServer,
+                Role = Role.Assistant,
+            },
+            new TextMessage { Text = "Based on the search...", Role = Role.Assistant, GenerationId = "g2" },
+        };
+
+        var results = await RunThroughJoinerAsync(stream);
+
+        var call = Assert.Single(results.OfType<ToolCallMessage>());
+        Assert.Equal("web_search", call.FunctionName);
+        Assert.Equal("srvtoolu_2", call.ToolCallId);
+        _ = Assert.Single(results.OfType<ToolCallResultMessage>());
+        Assert.Contains(results, m => m is TextMessage t && t.Text == "Based on the search...");
+    }
+
     #region Helper Methods
+
+    // Run a scripted provider stream through the joiner middleware and collect the joined output.
+    private static async Task<List<IMessage>> RunThroughJoinerAsync(IEnumerable<IMessage> stream)
+    {
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        _ = mockStreamingAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(stream.ToAsyncEnumerable());
+
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, CancellationToken.None);
+
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        return results;
+    }
 
     // Helper method to split string on spaces while including spaces in the parts
     private static List<string> SplitStringPreservingSpaces(string input)

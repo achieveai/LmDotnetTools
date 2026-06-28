@@ -88,6 +88,51 @@ describe('useMessageMerger', () => {
       expect(result2.text).toBe('Second gen');
       expect(result2.generationId).toBe('gen-2');
     });
+
+    // BUG: across the turns of ONE run the backend reuses a single run-scoped generationId
+    // (#105/H1). Keying the accumulator by generationId alone made turn N+1's text deltas
+    // concatenate onto turn N's, so the UI showed one giant text block instead of one per turn.
+    // The caller (useChat) now passes a per-turn sequence; same genId + different turnSeq must NOT
+    // share an accumulator, while same genId + same turnSeq still accumulates within the turn.
+    it('does not concatenate text across turns that share a generationId but differ in turnSeq', () => {
+      const mk = (text: string, chunkIdx: number): TextUpdateMessage => ({
+        $type: MessageType.TextUpdate,
+        text,
+        isUpdate: true,
+        role: 'assistant',
+        generationId: 'run-gen',
+        messageOrderIdx: 0,
+        chunkIdx,
+      });
+
+      // Turn 1 (seq 1): two deltas accumulate within the turn.
+      merger.processUpdate(mk('Let me ', 0), 1);
+      const t1 = merger.processUpdate(mk('read the file.', 1), 1) as TextMessage;
+      expect(t1.text).toBe('Let me read the file.');
+      expect(t1.generationId).toBe('run-gen');
+
+      // Turn 2 (seq 2): SAME generationId, new turn — must start fresh, not append to turn 1.
+      const t2 = merger.processUpdate(mk('Now I will edit it.', 0), 2) as TextMessage;
+      expect(t2.text, 'turn 2 text must not carry turn 1 content').toBe('Now I will edit it.');
+      expect(t2.generationId).toBe('run-gen');
+    });
+
+    it('does not concatenate reasoning across turns that share a generationId but differ in turnSeq', () => {
+      const mk = (reasoning: string): ReasoningUpdateMessage => ({
+        $type: MessageType.ReasoningUpdate,
+        reasoning,
+        isUpdate: true,
+        visibility: 'Plain',
+        role: 'assistant',
+        generationId: 'run-gen',
+        messageOrderIdx: 0,
+      });
+
+      const r1 = merger.processUpdate(mk('Thinking about turn one.'), 1) as ReasoningMessage;
+      expect(r1.reasoning).toBe('Thinking about turn one.');
+      const r2 = merger.processUpdate(mk('Thinking about turn two.'), 2) as ReasoningMessage;
+      expect(r2.reasoning, 'turn 2 reasoning must not carry turn 1 content').toBe('Thinking about turn two.');
+    });
   });
 
   describe('processUpdate - reasoning updates', () => {

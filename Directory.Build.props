@@ -37,6 +37,11 @@
     <!-- IDE0330: Prefer readonly span (uses .NET 9 Lock type, incompatible with .NET 8) -->
     <!-- Enforce zero-warning builds repo-wide. Local opt-out via -p:TreatWarningsAsErrors=false. -->
     <TreatWarningsAsErrors Condition="'$(TreatWarningsAsErrors)' == ''">true</TreatWarningsAsErrors>
+    <!-- NuGet audit advisories must NOT fail the build: NU1902 (moderate) currently fires for the
+         transitive Scriban 7.2.0 dependency (GHSA-6q7j-xr26-3h2c, GHSA-q6rr-fm2g-g5x8), which has no
+         patched release we can move to. Keep the advisory VISIBLE as a warning (not NoWarn-hidden) so
+         it resurfaces when a fix ships, but don't break CI on an advisory we can't yet remediate. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1902</WarningsNotAsErrors>
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>

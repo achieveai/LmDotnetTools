@@ -342,26 +342,44 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             }
 
             turnCount++;
-            Logger.LogDebug("Executing turn {Turn} of run {RunId}", turnCount, runId);
 
-            var hasToolCalls = await ExecuteTurnAsync(runId, generationId, turnCount, ct);
+            // Per-turn generationId. The client merge key is kind-runId-generationId-messageOrderIdx
+            // and messageOrderIdx RESETS every turn (a fresh OrderingState per streaming invocation),
+            // so a single run-scoped generationId makes turn N and turn N+1 collide — later turns'
+            // reasoning/text (which carry no per-instance id, unlike tool calls' tool_call_id)
+            // collapse onto the first block. Give each turn its own generationId so turns stay
+            // distinct, while every message WITHIN a turn still shares one id (the #105/H1
+            // requirement that a turn's tool_call + tool_call_result group together). Turn 1 reuses
+            // the run's generationId so run_assignment's advertised id matches the first turn and
+            // single-turn runs are unchanged; turns 2+ get a fresh id. Pillbox grouping is
+            // arrival-order based on the client (not generationId), so this never changes grouping.
+            var turnGenerationId = turnCount == 1 ? generationId : Guid.NewGuid().ToString("N");
+
+            Logger.LogDebug(
+                "Executing turn {Turn} of run {RunId} (generation {GenerationId})",
+                turnCount,
+                runId,
+                turnGenerationId);
+
+            var hasToolCalls = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, ct);
 
             // If any tool call from this generation deferred and is still unresolved, end
             // the run cleanly. Resolution of the last deferred entry will auto-trigger a
-            // new run via the resume sentinel.
-            if (HasUnresolvedDeferralsForGeneration(generationId))
+            // new run via the resume sentinel. Keyed on the per-turn generationId — the turn's
+            // tool calls are tagged with it, so this stays internally consistent.
+            if (HasUnresolvedDeferralsForGeneration(turnGenerationId))
             {
                 lock (_resumeLock)
                 {
                     _lastDeferringRunId = runId;
-                    _lastDeferringGenerationId = generationId;
+                    _lastDeferringGenerationId = turnGenerationId;
                     _resumeScheduled = false;
                 }
 
                 Logger.LogInformation(
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
                     runId,
-                    _deferred.Values.Count(d => d.GenerationId == generationId));
+                    _deferred.Values.Count(d => d.GenerationId == turnGenerationId));
                 break;
             }
 

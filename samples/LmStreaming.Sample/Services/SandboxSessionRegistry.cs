@@ -370,8 +370,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var workspaceId = workspaceRef.Id;
 
         // Surface the clear, actionable gateway error here (not at app startup) — this is the
-        // first point at which Workspace Agent mode actually requires a healthy gateway.
-        await _gateway.EnsureReadyAsync(ct).ConfigureAwait(false);
+        // first point at which Workspace Agent mode actually requires a healthy gateway. Wrap the
+        // gateway-unreachable failure as SandboxSessionUnavailableException so the WebSocket layer
+        // surfaces a clean client error instead of crashing the connection with an unhandled 500.
+        try
+        {
+            await _gateway.EnsureReadyAsync(ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex is not SandboxSessionUnavailableException)
+        {
+            throw new SandboxSessionUnavailableException(workspaceId, statusCode: null, ex.Message, ex);
+        }
 
         var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
@@ -429,9 +438,35 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
-        using var response = await _httpClient
-            .PostAsJsonAsync(requestUri, request, JsonOptions, ct)
-            .ConfigureAwait(false);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient
+                .PostAsJsonAsync(requestUri, request, JsonOptions, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            // The gateway became unreachable mid-request (down / restarting / connection refused).
+            // Surface it as the same clean, handled "sandbox unavailable" signal the WebSocket and
+            // mode-switch layers already catch — not a raw HttpRequestException that crashes the
+            // request with an unhandled 500.
+            _logger.LogWarning(
+                ex,
+                "Sandbox create could not reach the gateway at {GatewayBaseUrl} for workspace {WorkspaceId}",
+                _gateway.GatewayBaseUrl,
+                workspaceId
+            );
+            throw new SandboxSessionUnavailableException(
+                workspaceId,
+                statusCode: null,
+                $"Could not reach the sandbox gateway at {_gateway.GatewayBaseUrl} to create a session "
+                    + $"for workspace '{workspaceId}'.",
+                ex
+            );
+        }
+
+        using var responseScope = response;
 
         if (!response.IsSuccessStatusCode)
         {
@@ -442,7 +477,9 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 (int)response.StatusCode,
                 body
             );
-            throw new InvalidOperationException(
+            throw new SandboxSessionUnavailableException(
+                workspaceId,
+                (int)response.StatusCode,
                 $"Sandbox gateway returned {(int)response.StatusCode} creating a session for "
                     + $"workspace '{workspaceId}': {body}"
             );

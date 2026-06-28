@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
@@ -166,7 +167,38 @@ public class ConversationsController(
                 });
         }
 
-        _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
+        // Switching into a sandbox-backed mode (e.g. Workspace Agent) eagerly creates the sandbox
+        // session. A gateway rejection or an unreachable gateway must answer a clean 503 — not crash
+        // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
+        try
+        {
+            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Mode switch to {ModeId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
+                request.ModeId,
+                threadId,
+                ex.StatusCode);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Mode switch to {ModeId} for thread {ThreadId} failed: provider {ProviderId} unavailable",
+                request.ModeId,
+                threadId,
+                ex.ProviderId);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+        }
+
         return Ok(new { modeId = mode.Id, modeName = mode.Name });
     }
 

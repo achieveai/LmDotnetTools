@@ -719,9 +719,46 @@ public record AnthropicRequest
         foreach (var msg in merged)
         {
             MergeAdjacentThinkingBlocks(msg.Content);
+            OrderAssistantToolUseLast(msg);
         }
 
         return merged;
+    }
+
+    /// <summary>
+    /// Anthropic requires tool_use blocks to be the trailing content of an assistant turn: any
+    /// text/thinking block appearing AFTER a tool_use makes the API reject the whole turn with
+    /// "tool_use ids were found without tool_result blocks immediately after". History reconstruction
+    /// can interleave demoted-thinking / trailing text after the tool calls (the streaming + merge
+    /// order is not the wire order Anthropic mandates), so stably reorder each assistant turn that has
+    /// tool calls into thinking → text → tool_use.
+    /// </summary>
+    private static void OrderAssistantToolUseLast(AnthropicMessage message)
+    {
+        if (message.Role != "assistant")
+        {
+            return;
+        }
+
+        var content = message.Content;
+        if (!content.Any(b => b.Type is "tool_use" or "server_tool_use"))
+        {
+            return;
+        }
+
+        static int Rank(AnthropicContent block) => block.Type switch
+        {
+            "thinking" => 0,
+            "tool_use" or "server_tool_use" => 2,
+            _ => 1,
+        };
+
+        // OrderBy performs a stable sort, so the relative order within each group is preserved — in
+        // particular the tool_use blocks keep their order, which Anthropic pairs to tool_result blocks
+        // by id (not position) in the next message.
+        var ordered = content.OrderBy(Rank).ToList();
+        content.Clear();
+        content.AddRange(ordered);
     }
 
     /// <summary>
@@ -753,20 +790,31 @@ public record AnthropicRequest
             }
         }
 
-        // Any thinking block still lacking a signature after merging cannot be replayed: Anthropic
-        // (and compatible backends like Kimi, which emit thinking text but no signature) reject a
-        // signatureless thinking block in multi-turn history with 400 "invalid_request_error".
-        // Demote those to plain text so the reasoning context is kept without breaking the request;
-        // drop empty ones outright.
+        // A valid thinking block needs BOTH thinking text and a signature. Any block that isn't a
+        // complete pair after merging cannot be replayed — Anthropic (and compatible backends like
+        // Kimi) reject it in multi-turn history with 400 "invalid_request_error" /
+        // "thinking.thinking: Field required". Normalise the leftovers:
+        //   - text but no signature  → demote to plain text (keeps the reasoning context).
+        //   - no text (signature-only orphan, or fully empty) → drop. This happens when the
+        //     text/signature halves get separated (e.g. a tool_use block lands between them, so the
+        //     adjacent-merge above can't combine them), leaving a stranded signature with no thinking
+        //     text — an empty `thinking` field the backend requires to be present and non-empty.
         for (var i = content.Count - 1; i >= 0; i--)
         {
             var block = content[i];
-            if (block.Type != "thinking" || !string.IsNullOrEmpty(block.ThinkingSignature))
+            if (block.Type != "thinking")
             {
                 continue;
             }
 
-            if (!string.IsNullOrEmpty(block.Thinking))
+            var hasText = !string.IsNullOrEmpty(block.Thinking);
+            var hasSignature = !string.IsNullOrEmpty(block.ThinkingSignature);
+            if (hasText && hasSignature)
+            {
+                continue; // complete, valid thinking block — keep as-is
+            }
+
+            if (hasText)
             {
                 content[i] = new AnthropicContent { Type = "text", Text = block.Thinking };
             }

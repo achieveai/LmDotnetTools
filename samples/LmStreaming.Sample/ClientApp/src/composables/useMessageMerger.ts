@@ -57,23 +57,29 @@ export function useMessageMerger() {
    * For update messages, returns the accumulated state.
    * For non-update messages, returns them directly.
    */
-  function processUpdate(message: Message): Message {
+  function processUpdate(message: Message, turnSeq = 0): Message {
     const genId = message.generationId || 'default';
+    // Accumulators are scoped per logical TURN, not just per generationId. A multi-turn run reuses
+    // one run-scoped generationId (#105/H1) with messageOrderIdx reset each turn, so keying by
+    // generationId alone made a later turn's text/reasoning deltas concatenate onto an earlier
+    // turn's (one giant block instead of one per turn). The caller (useChat) supplies a per-turn
+    // sequence so each turn accumulates independently.
+    const accKey = `${genId}::t${turnSeq}`;
 
     if (isTextUpdateMessage(message)) {
-      return processTextUpdate(genId, message);
+      return processTextUpdate(accKey, message);
     }
 
     if (isToolsCallUpdateMessage(message)) {
-      return processToolsCallUpdate(genId, message);
+      return processToolsCallUpdate(accKey, message);
     }
 
     if (isToolCallUpdateMessage(message)) {
-      return processToolCallUpdate(genId, message);
+      return processToolCallUpdate(accKey, message);
     }
 
     if (isReasoningUpdateMessage(message)) {
-      return processReasoningUpdate(genId, message);
+      return processReasoningUpdate(accKey, message);
     }
 
     // Tool call messages and tool call result messages pass through directly
@@ -89,8 +95,8 @@ export function useMessageMerger() {
   /**
    * Process a TextUpdateMessage and return accumulated TextMessage
    */
-  function processTextUpdate(genId: string, update: TextUpdateMessage): TextMessage {
-    let acc = accumulators.value.get(genId);
+  function processTextUpdate(accKey: string, update: TextUpdateMessage): TextMessage {
+    let acc = accumulators.value.get(accKey);
 
     if (!acc || acc.type !== 'text') {
       acc = {
@@ -100,7 +106,7 @@ export function useMessageMerger() {
         isThinking: update.isThinking,
         role: update.role,
       };
-      accumulators.value.set(genId, acc);
+      accumulators.value.set(accKey, acc);
     }
 
     // Concatenate text updates: each update is a delta chunk that should be appended
@@ -126,10 +132,10 @@ export function useMessageMerger() {
    * Process a ToolsCallUpdateMessage and return accumulated ToolsCallMessage
    */
   function processToolsCallUpdate(
-    genId: string,
+    accKey: string,
     update: ToolsCallUpdateMessage
   ): ToolsCallMessage {
-    let acc = accumulators.value.get(genId);
+    let acc = accumulators.value.get(accKey);
 
     if (!acc || acc.type !== 'tools_call') {
       acc = {
@@ -139,7 +145,7 @@ export function useMessageMerger() {
         toolCalls: [],
         currentToolCall: {},
       };
-      accumulators.value.set(genId, acc);
+      accumulators.value.set(accKey, acc);
     }
 
     // Process each tool call update (matching ToolsCallMessageBuilder logic)
@@ -200,11 +206,11 @@ export function useMessageMerger() {
    * Process a ToolCallUpdateMessage (individual tool call streaming) and return accumulated ToolCallMessage
    */
   function processToolCallUpdate(
-    genId: string,
+    accKey: string,
     update: ToolCallUpdateMessage
   ): ToolCallMessage {
     // Use tool_call_id as key to support multiple concurrent tool calls
-    const toolCallKey = `${genId}-${update.tool_call_id || 'tc'}`;
+    const toolCallKey = `${accKey}-${update.tool_call_id || 'tc'}`;
     let acc = accumulators.value.get(toolCallKey);
 
     if (!acc || acc.type !== 'tool_call') {
@@ -248,10 +254,10 @@ export function useMessageMerger() {
    * Process a ReasoningUpdateMessage and return accumulated ReasoningMessage
    */
   function processReasoningUpdate(
-    genId: string,
+    accKey: string,
     update: ReasoningUpdateMessage
   ): ReasoningMessage {
-    let acc = accumulators.value.get(genId);
+    let acc = accumulators.value.get(accKey);
 
     if (!acc || acc.type !== 'reasoning') {
       acc = {
@@ -261,7 +267,7 @@ export function useMessageMerger() {
         role: update.role,
         visibility: normalizeReasoningVisibility(update.visibility) ?? 'Plain',
       };
-      accumulators.value.set(genId, acc);
+      accumulators.value.set(accKey, acc);
     }
 
     // Accumulate reasoning text
@@ -282,11 +288,18 @@ export function useMessageMerger() {
   }
 
   /**
-   * Finalize and clear accumulator for a generation
+   * Finalize and clear accumulators for a generation. Accumulators are keyed per turn
+   * (`${genId}::t${turnSeq}` plus a `-${toolCallId}` suffix for individual tool calls), so clear
+   * every turn-scoped entry belonging to this generation, not just an exact key match.
    */
   function finalize(generationId?: string): void {
     const genId = generationId || 'default';
-    accumulators.value.delete(genId);
+    const prefix = `${genId}::`;
+    for (const key of [...accumulators.value.keys()]) {
+      if (key === genId || key.startsWith(prefix)) {
+        accumulators.value.delete(key);
+      }
+    }
   }
 
   /**
