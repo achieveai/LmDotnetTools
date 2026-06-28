@@ -45,6 +45,29 @@ export async function loadConversationMessages(
 }
 
 /**
+ * In-memory run state for a conversation. `isInProgress` is true while a run is still streaming
+ * on the backend (the pooled agent keeps running after the client disconnects), which lets a
+ * client returning to the conversation decide whether to re-open the WebSocket and resume.
+ */
+export interface ConversationRunState {
+  threadId: string;
+  isInProgress: boolean;
+  currentRunId?: string | null;
+}
+
+/**
+ * Fetches whether a conversation currently has an in-flight run, so a client returning to it
+ * (switch-back or refresh) can resume the live stream instead of showing a frozen partial.
+ */
+export async function getRunState(threadId: string): Promise<ConversationRunState> {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/run-state`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch run state: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
  * Updates conversation metadata (title, preview).
  */
 export async function updateConversationMetadata(

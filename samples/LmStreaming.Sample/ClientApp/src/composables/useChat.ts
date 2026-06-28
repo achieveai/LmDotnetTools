@@ -871,30 +871,7 @@ export function useChat(options: UseChatOptions = {}) {
     pendingMessages.value.push(userMessage);
     log.debug('Added message to pending queue', { tempId, text: displayText.substring(0, 50) });
 
-    const callbacks = {
-      onMessage: handleMessage,
-      onDone: () => {
-        log.info('Stream completed', { transport: transport.value });
-        
-        // Mark all streaming messages as completed
-        for (const message of messageIndex.value.values()) {
-          if (message.isStreaming) {
-            message.isStreaming = false;
-            if (message.status === 'active') {
-              message.status = 'completed';
-            }
-          }
-        }
-        
-        finalize();
-        isLoading.value = false;
-      },
-      onError: (err: string) => {
-        log.error('Stream error', { error: err, transport: transport.value });
-        error.value = err;
-        isLoading.value = false;
-      },
-    };
+    const callbacks = buildStreamCallbacks();
 
     try {
       if (transport.value === 'websocket') {
@@ -913,6 +890,97 @@ export function useChat(options: UseChatOptions = {}) {
   }
   
   /**
+   * Build the stream callbacks (message handler + completion/error handling) shared by the
+   * send path and the resume path. Extracted so `resumeStreamIfActive` can re-attach the exact
+   * same rendering pipeline to a reconnected, subscribe-only socket.
+   */
+  function buildStreamCallbacks(): {
+    onMessage: (msg: Message) => void;
+    onDone: () => void;
+    onError: (err: string) => void;
+  } {
+    return {
+      onMessage: handleMessage,
+      onDone: () => {
+        log.info('Stream completed', { transport: transport.value });
+
+        // Mark all streaming messages as completed
+        for (const message of messageIndex.value.values()) {
+          if (message.isStreaming) {
+            message.isStreaming = false;
+            if (message.status === 'active') {
+              message.status = 'completed';
+            }
+          }
+        }
+
+        finalize();
+        isLoading.value = false;
+      },
+      onError: (err: string) => {
+        log.error('Stream error', { error: err, transport: transport.value });
+        error.value = err;
+        isLoading.value = false;
+      },
+    };
+  }
+
+  /**
+   * Open (or replace) the persistent WebSocket for a thread and wire the stream callbacks.
+   * Does NOT send anything — callers send afterwards (new message) or leave it subscribe-only
+   * (resume). Shared by `sendMessageViaWebSocket` and `resumeStreamIfActive`.
+   */
+  async function openStreamConnection(
+    effectiveThreadId: string,
+    callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
+  ): Promise<void> {
+    const currentModeId = getModeId?.();
+    const currentProviderId = getProviderId?.() ?? null;
+    const currentWorkspaceId = getWorkspaceId?.() ?? null;
+    log.info('Creating new WebSocket connection', {
+      threadId: effectiveThreadId,
+      modeId: currentModeId,
+      providerId: currentProviderId,
+      workspaceId: currentWorkspaceId,
+      recordEnabled,
+    });
+
+    // Close old connection if exists
+    if (wsConnection) {
+      const { closeWebSocketConnection } = await import('@/api/wsClient');
+      closeWebSocketConnection(wsConnection);
+      wsConnection = null;
+    }
+
+    const { createWebSocketConnection } = await import('@/api/wsClient');
+
+    wsConnection = await createWebSocketConnection({
+      threadId: effectiveThreadId,
+      modeId: currentModeId,
+      providerId: currentProviderId,
+      workspaceId: currentWorkspaceId,
+      record: recordEnabled,
+      ...callbacks,
+      onAuthEvent: handleAuthEvent,
+      onDone: () => {
+        log.debug('WebSocket stream done signal received');
+        callbacks.onDone();
+        // Keep connection open for next message (don't close)
+      },
+      onError: async (error) => {
+        log.error('WebSocket error', { error });
+        callbacks.onError(error);
+        // Close and cleanup on error
+        if (wsConnection) {
+          const { closeWebSocketConnection } = await import('@/api/wsClient');
+          closeWebSocketConnection(wsConnection);
+          wsConnection = null;
+        }
+      },
+    });
+  }
+
+  /**
    * Send message via WebSocket (persistent or new connection)
    */
   async function sendMessageViaWebSocket(
@@ -920,7 +988,7 @@ export function useChat(options: UseChatOptions = {}) {
     callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
   ): Promise<void> {
     const effectiveThreadId = getOrCreateThreadId();
-    
+
     // Check if we have an open connection that belongs to the current thread.
     // A socket bound to a previously-viewed conversation must not be reused for a
     // different thread (e.g. after switching conversations); close it and fall
@@ -940,55 +1008,61 @@ export function useChat(options: UseChatOptions = {}) {
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection, text);
     } else {
-      const currentModeId = getModeId?.();
-      const currentProviderId = getProviderId?.() ?? null;
-      const currentWorkspaceId = getWorkspaceId?.() ?? null;
-      log.info('Creating new WebSocket connection', {
-        threadId: effectiveThreadId,
-        modeId: currentModeId,
-        providerId: currentProviderId,
-        workspaceId: currentWorkspaceId,
-        recordEnabled,
-      });
+      await openStreamConnection(effectiveThreadId, callbacks);
 
-      // Close old connection if exists
-      if (wsConnection) {
-        const { closeWebSocketConnection } = await import('@/api/wsClient');
-        closeWebSocketConnection(wsConnection);
-        wsConnection = null;
-      }
-
-      // Create new persistent connection
-      const { createWebSocketConnection, sendWebSocketMessage } = await import('@/api/wsClient');
-
-      wsConnection = await createWebSocketConnection({
-        threadId: effectiveThreadId,
-        modeId: currentModeId,
-        providerId: currentProviderId,
-        workspaceId: currentWorkspaceId,
-        record: recordEnabled,
-        ...callbacks,
-        onAuthEvent: handleAuthEvent,
-        onDone: () => {
-          log.debug('WebSocket stream done signal received');
-          callbacks.onDone();
-          // Keep connection open for next message (don't close)
-        },
-        onError: async (error) => {
-          log.error('WebSocket error', { error });
-          callbacks.onError(error);
-          // Close and cleanup on error
-          if (wsConnection) {
-            const { closeWebSocketConnection } = await import('@/api/wsClient');
-            closeWebSocketConnection(wsConnection);
-            wsConnection = null;
-          }
-        },
-      });
-      
       // Send message on new connection
-      sendWebSocketMessage(wsConnection, text);
+      const { sendWebSocketMessage } = await import('@/api/wsClient');
+      sendWebSocketMessage(wsConnection!, text);
     }
+  }
+
+  /**
+   * Resume an in-flight stream after returning to a conversation (switch-back or refresh).
+   *
+   * The backend run keeps running after the client disconnects (the agent is pooled), so when a
+   * conversation still has an in-flight run we re-open the WebSocket in subscribe-only mode (no
+   * send). The backend replays the in-flight run's already-emitted messages and then continues
+   * delivering live deltas, which merge with the persisted history just loaded (the merge key
+   * kind-runId-generationId-messageOrderIdx dedups replay vs history). Without this, returning to
+   * a streaming conversation showed the partial frozen at the last persisted point.
+   */
+  async function resumeStreamIfActive(existingThreadId: string): Promise<void> {
+    // Only the WebSocket transport maintains a resumable live backend run.
+    if (transport.value !== 'websocket') return;
+
+    // Already streaming this thread on an open socket — nothing to resume.
+    if (
+      wsConnection &&
+      wsConnection.isConnected &&
+      wsConnection.socket.readyState === WebSocket.OPEN &&
+      wsConnection.threadId === existingThreadId
+    ) {
+      return;
+    }
+
+    let runState;
+    try {
+      const { getRunState } = await import('@/api/conversationsApi');
+      runState = await getRunState(existingThreadId);
+    } catch (err) {
+      log.warn('Failed to query run state for resume', { threadId: existingThreadId, error: err });
+      return;
+    }
+
+    if (!runState?.isInProgress) {
+      log.debug('No in-flight run to resume', { threadId: existingThreadId });
+      return;
+    }
+
+    log.info('Resuming in-flight stream', {
+      threadId: existingThreadId,
+      runId: runState.currentRunId,
+    });
+
+    // Reflect the live run in the UI (spinner / stop button) while the replayed + live deltas arrive.
+    isLoading.value = true;
+    await openStreamConnection(existingThreadId, buildStreamCallbacks());
+    // No send: this is a subscribe-only resume.
   }
 
   /**
@@ -1220,6 +1294,7 @@ export function useChat(options: UseChatOptions = {}) {
     getResultForToolCall,
     setThreadId,
     loadMessagesFromBackend,
+    resumeStreamIfActive,
   };
 }
 

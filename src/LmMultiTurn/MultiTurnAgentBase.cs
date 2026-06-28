@@ -26,6 +26,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private readonly object _channelLock = new();
     private readonly ConcurrentDictionary<string, Channel<IMessage>> _outputSubscribers = new();
 
+    // Replay buffer for the in-flight run. A client that reconnects mid-run (after switching
+    // conversations or refreshing the page) re-subscribes via SubscribeAsync; without replay it
+    // would only see messages published AFTER re-subscribing, so the visible stream froze. We
+    // buffer the current run's published messages (from its RunAssignmentMessage until its
+    // RunCompletedMessage) and replay them to a joining subscriber. `_replayLock` guards
+    // register-subscriber + buffer-snapshot (SubscribeAsync) atomically against the buffer-append +
+    // subscriber-snapshot (PublishToAllAsync), so a message published concurrently with a subscribe
+    // reaches that subscriber EXACTLY once (replay XOR live). Publishes are serialized by the run
+    // loop, so the only race is Subscribe vs a single in-flight publish.
+    private readonly object _replayLock = new();
+    private readonly List<IMessage> _replayBuffer = [];
+    private bool _replayRunActive;
+    private bool _replayBufferTruncated;
+    private const int MaxReplayBufferSize = 10_000;
+
     // State
     private string? _currentRunId;
     private string? _latestRunId;
@@ -793,11 +808,33 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             SingleWriter = false,
         });
 
-        _outputSubscribers[subscriberId] = channel;
-        Logger.LogDebug("Subscriber {SubscriberId} connected", subscriberId);
+        // Atomically register this subscriber AND snapshot the in-flight run's buffered messages,
+        // so a message published concurrently is delivered EITHER via this replay snapshot OR via
+        // the live channel below — never both, never neither. See `_replayLock` remarks.
+        IReadOnlyList<IMessage> replay;
+        lock (_replayLock)
+        {
+            _outputSubscribers[subscriberId] = channel;
+            replay = _replayRunActive && _replayBuffer.Count > 0
+                ? [.. _replayBuffer]
+                : [];
+        }
+
+        Logger.LogDebug(
+            "Subscriber {SubscriberId} connected (replaying {ReplayCount} in-flight message(s))",
+            subscriberId,
+            replay.Count);
 
         try
         {
+            // Replay the in-flight run's already-published messages first (so a reconnecting client
+            // resumes from the start of the live run), then stream subsequent live messages.
+            foreach (var buffered in replay)
+            {
+                ct.ThrowIfCancellationRequested();
+                yield return buffered;
+            }
+
             await foreach (var message in channel.Reader.ReadAllAsync(ct))
             {
                 yield return message;
@@ -822,9 +859,52 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="ct">Cancellation token</param>
     protected async ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
-        var tasks = new List<Task>();
+        List<KeyValuePair<string, Channel<IMessage>>> targets;
+        lock (_replayLock)
+        {
+            // Maintain the in-flight run's replay buffer. RunAssignmentMessage opens a fresh run;
+            // RunCompletedMessage closes it (after which a joining subscriber must NOT replay it —
+            // the client already has completed messages via persisted REST history, so replaying
+            // would duplicate). Snapshotting subscribers under the SAME lock SubscribeAsync uses to
+            // register + snapshot the buffer guarantees this message reaches each subscriber exactly
+            // once (replay XOR live).
+            if (message is RunAssignmentMessage)
+            {
+                _replayBuffer.Clear();
+                _replayRunActive = true;
+                _replayBufferTruncated = false;
+            }
 
-        foreach (var (subscriberId, channel) in _outputSubscribers)
+            if (_replayRunActive)
+            {
+                if (_replayBuffer.Count < MaxReplayBufferSize)
+                {
+                    _replayBuffer.Add(message);
+                }
+                else if (!_replayBufferTruncated)
+                {
+                    _replayBufferTruncated = true;
+                    Logger.LogWarning(
+                        "In-flight replay buffer hit the {Cap}-message cap; a client reconnecting mid-run may miss the earliest deltas of this run (persisted history still covers its completed messages).",
+                        MaxReplayBufferSize);
+                }
+            }
+
+            if (message is RunCompletedMessage)
+            {
+                _replayRunActive = false;
+            }
+
+            targets = [.. _outputSubscribers];
+        }
+
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        var tasks = new List<Task>(targets.Count);
+        foreach (var (subscriberId, channel) in targets)
         {
             tasks.Add(PublishToSubscriberAsync(subscriberId, channel, message, ct));
         }

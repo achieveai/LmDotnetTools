@@ -83,6 +83,7 @@ const {
   disconnectWebSocket,
   setThreadId,
   loadMessagesFromBackend,
+  resumeStreamIfActive,
   getResultForToolCall,
 } = useChat({
   getModeId: () => currentModeId.value,
@@ -213,6 +214,10 @@ async function handleSelectConversation(threadId: string): Promise<void> {
   // Load existing messages
   try {
     await loadMessagesFromBackend(threadId);
+    // If a run is still streaming on the backend (the pooled agent keeps running after we
+    // disconnected on switch/refresh), re-open the WebSocket to resume the live stream instead
+    // of leaving the partial frozen.
+    await resumeStreamIfActive(threadId);
   } catch (e) {
     console.error('Failed to load messages:', e);
   }
