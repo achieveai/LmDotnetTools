@@ -15,9 +15,14 @@ internal static class BuiltInSubAgentTemplates
 {
     /// <summary>
     /// Default concurrent sub-agent cap applied wherever these templates are wrapped in a
-    /// <see cref="SubAgentOptions"/>.
+    /// <see cref="SubAgentOptions"/>. Bounds how many sub-agents the <c>Agent</c> tool can run in
+    /// parallel before an additional spawn waits (up to 5s) for a slot — each concurrent sub-agent
+    /// is a live provider/LLM call, so this is also the concurrent-request fan-out per conversation.
+    /// Scaled to the host like the workflow engine: <c>min(16, cores - 2)</c>, floored at 1 so a
+    /// low-core/CI host can never produce an invalid <c>SemaphoreSlim(0)</c>. On a 16-core box = 14.
     /// </summary>
-    internal const int DefaultMaxConcurrentSubAgents = 5;
+    internal static readonly int DefaultMaxConcurrentSubAgents =
+        Math.Max(1, Math.Min(16, Environment.ProcessorCount - 2));
 
     /// <summary>
     /// Builds a fresh dictionary of the built-in templates. Each template reuses

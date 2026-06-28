@@ -106,3 +106,35 @@ thinking/text distinctly. Regression coverage:
   (`useChat`/`displayItems`). Unit/single-turn green ≠ correct; the bug is emergent across turns.
 - "Consistent across the whole run" is a **two-field** claim: pinning `generationId` silently
   requires `messageOrderIdx` to be run-unique. State and test both halves.
+
+## Streaming resume (why a switched-away tool run's count "freezes" / pills duplicate)
+Switching to another conversation mid-run and coming back used to leave the in-flight run's
+**tool-call pills duplicated and never settling** ("tool count stuck") — text resumed fine, tools did
+not. Root cause is a **merge-key divergence on the resume path** (key =
+`kind-runId-generationId-messageOrderIdx-toolCallId`):
+- On the wire, **finalized `tool_call` / `tool_call_result` messages arrive WITHOUT a `runId`** (verified
+  across `recordings/*.ws.jsonl`: `tool_call` carried one in **0 of 267**). `text_update` *does* carry it —
+  exactly why text-resume worked and tool-resume didn't. Only `run_assignment` reliably carries the id.
+- `getMergeKey` (`useChat.ts`) keys a runId-less message to `'default'`.
+- `loadMessagesFromBackend` rehydrates the **persisted** copy of the same message stamped with the run's
+  **real** id (`pm.runId`). So on switch-back the REST-rehydrated tool call (real runId) and the
+  WS-replayed tool call (runId-less → `'default'`) get **different keys → never merge → duplicate pill**.
+- A full page **reload "fixes" it** because it loads completed history via REST only and never takes the
+  WS resume path. Useful localizer: *reload-works + switch-breaks ⇒ bug is in live resume, not the backend.*
+
+**Fix:** in `useChat.handleMessage`, stamp the active run id onto runId-less live content **before** the
+merge key is computed: `if (!msg.runId && currentRunId.value) msg = { ...msg, runId: currentRunId.value }`.
+`currentRunId` is set from `run_assignment`, which the backend replay buffer (`MultiTurnAgentBase`) delivers
+first on resume, so the live key now matches the rehydrated one. Guarded on `!msg.runId` so providers that
+already send a runId are untouched.
+
+**Rules when touching streaming resume / merge keys (these bit us):**
+- Test **every message kind** that flows the path — `text`, `reasoning`, `tool_call`, `tool_call_result` —
+  not just text. The first resume fix shipped **11 green tests that only fed `textUpdate`/`TextMessage`**, so
+  the tool path stayed broken behind a fully-green suite. *A passing suite that never exercises the failing
+  modality is false confidence.*
+- Verify wire assumptions against **recorded traffic** (`recordings/*.ws.jsonl`), not the agent code:
+  `AnthropicAgent` calls `WithIds`, yet finalized `tool_call` still reaches the client runId-less.
+- Reproduce the user's exact **modality + scale** (1 tool vs 10–15 tools; tool vs text are different paths).
+- Coverage: `ClientApp/src/__tests__/composables/useChatResume.test.ts` (1-tool and 12-tool switch-back,
+  RED-without-fix / GREEN-with) and `LmMultiTurn.Tests/MultiTurnAgentReplayTests` (replay carries tool messages).

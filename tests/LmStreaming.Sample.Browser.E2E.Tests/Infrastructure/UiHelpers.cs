@@ -37,6 +37,12 @@ public static class UiHelpers
         return page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "+ New Chat" });
     }
 
+    /// <summary>All conversation list items in the sidebar (one per started conversation).</summary>
+    public static ILocator ConversationItems(this IPage page)
+    {
+        return page.GetByTestId("conversation-item");
+    }
+
     /// <summary>Error banner — rendered only when an error is present.</summary>
     public static ILocator ErrorBanner(this IPage page)
     {

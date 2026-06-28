@@ -812,6 +812,34 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         return set.TryAdd($"{kind}\0{path}", 0);
     }
 
+    /// <summary>
+    /// The exact URL the gateway is told to deliver context-discovery webhooks to (the auth-callback
+    /// base plus the discovery route). Surfaced by the diagnostics endpoint so an operator can spot
+    /// an unreachable/loopback callback host — the silent-failure mode where discoveries are fired
+    /// by the gateway but never arrive at the app.
+    /// </summary>
+    public string DiscoveryWebhookUrl =>
+        $"{_authOptions.Webhook.CallbackBaseUrl}/api/discovery/context_discovery";
+
+    /// <summary>
+    /// True when a callback base URL is configured. The default (a loopback host) is non-empty, so
+    /// this is normally true; it only reports false if an operator explicitly blanks the webhook
+    /// PublicBaseUrl. The more actionable "why is nothing arriving?" signal is the host visible in
+    /// <see cref="DiscoveryWebhookUrl"/> — a loopback callback the gateway (in a container) often
+    /// cannot reach.
+    /// </summary>
+    public bool DiscoveryEnabled => !string.IsNullOrWhiteSpace(_authOptions.Webhook.CallbackBaseUrl);
+
+    /// <summary>
+    /// Snapshot of the ids of every gateway session currently known to the registry. Used by the
+    /// diagnostics endpoint to pair live sessions against their received-discovery counts.
+    /// </summary>
+    public IReadOnlyCollection<string> GetActiveSessionIds()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return [.. _sessionsById.Keys];
+    }
+
     private const int ErrorBodyMaxLength = 500;
 
     /// <summary>
@@ -992,10 +1020,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// </summary>
     private DiscoveryDto BuildDiscovery()
     {
-        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
+        var url = DiscoveryWebhookUrl;
+        // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
+        // can correlate it against the diagnostics endpoint's received counts. NEVER logs the auth
+        // value (the gateway↔webhook shared secret) — only the URL and the enabled flag.
+        _logger.LogInformation(
+            "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}).",
+            url,
+            DiscoveryEnabled);
         return new DiscoveryDto(
             new DiscoveryWebhookDto(
-                Url: $"{baseUrl}/api/discovery/context_discovery",
+                Url: url,
                 Auth: _sharedSecret.Value
             )
         );

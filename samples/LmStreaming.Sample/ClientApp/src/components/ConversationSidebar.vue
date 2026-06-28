@@ -83,6 +83,8 @@ function handleDelete(event: Event, threadId: string): void {
           v-for="conv in conversations"
           :key="conv.threadId"
           :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
+          data-testid="conversation-item"
+          :data-thread-id="conv.threadId"
           @click="emit('selectConversation', conv.threadId)"
         >
           <div class="conversation-content">

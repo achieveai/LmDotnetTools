@@ -26,6 +26,19 @@ public record ConversationSummary
 }
 
 /// <summary>
+/// In-memory run state for a conversation. Lets a reconnecting client decide whether to resume
+/// the live stream: after switching conversations or refreshing, the backend run keeps running
+/// (the agent is pooled), so a client returning to a conversation with <see cref="IsInProgress"/>
+/// re-opens the WebSocket to resume the in-flight stream instead of showing a frozen partial.
+/// </summary>
+public record ConversationRunState
+{
+    public required string ThreadId { get; init; }
+    public required bool IsInProgress { get; init; }
+    public string? CurrentRunId { get; init; }
+}
+
+/// <summary>
 /// DTO for updating conversation metadata (title, preview).
 /// </summary>
 public record ConversationMetadataUpdate

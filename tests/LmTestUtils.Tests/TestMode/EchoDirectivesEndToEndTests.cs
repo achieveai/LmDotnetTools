@@ -86,7 +86,7 @@ public class EchoDirectivesEndToEndTests
             .GetString();
 
         Assert.NotNull(content);
-        return content!;
+        return content;
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public class EchoDirectivesEndToEndTests
         Assert.True(contentArray.GetArrayLength() > 0);
         var text = contentArray[0].GetProperty("text").GetString();
         Assert.NotNull(text);
-        return text!;
+        return text;
     }
 
     [Fact]

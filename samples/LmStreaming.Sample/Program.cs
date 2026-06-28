@@ -242,6 +242,10 @@ try
     // thread bound to the same sandbox session.
     _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
     _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
+    // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
+    // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
+    // unreachable callback host).
+    _ = builder.Services.AddSingleton<ContextDiscoveryDiagnostics>();
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
@@ -793,6 +797,10 @@ try
                             PromptCaching = PromptCachingMode.Auto,
                             ExtraProperties = extraProperties,
                         },
+                        // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
+                        // default: workspace/tool-heavy conversations routinely need more turns before
+                        // the run hits its cap.
+                        maxTurnsPerRun: 150,
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
@@ -1794,7 +1802,9 @@ public partial class Program
         // "the agent completes with no assistant content rendered" (issue #29).
         var claudeOptions = new ClaudeAgentSdkOptions
         {
-            MaxTurnsPerRun = 50,
+            // Match the generic MultiTurnAgentLoop cap above so the Claude SDK provider path allows
+            // the same longer agentic runs in this sample.
+            MaxTurnsPerRun = 150,
             AllowedTools = allowedTools,
             BaseUrl = string.IsNullOrWhiteSpace(mockBaseUrlOverride) ? null : mockBaseUrlOverride,
             AuthToken = string.IsNullOrWhiteSpace(mockAuthTokenOverride) ? null : mockAuthTokenOverride,

@@ -89,6 +89,25 @@ public class ConversationsController(
         return Ok(normalized);
     }
 
+    /// <summary>
+    /// Reports whether a conversation currently has an in-flight run. A client returning to a
+    /// conversation (switch-back or refresh) calls this after loading persisted history; when
+    /// <see cref="ConversationRunState.IsInProgress"/> is true it re-opens the WebSocket to resume
+    /// the live stream (the pooled agent keeps running after the client disconnects). The signal is
+    /// in-memory run state, not persisted metadata, so it reflects the actual live run.
+    /// </summary>
+    [HttpGet("{threadId}/run-state")]
+    public IActionResult GetRunState(string threadId)
+    {
+        var runState = agentPool.GetRunStateInfo(threadId);
+        return Ok(new ConversationRunState
+        {
+            ThreadId = threadId,
+            IsInProgress = runState.IsInProgress,
+            CurrentRunId = runState.CurrentRunId,
+        });
+    }
+
     [HttpPut("{threadId}/metadata")]
     public async Task<IActionResult> UpdateMetadata(
         string threadId,
