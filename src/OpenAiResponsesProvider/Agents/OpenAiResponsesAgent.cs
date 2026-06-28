@@ -97,7 +97,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                     Role = Role.Assistant,
                     FromAgent = Name,
                     GenerationId = generationId,
-                }
+                }.WithIds(options)
             );
         }
 
@@ -123,7 +123,26 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         );
 
         var eventStream = _client.StreamResponseAsync(request, cancellationToken);
-        return Task.FromResult(EventStreamToMessages(eventStream, Name, options?.GenerationId, cancellationToken));
+        var mapped = EventStreamToMessages(eventStream, Name, options?.GenerationId, cancellationToken);
+        // The agent constructs messages itself, so (unlike OpenAgent/AnthropicAgent) it must stamp the
+        // run's RunId/ParentRunId/ThreadId explicitly — otherwise every emitted message carries a null
+        // RunId and the client merge key (kind, runId, generationId, messageOrderIdx) loses a segment.
+        // WithIds preserves the GenerationId already set above (BUG H1), only overriding it when the run
+        // advertises one — which equals the id the messages already carry.
+        return Task.FromResult(StampRunIds(mapped, options, cancellationToken));
+    }
+
+    private static async IAsyncEnumerable<IMessage> StampRunIds(
+        IAsyncEnumerable<IMessage> source,
+        GenerateReplyOptions? options,
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
+    {
+        await foreach (var message in source.ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return message.WithIds(options);
+        }
     }
 
     private static async IAsyncEnumerable<IMessage> EventStreamToMessages(
