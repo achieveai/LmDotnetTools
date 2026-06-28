@@ -78,11 +78,7 @@ public record OpenMessage
             PromptTokens = usage.PromptTokens,
             CompletionTokens = usage.CompletionTokens,
             TotalTokens = usage.PromptTokens + usage.CompletionTokens,
-            InputTokenDetails =
-                usage.CachedTokens > 0 ? new InputTokenDetails { CachedTokens = usage.CachedTokens } : null,
-            OutputTokenDetails =
-                usage.ReasoningTokens > 0 ? new OutputTokenDetails { ReasoningTokens = usage.ReasoningTokens } : null,
-        };
+        }.WithTokenDetails(usage.CachedTokens, usage.ReasoningTokens);
     }
 
     public IEnumerable<IMessage> ToStreamingMessage()

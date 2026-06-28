@@ -106,6 +106,7 @@ vi.mock('@/composables/useChat', async () => {
       usage: ref(null),
       cumulativeUsage: ref({
         promptTokens: 0,
+        uncachedInputTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
         cachedTokens: 0,

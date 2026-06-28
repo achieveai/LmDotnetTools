@@ -91,17 +91,7 @@ public record OpenAIProviderUsage
 
         // Convert nested token details using the unified accessors so every shape (Responses-API
         // nesting, Chat Completions nesting, and OpenRouter direct fields) maps to core consistently.
-        if (TotalCachedTokens > 0)
-        {
-            usage = usage with { InputTokenDetails = new InputTokenDetails { CachedTokens = TotalCachedTokens } };
-        }
-
-        if (TotalReasoningTokens > 0)
-        {
-            usage = usage with { OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = TotalReasoningTokens } };
-        }
-
-        return usage;
+        return usage.WithTokenDetails(TotalCachedTokens, TotalReasoningTokens);
     }
 
     /// <summary>

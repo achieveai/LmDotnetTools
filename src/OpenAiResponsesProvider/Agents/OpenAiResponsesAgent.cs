@@ -493,21 +493,20 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             PromptTokens = inputTokens,
             CompletionTokens = outputTokens,
             TotalTokens = totalTokens,
-            InputTokenDetails = cachedTokens > 0 ? new InputTokenDetails { CachedTokens = cachedTokens } : null,
-            OutputTokenDetails = reasoningTokens > 0
-                ? new OutputTokenDetails { ReasoningTokens = reasoningTokens }
-                : null,
-        };
+        }.WithTokenDetails(cachedTokens, reasoningTokens);
         return true;
     }
 
     private static int TryReadNestedInt(JsonElement parent, string objectProperty, string numberProperty)
     {
+        // Non-throwing: optional usage telemetry must never abort an otherwise valid stream just
+        // because a count is encoded in a way GetInt32() would reject (out-of-range / non-int number).
         return parent.TryGetProperty(objectProperty, out var nestedEl)
             && nestedEl.ValueKind == JsonValueKind.Object
             && nestedEl.TryGetProperty(numberProperty, out var valueEl)
             && valueEl.ValueKind == JsonValueKind.Number
-            ? valueEl.GetInt32()
+            && valueEl.TryGetInt32(out var value)
+            ? value
             : 0;
     }
 

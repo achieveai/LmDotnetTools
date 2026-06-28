@@ -59,4 +59,39 @@ public sealed class ChatCompletionsCacheTokenUsageTests
         Assert.Equal(13696, usage.TotalCachedTokens);
         Assert.Equal(64, usage.TotalReasoningTokens);
     }
+
+    // Streamed chat-completions chunks. The usage is co-located on the final (stop) chunk because the
+    // streaming reader expects each chunk to carry a choice/delta. Mirrors the nested detail shape.
+    private static readonly string[] StreamingChunks =
+    [
+        """{"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}""",
+        """{"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":14986,"completion_tokens":121,"total_tokens":15107,"prompt_tokens_details":{"cached_tokens":13696},"completion_tokens_details":{"reasoning_tokens":64}}}""",
+        "[DONE]",
+    ];
+
+    [Fact]
+    public async Task Streaming_UsageMessage_preserves_cached_and_reasoning_tokens_from_chat_completions()
+    {
+        using var httpClient = new HttpClient(FakeHttpMessageHandler.CreateSimpleSseStreamHandler(StreamingChunks));
+        var client = new OpenClient(httpClient, BaseUrl);
+        var agent = new OpenClientAgent("TestAgent", client);
+
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "hi" }],
+            new GenerateReplyOptions { ModelId = "gpt-4o" }
+        );
+
+        UsageMessage? usageMessage = null;
+        await foreach (var m in stream)
+        {
+            if (m is UsageMessage u)
+            {
+                usageMessage = u;
+            }
+        }
+
+        Assert.NotNull(usageMessage);
+        Assert.Equal(13696, usageMessage!.Usage.TotalCachedTokens);
+        Assert.Equal(64, usageMessage.Usage.TotalReasoningTokens);
+    }
 }

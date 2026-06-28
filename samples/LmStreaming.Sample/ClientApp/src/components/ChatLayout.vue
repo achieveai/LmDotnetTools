@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
 
         <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner">
           Total: {{ cumulativeUsage.totalTokens }} |
-          In: {{ cumulativeUsage.promptTokens }} |
+          In: {{ cumulativeUsage.uncachedInputTokens }} |
           Out: {{ cumulativeUsage.completionTokens }}
           <template v-if="cumulativeUsage.cachedTokens > 0">
             | Cached: {{ cumulativeUsage.cachedTokens }}
