@@ -117,4 +117,67 @@ describe('useChat — resume in-flight stream after switch/refresh', () => {
     // No active run ⇒ no reconnect.
     expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
   });
+
+  it('does not query run-state or reconnect when already streaming the same thread', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+
+    await chat.sendMessage('hi');
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+
+    // Already connected to thread-1 — resume must be a no-op.
+    await chat.resumeStreamIfActive('thread-1');
+    expect(convMocks.getRunState).not.toHaveBeenCalled();
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resume under the SSE transport', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    chat.setTransport('sse');
+
+    await chat.resumeStreamIfActive('thread-1');
+
+    expect(convMocks.getRunState).not.toHaveBeenCalled();
+    expect(wsMocks.createWebSocketConnection).not.toHaveBeenCalled();
+  });
+
+  it('resets isLoading when the resume connection fails to open', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+    convMocks.getRunState.mockResolvedValue({
+      threadId: 'thread-1',
+      isInProgress: true,
+      currentRunId: 'run-1',
+    });
+    wsMocks.createWebSocketConnection.mockRejectedValueOnce(new Error('ws open failed'));
+
+    await chat.resumeStreamIfActive('thread-1');
+
+    // A failed resume must not leave the UI stuck "streaming" forever.
+    expect(chat.isLoading.value).toBe(false);
+  });
+
+  it('aborts resume if the active thread changed during the run-state check', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-A');
+
+    // Hold getRunState open so we can simulate a conversation switch mid-await.
+    let resolveRunState!: (v: unknown) => void;
+    convMocks.getRunState.mockImplementation(
+      () => new Promise((resolve) => { resolveRunState = resolve; })
+    );
+
+    const pending = chat.resumeStreamIfActive('thread-A');
+    // Wait until the run-state request is actually in flight (after the dynamic import), then
+    // simulate the user switching to a different conversation before it resolves.
+    await vi.waitFor(() => expect(convMocks.getRunState).toHaveBeenCalledTimes(1));
+    chat.setThreadId('thread-B');
+    resolveRunState({ threadId: 'thread-A', isInProgress: true, currentRunId: 'run-1' });
+    await pending;
+
+    // The stream for thread-A must NOT be bound to the now-current thread-B state.
+    expect(wsMocks.createWebSocketConnection).not.toHaveBeenCalled();
+    expect(chat.isLoading.value).toBe(false);
+  });
 });

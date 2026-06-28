@@ -33,8 +33,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // RunCompletedMessage) and replay them to a joining subscriber. `_replayLock` guards
     // register-subscriber + buffer-snapshot (SubscribeAsync) atomically against the buffer-append +
     // subscriber-snapshot (PublishToAllAsync), so a message published concurrently with a subscribe
-    // reaches that subscriber EXACTLY once (replay XOR live). Publishes are serialized by the run
-    // loop, so the only race is Subscribe vs a single in-flight publish.
+    // reaches that subscriber EXACTLY once (replay XOR live) — this holds even if publishes overlap
+    // (e.g. parallel tool-call results). Relative ordering of concurrently-published messages is not
+    // guaranteed (the channel writes happen outside the lock), exactly as before this change.
     private readonly object _replayLock = new();
     private readonly List<IMessage> _replayBuffer = [];
     private bool _replayRunActive;
@@ -893,6 +894,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             if (message is RunCompletedMessage)
             {
                 _replayRunActive = false;
+                // Free the buffered run now that it can no longer be replayed (replay is gated on
+                // _replayRunActive). A subscriber joining after completion uses persisted history.
+                _replayBuffer.Clear();
             }
 
             targets = [.. _outputSubscribers];

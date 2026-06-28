@@ -1049,6 +1049,17 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // The active conversation may have changed while getRunState was in flight (rapid switching).
+    // Binding this thread's stream to whatever conversation is now current would contaminate it,
+    // so abort if we've moved on.
+    if (threadId.value !== existingThreadId) {
+      log.debug('Thread changed during resume check; aborting', {
+        requested: existingThreadId,
+        current: threadId.value,
+      });
+      return;
+    }
+
     if (!runState?.isInProgress) {
       log.debug('No in-flight run to resume', { threadId: existingThreadId });
       return;
@@ -1061,8 +1072,14 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Reflect the live run in the UI (spinner / stop button) while the replayed + live deltas arrive.
     isLoading.value = true;
-    await openStreamConnection(existingThreadId, buildStreamCallbacks());
-    // No send: this is a subscribe-only resume.
+    try {
+      // No send: this is a subscribe-only resume.
+      await openStreamConnection(existingThreadId, buildStreamCallbacks());
+    } catch (err) {
+      // A failure opening the resume socket must not leave the UI stuck "streaming" forever.
+      isLoading.value = false;
+      log.error('Failed to open resume connection', { threadId: existingThreadId, error: err });
+    }
   }
 
   /**

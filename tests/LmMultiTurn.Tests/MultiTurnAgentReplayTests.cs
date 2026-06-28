@@ -89,4 +89,120 @@ public sealed class MultiTurnAgentReplayTests
         (await first).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("new");
     }
+
+    [Fact]
+    public async Task Live_and_reconnecting_subscribers_both_receive_every_message_once()
+    {
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        // Subscriber A is live from before the run starts. The first MoveNextAsync registers it
+        // synchronously (the lock/register runs before the first await), so publishes below reach it.
+        await using var a = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var aFirst = a.MoveNextAsync();
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        await agent.PublishForTest(TextDelta(runId, genId, "Hel"));
+
+        (await aFirst).Should().BeTrue();
+        a.Current.Should().BeOfType<RunAssignmentMessage>();
+        (await a.MoveNextAsync()).Should().BeTrue();
+        a.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+
+        // Subscriber B reconnects mid-run and REPLAYS what A already saw live.
+        await using var b = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await b.MoveNextAsync()).Should().BeTrue();
+        b.Current.Should().BeOfType<RunAssignmentMessage>();
+        (await b.MoveNextAsync()).Should().BeTrue();
+        b.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+
+        // A subsequent live message reaches BOTH exactly once.
+        await agent.PublishForTest(TextDelta(runId, genId, "lo"));
+        (await a.MoveNextAsync()).Should().BeTrue();
+        a.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("lo");
+        (await b.MoveNextAsync()).Should().BeTrue();
+        b.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("lo");
+    }
+
+    [Fact]
+    public async Task Concurrent_subscribe_during_active_publishing_delivers_each_message_exactly_once()
+    {
+        // Exercises the real race the `_replayLock` guards: a subscriber registering WHILE a
+        // publisher is actively publishing. With a single serial publisher the messages are totally
+        // ordered, so the subscriber must observe a contiguous, gap-free, duplicate-free run made of
+        // a replay prefix + a live suffix.
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        const int total = 500;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+
+        var publisher = Task.Run(async () =>
+        {
+            for (var i = 0; i < total; i++)
+            {
+                await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+            }
+
+            await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
+        }, cts.Token);
+
+        var received = new List<int>();
+        await foreach (var m in agent.SubscribeAsync(cts.Token))
+        {
+            if (m is TextUpdateMessage t && int.TryParse(t.Text, out var n))
+            {
+                received.Add(n);
+            }
+
+            if (m is RunCompletedMessage)
+            {
+                break;
+            }
+        }
+
+        await publisher;
+
+        received.Should().OnlyHaveUniqueItems("no message may be delivered twice (replay XOR live)");
+        received.Should().BeInAscendingOrder("a single serial publisher produces a total order");
+        received.Should().Contain(total - 1, "the subscriber must receive through the end of the run");
+    }
+
+    [Fact]
+    public async Task Replay_buffer_is_capped_so_a_huge_run_does_not_grow_unbounded()
+    {
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        const int cap = 10_000; // mirrors MultiTurnAgentBase.MaxReplayBufferSize
+
+        // Assignment fills slot #1; the next `cap` deltas overflow by one, which must be dropped.
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        for (var i = 0; i < cap; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // Drain exactly `cap` replayed messages — the buffer must hold no more than this.
+        for (var i = 0; i < cap; i++)
+        {
+            (await e.MoveNextAsync()).Should().BeTrue();
+        }
+
+        // Prove the buffer held EXACTLY `cap` (not cap+1): the next message must be a sentinel
+        // published live AFTER subscribing, not the overflowed delta that was dropped.
+        await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should()
+            .BeOfType<TextUpdateMessage>()
+            .Which.Text.Should()
+            .Be("SENTINEL", "the in-flight replay buffer is bounded at the cap, so the overflow delta was dropped");
+    }
 }
