@@ -241,6 +241,55 @@ public class WorkflowRuntimeTests
         unit.Prompt.Should().Contain("Analyze the topic custom-topic.");
     }
 
+    [Fact]
+    public void FindNode_ResolvesEveryNodeId_ReflectedInProjectionNodeType()
+    {
+        // The O(1) node index must resolve each declared id to its correct node: the projection surfaces the
+        // procedural-only "join" view exactly when the active node is the procedural one, proving the lookup
+        // returns the right typed node for start/procedural/terminal ids alike.
+        var runtime = LoadedRuntime();
+
+        // start -> StartNode: no procedural join surface.
+        runtime.GetProjection(null).ContainsKey("join").Should().BeFalse();
+
+        // analyze -> ProceduralNode: the join surface is present.
+        runtime.AdvanceTo("start", "analyze", null);
+        runtime.GetProjection(null).Should().ContainKey("join");
+
+        // done -> TerminalNode: completes, no join surface.
+        runtime.AdvanceTo("analyze", "done", JsonNode.Parse("""{ "summary": "x" }"""));
+        runtime.GetProjection(null).ContainsKey("join").Should().BeFalse();
+        runtime.IsComplete.Should().BeTrue();
+
+        // An undeclared target resolves to no node and is refused (unknown-id path).
+        var advanceUnknown = () => runtime.AdvanceTo("done", "ghost", null);
+        advanceUnknown.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void ObserveResult_UnmatchedDiagnostics_AreCappedAt50_KeepingMostRecent()
+    {
+        var runtime = RuntimeAtAnalyze();
+        _ = runtime.ComposeNextExpectedAction();
+
+        // 60 uncorrelated tool-call ids arrive; only the most recent 50 are retained.
+        for (var i = 0; i < 60; i++)
+        {
+            runtime.ObserveResult($"unmatched_{i}", """{ "summary": "x" }""", isError: false);
+        }
+
+        var unmatched = runtime
+            .GetProjection(null)["unmatched"]!.AsArray()
+            .Select(n => n!.GetValue<string>())
+            .ToList();
+
+        unmatched.Should().HaveCount(50);
+        unmatched.Should().Contain("unmatched_59"); // most recent retained
+        unmatched.Should().Contain("unmatched_10"); // oldest retained (boundary)
+        unmatched.Should().NotContain("unmatched_9"); // dropped
+        unmatched.Should().NotContain("unmatched_0"); // dropped
+    }
+
     private static string StatusOf(WorkflowRuntime runtime, string unitName) =>
         runtime.GetProjection(null)["tasks"]![unitName]!.GetValue<string>();
 }

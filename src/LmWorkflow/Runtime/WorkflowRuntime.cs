@@ -59,6 +59,15 @@ public sealed class WorkflowRuntime
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
     private readonly List<string> _unmatched = [];
 
+    // O(1) node-id -> node lookup rebuilt whenever Definition changes (Fix: FindNodeNoLock was O(N) and is
+    // called 4-5x per GetProjection/AdvanceTo). Empty when no definition is loaded.
+    private readonly Dictionary<string, WorkflowNode> _nodeIndex = new(StringComparer.Ordinal);
+
+    // The cap on the surfaced "unmatched" diagnostic list: a misbehaving controller emitting an unbounded
+    // stream of uncorrelated ids must not inflate the projection (and the LLM context) without limit. The
+    // most recent entries are kept (Fix: bound the diagnostic list).
+    private const int MaxUnmatchedDiagnostics = 50;
+
     // The live data channels the runtime mutates IN PLACE under _lock. They are exposed only through the
     // public getters below, which hand back a deep copy taken under the lock so a host can never observe a
     // half-mutated channel or mutate internal state by writing into the returned node (Fix H1).
@@ -242,6 +251,7 @@ public sealed class WorkflowRuntime
         lock (_lock)
         {
             Definition = def;
+            RebuildNodeIndexNoLock();
             _inputs = CloneObject(def.Inputs);
             _state = CloneObject(def.State);
             _outputs = [];
@@ -386,7 +396,7 @@ public sealed class WorkflowRuntime
             }
             else
             {
-                _unmatched.Add(toolCallId);
+                AddUnmatchedNoLock(toolCallId);
             }
 
             snapshot = CaptureSnapshotNoLock();
@@ -412,7 +422,7 @@ public sealed class WorkflowRuntime
         {
             if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
             {
-                _unmatched.Add(toolCallId);
+                AddUnmatchedNoLock(toolCallId);
             }
             else if (isError)
             {
@@ -453,7 +463,7 @@ public sealed class WorkflowRuntime
             }
             else
             {
-                _unmatched.Add(agentId);
+                AddUnmatchedNoLock(agentId);
             }
 
             snapshot = CaptureSnapshotNoLock();
@@ -783,6 +793,7 @@ public sealed class WorkflowRuntime
             // Restore the definition verbatim (no validator, no channel re-seeding) and the channels as
             // captured — a deep copy so the runtime never aliases the caller's snapshot nodes.
             Definition = snapshot.Definition;
+            RebuildNodeIndexNoLock();
             CurrentNodeId = snapshot.CurrentNodeId;
             IsComplete = snapshot.IsComplete;
             _result = snapshot.Result?.DeepClone();
@@ -1010,7 +1021,10 @@ public sealed class WorkflowRuntime
             State = clone ? CloneObject(_state) : _state,
             Outputs = clone ? CloneObject(_outputs) : _outputs,
             Notes = clone ? CloneObject(_notes) : _notes,
-            Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
+            // Internal (clone:false) callers read the context synchronously under _lock and never let it
+            // escape, so the live _visits map can be aliased; the public (clone:true) BuildContext keeps the
+            // defensive copy so its returned context is isolated from later runtime mutation (Fix H1).
+            Visits = clone ? new Dictionary<string, int>(_visits, StringComparer.Ordinal) : _visits,
             Step = Step,
             Item = item,
             Index = index,
@@ -1168,9 +1182,9 @@ public sealed class WorkflowRuntime
             return;
         }
 
-        if (taskRef.OutputSchema is { } schema)
+        if (taskRef.OutputSchemaJson is { } schemaJson)
         {
-            var validation = _schemaValidator.ValidateDetailed(resultText, schema.ToJsonString());
+            var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
             if (!validation.IsValid)
             {
                 HandleFailureNoLock(
@@ -1265,6 +1279,21 @@ public sealed class WorkflowRuntime
         array[index] = value.DeepClone();
     }
 
+    /// <summary>
+    ///     Records an uncorrelated <paramref name="id"/> in the bounded diagnostic list surfaced by
+    ///     <see cref="GetProjection"/>. At most <see cref="MaxUnmatchedDiagnostics"/> entries are retained — when
+    ///     adding would exceed the cap the oldest entry is dropped, keeping the most recent ids so a misbehaving
+    ///     controller cannot inflate the projection (and the LLM context) without bound.
+    /// </summary>
+    private void AddUnmatchedNoLock(string id)
+    {
+        _unmatched.Add(id);
+        if (_unmatched.Count > MaxUnmatchedDiagnostics)
+        {
+            _unmatched.RemoveAt(0);
+        }
+    }
+
     /// <summary>Removes any tool-call-id / agent-id correlation pointing at the unit named <paramref name="unitName"/>.</summary>
     private void ClearCorrelationNoLock(string unitName)
     {
@@ -1344,8 +1373,26 @@ public sealed class WorkflowRuntime
             _ => false,
         };
 
-    private WorkflowNode? FindNodeNoLock(string id) =>
-        Definition?.Nodes.FirstOrDefault(n => n.Id == id);
+    private WorkflowNode? FindNodeNoLock(string id) => _nodeIndex.GetValueOrDefault(id);
+
+    /// <summary>
+    ///     Rebuilds the O(1) node-id lookup index from the current <see cref="Definition"/>. Cleared first so a
+    ///     re-load/restore never retains stale nodes; <see cref="Dictionary{TKey,TValue}.TryAdd"/> preserves the
+    ///     first-wins resolution of the previous <c>FirstOrDefault</c> lookup. Caller MUST hold <see cref="_lock"/>.
+    /// </summary>
+    private void RebuildNodeIndexNoLock()
+    {
+        _nodeIndex.Clear();
+        if (Definition is null)
+        {
+            return;
+        }
+
+        foreach (var node in Definition.Nodes)
+        {
+            _ = _nodeIndex.TryAdd(node.Id, node);
+        }
+    }
 
     private JsonObject VisitsToJsonNoLock()
     {
@@ -1571,6 +1618,13 @@ public sealed class WorkflowRuntime
     /// </summary>
     private sealed record TaskRef
     {
+        // Lazily-computed caches: Name and the serialized OutputSchema are derived purely from the immutable
+        // init properties, so caching them on first access is behavior-identical while avoiding a fresh
+        // allocation/serialization on every access (Name is read many times per unit; the schema JSON is
+        // re-validated for every forEach element sharing one schema).
+        private string? _name;
+        private string? _outputSchemaJson;
+
         public required string NodeId { get; init; }
         public required int Visit { get; init; }
         public required string TaskId { get; init; }
@@ -1580,7 +1634,15 @@ public sealed class WorkflowRuntime
         public string? OnFailure { get; init; }
         public int MaxValidationRetries { get; init; }
 
+        /// <summary>The stable unit name, computed once and cached.</summary>
         public string Name =>
-            Index is { } index ? $"{NodeId}:{Visit}:{TaskId}:{index}" : $"{NodeId}:{Visit}:{TaskId}";
+            _name ??=
+                Index is { } index
+                    ? $"{NodeId}:{Visit}:{TaskId}:{index}"
+                    : $"{NodeId}:{Visit}:{TaskId}";
+
+        /// <summary>The serialized <see cref="OutputSchema"/>, serialized once and cached; <c>null</c> when there is no schema.</summary>
+        public string? OutputSchemaJson =>
+            OutputSchema is null ? null : (_outputSchemaJson ??= OutputSchema.ToJsonString());
     }
 }
