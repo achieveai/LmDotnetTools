@@ -327,13 +327,19 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     Advances the controller from the current node to <paramref name="nextNodeId"/>, which must be a
-    ///     declared edge target. Increments the next node's visit count and the step counter. When the next
-    ///     node is terminal and a <paramref name="result"/> is supplied, the result is validated against the
-    ///     terminal's (or the definition's) final output schema, captured, and the workflow is completed.
+    ///     declared edge target (or the definition's <c>onBudgetExhausted</c> escape). Increments the next
+    ///     node's visit count and the step counter. Enforces the safety rails by REFUSING out-of-policy
+    ///     moves: a node at its <c>maxVisits</c> ceiling may not be re-entered (route to its
+    ///     <c>onMaxVisits</c>), and once the step budget is exhausted only the <c>onBudgetExhausted</c>
+    ///     escape is allowed. When the next node is terminal, the result is taken from the supplied
+    ///     <paramref name="result"/> or, when none is supplied, deep-rendered from the terminal's
+    ///     <c>resultTemplate</c>; either way it is validated against the terminal's (or the definition's)
+    ///     final output schema, captured, and the workflow completed. The runtime never auto-advances.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    ///     No definition is loaded, the transition is not a declared edge, or the terminal result fails its
-    ///     final output schema.
+    ///     No definition is loaded; the transition is not a declared edge; the next node has reached its
+    ///     <c>maxVisits</c> ceiling; the step budget is exhausted and the move is not the
+    ///     <c>onBudgetExhausted</c> escape; or the terminal result fails its final output schema.
     /// </exception>
     public void AdvanceTo(string? completedNodeId, string nextNodeId, JsonNode? result)
     {
@@ -346,36 +352,92 @@ public sealed class WorkflowRuntime
                 throw new InvalidOperationException("No workflow definition is loaded.");
             }
 
-            if (!IsDeclaredEdgeNoLock(CurrentNodeId, nextNodeId))
+            // Safety rail: once the global step budget is reached, the only permitted move is the
+            // definition's onBudgetExhausted escape, which acts as a global edge and bypasses the
+            // declared-edge check below. When no escape is defined the advance is allowed so the
+            // controller is never deadlocked.
+            var budgetExhausted = Step >= Definition.MaxStepBudget;
+            var budgetEscape =
+                budgetExhausted
+                && !string.IsNullOrEmpty(Definition.OnBudgetExhausted)
+                && nextNodeId == Definition.OnBudgetExhausted;
+            if (
+                budgetExhausted
+                && !string.IsNullOrEmpty(Definition.OnBudgetExhausted)
+                && nextNodeId != Definition.OnBudgetExhausted
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Step budget {Definition.MaxStepBudget} exhausted; route to onBudgetExhausted "
+                        + $"'{Definition.OnBudgetExhausted}' instead."
+                );
+            }
+
+            if (!budgetEscape && !IsDeclaredEdgeNoLock(CurrentNodeId, nextNodeId))
             {
                 throw new InvalidOperationException(
                     $"Undeclared transition: '{CurrentNodeId}' has no edge to '{nextNodeId}'."
                 );
             }
 
-            // Validate any terminal result BEFORE mutating, so a schema failure leaves the runtime
-            // untouched (no half-advanced node/visit/step state to recover from).
-            var terminal = FindNodeNoLock(nextNodeId) as TerminalNode;
-            JsonNode? capturedResult = null;
-            if (terminal is not null && result is not null)
-            {
-                var schema = terminal.FinalOutputSchema ?? Definition.FinalOutputSchema;
-                if (schema is not null)
-                {
-                    var validation = _schemaValidator.ValidateDetailed(
-                        result.ToJsonString(),
-                        schema.ToJsonString()
-                    );
-                    if (!validation.IsValid)
-                    {
-                        throw new InvalidOperationException(
-                            "Final result failed schema validation: "
-                                + string.Join("; ", validation.Errors)
-                        );
-                    }
-                }
+            var nextNode = FindNodeNoLock(nextNodeId);
 
-                capturedResult = result.DeepClone();
+            // Safety rail: a node with maxVisits = N may be ENTERED N times; the (N+1)-th entry is
+            // refused so the controller routes to its onMaxVisits instead. The rejected path mutates
+            // nothing.
+            if (MaxVisitsOf(nextNode) is { } maxVisits)
+            {
+                var entered = _visits.TryGetValue(nextNodeId, out var priorVisits) ? priorVisits : 0;
+                if (entered >= maxVisits)
+                {
+                    var onMaxVisits = OnMaxVisitsOf(nextNode);
+                    throw new InvalidOperationException(
+                        string.IsNullOrEmpty(onMaxVisits)
+                            ? $"Node '{nextNodeId}' reached maxVisits {maxVisits} and no onMaxVisits is defined."
+                            : $"Node '{nextNodeId}' reached maxVisits {maxVisits}; route to onMaxVisits '{onMaxVisits}' instead."
+                    );
+                }
+            }
+
+            // Validate any terminal result BEFORE mutating, so a schema failure leaves the runtime
+            // untouched (no half-advanced node/visit/step state to recover from). When the controller
+            // does not pass an explicit result, the terminal's resultTemplate (if any) is deep-rendered
+            // from state to compose one.
+            var terminal = nextNode as TerminalNode;
+            JsonNode? capturedResult = null;
+            if (terminal is not null)
+            {
+                var composed =
+                    result
+                    ?? (
+                        terminal.ResultTemplate is { } template
+                            ? TemplateNodeRenderer.Render(
+                                template,
+                                BuildContextNoLock(null, null, null)
+                            )
+                            : null
+                    );
+
+                if (composed is not null)
+                {
+                    var schema = terminal.FinalOutputSchema ?? Definition.FinalOutputSchema;
+                    if (schema is not null)
+                    {
+                        var validation = _schemaValidator.ValidateDetailed(
+                            composed.ToJsonString(),
+                            schema.ToJsonString()
+                        );
+                        if (!validation.IsValid)
+                        {
+                            throw new InvalidOperationException(
+                                "Final result failed schema validation: "
+                                    + string.Join("; ", validation.Errors)
+                            );
+                        }
+                    }
+
+                    capturedResult = composed.DeepClone();
+                }
             }
 
             CurrentNodeId = nextNodeId;
@@ -459,6 +521,21 @@ public sealed class WorkflowRuntime
                     result["onFailure"] = route;
                 }
             }
+
+            // For the active conditional node, surface the deterministic recommended branch plus a
+            // per-branch evaluation view (read-only hints; AdvanceTo still accepts any declared edge).
+            if (
+                CurrentNodeId is { } conditionalId
+                && FindNodeNoLock(conditionalId) is ConditionalNode conditional
+            )
+            {
+                AddConditionalRoutingNoLock(result, conditional);
+            }
+
+            // Safety-rail surfaces for the active node: a reached visit ceiling (route to onMaxVisits)
+            // and a global step-budget exhaustion (route to onBudgetExhausted).
+            AddVisitCeilingNoLock(result);
+            AddBudgetSurfaceNoLock(result);
 
             // Surface per-unit validation/parse errors so the controller can re-author a re-surfaced unit.
             if (_lastError.Count > 0)
@@ -906,6 +983,89 @@ public sealed class WorkflowRuntime
         var route = failed.OnFailure ?? node.OnFailure;
         return string.IsNullOrEmpty(route) ? null : route;
     }
+
+    /// <summary>
+    ///     Surfaces the deterministic recommended branch for an active conditional node: the first branch
+    ///     whose structured condition holds (prose <c>when</c> branches have no structured form and are
+    ///     skipped), else the <c>else</c> target. A per-branch <c>{ to, matched }</c> view is surfaced too.
+    /// </summary>
+    private void AddConditionalRoutingNoLock(JsonObject result, ConditionalNode conditional)
+    {
+        var context = BuildContextNoLock(null, null, null);
+        var evaluations = new JsonArray();
+        string? recommended = null;
+        foreach (var branch in conditional.Branches)
+        {
+            var matched =
+                branch.StructuredCondition is { } condition
+                && ConditionEvaluator.Evaluate(condition, context);
+            evaluations.Add(new JsonObject { ["to"] = branch.To, ["matched"] = matched });
+            recommended ??= matched ? branch.To : null;
+        }
+
+        result["recommendedBranch"] = recommended ?? conditional.Else;
+        result["branchEvaluations"] = evaluations;
+    }
+
+    /// <summary>
+    ///     Surfaces <c>atVisitCeiling</c>/<c>onMaxVisits</c> when the active node has been entered its
+    ///     declared <c>maxVisits</c> times, so the controller routes to its <c>onMaxVisits</c> instead of
+    ///     re-entering it.
+    /// </summary>
+    private void AddVisitCeilingNoLock(JsonObject result)
+    {
+        if (CurrentNodeId is not { } nodeId)
+        {
+            return;
+        }
+
+        var node = FindNodeNoLock(nodeId);
+        if (
+            MaxVisitsOf(node) is { } maxVisits
+            && (_visits.TryGetValue(nodeId, out var entered) ? entered : 0) >= maxVisits
+        )
+        {
+            result["atVisitCeiling"] = true;
+            if (OnMaxVisitsOf(node) is { } onMaxVisits && !string.IsNullOrEmpty(onMaxVisits))
+            {
+                result["onMaxVisits"] = onMaxVisits;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Surfaces <c>budgetExhausted</c>/<c>onBudgetExhausted</c> when the global step counter has reached
+    ///     the definition's <c>maxStepBudget</c>, so the controller routes to the escape.
+    /// </summary>
+    private void AddBudgetSurfaceNoLock(JsonObject result)
+    {
+        if (Definition is { } definition && Step >= definition.MaxStepBudget)
+        {
+            result["budgetExhausted"] = true;
+            if (!string.IsNullOrEmpty(definition.OnBudgetExhausted))
+            {
+                result["onBudgetExhausted"] = definition.OnBudgetExhausted;
+            }
+        }
+    }
+
+    /// <summary>The visit ceiling declared on a node (procedural/conditional), or <c>null</c> when unbounded.</summary>
+    private static int? MaxVisitsOf(WorkflowNode? node) =>
+        node switch
+        {
+            ProceduralNode procedural => procedural.MaxVisits,
+            ConditionalNode conditional => conditional.MaxVisits,
+            _ => null,
+        };
+
+    /// <summary>The <c>onMaxVisits</c> route declared on a node (procedural/conditional), or <c>null</c>.</summary>
+    private static string? OnMaxVisitsOf(WorkflowNode? node) =>
+        node switch
+        {
+            ProceduralNode procedural => procedural.OnMaxVisits,
+            ConditionalNode conditional => conditional.OnMaxVisits,
+            _ => null,
+        };
 
     private WorkflowTaskStatus StatusOfNoLock(string unitName) =>
         _status.TryGetValue(unitName, out var status) ? status : WorkflowTaskStatus.Pending;
