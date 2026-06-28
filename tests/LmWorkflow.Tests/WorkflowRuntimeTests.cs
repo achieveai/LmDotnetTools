@@ -172,6 +172,61 @@ public class WorkflowRuntimeTests
         runtime.IsComplete.Should().BeFalse();
     }
 
+    [Fact]
+    public void PublicChannelGetters_ReturnIsolatedCopies_MutatingThemDoesNotLeakIntoRuntime()
+    {
+        var runtime = RuntimeAtAnalyze();
+        _ = runtime.ComposeNextExpectedAction();
+        runtime.RegisterSpawn("tc_agent", AnalyzeUnit);
+        runtime.ObserveResult("tc_agent", """{ "summary": "v1" }""", isError: false);
+
+        // Fix H1: the getters hand back DEEP COPIES — two reads are not the same instance, and mutating a
+        // returned copy must NOT change runtime state.
+        ReferenceEquals(runtime.Outputs, runtime.Outputs).Should().BeFalse();
+
+        var outputs = runtime.Outputs;
+        outputs["analyze"]!["task"]!["summary"] = JsonValue.Create("HACKED");
+        var state = runtime.State;
+        state["analysis"]!["summary"] = JsonValue.Create("HACKED");
+
+        runtime.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>().Should().Be("v1");
+        runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("v1");
+    }
+
+    [Fact]
+    public void PublicChannelGetter_ReturnsStableCopy_UnaffectedByLaterRuntimeMutation()
+    {
+        var runtime = RuntimeAtAnalyze();
+        _ = runtime.ComposeNextExpectedAction();
+        runtime.RegisterSpawn("tc_agent", AnalyzeUnit);
+        runtime.ObserveResult("tc_agent", """{ "summary": "v1" }""", isError: false);
+
+        // Capture a copy, then mutate the live state channel under the lock.
+        var captured = runtime.State;
+        runtime.SetState("state.analysis.summary", JsonValue.Create("v2"), "set", key: null);
+
+        // Fix H1: the previously-returned copy is STABLE (the in-place mutation cannot race into it),
+        // while a fresh read observes the update.
+        captured["analysis"]!["summary"]!.GetValue<string>().Should().Be("v1");
+        runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("v2");
+    }
+
+    [Fact]
+    public void BuildContext_ChannelsAreClonedCopies_NotLiveAliases()
+    {
+        var runtime = RuntimeAtAnalyze();
+        _ = runtime.ComposeNextExpectedAction();
+        runtime.RegisterSpawn("tc_agent", AnalyzeUnit);
+        runtime.ObserveResult("tc_agent", """{ "summary": "v1" }""", isError: false);
+
+        // Fix H1: the PUBLIC BuildContext clones the channels, so mutating the returned context's state does
+        // not leak back into the runtime.
+        var context = runtime.BuildContext();
+        context.State["analysis"]!["summary"] = JsonValue.Create("HACKED");
+
+        runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("v1");
+    }
+
     private static string StatusOf(WorkflowRuntime runtime, string unitName) =>
         runtime.GetProjection(null)["tasks"]![unitName]!.GetValue<string>();
 }

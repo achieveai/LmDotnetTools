@@ -96,11 +96,55 @@ internal static class Phase4Fixtures
         }
         """;
 
+    private const string EmptyForEachTemplate = """
+        {
+          "schemaVersion": 1,
+          "objective": "Fan out over an empty set.",
+          "sharedContext": "SHARED_CTX: fan-out pipeline.",
+          "inputs": { "items": [] },
+          "state": {},
+          "maxStepBudget": 50,
+          "nodes": [
+            { "id": "start", "type": "start", "title": "Start", "next": ["fan"] },
+            {
+              "id": "fan",
+              "type": "procedural",
+              "title": "Fan out",
+              "tasksMode": "authored",
+              "joinPolicy": { "mode": "all" },
+              "onFailure": "fail",
+              "taskList": [
+                {
+                  "id": "task",
+                  "delegate": "agent",
+                  "subagent_type": "general-purpose",
+                  "forEach": "inputs.items",
+                  "promptTemplate": "Process {{item}}.",
+                  "outputSchema": {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": { "text": { "type": "string" } }
+                  },
+                  "onFailure": "fail",
+                  "maxValidationRetries": 0
+                }
+              ],
+              "next": ["done"]
+            },
+            { "id": "done", "type": "terminal", "title": "Done" },
+            { "id": "fail", "type": "terminal", "title": "Failed" }
+          ]
+        }
+        """;
+
     /// <summary>A <c>start → fan(forEach inputs.items[3]) → done</c> workflow with a configurable join + retry budget.</summary>
     public static string ForEachWorkflow(string joinMode = "all", int maxValidationRetries = 0) =>
         ForEachTemplate
             .Replace("__JOIN__", joinMode)
             .Replace("__RETRIES__", maxValidationRetries.ToString(CultureInfo.InvariantCulture));
+
+    /// <summary>A <c>start → fan(forEach over an EMPTY array) → done</c> workflow: the node has nothing to spawn.</summary>
+    public static string EmptyForEachWorkflow() => EmptyForEachTemplate;
 
     /// <summary>A single-task <c>start → analyze → done</c> workflow (with a <c>fail</c> onFailure terminal) and a configurable retry budget.</summary>
     public static string SingleTask(int maxValidationRetries) =>

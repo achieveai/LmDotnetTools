@@ -167,11 +167,30 @@ public static class WorkflowSession
         CancellationToken ct
     )
     {
-        _ = loop.RunAsync(ct);
+        var runTask = loop.RunAsync(ct);
+
+        // The controller pump runs on its own task. If it does NOT run to completion — it FAULTS, or it
+        // propagates an OperationCanceledException while nothing was cancelled (which the async state machine
+        // surfaces as a CANCELED task, not a faulted one) — before the drive enumeration observes a run
+        // completion, the consumer awaiting Completion would otherwise hang forever. Fault Completion with the
+        // pump's exception so the wait resolves (Fix M4). SignalFailure uses TrySetException (first-wins), so
+        // a normal completion or a cancellation already signalled by the drive is unaffected. NotOnRanToCompletion
+        // covers both the faulted and canceled antecedent states.
+        _ = runTask.ContinueWith(
+            t =>
+                runtime.SignalFailure(
+                    t.Exception?.GetBaseException()
+                        ?? new OperationCanceledException("The controller run pump was cancelled.")
+                ),
+            CancellationToken.None,
+            TaskContinuationOptions.NotOnRanToCompletion,
+            TaskScheduler.Default
+        );
+
         var input = new UserInput([new TextMessage { Text = initialMessage, Role = Role.User }]);
         var driveTask = DriveAndObserveAsync(loop, runtime, input, ct);
 
-        return new WorkflowRunHandle(runtime, loop, driveTask);
+        return new WorkflowRunHandle(runtime, loop, runTask, driveTask);
     }
 
     /// <summary>
@@ -280,12 +299,19 @@ public static class WorkflowSession
 /// </summary>
 public sealed class WorkflowRunHandle : IAsyncDisposable
 {
+    private readonly Task _runTask;
     private readonly Task _driveTask;
 
-    internal WorkflowRunHandle(WorkflowRuntime runtime, MultiTurnAgentLoop loop, Task driveTask)
+    internal WorkflowRunHandle(
+        WorkflowRuntime runtime,
+        MultiTurnAgentLoop loop,
+        Task runTask,
+        Task driveTask
+    )
     {
         Runtime = runtime;
         Loop = loop;
+        _runTask = runTask;
         _driveTask = driveTask;
     }
 
@@ -304,6 +330,12 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        // Dispose the loop FIRST: it stops the controller pump and completes its output channels, which
+        // releases the drive enumeration even if the pump faulted WITHOUT publishing a run completion (the
+        // hang Fix M4 guards against). Then observe BOTH background tasks so neither fault goes unobserved —
+        // each is already surfaced via Completion (SignalFailure / SignalCompletion).
+        await Loop.DisposeAsync().ConfigureAwait(false);
+
         try
         {
             await _driveTask.ConfigureAwait(false);
@@ -313,6 +345,16 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
             // The drive task's failure is already surfaced via Completion; disposal must not throw.
         }
 
-        await Loop.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _runTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The pump fault is surfaced via Completion (SignalFailure); disposal must not throw.
+        }
+
+        // Flush any pending best-effort snapshot saves before the handle goes away (Fix M2/M3).
+        await Runtime.DrainPersistAsync().ConfigureAwait(false);
     }
 }

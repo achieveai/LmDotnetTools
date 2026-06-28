@@ -67,4 +67,26 @@ public class JoinSurfacingTests
         after["validated"]!.GetValue<int>().Should().Be(1);
         after["satisfied"]!.GetValue<bool>().Should().BeTrue();
     }
+
+    [Fact]
+    public void AllJoin_OverEmptyForEach_IsVacuouslySatisfied_AndSurfacesNoSpawnUnits()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4Fixtures.EmptyForEachWorkflow()));
+        runtime.AdvanceTo("start", "fan", null);
+
+        var projection = runtime.GetProjection(null);
+
+        // Fix M5: a node whose forEach is empty has nothing to spawn, so the all-join is VACUOUSLY satisfied
+        // (validated == total == 0) and the controller can route on — instead of livelocking until the
+        // budget rail trips. The satisfied flag is only computed after GetProjection has composed the node.
+        var join = projection["join"]!;
+        join["mode"]!.GetValue<string>().Should().Be("all");
+        join["total"]!.GetValue<int>().Should().Be(0);
+        join["validated"]!.GetValue<int>().Should().Be(0);
+        join["satisfied"]!.GetValue<bool>().Should().BeTrue();
+
+        // No spawnable units are surfaced for the controller to act on.
+        projection["nextExpectedAction"]!.AsArray().Should().BeEmpty();
+    }
 }

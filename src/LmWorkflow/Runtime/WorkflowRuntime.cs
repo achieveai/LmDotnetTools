@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 
@@ -58,15 +59,37 @@ public sealed class WorkflowRuntime
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
     private readonly List<string> _unmatched = [];
 
+    // The live data channels the runtime mutates IN PLACE under _lock. They are exposed only through the
+    // public getters below, which hand back a deep copy taken under the lock so a host can never observe a
+    // half-mutated channel or mutate internal state by writing into the returned node (Fix H1).
+    private JsonObject _inputs = [];
+    private JsonObject _state = [];
+    private JsonObject _outputs = [];
+    private JsonObject _notes = [];
+    private JsonNode? _result;
+
     // Optional best-effort persistence: when attached, a fresh snapshot is saved after every state-mutating
     // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
     private IWorkflowStore? _store;
     private string? _instanceId;
 
-    /// <summary>Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests.</summary>
-    public WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null)
+    // Persistence is serialized so saves apply in capture order (save N completes before save N+1 starts),
+    // preventing a slow stale save from overwriting a newer one (Fix M2). The chain is advanced under a
+    // dedicated lock so it never blocks the main runtime lock.
+    private readonly object _saveLock = new();
+    private Task _saveChain = Task.CompletedTask;
+
+    // Optional logger so a swallowed best-effort persistence fault is at least visible (Fix M3).
+    private readonly ILogger? _logger;
+
+    /// <summary>
+    ///     Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests, and an
+    ///     optional <paramref name="logger"/> surfaces otherwise-swallowed best-effort persistence faults.
+    /// </summary>
+    public WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null)
     {
         _schemaValidator = schemaValidator ?? new JsonSchemaValidator();
+        _logger = logger;
     }
 
     /// <summary>
@@ -95,23 +118,83 @@ public sealed class WorkflowRuntime
     /// <summary>Whether the workflow has advanced into a terminal node.</summary>
     public bool IsComplete { get; private set; }
 
-    /// <summary>The validated final result captured when the workflow completed, or <c>null</c>.</summary>
-    public JsonNode? Result { get; private set; }
+    /// <summary>
+    ///     The validated final result captured when the workflow completed, or <c>null</c>. Returns a deep
+    ///     copy taken under the lock, so a host reading it never aliases live runtime state (Fix H1).
+    /// </summary>
+    public JsonNode? Result
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _result?.DeepClone();
+            }
+        }
+    }
 
     /// <summary>The global controller step counter, incremented on every transition.</summary>
     public int Step { get; private set; }
 
-    /// <summary>The workflow inputs channel (<c>inputs.&lt;...&gt;</c>).</summary>
-    public JsonObject Inputs { get; private set; } = [];
+    /// <summary>
+    ///     The workflow inputs channel (<c>inputs.&lt;...&gt;</c>). Returns a deep copy taken under the lock;
+    ///     mutating the returned object does not change runtime state (Fix H1).
+    /// </summary>
+    public JsonObject Inputs
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return CloneObject(_inputs);
+            }
+        }
+    }
 
-    /// <summary>The mutable state channel (<c>state.&lt;...&gt;</c>).</summary>
-    public JsonObject State { get; private set; } = [];
+    /// <summary>
+    ///     The mutable state channel (<c>state.&lt;...&gt;</c>). Returns a deep copy taken under the lock;
+    ///     mutating the returned object does not change runtime state (Fix H1).
+    /// </summary>
+    public JsonObject State
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return CloneObject(_state);
+            }
+        }
+    }
 
-    /// <summary>The per-node task outputs channel (<c>{ nodeId: { taskId: value } }</c>).</summary>
-    public JsonObject Outputs { get; private set; } = [];
+    /// <summary>
+    ///     The per-node task outputs channel (<c>{ nodeId: { taskId: value } }</c>). Returns a deep copy taken
+    ///     under the lock; mutating the returned object does not change runtime state (Fix H1).
+    /// </summary>
+    public JsonObject Outputs
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return CloneObject(_outputs);
+            }
+        }
+    }
 
-    /// <summary>The scoped notes channel (<c>{ scope: { key: value } }</c>).</summary>
-    public JsonObject Notes { get; private set; } = [];
+    /// <summary>
+    ///     The scoped notes channel (<c>{ scope: { key: value } }</c>). Returns a deep copy taken under the
+    ///     lock; mutating the returned object does not change runtime state (Fix H1).
+    /// </summary>
+    public JsonObject Notes
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return CloneObject(_notes);
+            }
+        }
+    }
 
     /// <summary>
     ///     Completes when the workflow reaches a terminal node and the run observer has drained the stream
@@ -159,13 +242,13 @@ public sealed class WorkflowRuntime
         lock (_lock)
         {
             Definition = def;
-            Inputs = CloneObject(def.Inputs);
-            State = CloneObject(def.State);
-            Outputs = [];
-            Notes = [];
+            _inputs = CloneObject(def.Inputs);
+            _state = CloneObject(def.State);
+            _outputs = [];
+            _notes = [];
             foreach (var node in def.Nodes)
             {
-                Outputs[node.Id] = new JsonObject();
+                _outputs[node.Id] = new JsonObject();
             }
 
             var start = def.Nodes.OfType<StartNode>().Single();
@@ -174,7 +257,7 @@ public sealed class WorkflowRuntime
             _visits[start.Id] = 1;
             Step = 0;
             IsComplete = false;
-            Result = null;
+            _result = null;
 
             _tasksByName.Clear();
             _tasksByToolCallId.Clear();
@@ -199,20 +282,21 @@ public sealed class WorkflowRuntime
         {
             foreach (var (key, value) in inputs)
             {
-                Inputs[key] = value?.DeepClone();
+                _inputs[key] = value?.DeepClone();
             }
         }
     }
 
     /// <summary>
     ///     Builds a <see cref="BindingContext"/> over the current channels (plus optional loop locals) for
-    ///     template rendering and condition evaluation.
+    ///     template rendering and condition evaluation. The channels are deep-copied under the lock so the
+    ///     returned context never aliases live runtime state (Fix H1).
     /// </summary>
     public BindingContext BuildContext(JsonNode? item = null, int? index = null, int? count = null)
     {
         lock (_lock)
         {
-            return BuildContextNoLock(item, index, count);
+            return BuildContextNoLock(item, index, count, clone: true);
         }
     }
 
@@ -244,6 +328,17 @@ public sealed class WorkflowRuntime
         lock (_lock)
         {
             if (!_tasksByName.TryGetValue(name, out var taskRef))
+            {
+                return;
+            }
+
+            // A unit that has already validated or terminally failed is SETTLED. A controller re-issuing an
+            // Agent call for it (e.g. after completion) must not reset its status or re-map the toolCallId,
+            // or the eventual ObserveResult would re-run ValidateAndRecordNoLock and re-apply its
+            // append/merge writes — silently corrupting state (Fix M1). Only a Pending unit transitions to
+            // InFlight; an already-InFlight unit re-correlates as before.
+            var status = StatusOfNoLock(name);
+            if (status is WorkflowTaskStatus.Validated or WorkflowTaskStatus.Failed)
             {
                 return;
             }
@@ -491,7 +586,7 @@ public sealed class WorkflowRuntime
             {
                 if (capturedResult is not null)
                 {
-                    Result = capturedResult;
+                    _result = capturedResult;
                 }
 
                 IsComplete = true;
@@ -517,7 +612,7 @@ public sealed class WorkflowRuntime
                 Mode = ParseWriteMode(mode),
                 Key = key,
             };
-            StateWriter.Apply(State, spec, value);
+            StateWriter.Apply(_state, spec, value);
 
             snapshot = CaptureSnapshotNoLock();
         }
@@ -534,10 +629,10 @@ public sealed class WorkflowRuntime
         WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (Notes[scope] is not JsonObject scopeObject)
+            if (_notes[scope] is not JsonObject scopeObject)
             {
                 scopeObject = [];
-                Notes[scope] = scopeObject;
+                _notes[scope] = scopeObject;
             }
 
             scopeObject[key] = JsonValue.Create(value);
@@ -609,17 +704,17 @@ public sealed class WorkflowRuntime
 
             if (IncludesChannel(projection, "state"))
             {
-                result["state"] = State.DeepClone();
+                result["state"] = _state.DeepClone();
             }
 
             if (IncludesChannel(projection, "outputs"))
             {
-                result["outputs"] = Outputs.DeepClone();
+                result["outputs"] = _outputs.DeepClone();
             }
 
             if (IncludesChannel(projection, "notes"))
             {
-                result["notes"] = Notes.DeepClone();
+                result["notes"] = _notes.DeepClone();
             }
 
             if (_unmatched.Count > 0)
@@ -692,12 +787,12 @@ public sealed class WorkflowRuntime
             Definition = snapshot.Definition;
             CurrentNodeId = snapshot.CurrentNodeId;
             IsComplete = snapshot.IsComplete;
-            Result = snapshot.Result?.DeepClone();
+            _result = snapshot.Result?.DeepClone();
             Step = snapshot.Step;
-            Inputs = CloneObject(snapshot.Inputs);
-            State = CloneObject(snapshot.State);
-            Outputs = CloneObject(snapshot.Outputs);
-            Notes = CloneObject(snapshot.Notes);
+            _inputs = CloneObject(snapshot.Inputs);
+            _state = CloneObject(snapshot.State);
+            _outputs = CloneObject(snapshot.Outputs);
+            _notes = CloneObject(snapshot.Notes);
 
             _visits.Clear();
             foreach (var (nodeId, count) in snapshot.Visits)
@@ -822,12 +917,12 @@ public sealed class WorkflowRuntime
             Definition = Definition,
             CurrentNodeId = CurrentNodeId,
             IsComplete = IsComplete,
-            Result = Result?.DeepClone(),
+            Result = _result?.DeepClone(),
             Step = Step,
-            Inputs = CloneObject(Inputs),
-            State = CloneObject(State),
-            Outputs = CloneObject(Outputs),
-            Notes = CloneObject(Notes),
+            Inputs = CloneObject(_inputs),
+            State = CloneObject(_state),
+            Outputs = CloneObject(_outputs),
+            Notes = CloneObject(_notes),
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
             Tasks = tasks,
         };
@@ -837,7 +932,12 @@ public sealed class WorkflowRuntime
     private WorkflowInstanceSnapshot? CaptureSnapshotNoLock() =>
         _store is not null && _instanceId is not null ? BuildSnapshotNoLock(_instanceId) : null;
 
-    /// <summary>Fire-and-forget, best-effort persistence of a captured snapshot (no-op when not attached).</summary>
+    /// <summary>
+    ///     Best-effort persistence of a captured snapshot (no-op when not attached). Saves are SERIALIZED on a
+    ///     per-instance chain so they apply in capture order — save N completes before save N+1 starts — which
+    ///     prevents a slow, stale save from overwriting a newer snapshot (Fix M2). Use
+    ///     <see cref="DrainPersistAsync"/> to flush pending saves before disposal.
+    /// </summary>
     private void Persist(WorkflowInstanceSnapshot? snapshot)
     {
         if (snapshot is null || _store is null || _instanceId is null)
@@ -845,10 +945,38 @@ public sealed class WorkflowRuntime
             return;
         }
 
-        _ = SaveBestEffortAsync(_store, _instanceId, snapshot);
+        var store = _store;
+        var instanceId = _instanceId;
+        lock (_saveLock)
+        {
+            // ExecuteSynchronously keeps a save inline when its antecedent is ALREADY complete (the common
+            // case for a synchronous store), so persistence stays as prompt as the prior fire-and-forget for
+            // such stores; an async store's save simply chains the next save behind its still-running task.
+            _saveChain = _saveChain
+                .ContinueWith(
+                    _ => SaveBestEffortAsync(store, instanceId, snapshot),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
+                )
+                .Unwrap();
+        }
     }
 
-    private static async Task SaveBestEffortAsync(
+    /// <summary>
+    ///     Awaits the current per-instance save chain so a host can flush every pending best-effort save
+    ///     before disposing the run. Best-effort saves never fault the chain, so this never throws; it is a
+    ///     no-op (already-completed task) when no store is attached.
+    /// </summary>
+    public Task DrainPersistAsync()
+    {
+        lock (_saveLock)
+        {
+            return _saveChain;
+        }
+    }
+
+    private async Task SaveBestEffortAsync(
         IWorkflowStore store,
         string instanceId,
         WorkflowInstanceSnapshot snapshot
@@ -858,20 +986,32 @@ public sealed class WorkflowRuntime
         {
             await store.SaveAsync(instanceId, snapshot).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            // Best-effort: a persistence fault must never corrupt or fail the live run. The next mutation
-            // re-attempts with a fresh snapshot.
+            // Best-effort: a persistence fault must never corrupt or fail the live run. Surface it at Warning
+            // (Fix M3) so a store outage is visible; the next mutation re-attempts with a fresh snapshot.
+            _logger?.LogWarning(ex, "Workflow {InstanceId} snapshot persistence failed", instanceId);
         }
     }
 
-    private BindingContext BuildContextNoLock(JsonNode? item, int? index, int? count) =>
+    /// <summary>
+    ///     Builds a binding context over the live channels. Internal callers use it read-only under the lock
+    ///     and may keep aliasing the live channels (<paramref name="clone"/> = <c>false</c>); the public
+    ///     <see cref="BuildContext"/> passes <paramref name="clone"/> = <c>true</c> so its returned context is
+    ///     isolated from later runtime mutation (Fix H1).
+    /// </summary>
+    private BindingContext BuildContextNoLock(
+        JsonNode? item,
+        int? index,
+        int? count,
+        bool clone = false
+    ) =>
         new()
         {
-            Inputs = Inputs,
-            State = State,
-            Outputs = Outputs,
-            Notes = Notes,
+            Inputs = clone ? CloneObject(_inputs) : _inputs,
+            State = clone ? CloneObject(_state) : _state,
+            Outputs = clone ? CloneObject(_outputs) : _outputs,
+            Notes = clone ? CloneObject(_notes) : _notes,
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
             Step = Step,
             Item = item,
@@ -1046,7 +1186,7 @@ public sealed class WorkflowRuntime
         WriteOutputSlotNoLock(taskRef, parsed);
         if (taskRef.Writes is { } writes)
         {
-            StateWriter.Apply(State, writes, parsed);
+            StateWriter.Apply(_state, writes, parsed);
         }
 
         _status[taskRef.Name] = WorkflowTaskStatus.Validated;
@@ -1085,10 +1225,10 @@ public sealed class WorkflowRuntime
     /// </summary>
     private void WriteOutputSlotNoLock(TaskRef taskRef, JsonNode value)
     {
-        if (Outputs[taskRef.NodeId] is not JsonObject nodeOutputs)
+        if (_outputs[taskRef.NodeId] is not JsonObject nodeOutputs)
         {
             nodeOutputs = [];
-            Outputs[taskRef.NodeId] = nodeOutputs;
+            _outputs[taskRef.NodeId] = nodeOutputs;
         }
 
         if (taskRef.Index is not { } index)
@@ -1234,7 +1374,14 @@ public sealed class WorkflowRuntime
 
         var mode = node.JoinPolicy?.Mode ?? JoinMode.All;
         var total = units.Count;
-        var satisfied = mode == JoinMode.Any ? validated >= 1 : total > 0 && validated == total;
+
+        // An all-join is satisfied once every COMPOSED unit validated — including the vacuous total == 0
+        // case: a node whose working set is empty (a forEach over an empty array, or a procedural node whose
+        // TaskList yields no spawnable units) has nothing to spawn and is therefore vacuously satisfied, so
+        // the controller can route on instead of livelocking until the budget rail trips (Fix M5). This is
+        // only ever evaluated AFTER compose has run for the node — GetProjection calls ComposeNoLock before
+        // ActiveUnitsNoLock/BuildJoinNoLock — so a not-yet-composed node is never falsely reported satisfied.
+        var satisfied = mode == JoinMode.Any ? validated >= 1 : validated == total;
 
         return new JsonObject
         {

@@ -88,4 +88,36 @@ public class ForEachCompositionTests
         // Each element's text was appended to state.results (one append per validated unit).
         runtime.State["results"]!.AsArray().Should().HaveCount(3);
     }
+
+    [Fact]
+    public void RegisterSpawn_AfterUnitValidated_IsNoOp_DoesNotReapplyAppendOrChangeOutput()
+    {
+        var runtime = RuntimeAtFan();
+        _ = runtime.ComposeNextExpectedAction();
+
+        // Validate unit 0: its text is appended to state.results and recorded at outputs[fan][task][0].
+        runtime.RegisterSpawn("tc_0", "fan:1:task:0");
+        runtime.ObserveResult("tc_0", """{ "text": "first" }""", isError: false);
+
+        runtime.State["results"]!.AsArray().Should().HaveCount(1);
+        runtime.Outputs["fan"]!["task"]![0]!["text"]!.GetValue<string>().Should().Be("first");
+
+        // Fix M1: re-issuing an Agent call for the already-validated unit must NOT reset its status, re-map
+        // the toolCallId, or re-run validation — otherwise the append write would be applied a second time
+        // (silent state corruption). The second result is therefore surfaced as unmatched and changes nothing.
+        runtime.RegisterSpawn("tc_0_again", "fan:1:task:0");
+        runtime.ObserveResult("tc_0_again", """{ "text": "second" }""", isError: false);
+
+        // The append target did NOT grow and the recorded output is unchanged.
+        runtime.State["results"]!.AsArray().Should().HaveCount(1);
+        runtime.Outputs["fan"]!["task"]![0]!["text"]!.GetValue<string>().Should().Be("first");
+
+        // The status stays validated, and the second toolCallId is surfaced as unmatched.
+        var projection = runtime.GetProjection(null);
+        projection["tasks"]!["fan:1:task:0"]!.GetValue<string>().Should().Be("validated");
+        projection["unmatched"]!.AsArray()
+            .Select(n => n!.GetValue<string>())
+            .Should()
+            .Contain("tc_0_again");
+    }
 }
