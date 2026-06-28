@@ -58,12 +58,7 @@ public record OpenMessage
             messages.Add(
                 new UsageMessage
                 {
-                    Usage = new Usage
-                    {
-                        PromptTokens = Usage.PromptTokens,
-                        CompletionTokens = Usage.CompletionTokens,
-                        TotalTokens = Usage.PromptTokens + Usage.CompletionTokens,
-                    },
+                    Usage = BuildCoreUsage(Usage),
                     Role = Role.Assistant,
                     FromAgent = ChatMessage.Name,
                     GenerationId = CompletionId,
@@ -72,6 +67,22 @@ public record OpenMessage
         }
 
         return messages;
+    }
+
+    // Carries cached/reasoning detail counts onto the core Usage so prompt-cache and reasoning
+    // telemetry survive the provider→core boundary (nested *_tokens_details on OpenAI/OpenRouter).
+    private static Usage BuildCoreUsage(OpenUsage usage)
+    {
+        return new Usage
+        {
+            PromptTokens = usage.PromptTokens,
+            CompletionTokens = usage.CompletionTokens,
+            TotalTokens = usage.PromptTokens + usage.CompletionTokens,
+            InputTokenDetails =
+                usage.CachedTokens > 0 ? new InputTokenDetails { CachedTokens = usage.CachedTokens } : null,
+            OutputTokenDetails =
+                usage.ReasoningTokens > 0 ? new OutputTokenDetails { ReasoningTokens = usage.ReasoningTokens } : null,
+        };
     }
 
     public IEnumerable<IMessage> ToStreamingMessage()
@@ -127,12 +138,7 @@ public record OpenMessage
             messages.Add(
                 new UsageMessage
                 {
-                    Usage = new Usage
-                    {
-                        PromptTokens = Usage.PromptTokens,
-                        CompletionTokens = Usage.CompletionTokens,
-                        TotalTokens = Usage.PromptTokens + Usage.CompletionTokens,
-                    },
+                    Usage = BuildCoreUsage(Usage),
                     Role = Role.Assistant,
                     FromAgent = ChatMessage.Name,
                     GenerationId = CompletionId,
@@ -156,6 +162,12 @@ public record OpenUsage
 
     public bool IsCached { get; init; }
 
+    /// <summary>Cached (prompt-cache hit) input tokens — a subset of <see cref="PromptTokens"/>.</summary>
+    public int CachedTokens { get; init; }
+
+    /// <summary>Reasoning tokens — a subset of <see cref="CompletionTokens"/>.</summary>
+    public int ReasoningTokens { get; init; }
+
     public static OpenUsage operator +(OpenUsage a, OpenUsage b)
     {
         ArgumentNullException.ThrowIfNull(a);
@@ -168,6 +180,8 @@ public record OpenUsage
             PromptTokens = a.PromptTokens + b.PromptTokens,
             TotalCost = a.TotalCost + b.TotalCost,
             IsCached = a.IsCached,
+            CachedTokens = a.CachedTokens + b.CachedTokens,
+            ReasoningTokens = a.ReasoningTokens + b.ReasoningTokens,
         };
     }
 }

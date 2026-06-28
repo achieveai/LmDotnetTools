@@ -54,6 +54,39 @@ public class OpenAIProviderUsageTests
     }
 
     [Fact]
+    public void OpenAIProviderUsage_ShouldDeserializeChatCompletionsNestedDetails()
+    {
+        // Arrange - the REAL OpenAI Chat Completions usage shape uses prompt_tokens_details /
+        // completion_tokens_details (the Responses API uses input_tokens_details / output_tokens_details).
+        var chatJson = """
+            {
+                "prompt_tokens": 14986,
+                "completion_tokens": 121,
+                "total_tokens": 15107,
+                "prompt_tokens_details": {
+                    "cached_tokens": 13696
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 64
+                }
+            }
+            """;
+
+        // Act
+        var usage = JsonSerializer.Deserialize<OpenAIProviderUsage>(chatJson, _options);
+
+        // Assert
+        Assert.NotNull(usage);
+        Assert.Equal(13696, usage.TotalCachedTokens);
+        Assert.Equal(64, usage.TotalReasoningTokens);
+
+        // ToCoreUsage must carry the details across the boundary.
+        var core = usage.ToCoreUsage();
+        Assert.Equal(13696, core.TotalCachedTokens);
+        Assert.Equal(64, core.TotalReasoningTokens);
+    }
+
+    [Fact]
     public void OpenAIProviderUsage_ShouldDeserializeOpenRouterResponse()
     {
         // Arrange - OpenRouter API response format with direct fields

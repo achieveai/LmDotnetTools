@@ -224,10 +224,19 @@ public sealed class ChatWebSocketManager
                 {
                     var u = usageMsg.Usage;
                     var cacheCreation = u.GetExtraProperty<int>("cache_creation_input_tokens");
+                    // cached_tokens is a SUBSET of PromptTokens for the OpenAI family (Responses + chat
+                    // completions), so uncached = prompt - cached. Anthropic instead reports cache reads
+                    // SEPARATELY from input_tokens, so when the cache read exceeds the reported prompt we
+                    // fall back to PromptTokens (the additive case) and never go negative. The proper
+                    // cross-provider normalization of Usage is tracked as a follow-up.
+                    var uncachedInput = u.TotalCachedTokens <= u.PromptTokens
+                        ? u.PromptTokens - u.TotalCachedTokens
+                        : u.PromptTokens;
                     _logger.LogInformation(
-                        "Cache: read={CacheRead}, created={CacheCreation}, uncached_input={Input}, output={Output}, total={Total}",
+                        "Cache: read={CacheRead}, created={CacheCreation}, uncached_input={Uncached}, prompt={Prompt}, output={Output}, total={Total}",
                         u.TotalCachedTokens,
                         cacheCreation,
+                        uncachedInput,
                         u.PromptTokens,
                         u.CompletionTokens,
                         u.TotalTokens);

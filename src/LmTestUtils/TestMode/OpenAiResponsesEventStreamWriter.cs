@@ -126,7 +126,14 @@ public static class OpenAiResponsesEventStreamWriter
                     effectiveResponseId,
                     effectiveModel,
                     status: "completed",
-                    usage: new UsageSnapshot(InputTokens: 100, OutputTokens: 50)
+                    // Faithful to the real Responses API: surface prompt-cache hits and reasoning spend
+                    // via the nested *_tokens_details objects so the provider's usage parser is exercised.
+                    usage: new UsageSnapshot(
+                        InputTokens: 100,
+                        OutputTokens: 50,
+                        CachedTokens: plan.CacheReadInputTokens,
+                        ReasoningTokens: plan.ReasoningLength ?? 0
+                    )
                 ),
             }
         );
@@ -409,12 +416,24 @@ public static class OpenAiResponsesEventStreamWriter
 
         if (usage is { } u)
         {
-            node["usage"] = new JsonObject
+            var usageNode = new JsonObject
             {
                 ["input_tokens"] = u.InputTokens,
                 ["output_tokens"] = u.OutputTokens,
                 ["total_tokens"] = u.InputTokens + u.OutputTokens,
             };
+
+            if (u.CachedTokens > 0)
+            {
+                usageNode["input_tokens_details"] = new JsonObject { ["cached_tokens"] = u.CachedTokens };
+            }
+
+            if (u.ReasoningTokens > 0)
+            {
+                usageNode["output_tokens_details"] = new JsonObject { ["reasoning_tokens"] = u.ReasoningTokens };
+            }
+
+            node["usage"] = usageNode;
         }
 
         return ToJsonElement(node);
@@ -458,5 +477,10 @@ public static class OpenAiResponsesEventStreamWriter
         }
     }
 
-    private readonly record struct UsageSnapshot(int InputTokens, int OutputTokens);
+    private readonly record struct UsageSnapshot(
+        int InputTokens,
+        int OutputTokens,
+        int CachedTokens = 0,
+        int ReasoningTokens = 0
+    );
 }
