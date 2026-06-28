@@ -46,7 +46,7 @@ public class ConversationsControllerWorkspaceTests
     {
         var result = await controller.List(ct: CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
-        return [.. Assert.IsAssignableFrom<IEnumerable<ConversationSummary>>(ok.Value!)];
+        return [.. Assert.IsAssignableFrom<IEnumerable<ConversationSummary>>(ok.Value)];
     }
 
     private static ThreadMetadata ThreadWithProperties(string threadId, ImmutableDictionary<string, object> properties) =>
