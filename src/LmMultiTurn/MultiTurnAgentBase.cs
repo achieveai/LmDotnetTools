@@ -972,9 +972,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         switch (message)
         {
             case TextUpdateMessage t:
-                return baseOverhead + (t.Text?.Length ?? 0) * 2L;
+                return baseOverhead + ((t.Text?.Length ?? 0) * 2L);
             case TextMessage t:
-                return baseOverhead + (t.Text?.Length ?? 0) * 2L;
+                return baseOverhead + ((t.Text?.Length ?? 0) * 2L);
             case ToolsCallMessage tc:
                 {
                     var bytes = baseOverhead;
