@@ -60,6 +60,14 @@ internal sealed class TaskCoordinator
     // most recent entries are kept (Fix: bound the diagnostic list).
     private const int MaxUnmatchedDiagnostics = 50;
 
+    // The cap on the VARIABLE, potentially-EUII tail embedded in a task failure reason (the raw sub-agent
+    // output or the joined schema-validation errors). A failure reason flows into _lastError, the
+    // {"_error": ...} output marker, the GetWorkflow taskErrors projection AND the persisted
+    // WorkflowTaskSnapshot.LastError, so the raw tail is truncated to bound data-retention / EUII exposure
+    // (and keep the controller context small). The stable prefix is always kept so the controller still has
+    // enough signal to decide retry/route (Fix: bound the failure reason).
+    private const int MaxFailureReasonChars = 300;
+
     /// <summary>Creates a coordinator over the supplied schema validator and runtime-state accessors.</summary>
     public TaskCoordinator(
         IJsonSchemaValidator schemaValidator,
@@ -223,7 +231,7 @@ internal sealed class TaskCoordinator
         }
         else if (isError)
         {
-            HandleFailure(taskRef, $"sub-agent returned an error: {resultText}");
+            HandleFailure(taskRef, $"sub-agent returned an error: {Sanitize(resultText)}");
         }
         else if (TryReadSpawnReceipt(resultText, out var agentId))
         {
@@ -454,7 +462,7 @@ internal sealed class TaskCoordinator
     {
         if (isError)
         {
-            HandleFailure(taskRef, $"sub-agent returned an error: {resultText}");
+            HandleFailure(taskRef, $"sub-agent returned an error: {Sanitize(resultText)}");
             return;
         }
 
@@ -475,7 +483,7 @@ internal sealed class TaskCoordinator
         }
         catch (JsonException ex)
         {
-            HandleFailure(taskRef, $"task output is not valid JSON: {ex.Message}");
+            HandleFailure(taskRef, $"task output is not valid JSON: {Sanitize(ex.Message)}");
             return;
         }
 
@@ -490,10 +498,8 @@ internal sealed class TaskCoordinator
             var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
             if (!validation.IsValid)
             {
-                HandleFailure(
-                    taskRef,
-                    "task output failed schema validation: " + string.Join("; ", validation.Errors)
-                );
+                var errors = string.Join("; ", validation.Errors);
+                HandleFailure(taskRef, "task output failed schema validation: " + Sanitize(errors));
                 return;
             }
         }
@@ -512,7 +518,10 @@ internal sealed class TaskCoordinator
             catch (Exception ex)
                 when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
             {
-                HandleFailure(taskRef, $"task output could not be written to state: {ex.Message}");
+                HandleFailure(
+                    taskRef,
+                    $"task output could not be written to state: {Sanitize(ex.Message)}"
+                );
                 return;
             }
         }
@@ -522,11 +531,22 @@ internal sealed class TaskCoordinator
     }
 
     /// <summary>
+    ///     Truncates the variable, potentially-EUII tail of a failure reason (the raw sub-agent output or the
+    ///     joined schema-validation errors) to <see cref="MaxFailureReasonChars"/> characters. Failure reasons
+    ///     are persisted and surfaced (see <see cref="HandleFailure"/>), so capping the raw tail bounds the
+    ///     data-retention / EUII exposure while keeping a short, useful prefix for the controller.
+    /// </summary>
+    private static string Sanitize(string raw) =>
+        raw.Length <= MaxFailureReasonChars ? raw : raw[..MaxFailureReasonChars] + "…[truncated]";
+
+    /// <summary>
     ///     Applies the "controller re-spawns; runtime bounds the attempts" retry policy. The attempt counter
     ///     for the unit is incremented; while it stays within <see cref="WorkflowTask.MaxValidationRetries"/>
     ///     the unit is marked <c>pending</c> again (so it re-surfaces in <c>nextExpectedAction</c>), its error
     ///     surfaced, and its spawn correlation cleared so the next spawn re-correlates. Once the budget is
     ///     exhausted the unit is terminally failed and an <c>{ "_error": ... }</c> marker recorded into outputs.
+    ///     The <paramref name="error"/> reason is already truncated by <see cref="Sanitize"/> at every call
+    ///     site that embeds raw text, bounding what is persisted/surfaced.
     /// </summary>
     private void HandleFailure(TaskRef taskRef, string error)
     {

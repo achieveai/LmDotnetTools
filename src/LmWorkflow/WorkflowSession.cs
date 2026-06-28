@@ -45,7 +45,11 @@ public static class WorkflowSession
     /// <param name="controllerAgent">The controller LLM that authors and drives the workflow.</param>
     /// <param name="threadId">The conversation thread id for the controller loop.</param>
     /// <param name="store">An optional workflow store; when supplied with <paramref name="instanceId"/> the runtime persists a snapshot after every mutation so the run can be resumed.</param>
-    /// <param name="instanceId">The instance id to persist under; required for persistence to be enabled.</param>
+    /// <param name="instanceId">
+    ///     The instance id to persist under; required for persistence to be enabled. It is used as the
+    ///     snapshot store correlation key AND written to logs on a persistence failure, so callers MUST supply
+    ///     an OPAQUE, non-user-identifying value (not an email / tenant / customer id).
+    /// </param>
     /// <param name="conversationStore">An optional conversation store; when supplied the controller's history is persisted under <paramref name="threadId"/> (and recoverable on resume).</param>
     /// <param name="logger">An optional logger; forwarded to the runtime so swallowed best-effort persistence faults are surfaced at Warning.</param>
     /// <param name="schemaValidator">An optional JSON-Schema validator the runtime validates task/terminal outputs with.</param>
@@ -97,7 +101,11 @@ public static class WorkflowSession
     ///     orphaned in-flight tasks reset, restores the controller's conversation history, and continues the
     ///     run. The returned handle behaves exactly like a freshly started one.
     /// </summary>
-    /// <param name="instanceId">The instance id whose snapshot is loaded and re-persisted under.</param>
+    /// <param name="instanceId">
+    ///     The instance id whose snapshot is loaded and re-persisted under. It is used as the snapshot store
+    ///     correlation key AND written to logs on a persistence failure, so callers MUST supply an OPAQUE,
+    ///     non-user-identifying value (not an email / tenant / customer id).
+    /// </param>
     /// <param name="store">The workflow store holding the snapshot.</param>
     /// <param name="subAgentOptions">The sub-agent templates available to the resumed controller.</param>
     /// <param name="controllerAgent">The controller LLM that continues driving the workflow.</param>

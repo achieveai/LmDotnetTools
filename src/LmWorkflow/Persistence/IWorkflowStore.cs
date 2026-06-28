@@ -7,6 +7,11 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 ///     run. Implementations must isolate stored snapshots from later mutation of the live runtime (store a
 ///     copy, not the caller's instance).
 /// </summary>
+/// <remarks>
+///     The <c>instanceId</c> is used as the store correlation key AND is written to logs on a persistence
+///     failure, so callers MUST supply an OPAQUE, non-user-identifying value (not an email / tenant /
+///     customer id).
+/// </remarks>
 public interface IWorkflowStore
 {
     /// <summary>Upserts the latest snapshot for <paramref name="instanceId"/>.</summary>
