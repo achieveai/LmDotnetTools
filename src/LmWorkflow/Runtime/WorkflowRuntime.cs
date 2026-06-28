@@ -672,10 +672,11 @@ public sealed class WorkflowRuntime
     /// </summary>
     /// <remarks>
     ///     <b>Orphan handling.</b> A task that was <c>in_flight</c> at snapshot time — or <c>pending</c> while
-    ///     still holding a live <c>Agent</c> tool-call / background agent correlation but no recorded output —
-    ///     cannot be resumed, because its sub-agent no longer exists after a restart. Such a task is reset to
-    ///     <c>pending</c> and its tool-call/agent-id correlation is dropped, so the resumed controller
-    ///     re-spawns it. Its attempt budget is preserved so bounded validation retries survive the restart. A
+    ///     still holding a live <c>Agent</c> tool-call correlation but no recorded output — cannot be resumed,
+    ///     because its sub-agent no longer exists after a restart. Such a task is reset to <c>pending</c> and
+    ///     its tool-call correlation is dropped, so the resumed controller re-spawns it. An in-flight
+    ///     background spawn (whose live agent id is not persisted) is reset purely on its <c>in_flight</c>
+    ///     status. Its attempt budget is preserved so bounded validation retries survive the restart. A
     ///     <c>validated</c> or terminally <c>failed</c> task keeps its status and recorded output untouched.
     /// </remarks>
     public static WorkflowRuntime FromSnapshot(

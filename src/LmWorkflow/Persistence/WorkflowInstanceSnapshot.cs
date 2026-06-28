@@ -107,8 +107,9 @@ public sealed record WorkflowInstanceSnapshot
 ///     element). It carries both the correlation identity the runtime rebuilds its task maps from
 ///     (<see cref="NodeId"/>/<see cref="Visit"/>/<see cref="TaskId"/>/<see cref="Index"/> plus the
 ///     schema/writes/retry policy) and the live lifecycle state (<see cref="Status"/>, <see cref="Attempts"/>,
-///     <see cref="LastError"/>) plus any in-flight spawn correlation (<see cref="ToolCallId"/>/
-///     <see cref="AgentId"/>) needed to detect an orphan on resume.
+///     <see cref="LastError"/>) plus the in-flight blocking-spawn correlation (<see cref="ToolCallId"/>). An
+///     orphaned in-flight task is detected on resume by its <see cref="Status"/> being
+///     <see cref="WorkflowTaskStatus.InFlight"/>, independent of any spawn correlation.
 /// </summary>
 public sealed record WorkflowTaskSnapshot
 {
@@ -150,7 +151,4 @@ public sealed record WorkflowTaskSnapshot
 
     /// <summary>The correlated <c>Agent</c> tool-call id of an in-flight spawn, if any.</summary>
     public string? ToolCallId { get; init; }
-
-    /// <summary>The correlated background-spawn receipt agent id, if any.</summary>
-    public string? AgentId { get; init; }
 }

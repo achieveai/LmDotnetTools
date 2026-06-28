@@ -92,4 +92,24 @@ public class BackgroundCorrelationTests
         StatusOf(runtime, Unit).Should().Be("failed");
         runtime.Outputs["analyze"]!["task"]!["_error"].Should().NotBeNull();
     }
+
+    [Fact]
+    public void BackgroundInFlight_OrphanResetsOnResume_WithoutPersistedAgentId()
+    {
+        // Drive a background spawn to the point where the task is in_flight with a LIVE agent_id correlation
+        // recorded from the receipt — that agent id lives only in the runtime's in-run correlation map and is
+        // (deliberately) NOT carried in the snapshot.
+        var runtime = RuntimeAtAnalyze();
+        runtime.RegisterSpawn("tc_agent", Unit);
+        runtime.ObserveSpawnResult("tc_agent", Receipt("agent777"), isError: false);
+        StatusOf(runtime, Unit).Should().Be("in_flight");
+
+        // Snapshot + resume into a fresh runtime. The orphan reset keys off Status == in_flight, so the
+        // background task is reset to pending and re-surfaces for re-spawn even though no agent id was
+        // persisted — identical to the behaviour when the inert AgentId field was still round-tripped.
+        var restored = WorkflowRuntime.FromSnapshot(runtime.Snapshot());
+
+        StatusOf(restored, Unit).Should().Be("pending");
+        restored.ComposeNextExpectedAction().Should().ContainSingle(unit => unit.Name == Unit);
+    }
 }

@@ -287,7 +287,9 @@ internal sealed class TaskCoordinator
 
     /// <summary>
     ///     Builds the per-task snapshot list (one entry per surfaced occurrence), reverse-indexing the live
-    ///     spawn correlation so each task carries its own tool-call / agent id.
+    ///     blocking-spawn correlation so each task carries its own tool-call id. The background-spawn agent id
+    ///     is intentionally NOT persisted: an orphaned in-flight task is detected on resume by its
+    ///     <see cref="WorkflowTaskStatus.InFlight"/> status alone, so persisting the agent id would be inert.
     /// </summary>
     public IReadOnlyList<WorkflowTaskSnapshot> BuildTaskSnapshots()
     {
@@ -295,12 +297,6 @@ internal sealed class TaskCoordinator
         foreach (var (toolCallId, taskRef) in _tasksByToolCallId)
         {
             toolCallByName[taskRef.Name] = toolCallId;
-        }
-
-        var agentByName = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (agentId, taskRef) in _tasksByAgentId)
-        {
-            agentByName[taskRef.Name] = agentId;
         }
 
         var tasks = new List<WorkflowTaskSnapshot>(_tasksByName.Count);
@@ -322,7 +318,6 @@ internal sealed class TaskCoordinator
                     Attempts = _attempts.TryGetValue(name, out var attempts) ? attempts : 0,
                     LastError = _lastError.TryGetValue(name, out var error) ? error : null,
                     ToolCallId = toolCallByName.TryGetValue(name, out var toolCallId) ? toolCallId : null,
-                    AgentId = agentByName.TryGetValue(name, out var agentId) ? agentId : null,
                 }
             );
         }
@@ -348,8 +343,10 @@ internal sealed class TaskCoordinator
 
         // An in-flight unit (or a pending one still holding a live spawn correlation, hence no recorded
         // output) is an orphan after a restart: reset it to pending and drop its correlation so the controller
-        // re-spawns it. Everything else keeps its status and (for completeness) its correlation.
-        var hasLiveCorrelation = task.ToolCallId is not null || task.AgentId is not null;
+        // re-spawns it. Everything else keeps its status and (for completeness) its correlation. Only the
+        // blocking-spawn tool-call correlation is persisted; the background-spawn agent id is not, because the
+        // in-flight status alone drives the orphan reset (a pending task never carries a live agent id).
+        var hasLiveCorrelation = task.ToolCallId is not null;
         var isOrphan =
             task.Status == WorkflowTaskStatus.InFlight
             || (task.Status == WorkflowTaskStatus.Pending && hasLiveCorrelation);
@@ -364,11 +361,6 @@ internal sealed class TaskCoordinator
             if (task.ToolCallId is { } toolCallId)
             {
                 _tasksByToolCallId[toolCallId] = taskRef;
-            }
-
-            if (task.AgentId is { } agentId)
-            {
-                _tasksByAgentId[agentId] = taskRef;
             }
         }
 
