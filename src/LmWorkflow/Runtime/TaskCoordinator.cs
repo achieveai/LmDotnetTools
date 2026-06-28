@@ -9,10 +9,10 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 
 /// <summary>
 ///     Owns the authored-task lifecycle: composing the next-expected-action unit(s) for the active node,
-///     correlating observed sub-agent spawns/results back to the task they fulfill (by surfaced unit name,
-///     <c>Agent</c> tool-call id, or background-receipt agent id), validating/recording results with the
-///     bounded validation-retry policy, and the per-task status/attempt/error bookkeeping the projection and
-///     snapshot read from.
+///     correlating observed sub-agent spawns/results back to the task they fulfill (by surfaced unit name or
+///     <c>Agent</c> tool-call id; a background spawn receipt is failed fast in V1, see
+///     <see cref="ObserveSpawnResult"/>), validating/recording results with the bounded validation-retry
+///     policy, and the per-task status/attempt/error bookkeeping the projection and snapshot read from.
 /// </summary>
 /// <remarks>
 ///     <para>
@@ -37,17 +37,18 @@ internal sealed class TaskCoordinator
     private readonly Func<JsonObject> _liveOutputs;
     private readonly Func<JsonNode?, int?, int?, BindingContext> _buildContext;
 
-    // Correlation: the surfaced unit name -> its task ref (populated by Compose), the observed Agent
-    // tool_call_id -> the same task ref (populated by RegisterSpawn), and the background spawn receipt
-    // agent_id -> the same task ref (populated by ObserveSpawnResult).
+    // Correlation: the surfaced unit name -> its task ref (populated by Compose) and the observed Agent
+    // tool_call_id -> the same task ref (populated by RegisterSpawn).
     private readonly Dictionary<string, TaskRef> _tasksByName = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskRef> _tasksByToolCallId = new(StringComparer.Ordinal);
 
-    // EXPERIMENTAL / not observable end-to-end in V1. Correlates a background spawn receipt's agent_id to its
-    // task so an injected completion can later be validated. That live background path is NOT observable
-    // end-to-end in V1: MultiTurnAgentLoop does not publish injected sub-agent completions to its subscribers,
-    // so the session never feeds those completions back here. The supported, deterministic path is blocking
-    // forEach; this map is forward-built for when injected completions become observable.
+    // DORMANT / forward-built in V1. Would correlate a background spawn receipt's agent_id to its task so an
+    // injected completion could later be validated. In V1 the receipt path instead FAILS FAST (see
+    // ObserveSpawnResult) rather than deferring, because MultiTurnAgentLoop does not publish injected sub-agent
+    // completions to its subscribers, so the session could never feed a completion back here. This map is
+    // therefore never populated in V1; it (and ObserveInjectedResult) are forward-built and re-enabled in the
+    // follow-up that makes injected completions observable end-to-end. The supported, deterministic path is
+    // blocking forEach.
     private readonly Dictionary<string, TaskRef> _tasksByAgentId = new(StringComparer.Ordinal);
 
     // Per-task status and the last composed spawn unit, both keyed by the unit name.
@@ -218,10 +219,20 @@ internal sealed class TaskCoordinator
 
     /// <summary>
     ///     Observes the result of a correlated <c>Agent</c> tool call, distinguishing a <b>background spawn
-    ///     receipt</b> (<c>{ "status": "spawned", "agent_id": ... }</c>, which records the <c>agent_id → task</c>
-    ///     correlation and defers validation) from a <b>blocking answer</b> (validated/recorded immediately).
-    ///     An error is failed; an unknown <paramref name="toolCallId"/> is surfaced as "unmatched".
+    ///     receipt</b> (<c>{ "status": "spawned", "agent_id": ... }</c>) from a <b>blocking answer</b>
+    ///     (validated/recorded immediately). A background receipt is NOT supported in V1 and is FAILED FAST
+    ///     (terminally, non-retryably) rather than deferred — see remarks. An error is failed; an unknown
+    ///     <paramref name="toolCallId"/> is surfaced as "unmatched".
     /// </summary>
+    /// <remarks>
+    ///     A background (<c>run_in_background</c>) spawn is failed fast because its injected completion is not
+    ///     observable end-to-end in V1: <c>MultiTurnAgentLoop</c> does not publish injected sub-agent
+    ///     completions to its subscribers, so a deferred receipt would hang the task <c>in_flight</c> until the
+    ///     step budget tripped. Retrying the same unsupported mode cannot succeed, so the failure bypasses the
+    ///     validation-retry budget (<see cref="HandleHardFailure"/>). The dormant injected-result correlation
+    ///     (<see cref="ObserveInjectedResult"/> / <c>_tasksByAgentId</c>) is left forward-built and re-enabled
+    ///     in the follow-up that makes injected completions observable.
+    /// </remarks>
     public void ObserveSpawnResult(string toolCallId, string resultText, bool isError)
     {
         if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
@@ -234,13 +245,15 @@ internal sealed class TaskCoordinator
             // emails, document excerpts) and must not land in durable/projected state (see HandleFailure).
             HandleFailure(taskRef, $"sub-agent reported an error ({resultText.Length} chars)");
         }
-        else if (TryReadSpawnReceipt(resultText, out var agentId))
+        else if (TryReadSpawnReceipt(resultText, out _))
         {
-            // Background spawn (EXPERIMENTAL / not observable end-to-end in V1): correlate by the receipt
-            // agent_id and wait for the injected result. MultiTurnAgentLoop does not publish injected
-            // sub-agent completions to subscribers, so this branch never drives a completion in V1 — the
-            // supported deterministic path is blocking forEach. Forward-built for when injection is observable.
-            _tasksByAgentId[agentId] = taskRef;
+            // Background spawn (run_in_background) is NOT supported in V1: fail fast and non-retryably instead
+            // of deferring (which would hang in_flight until the step budget tripped) — see remarks. The
+            // dormant injected-result correlation (_tasksByAgentId / ObserveInjectedResult) stays forward-built.
+            HandleHardFailure(
+                taskRef,
+                "background spawns (run_in_background) are not supported in V1; use a blocking spawn"
+            );
         }
         else
         {
@@ -255,10 +268,13 @@ internal sealed class TaskCoordinator
     ///     "unmatched" rather than dropped.
     /// </summary>
     /// <remarks>
-    ///     EXPERIMENTAL / not observable end-to-end in V1: <c>MultiTurnAgentLoop</c> does not publish injected
-    ///     sub-agent completions to its subscribers, so the session never calls this in V1. The supported
-    ///     deterministic path is blocking <c>forEach</c>; this is forward-built for when injected completions
-    ///     become observable.
+    ///     DORMANT / forward-built in V1. The background receipt path now FAILS FAST (see
+    ///     <see cref="ObserveSpawnResult"/>) instead of recording an <c>agent_id → task</c> correlation, so
+    ///     <c>_tasksByAgentId</c> is never populated and this method finds no mapping in V1 — any injected
+    ///     result is surfaced as "unmatched". It is also never driven by the session, because
+    ///     <c>MultiTurnAgentLoop</c> does not publish injected sub-agent completions to its subscribers. The
+    ///     validates/records-by-agent-id behaviour is re-enabled in the follow-up that makes injected
+    ///     completions observable; the parser feeding it stays covered by <c>SubAgentResultParserTests</c>.
     /// </remarks>
     public void ObserveInjectedResult(string agentId, string resultText, bool isError)
     {
@@ -572,6 +588,25 @@ internal sealed class TaskCoordinator
 
         WriteOutputSlot(taskRef, new JsonObject { ["_error"] = error });
         _status[taskRef.Name] = WorkflowTaskStatus.Failed;
+    }
+
+    /// <summary>
+    ///     Terminally fails a task with a NON-RETRYABLE reason, bypassing the validation-retry budget: the
+    ///     <c>{ "_error": ... }</c> marker is recorded, the unit is marked <c>failed</c> (so the projection
+    ///     surfaces its <c>onFailure</c> route), and its spawn correlation is cleared. Unlike
+    ///     <see cref="HandleFailure"/> this never re-surfaces the unit as <c>pending</c> and never touches the
+    ///     attempt counter — it is for failures that retrying the same input cannot fix (e.g. an unsupported
+    ///     background spawn mode). The <paramref name="error"/> reason carries the same STABLE, non-sensitive
+    ///     invariant as <see cref="HandleFailure"/>: it flows into <see cref="_lastError"/>, the
+    ///     <c>{ "_error": ... }</c> output marker, the <c>taskErrors</c> projection AND the persisted
+    ///     <see cref="WorkflowTaskSnapshot.LastError"/>, so it must never embed a raw payload.
+    /// </summary>
+    private void HandleHardFailure(TaskRef taskRef, string error)
+    {
+        _lastError[taskRef.Name] = error;
+        WriteOutputSlot(taskRef, new JsonObject { ["_error"] = error });
+        _status[taskRef.Name] = WorkflowTaskStatus.Failed;
+        ClearCorrelation(taskRef.Name);
     }
 
     /// <summary>

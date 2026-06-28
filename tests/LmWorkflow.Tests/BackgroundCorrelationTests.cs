@@ -6,15 +6,27 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     Loop-free proof of the background sub-agent correlation chain: an <c>Agent</c> spawn is registered by
-///     unit name, its receipt records the <c>agent_id → task</c> correlation <b>without</b> validating, and
-///     the later injected result (matched by <c>agent_id</c>) is the thing that validates and records. The
-///     blocking path (a non-receipt tool result) still validates from the tool result, and an unknown
-///     <c>agent_id</c> is surfaced.
+///     V1 <b>fails fast</b> on background (<c>run_in_background</c>) spawns: an observed background spawn
+///     RECEIPT (<c>{ "status": "spawned", "agent_id": ... }</c>) cannot be completed end-to-end in V1
+///     (<c>MultiTurnAgentLoop</c> does not publish injected sub-agent completions to its subscribers), so the
+///     runtime terminally and non-retryably fails the task with a clear, non-sensitive reason instead of
+///     deferring it until the step budget trips. The blocking <c>Agent</c> path (a non-receipt tool result)
+///     still validates from the tool result.
 /// </summary>
+/// <remarks>
+///     The injected-result correlation (<c>ObserveInjectedResult</c> + <c>_tasksByAgentId</c>) is DORMANT /
+///     forward-built in V1: its unknown-id "unmatched" path is exercised here, the parser feeding it is
+///     covered by <see cref="SubAgentResultParserTests"/>, and its validates/records-by-<c>agent_id</c>
+///     behaviour is re-enabled in the follow-up that makes injected completions observable. That behaviour is
+///     intentionally NOT exercised here: with the receipt path failing fast, <c>_tasksByAgentId</c> is never
+///     populated, and no hacky internal seam is added just to keep an otherwise-unreachable test alive.
+/// </remarks>
 public class BackgroundCorrelationTests
 {
     private const string Unit = "analyze:1:task";
+
+    private const string UnsupportedReason =
+        "background spawns (run_in_background) are not supported in V1; use a blocking spawn";
 
     private static WorkflowRuntime RuntimeAtAnalyze()
     {
@@ -34,23 +46,43 @@ public class BackgroundCorrelationTests
         runtime.GetProjection(null)["tasks"]![unit]!.GetValue<string>();
 
     [Fact]
-    public void BackgroundReceipt_DoesNotValidate_InjectedResultValidates()
+    public void BackgroundReceipt_FailsFast_TerminallyWithUnsupportedModeReason()
     {
         var runtime = RuntimeAtAnalyze();
         runtime.RegisterSpawn("tc_agent", Unit);
 
-        // The receipt only records the agent_id correlation; it must NOT validate or record an output.
+        // A background spawn receipt is unsupported in V1: it must hard-fail the task immediately rather than
+        // defer (which would hang in_flight until the step budget tripped).
         runtime.ObserveSpawnResult("tc_agent", Receipt("agent777"), isError: false);
 
-        StatusOf(runtime, Unit).Should().Be("in_flight");
-        runtime.Outputs["analyze"]!.AsObject().Should().NotContainKey("task");
+        var projection = runtime.GetProjection(null);
 
-        // The injected result, matched by agent_id, is what validates and records.
-        runtime.ObserveInjectedResult("agent777", """{ "summary": "done" }""", isError: false);
+        // Terminally failed (NOT retried back to pending) and the node's onFailure route is surfaced.
+        projection["tasks"]![Unit]!.GetValue<string>().Should().Be("failed");
+        projection["onFailure"]!.GetValue<string>().Should().Be("fail");
 
-        StatusOf(runtime, Unit).Should().Be("validated");
-        runtime.Outputs["analyze"]!["task"]!["summary"]!.GetValue<string>().Should().Be("done");
-        runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("done");
+        // The stable, non-sensitive reason lands in all three sinks: the {_error} marker, the taskErrors
+        // projection, and the persisted snapshot.
+        runtime.Outputs["analyze"]!["task"]!["_error"]!.GetValue<string>().Should().Be(UnsupportedReason);
+        projection["taskErrors"]![Unit]!.GetValue<string>().Should().Be(UnsupportedReason);
+        runtime.Snapshot().Tasks.Single(t => t.Name == Unit).LastError.Should().Be(UnsupportedReason);
+    }
+
+    [Fact]
+    public void BackgroundReceipt_FailsFast_DoesNotReSurfaceForRespawn()
+    {
+        var runtime = RuntimeAtAnalyze();
+        runtime.RegisterSpawn("tc_agent", Unit);
+
+        runtime.ObserveSpawnResult("tc_agent", Receipt("agent777"), isError: false);
+
+        // Non-retryable: the unit must not re-appear in nextExpectedAction (re-spawning the same unsupported
+        // mode could never succeed), and its spawn correlation is cleared.
+        runtime
+            .GetProjection(null)["nextExpectedAction"]!.AsArray()
+            .Should()
+            .NotContain(n => n!["name"]!.GetValue<string>() == Unit);
+        runtime.IsRegisteredSpawn("tc_agent").Should().BeFalse();
     }
 
     [Fact]
@@ -69,6 +101,8 @@ public class BackgroundCorrelationTests
     [Fact]
     public void InjectedResult_UnknownAgentId_IsSurfacedAsUnmatched()
     {
+        // ObserveInjectedResult is dormant in V1 (the receipt path no longer seeds _tasksByAgentId), so every
+        // injected result finds no mapping and is surfaced as a harmless "unmatched" diagnostic.
         var runtime = RuntimeAtAnalyze();
 
         runtime.ObserveInjectedResult("never_correlated", """{ "summary": "x" }""", isError: false);
@@ -78,38 +112,5 @@ public class BackgroundCorrelationTests
             .Select(n => n!.GetValue<string>())
             .Should()
             .Contain("never_correlated");
-    }
-
-    [Fact]
-    public void InjectedError_MarksTaskFailed()
-    {
-        var runtime = RuntimeAtAnalyze();
-        runtime.RegisterSpawn("tc_agent", Unit);
-        runtime.ObserveSpawnResult("tc_agent", Receipt("agentX"), isError: false);
-
-        runtime.ObserveInjectedResult("agentX", "the sub-agent failed", isError: true);
-
-        StatusOf(runtime, Unit).Should().Be("failed");
-        runtime.Outputs["analyze"]!["task"]!["_error"].Should().NotBeNull();
-    }
-
-    [Fact]
-    public void BackgroundInFlight_OrphanResetsOnResume_WithoutPersistedAgentId()
-    {
-        // Drive a background spawn to the point where the task is in_flight with a LIVE agent_id correlation
-        // recorded from the receipt — that agent id lives only in the runtime's in-run correlation map and is
-        // (deliberately) NOT carried in the snapshot.
-        var runtime = RuntimeAtAnalyze();
-        runtime.RegisterSpawn("tc_agent", Unit);
-        runtime.ObserveSpawnResult("tc_agent", Receipt("agent777"), isError: false);
-        StatusOf(runtime, Unit).Should().Be("in_flight");
-
-        // Snapshot + resume into a fresh runtime. The orphan reset keys off Status == in_flight, so the
-        // background task is reset to pending and re-surfaces for re-spawn even though no agent id was
-        // persisted — identical to the behaviour when the inert AgentId field was still round-tripped.
-        var restored = WorkflowRuntime.FromSnapshot(runtime.Snapshot());
-
-        StatusOf(restored, Unit).Should().Be("pending");
-        restored.ComposeNextExpectedAction().Should().ContainSingle(unit => unit.Name == Unit);
     }
 }

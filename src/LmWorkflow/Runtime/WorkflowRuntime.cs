@@ -18,9 +18,10 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 /// <remarks>
 ///     <para>
 ///         Beyond the linear P3 slice this surface supports <b>forEach fan-out</b> (one unit per array
-///         element), <b>background sub-agent correlation</b> (a spawn receipt is correlated by its
-///         <c>agent_id</c>, and the eventual injected result validated when it arrives), <b>join surfacing</b>
-///         (an <c>all</c>/<c>any</c> progress view for the controller), and <b>bounded validation retries</b>.
+///         element), <b>fail-fast handling of background spawns</b> (a <c>run_in_background</c> spawn receipt
+///         is terminally, non-retryably failed in V1 because its injected completion is not observable
+///         end-to-end — the dormant correlation is forward-built), <b>join surfacing</b> (an <c>all</c>/
+///         <c>any</c> progress view for the controller), and <b>bounded validation retries</b>.
 ///     </para>
 ///     <para>
 ///         The runtime stays deliberately light: it never initiates its own tool calls. Validation retries
@@ -371,11 +372,11 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     Observes the result of a correlated <c>Agent</c> tool call, distinguishing a <b>background spawn
-    ///     receipt</b> from a <b>blocking answer</b>. An error is failed; a receipt
-    ///     (<c>{ "status": "spawned", "agent_id": ... }</c>) records the <c>agent_id → task</c> correlation and
-    ///     defers validation until the injected result arrives (<see cref="ObserveInjectedResult"/>); anything
-    ///     else is treated as a blocking answer and validated/recorded immediately. An unknown
-    ///     <paramref name="toolCallId"/> is surfaced as "unmatched".
+    ///     receipt</b> from a <b>blocking answer</b>. An error is failed; a background receipt
+    ///     (<c>{ "status": "spawned", "agent_id": ... }</c>) is NOT supported in V1 and is FAILED FAST
+    ///     (terminally, non-retryably) instead of deferred, because its injected completion is not observable
+    ///     end-to-end; anything else is treated as a blocking answer and validated/recorded immediately. An
+    ///     unknown <paramref name="toolCallId"/> is surfaced as "unmatched".
     /// </summary>
     internal void ObserveSpawnResult(string toolCallId, string resultText, bool isError)
     {
@@ -392,10 +393,11 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>
-    ///     Observes the injected background-completion result for a sub-agent, correlated by the receipt
-    ///     <paramref name="agentId"/> recorded in <see cref="ObserveSpawnResult"/>. Validates and records (or
-    ///     fails) exactly as the blocking path does. An unknown <paramref name="agentId"/> is surfaced as
-    ///     "unmatched" rather than dropped.
+    ///     Observes the injected background-completion result for a sub-agent, correlated by its receipt
+    ///     <paramref name="agentId"/>. DORMANT in V1: the receipt path now fails fast (see
+    ///     <see cref="ObserveSpawnResult"/>) and never records an <c>agent_id → task</c> correlation, so in V1
+    ///     this finds no mapping and surfaces any injected result as "unmatched". Forward-built for when
+    ///     injected completions become observable, where it validates/records (or fails) like the blocking path.
     /// </summary>
     internal void ObserveInjectedResult(string agentId, string resultText, bool isError)
     {

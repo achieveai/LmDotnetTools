@@ -133,12 +133,16 @@ completeness.
 - The richer pipeline binding grammar (transforms/filters beyond direct paths).
 - The `reduce` node type.
 
-**Known limitation — parallel background fan-out is not observed end-to-end via the session.**
-`MultiTurnAgentLoop` does not publish *injected* sub-agent messages to its subscribers, so the workflow
-session cannot observe the results of sub-agents spawned with `run_in_background: true` as they complete.
-The supported deterministic path is therefore **blocking `forEach` (sequential)**. The background
-correlation logic (correlate a spawn receipt by its `agent_id`, then validate the injected result when it
-arrives) is fully implemented and unit-tested for the day that publishing path becomes observable.
+**Known limitation — parallel background fan-out is not observed end-to-end via the session, so V1 fails
+fast on it.** `MultiTurnAgentLoop` does not publish *injected* sub-agent messages to its subscribers, so the
+workflow session cannot observe the results of sub-agents spawned with `run_in_background: true` as they
+complete. Because a deferred background receipt would otherwise hang the task `in_flight` until the step
+budget trips, V1 **fails fast** on background spawns: an observed `{ "status": "spawned", ... }` receipt
+terminally (and non-retryably) fails the task with a clear reason — *"background spawns (run_in_background)
+are not supported in V1; use a blocking spawn"*. The supported deterministic path is therefore **blocking
+`forEach` (sequential)**. The injected-result correlation logic (correlate a spawn receipt by its
+`agent_id`, then validate the injected result when it arrives) is forward-built and parser-tested, and is
+re-enabled in the follow-up that makes the injected publishing path observable.
 
 ## Related
 
