@@ -772,6 +772,19 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // Stamp the active run's id onto live content that arrives without one. On the wire only
+    // run_assignment carries a runId; text/reasoning/tool-call messages are streamed runId-less, so
+    // getMergeKey would key them to 'default'. The PERSISTED copy of the same message, however, is
+    // rehydrated with the producing run's id (loadMessagesFromBackend stamps pm.runId), keying it to
+    // the real run id. After a switch-away/back resume those two keys diverged ('default' vs the run
+    // id), so the replayed message failed to merge with its rehydrated twin and rendered a duplicate,
+    // never-resolving pill (the frozen-tool-pill bug). currentRunId is set by the run_assignment that
+    // opens (and, on resume, replays first for) every run, so this aligns the live key with the
+    // rehydrated one. No run id yet (e.g. no run_assignment) ⇒ unchanged 'default' fallback.
+    if (!msg.runId && currentRunId.value) {
+      msg = { ...msg, runId: currentRunId.value };
+    }
+
     // Advance the content turn epoch in arrival order (BUG #8 + text interleaving) so multi-turn
     // thinking/text does not collapse onto the first block; non-content kinds just record the turn
     // boundary. The SAME sequence scopes both the merger accumulator (so deltas don't concatenate

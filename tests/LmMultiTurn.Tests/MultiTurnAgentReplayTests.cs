@@ -31,6 +31,29 @@ public sealed class MultiTurnAgentReplayTests
     private static TextUpdateMessage TextDelta(string runId, string genId, string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId, MessageOrderIdx = 0 };
 
+    private static ToolCallMessage ToolCall(string runId, string genId, string toolCallId, int orderIdx) =>
+        new()
+        {
+            Role = Role.Assistant,
+            RunId = runId,
+            GenerationId = genId,
+            MessageOrderIdx = orderIdx,
+            ToolCallId = toolCallId,
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\":\"Seattle\"}",
+        };
+
+    private static ToolCallResultMessage ToolResult(string runId, string genId, string toolCallId, int orderIdx) =>
+        new()
+        {
+            Role = Role.Tool,
+            RunId = runId,
+            GenerationId = genId,
+            MessageOrderIdx = orderIdx,
+            ToolCallId = toolCallId,
+            Result = "{\"location\":\"Seattle\",\"temperature\":72}",
+        };
+
     [Fact]
     public async Task Subscriber_joining_mid_run_replays_buffered_messages_then_streams_live()
     {
@@ -61,6 +84,45 @@ public sealed class MultiTurnAgentReplayTests
 
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("!");
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunCompletedMessage>();
+    }
+
+    [Fact]
+    public async Task Subscriber_joining_mid_run_replays_tool_call_and_result()
+    {
+        // The frozen-tool-pill resume bug needs the replay to carry BOTH the tool call AND its
+        // result: a client that switches away mid-tool-call and returns rebuilds the unresolved
+        // pill from REST history, then resolves it ONLY if the resumed stream replays the tool
+        // call and its result. This pins that the in-flight replay includes tool messages, not
+        // just text — the contract the client switch-back/resume render path depends on.
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        const string toolCallId = "call_1";
+
+        // The run issued a tool call and produced its result BEFORE the client (re)connects.
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        await agent.PublishForTest(ToolCall(runId, genId, toolCallId, orderIdx: 1));
+        await agent.PublishForTest(ToolResult(runId, genId, toolCallId, orderIdx: 2));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // The reconnecting subscriber must replay the run assignment, the tool call, and its result.
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<ToolCallMessage>()
+            .Which.ToolCallId.Should().Be(toolCallId);
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<ToolCallResultMessage>()
+            .Which.ToolCallId.Should().Be(toolCallId);
+
+        // The run then completes live and the same subscriber receives it.
+        await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunCompletedMessage>();
     }
