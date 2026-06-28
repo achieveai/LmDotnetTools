@@ -797,6 +797,10 @@ try
                             PromptCaching = PromptCachingMode.Auto,
                             ExtraProperties = extraProperties,
                         },
+                        // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
+                        // default: workspace/tool-heavy conversations routinely need more turns before
+                        // the run hits its cap.
+                        maxTurnsPerRun: 150,
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
@@ -1798,7 +1802,9 @@ public partial class Program
         // "the agent completes with no assistant content rendered" (issue #29).
         var claudeOptions = new ClaudeAgentSdkOptions
         {
-            MaxTurnsPerRun = 50,
+            // Match the generic MultiTurnAgentLoop cap above so the Claude SDK provider path allows
+            // the same longer agentic runs in this sample.
+            MaxTurnsPerRun = 150,
             AllowedTools = allowedTools,
             BaseUrl = string.IsNullOrWhiteSpace(mockBaseUrlOverride) ? null : mockBaseUrlOverride,
             AuthToken = string.IsNullOrWhiteSpace(mockAuthTokenOverride) ? null : mockAuthTokenOverride,
