@@ -41,7 +41,7 @@ public class WorkflowProseRendererTests
     {
         var runtime = new WorkflowRuntime();
         runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4bFixtures.ConditionalRouting));
-        runtime.SetState("state.count", JsonValue.Create(10), "set", null);
+        runtime.SetState("state.count", JsonValue.Create(10), "set");
         runtime.AdvanceTo("start", "gate", null);
 
         Prose(runtime).Should().Contain("Recommended branch: 'high'");
@@ -68,7 +68,7 @@ public class WorkflowProseRendererTests
     {
         var runtime = new WorkflowRuntime();
         runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4bFixtures.ConditionalRouting));
-        runtime.SetState("state.count", JsonValue.Create(10), "set", null);
+        runtime.SetState("state.count", JsonValue.Create(10), "set");
         runtime.AdvanceTo("start", "gate", null);
 
         var getWorkflow = new WorkflowToolProvider(runtime)

@@ -56,7 +56,10 @@ public sealed class WorkflowNodeJsonConverter : JsonConverter<WorkflowNode>
             Id = GetString(obj, "id") ?? string.Empty,
             Title = GetString(obj, "title") ?? string.Empty,
             ControllerInstructions = GetString(obj, "controllerInstructions"),
-            RawType = rawType ?? string.Empty,
+            // On a round trip the node serializes its computed type ("unknown") plus the original
+            // discriminator in a "rawType" property; prefer that property so the original survives, falling
+            // back to the wire "type" on the first read of an out-of-V1 node.
+            RawType = GetString(obj, "rawType") ?? rawType ?? string.Empty,
         };
 
     private static string? GetString(JsonObject obj, string key) =>

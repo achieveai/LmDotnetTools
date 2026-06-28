@@ -29,7 +29,7 @@ public class WorkflowPersistenceOrderingTests
         // saves 2..5 overtake it — the serialized chain keeps them queued behind it.
         for (var seq = 1; seq <= 5; seq++)
         {
-            runtime.SetState("state.seq", JsonValue.Create(seq), "set", key: null);
+            runtime.SetState("state.seq", JsonValue.Create(seq), "set");
         }
 
         store.ReleaseGate();
@@ -49,7 +49,7 @@ public class WorkflowPersistenceOrderingTests
 
         for (var seq = 1; seq <= 4; seq++)
         {
-            runtime.SetState("state.seq", JsonValue.Create(seq), "set", key: null);
+            runtime.SetState("state.seq", JsonValue.Create(seq), "set");
         }
 
         store.ReleaseGate();

@@ -70,11 +70,28 @@ public sealed record WorkflowInstanceSnapshot
 
     /// <summary>Deserializes a snapshot from its canonical JSON form.</summary>
     /// <exception cref="JsonException">The JSON is invalid or deserializes to a null snapshot.</exception>
+    /// <exception cref="NotSupportedException">
+    ///     The snapshot's <see cref="SchemaVersion"/> is newer than <see cref="CurrentSchemaVersion"/>.
+    /// </exception>
     public static WorkflowInstanceSnapshot FromJson(string json)
     {
         ArgumentException.ThrowIfNullOrEmpty(json);
-        return JsonSerializer.Deserialize<WorkflowInstanceSnapshot>(json, WorkflowJson.Options)
+        var snapshot =
+            JsonSerializer.Deserialize<WorkflowInstanceSnapshot>(json, WorkflowJson.Options)
             ?? throw new JsonException("Workflow snapshot JSON deserialized to a null snapshot.");
+
+        // Forward-safety: refuse a snapshot written by a newer, unknown schema rather than silently
+        // mis-reading it. V1 has no migrations, so a v1 (current-or-older) snapshot is accepted as-is; a
+        // future bump would add the migration ladder here for SchemaVersion < CurrentSchemaVersion.
+        if (snapshot.SchemaVersion > CurrentSchemaVersion)
+        {
+            throw new NotSupportedException(
+                $"Workflow snapshot schema version {snapshot.SchemaVersion} is newer than supported "
+                    + $"{CurrentSchemaVersion}."
+            );
+        }
+
+        return snapshot;
     }
 
     /// <summary>

@@ -203,7 +203,7 @@ public class WorkflowRuntimeTests
 
         // Capture a copy, then mutate the live state channel under the lock.
         var captured = runtime.State;
-        runtime.SetState("state.analysis.summary", JsonValue.Create("v2"), "set", key: null);
+        runtime.SetState("state.analysis.summary", JsonValue.Create("v2"), "set");
 
         // Fix H1: the previously-returned copy is STABLE (the in-place mutation cannot race into it),
         // while a fresh read observes the update.
@@ -225,6 +225,20 @@ public class WorkflowRuntimeTests
         context.State["analysis"]!["summary"] = JsonValue.Create("HACKED");
 
         runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("v1");
+    }
+
+    [Fact]
+    public void MergeInputs_SeedsHostInputs_AndBindsInComposedPrompt()
+    {
+        var runtime = LoadedRuntime();
+
+        // Host-supplied inputs override the definition seed and become visible to {{inputs.*}} bindings.
+        runtime.MergeInputs(new JsonObject { ["topic"] = "custom-topic" });
+        runtime.Inputs["topic"]!.GetValue<string>().Should().Be("custom-topic");
+
+        runtime.AdvanceTo("start", "analyze", null);
+        var unit = runtime.ComposeNextExpectedAction().Should().ContainSingle().Subject;
+        unit.Prompt.Should().Contain("Analyze the topic custom-topic.");
     }
 
     private static string StatusOf(WorkflowRuntime runtime, string unitName) =>

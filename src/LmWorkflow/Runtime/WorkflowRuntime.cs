@@ -97,7 +97,7 @@ public sealed class WorkflowRuntime
     ///     Once attached, every state-mutating method persists a fresh snapshot (best-effort). Idempotent and
     ///     safe to call before any state exists; it does not itself persist.
     /// </summary>
-    public void AttachStore(IWorkflowStore store, string instanceId)
+    internal void AttachStore(IWorkflowStore store, string instanceId)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrEmpty(instanceId);
@@ -275,7 +275,7 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>Shallow-merges <paramref name="inputs"/> into the inputs channel (caller-supplied seed).</summary>
-    public void MergeInputs(JsonObject inputs)
+    internal void MergeInputs(JsonObject inputs)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         lock (_lock)
@@ -292,7 +292,7 @@ public sealed class WorkflowRuntime
     ///     template rendering and condition evaluation. The channels are deep-copied under the lock so the
     ///     returned context never aliases live runtime state (Fix H1).
     /// </summary>
-    public BindingContext BuildContext(JsonNode? item = null, int? index = null, int? count = null)
+    internal BindingContext BuildContext(JsonNode? item = null, int? index = null, int? count = null)
     {
         lock (_lock)
         {
@@ -307,7 +307,7 @@ public sealed class WorkflowRuntime
     ///     minimal shape) return an empty list because the controller routes those itself. As a side effect
     ///     it registers the composed unit by name so a later <see cref="RegisterSpawn"/> can correlate it.
     /// </summary>
-    public IReadOnlyList<SpawnUnit> ComposeNextExpectedAction()
+    internal IReadOnlyList<SpawnUnit> ComposeNextExpectedAction()
     {
         lock (_lock)
         {
@@ -320,7 +320,7 @@ public sealed class WorkflowRuntime
     ///     expected unit named <paramref name="name"/> and marks the task in-flight. No-ops when the name is
     ///     not an expected unit (so the caller can pass through every <c>Agent</c> call unconditionally).
     /// </summary>
-    public void RegisterSpawn(string toolCallId, string name)
+    internal void RegisterSpawn(string toolCallId, string name)
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentException.ThrowIfNullOrEmpty(name);
@@ -349,7 +349,7 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>Whether <paramref name="name"/> is a currently-expected (composed) unit name.</summary>
-    public bool IsExpectedUnit(string name)
+    internal bool IsExpectedUnit(string name)
     {
         lock (_lock)
         {
@@ -358,7 +358,7 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>Whether <paramref name="toolCallId"/> has been correlated to a task via <see cref="RegisterSpawn"/>.</summary>
-    public bool IsRegisteredSpawn(string toolCallId)
+    internal bool IsRegisteredSpawn(string toolCallId)
     {
         lock (_lock)
         {
@@ -373,7 +373,7 @@ public sealed class WorkflowRuntime
     ///     valid result is recorded into <c>outputs[nodeId][taskId]</c>, its writes applied to state, and the
     ///     task marked validated. An unknown <paramref name="toolCallId"/> is surfaced as "unmatched".
     /// </summary>
-    public void ObserveResult(string toolCallId, string resultText, bool isError)
+    internal void ObserveResult(string toolCallId, string resultText, bool isError)
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
 
@@ -403,7 +403,7 @@ public sealed class WorkflowRuntime
     ///     else is treated as a blocking answer and validated/recorded immediately. An unknown
     ///     <paramref name="toolCallId"/> is surfaced as "unmatched".
     /// </summary>
-    public void ObserveSpawnResult(string toolCallId, string resultText, bool isError)
+    internal void ObserveSpawnResult(string toolCallId, string resultText, bool isError)
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
 
@@ -440,7 +440,7 @@ public sealed class WorkflowRuntime
     ///     fails) exactly as the blocking path does. An unknown <paramref name="agentId"/> is surfaced as
     ///     "unmatched" rather than dropped.
     /// </summary>
-    public void ObserveInjectedResult(string agentId, string resultText, bool isError)
+    internal void ObserveInjectedResult(string agentId, string resultText, bool isError)
     {
         ArgumentException.ThrowIfNullOrEmpty(agentId);
 
@@ -599,19 +599,16 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>Writes <paramref name="value"/> into the state channel at <paramref name="path"/> using the given mode.</summary>
-    public void SetState(string path, JsonNode? value, string? mode, string? key)
+    public void SetState(string path, JsonNode? value, string? mode)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
 
         WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            var spec = new WriteSpec
-            {
-                To = path,
-                Mode = ParseWriteMode(mode),
-                Key = key,
-            };
+            // WriteSpec.Key is only meaningful for the deferred upsert mode (out of V1 scope); set/append/
+            // merge never read it, so the controller-facing SetState carries no key (Fix: drop dead param).
+            var spec = new WriteSpec { To = path, Mode = ParseWriteMode(mode) };
             StateWriter.Apply(_state, spec, value);
 
             snapshot = CaptureSnapshotNoLock();
@@ -744,7 +741,7 @@ public sealed class WorkflowRuntime
     ///     correlation) so <see cref="FromSnapshot"/> can rebuild an equivalent runtime without re-running the
     ///     definition's ingest mutation of the channels.
     /// </summary>
-    public WorkflowInstanceSnapshot Snapshot()
+    internal WorkflowInstanceSnapshot Snapshot()
     {
         lock (_lock)
         {
@@ -768,12 +765,13 @@ public sealed class WorkflowRuntime
     /// </remarks>
     public static WorkflowRuntime FromSnapshot(
         WorkflowInstanceSnapshot snapshot,
-        IJsonSchemaValidator? validator = null
+        IJsonSchemaValidator? validator = null,
+        ILogger? logger = null
     )
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        var runtime = new WorkflowRuntime(validator);
+        var runtime = new WorkflowRuntime(validator, logger);
         runtime.RestoreFromSnapshot(snapshot);
         return runtime;
     }
@@ -968,7 +966,7 @@ public sealed class WorkflowRuntime
     ///     before disposing the run. Best-effort saves never fault the chain, so this never throws; it is a
     ///     no-op (already-completed task) when no store is attached.
     /// </summary>
-    public Task DrainPersistAsync()
+    internal Task DrainPersistAsync()
     {
         lock (_saveLock)
         {
@@ -1186,7 +1184,23 @@ public sealed class WorkflowRuntime
         WriteOutputSlotNoLock(taskRef, parsed);
         if (taskRef.Writes is { } writes)
         {
-            StateWriter.Apply(_state, writes, parsed);
+            // A validated output can still be un-writable (e.g. a merge whose value is not an object).
+            // Route that through the failure policy instead of letting it propagate out of the observe
+            // path and fault the ENTIRE workflow, mirroring the JSON-parse handling above and the
+            // SetState handler's catch (Fix: guard the task-output state write).
+            try
+            {
+                StateWriter.Apply(_state, writes, parsed);
+            }
+            catch (Exception ex)
+                when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
+            {
+                HandleFailureNoLock(
+                    taskRef,
+                    $"task output could not be written to state: {ex.Message}"
+                );
+                return;
+            }
         }
 
         _status[taskRef.Name] = WorkflowTaskStatus.Validated;

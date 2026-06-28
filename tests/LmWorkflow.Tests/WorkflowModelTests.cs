@@ -105,6 +105,46 @@ public class WorkflowModelTests
     }
 
     [Fact]
+    public void NodeType_IsDerivedFromConcreteRecordType()
+    {
+        var def = WorkflowJson.Deserialize(WorkflowFixtures.ValidWorkflow);
+
+        def.Nodes.OfType<StartNode>().Single().Type.Should().Be(NodeType.Start);
+        def.Nodes.OfType<ProceduralNode>().First().Type.Should().Be(NodeType.Procedural);
+        def.Nodes.OfType<ConditionalNode>().Single().Type.Should().Be(NodeType.Conditional);
+        def.Nodes.OfType<TerminalNode>().First().Type.Should().Be(NodeType.Terminal);
+    }
+
+    [Fact]
+    public void UnknownNode_PreservesRawType_AndDoesNotCollapseToStart_OnRoundTrip()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "objective": "unknown node round trip",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["t"] },
+                { "id": "r", "type": "reduce", "title": "Reduce" },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        var def = WorkflowJson.Deserialize(json);
+        var unknown = def.Nodes.OfType<UnknownNode>().Single();
+        unknown.RawType.Should().Be("reduce");
+        unknown.Type.Should().Be(NodeType.Unknown);
+
+        // Re-serializing then re-reading preserves the original discriminator and does NOT collapse to a
+        // StartNode (the round-trip bug the derived-Type fix addresses).
+        var roundTripped = WorkflowJson.Deserialize(WorkflowJson.Serialize(def));
+        var node = roundTripped.Nodes.Single(n => n.Id == "r");
+        node.Should().BeOfType<UnknownNode>();
+        ((UnknownNode)node).RawType.Should().Be("reduce");
+        node.Type.Should().Be(NodeType.Unknown);
+    }
+
+    [Fact]
     public void Serialize_Then_Deserialize_IsStable()
     {
         var def = WorkflowJson.Deserialize(WorkflowFixtures.ValidWorkflow);

@@ -18,7 +18,7 @@ public class ConditionalRoutingTests
     {
         var runtime = new WorkflowRuntime();
         runtime.LoadDefinition(WorkflowJson.Deserialize(Phase4bFixtures.ConditionalRouting));
-        runtime.SetState("state.count", JsonValue.Create(count), "set", null);
+        runtime.SetState("state.count", JsonValue.Create(count), "set");
         runtime.AdvanceTo("start", "gate", null);
         return runtime;
     }

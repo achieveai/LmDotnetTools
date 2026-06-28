@@ -12,10 +12,10 @@ public abstract record WorkflowNode
     public required string Id { get; init; }
 
     /// <summary>
-    ///     The node kind. Mirrors the JSON <c>type</c> discriminator and is set during deserialization;
-    ///     structural validation keys off the concrete runtime type rather than this value.
+    ///     The node kind. DERIVED from the concrete record type rather than stored, so it can never disagree
+    ///     with the runtime type and the JSON <c>type</c> discriminator always round-trips correctly.
     /// </summary>
-    public NodeType Type { get; init; }
+    public abstract NodeType Type { get; }
 
     /// <summary>Human-readable node title.</summary>
     public required string Title { get; init; }
@@ -27,6 +27,9 @@ public abstract record WorkflowNode
 /// <summary>The single entry point of a workflow. Must declare exactly one <see cref="Next"/> target.</summary>
 public sealed record StartNode : WorkflowNode
 {
+    /// <inheritdoc />
+    public override NodeType Type => NodeType.Start;
+
     /// <summary>The node ids this start transitions to (exactly one, enforced by the validator).</summary>
     public required IReadOnlyList<string> Next { get; init; }
 }
@@ -37,6 +40,9 @@ public sealed record StartNode : WorkflowNode
 /// </summary>
 public sealed record ProceduralNode : WorkflowNode
 {
+    /// <inheritdoc />
+    public override NodeType Type => NodeType.Procedural;
+
     /// <summary>How the task list is sourced. V1 requires <see cref="TasksMode.Authored"/>.</summary>
     public TasksMode TasksMode { get; init; } = TasksMode.Authored;
 
@@ -65,6 +71,9 @@ public sealed record ProceduralNode : WorkflowNode
 /// <summary>A node that selects a transition target from ordered <see cref="Branches"/>, falling back to <see cref="Else"/>.</summary>
 public sealed record ConditionalNode : WorkflowNode
 {
+    /// <inheritdoc />
+    public override NodeType Type => NodeType.Conditional;
+
     /// <summary>The ordered branches; the first whose condition holds wins.</summary>
     public required IReadOnlyList<Branch> Branches { get; init; }
 
@@ -81,6 +90,9 @@ public sealed record ConditionalNode : WorkflowNode
 /// <summary>A node that ends the workflow and shapes the final output.</summary>
 public sealed record TerminalNode : WorkflowNode
 {
+    /// <inheritdoc />
+    public override NodeType Type => NodeType.Terminal;
+
     /// <summary>An optional JSON-Schema fragment describing the final output.</summary>
     public JsonNode? FinalOutputSchema { get; init; }
 
@@ -95,6 +107,9 @@ public sealed record TerminalNode : WorkflowNode
 /// </summary>
 internal sealed record UnknownNode : WorkflowNode
 {
+    /// <inheritdoc />
+    public override NodeType Type => NodeType.Unknown;
+
     /// <summary>The raw <c>type</c> discriminator value as it appeared in the JSON.</summary>
     public required string RawType { get; init; }
 }

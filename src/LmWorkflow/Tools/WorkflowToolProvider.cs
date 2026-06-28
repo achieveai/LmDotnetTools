@@ -89,7 +89,6 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                 Param("path", "The destination path, e.g. state.analysis.", JsonSchemaObject.String(), required: true),
                 Param("value", "The value to write.", ObjectSchema(), required: true),
                 Param("mode", "The merge mode: set (default), append, or merge.", JsonSchemaObject.String(), required: false),
-                Param("key", "Optional key for keyed merges.", JsonSchemaObject.String(), required: false),
             ],
             HandleSetStateAsync
         );
@@ -112,35 +111,45 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        if (
-            !doc.RootElement.TryGetProperty("definition", out var definitionElement)
-            || definitionElement.ValueKind != JsonValueKind.Object
-        )
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Error("The 'definition' object parameter is required.", "invalid_args");
+            return Task.FromResult<ToolHandlerResult>(argsError!);
         }
 
-        WorkflowDefinition definition;
-        try
+        using (doc)
         {
-            definition = WorkflowJson.Deserialize(definitionElement.GetRawText());
-        }
-        catch (JsonException ex)
-        {
-            return Error($"The workflow definition is not valid JSON: {ex.Message}", "invalid_workflow");
-        }
+            if (
+                !doc.RootElement.TryGetProperty("definition", out var definitionElement)
+                || definitionElement.ValueKind != JsonValueKind.Object
+            )
+            {
+                return Error("The 'definition' object parameter is required.", "invalid_args");
+            }
 
-        try
-        {
-            _runtime.LoadDefinition(definition);
-        }
-        catch (WorkflowValidationException ex)
-        {
-            return Error(string.Join("; ", ex.Errors), "invalid_workflow");
-        }
+            WorkflowDefinition definition;
+            try
+            {
+                definition = WorkflowJson.Deserialize(definitionElement.GetRawText());
+            }
+            catch (JsonException ex)
+            {
+                return Error(
+                    $"The workflow definition is not valid JSON: {ex.Message}",
+                    "invalid_workflow"
+                );
+            }
 
-        return Text(_runtime.GetProjection(null).ToJsonString());
+            try
+            {
+                _runtime.LoadDefinition(definition);
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return Error(string.Join("; ", ex.Errors), "invalid_workflow");
+            }
+
+            return Text(_runtime.GetProjection(null).ToJsonString());
+        }
     }
 
     private Task<ToolHandlerResult> HandleGetWorkflowAsync(
@@ -149,14 +158,21 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var projection = OptionalString(doc.RootElement, "projection");
-        var state = _runtime.GetProjection(projection);
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
+        {
+            return Task.FromResult<ToolHandlerResult>(argsError!);
+        }
 
-        // A prose/text projection asks for the human-readable rendering; everything else stays JSON.
-        return Text(
-            WantsProse(projection) ? WorkflowProseRenderer.Render(state) : state.ToJsonString()
-        );
+        using (doc)
+        {
+            var projection = OptionalString(doc.RootElement, "projection");
+            var state = _runtime.GetProjection(projection);
+
+            // A prose/text projection asks for the human-readable rendering; everything else stays JSON.
+            return Text(
+                WantsProse(projection) ? WorkflowProseRenderer.Render(state) : state.ToJsonString()
+            );
+        }
     }
 
     /// <summary>Whether the controller asked for the prose rendering via a <c>prose</c>/<c>text</c> projection.</summary>
@@ -173,36 +189,41 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var root = doc.RootElement;
-
-        var nextNodeId = OptionalString(root, "nextNodeId");
-        if (string.IsNullOrEmpty(nextNodeId))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Error("The 'nextNodeId' parameter is required.", "invalid_args");
+            return Task.FromResult<ToolHandlerResult>(argsError!);
         }
 
-        var completedNodeId = OptionalString(root, "completedNodeId");
-        var result =
-            root.TryGetProperty("result", out var resultElement)
-            && resultElement.ValueKind != JsonValueKind.Null
-                ? JsonNode.Parse(resultElement.GetRawText())
-                : null;
-
-        try
+        using (doc)
         {
-            _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Error(ex.Message, "invalid_transition");
-        }
+            var root = doc.RootElement;
 
-        return _runtime.IsComplete
-            ? Text(
-                "Workflow complete. " + _runtime.GetProjection("all").ToJsonString()
-            )
-            : Text(_runtime.GetProjection(null).ToJsonString());
+            var nextNodeId = OptionalString(root, "nextNodeId");
+            if (string.IsNullOrEmpty(nextNodeId))
+            {
+                return Error("The 'nextNodeId' parameter is required.", "invalid_args");
+            }
+
+            var completedNodeId = OptionalString(root, "completedNodeId");
+            var result =
+                root.TryGetProperty("result", out var resultElement)
+                && resultElement.ValueKind != JsonValueKind.Null
+                    ? JsonNode.Parse(resultElement.GetRawText())
+                    : null;
+
+            try
+            {
+                _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Error(ex.Message, "invalid_transition");
+            }
+
+            return _runtime.IsComplete
+                ? Text("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
+                : Text(_runtime.GetProjection(null).ToJsonString());
+        }
     }
 
     private Task<ToolHandlerResult> HandleSetStateAsync(
@@ -211,32 +232,39 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var root = doc.RootElement;
-
-        var path = OptionalString(root, "path");
-        if (string.IsNullOrEmpty(path))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Error("The 'path' parameter is required.", "invalid_args");
+            return Task.FromResult<ToolHandlerResult>(argsError!);
         }
 
-        var value =
-            root.TryGetProperty("value", out var valueElement)
-                ? JsonNode.Parse(valueElement.GetRawText())
-                : null;
-        var mode = OptionalString(root, "mode");
-        var key = OptionalString(root, "key");
-
-        try
+        using (doc)
         {
-            _runtime.SetState(path, value, mode, key);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
-        {
-            return Error(ex.Message, "invalid_state_write");
-        }
+            var root = doc.RootElement;
 
-        return Text($"State updated at '{path}'.");
+            var path = OptionalString(root, "path");
+            if (string.IsNullOrEmpty(path))
+            {
+                return Error("The 'path' parameter is required.", "invalid_args");
+            }
+
+            var value =
+                root.TryGetProperty("value", out var valueElement)
+                    ? JsonNode.Parse(valueElement.GetRawText())
+                    : null;
+            var mode = OptionalString(root, "mode");
+
+            try
+            {
+                _runtime.SetState(path, value, mode);
+            }
+            catch (Exception ex)
+                when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
+            {
+                return Error(ex.Message, "invalid_state_write");
+            }
+
+            return Text($"State updated at '{path}'.");
+        }
     }
 
     private Task<ToolHandlerResult> HandleSetNotesAsync(
@@ -245,18 +273,25 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var root = doc.RootElement;
-
-        var scope = OptionalString(root, "scope");
-        var key = OptionalString(root, "key");
-        if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(key))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Error("The 'scope' and 'key' parameters are required.", "invalid_args");
+            return Task.FromResult<ToolHandlerResult>(argsError!);
         }
 
-        _runtime.SetNotes(scope, key, OptionalString(root, "value") ?? string.Empty);
-        return Text($"Note '{scope}.{key}' recorded.");
+        using (doc)
+        {
+            var root = doc.RootElement;
+
+            var scope = OptionalString(root, "scope");
+            var key = OptionalString(root, "key");
+            if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(key))
+            {
+                return Error("The 'scope' and 'key' parameters are required.", "invalid_args");
+            }
+
+            _runtime.SetNotes(scope, key, OptionalString(root, "value") ?? string.Empty);
+            return Text($"Note '{scope}.{key}' recorded.");
+        }
     }
 
     private static FunctionDescriptor Descriptor(
@@ -292,6 +327,34 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         };
 
     private static JsonSchemaObject ObjectSchema() => new() { Type = new("object") };
+
+    /// <summary>
+    ///     Parses a handler's raw JSON arguments, returning a structured <c>invalid_args</c> error result
+    ///     instead of letting a malformed-args <see cref="JsonException"/> escape to the executor (where it
+    ///     would surface as a generic, unstructured tool failure).
+    /// </summary>
+    private static bool TryParseArgs(
+        string argsJson,
+        out JsonDocument doc,
+        out ToolHandlerResult? error
+    )
+    {
+        try
+        {
+            doc = JsonDocument.Parse(argsJson);
+            error = null;
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            doc = null!;
+            error = ToolHandlerResult.FromError(
+                $"Tool arguments are not valid JSON: {ex.Message}",
+                "invalid_args"
+            );
+            return false;
+        }
+    }
 
     private static string? OptionalString(JsonElement root, string propertyName) =>
         root.TryGetProperty(propertyName, out var property)

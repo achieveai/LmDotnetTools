@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -12,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow;
 
@@ -45,6 +47,8 @@ public static class WorkflowSession
     /// <param name="store">An optional workflow store; when supplied with <paramref name="instanceId"/> the runtime persists a snapshot after every mutation so the run can be resumed.</param>
     /// <param name="instanceId">The instance id to persist under; required for persistence to be enabled.</param>
     /// <param name="conversationStore">An optional conversation store; when supplied the controller's history is persisted under <paramref name="threadId"/> (and recoverable on resume).</param>
+    /// <param name="logger">An optional logger; forwarded to the runtime so swallowed best-effort persistence faults are surfaced at Warning.</param>
+    /// <param name="schemaValidator">An optional JSON-Schema validator the runtime validates task/terminal outputs with.</param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
@@ -56,6 +60,8 @@ public static class WorkflowSession
         IWorkflowStore? store = null,
         string? instanceId = null,
         IConversationStore? conversationStore = null,
+        ILogger? logger = null,
+        IJsonSchemaValidator? schemaValidator = null,
         CancellationToken ct = default
     )
     {
@@ -64,7 +70,7 @@ public static class WorkflowSession
         ArgumentNullException.ThrowIfNull(controllerAgent);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
 
-        var runtime = new WorkflowRuntime();
+        var runtime = new WorkflowRuntime(schemaValidator, logger);
         if (definition is not null)
         {
             runtime.LoadDefinition(definition);
@@ -97,6 +103,8 @@ public static class WorkflowSession
     /// <param name="controllerAgent">The controller LLM that continues driving the workflow.</param>
     /// <param name="threadId">The same conversation thread id the run was started under.</param>
     /// <param name="conversationStore">The conversation store the controller history was persisted to; when supplied, history is recovered before driving.</param>
+    /// <param name="logger">An optional logger; forwarded to the runtime so swallowed best-effort persistence faults are surfaced at Warning.</param>
+    /// <param name="schemaValidator">An optional JSON-Schema validator the runtime validates task/terminal outputs with.</param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     /// <exception cref="InvalidOperationException">No snapshot exists for <paramref name="instanceId"/>.</exception>
     public static async Task<WorkflowRunHandle> ResumeAsync(
@@ -106,6 +114,8 @@ public static class WorkflowSession
         IStreamingAgent controllerAgent,
         string threadId,
         IConversationStore? conversationStore = null,
+        ILogger? logger = null,
+        IJsonSchemaValidator? schemaValidator = null,
         CancellationToken ct = default
     )
     {
@@ -122,7 +132,7 @@ public static class WorkflowSession
             );
 
         // Rebuild the runtime (orphaned in-flight tasks reset) and keep persisting under the same id.
-        var runtime = WorkflowRuntime.FromSnapshot(snapshot);
+        var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
         runtime.AttachStore(store, instanceId);
 
         var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
@@ -293,9 +303,13 @@ public static class WorkflowSession
 }
 
 /// <summary>
-///     A handle to a running workflow: exposes the backing <see cref="WorkflowRuntime"/> and controller
-///     <see cref="Loop"/> (for hosts/tests) plus the run <see cref="Completion"/> and final
-///     <see cref="Result"/>. Disposing the handle joins the observer task and disposes the loop.
+///     A handle to a running workflow: exposes the controller <see cref="Loop"/>, the run
+///     <see cref="Completion"/>, and READ-ONLY host views of the workflow state
+///     (<see cref="Result"/>/<see cref="Outputs"/>/<see cref="State"/>/<see cref="Notes"/>/
+///     <see cref="IsComplete"/>/<see cref="CurrentNodeId"/>). The mutable <see cref="Runtime"/> is kept
+///     internal so a host cannot bypass the controller and drive a transition itself — the V1 invariant is
+///     that the controller decides every transition. Disposing the handle joins the observer task and
+///     disposes the loop.
 /// </summary>
 public sealed class WorkflowRunHandle : IAsyncDisposable
 {
@@ -315,8 +329,8 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
         _driveTask = driveTask;
     }
 
-    /// <summary>The runtime that holds all workflow state.</summary>
-    public WorkflowRuntime Runtime { get; }
+    /// <summary>The runtime that holds all workflow state. Internal so hosts cannot bypass the controller.</summary>
+    internal WorkflowRuntime Runtime { get; }
 
     /// <summary>The controller loop driving the workflow.</summary>
     public MultiTurnAgentLoop Loop { get; }
@@ -324,8 +338,23 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
     /// <summary>Completes when the workflow reaches a terminal node; faults if the controller run throws.</summary>
     public Task Completion => Runtime.Completion;
 
-    /// <summary>The validated final result captured at completion, or <c>null</c>.</summary>
+    /// <summary>The validated final result captured at completion, or <c>null</c> (a deep copy).</summary>
     public JsonNode? Result => Runtime.Result;
+
+    /// <summary>The per-node task outputs channel (a deep copy; mutating it does not change runtime state).</summary>
+    public JsonObject Outputs => Runtime.Outputs;
+
+    /// <summary>The mutable state channel (a deep copy; mutating it does not change runtime state).</summary>
+    public JsonObject State => Runtime.State;
+
+    /// <summary>The scoped notes channel (a deep copy; mutating it does not change runtime state).</summary>
+    public JsonObject Notes => Runtime.Notes;
+
+    /// <summary>Whether the workflow has advanced into a terminal node.</summary>
+    public bool IsComplete => Runtime.IsComplete;
+
+    /// <summary>The id of the node the controller is currently positioned on, or <c>null</c>.</summary>
+    public string? CurrentNodeId => Runtime.CurrentNodeId;
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()

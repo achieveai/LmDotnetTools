@@ -39,7 +39,7 @@ sub-agent tools from the LmMultiTurn sub-agent stack:
 | `SetWorkflow(definition)`                         | `WorkflowToolProvider`| Author/replace the definition and position at the start node.   |
 | `GetWorkflow(projection?)`                        | `WorkflowToolProvider`| Read state + the ready-to-spawn `nextExpectedAction` units. Pass `prose`/`text` for a human-readable summary, or `state`/`outputs`/`notes`/`all` to include channels. |
 | `SetCurrentNode(completedNodeId?, nextNodeId, result?)` | `WorkflowToolProvider`| Advance along a declared edge; pass a result when entering a terminal. |
-| `SetState(path, value, mode?, key?)`              | `WorkflowToolProvider`| Write into the `state` channel (`set`/`append`/`merge`).        |
+| `SetState(path, value, mode?)`                    | `WorkflowToolProvider`| Write into the `state` channel (`set`/`append`/`merge`).        |
 | `SetNotes(scope, key, value)`                     | `WorkflowToolProvider`| Record a scoped note.                                            |
 | `Agent(subagent_type, prompt, name, ...)`         | `SubAgentToolProvider`| Spawn a sub-agent. The runtime correlates the result by `name`. |
 | `SendMessage(...)` / `CheckAgent(...)`            | `SubAgentToolProvider`| Continue / poll a previously spawned sub-agent.                 |
@@ -96,8 +96,8 @@ await using var handle = await WorkflowSession.StartAsync(
 // 4. Completion resolves only after the observer has recorded every sub-agent result.
 await handle.Completion;
 
-JsonNode? result = handle.Result;     // the validated final result
-var outputs = handle.Runtime.Outputs; // per-node task outputs
+JsonNode? result = handle.Result;  // the validated final result
+var outputs = handle.Outputs;      // per-node task outputs (read-only host view)
 ```
 
 A run can be persisted (pass an `IWorkflowStore` + `instanceId` to `StartAsync`) and later resumed with

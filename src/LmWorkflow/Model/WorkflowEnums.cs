@@ -2,8 +2,8 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 
 /// <summary>
 ///     The kind of a workflow node. V1 supports only <see cref="Start"/>, <see cref="Procedural"/>,
-///     <see cref="Conditional"/> and <see cref="Terminal"/>; any other node type is rejected by the
-///     validator with a "not supported in V1" error.
+///     <see cref="Conditional"/> and <see cref="Terminal"/>; an out-of-V1 discriminator deserializes to an
+///     <see cref="Unknown"/> placeholder that the validator rejects with a "not supported in V1" error.
 /// </summary>
 public enum NodeType
 {
@@ -18,6 +18,9 @@ public enum NodeType
 
     /// <summary>A node that ends the workflow and shapes the final output.</summary>
     Terminal,
+
+    /// <summary>An unrecognized (out-of-V1) node kind; carries the raw discriminator for validator reporting.</summary>
+    Unknown,
 }
 
 /// <summary>

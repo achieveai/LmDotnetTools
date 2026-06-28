@@ -373,19 +373,20 @@ public sealed class WorkflowValidator
         }
     }
 
-    // Rule 10: condition operators must be in the closed ConditionOp set.
+    // Rule 10: condition operators must be in the closed ConditionOp set, and each condition node must use
+    // exactly one shape (a leaf OR a single composite) so the evaluator routes on the authored predicate.
     private static void ValidateConditionOps(IReadOnlyList<WorkflowNode> nodes, List<string> errors)
     {
         foreach (var conditional in nodes.OfType<ConditionalNode>())
         {
             foreach (var branch in conditional.Branches ?? [])
             {
-                CollectUnknownOps(branch.StructuredCondition, conditional.Id, errors);
+                ValidateCondition(branch.StructuredCondition, conditional.Id, errors);
             }
         }
     }
 
-    private static void CollectUnknownOps(Condition? condition, string nodeId, List<string> errors)
+    private static void ValidateCondition(Condition? condition, string nodeId, List<string> errors)
     {
         if (condition is null)
         {
@@ -397,17 +398,34 @@ public sealed class WorkflowValidator
             errors.Add($"Conditional node '{nodeId}' uses unknown condition op '{unknown}'.");
         }
 
+        // Shape check: a condition is exactly one of a leaf (op/path) or a single composite (all/any/not).
+        // The evaluator checks composites first and silently drops a co-present leaf, so a mixed shape would
+        // route on a different predicate than the author intended — reject it here.
+        var composites =
+            (condition.All is not null ? 1 : 0)
+            + (condition.Any is not null ? 1 : 0)
+            + (condition.Not is not null ? 1 : 0);
+        var isLeaf =
+            condition.Op is not null || condition.UnknownOp is not null || condition.Path is not null;
+        if (composites > 1 || (composites == 1 && isLeaf))
+        {
+            errors.Add(
+                $"Conditional node '{nodeId}' mixes leaf and composite condition forms; "
+                    + "use exactly one of op/all/any/not."
+            );
+        }
+
         foreach (var child in condition.All ?? [])
         {
-            CollectUnknownOps(child, nodeId, errors);
+            ValidateCondition(child, nodeId, errors);
         }
 
         foreach (var child in condition.Any ?? [])
         {
-            CollectUnknownOps(child, nodeId, errors);
+            ValidateCondition(child, nodeId, errors);
         }
 
-        CollectUnknownOps(condition.Not, nodeId, errors);
+        ValidateCondition(condition.Not, nodeId, errors);
     }
 
     // Rule 6: every edge target resolves; from start, every node (and >= 1 terminal) is reachable over

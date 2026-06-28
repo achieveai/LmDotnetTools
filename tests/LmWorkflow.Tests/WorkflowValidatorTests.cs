@@ -299,6 +299,83 @@ public class WorkflowValidatorTests
             .Contain(e => e.Contains("unknown condition op") && e.Contains("between"));
     }
 
+    [Fact]
+    public void Condition_MixingLeafAndComposite_IsRejected()
+    {
+        // The when-object sets BOTH a leaf (op/path) and a composite (all); the evaluator would silently
+        // route on the composite and drop the leaf, so the validator must reject the mixed shape.
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "mixed condition",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["c"] },
+                {
+                  "id": "c", "type": "conditional", "title": "Gate",
+                  "branches": [
+                    {
+                      "when": {
+                        "op": "gt", "path": "state.x", "value": 0,
+                        "all": [ { "op": "gt", "path": "state.y", "value": 1 } ]
+                      },
+                      "to": "t"
+                    }
+                  ],
+                  "else": "t"
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        AssertInvalid(json, "mixes leaf and composite condition forms");
+    }
+
+    [Fact]
+    public void Condition_CompositeOnly_IsValid()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "composite only",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["c"] },
+                {
+                  "id": "c", "type": "conditional", "title": "Gate",
+                  "branches": [
+                    { "when": { "all": [ { "op": "gt", "path": "state.x", "value": 0 } ] }, "to": "t" }
+                  ],
+                  "else": "t"
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        var result = Validate(json);
+        result.IsValid.Should().BeTrue(because: string.Join(" | ", result.Errors));
+    }
+
+    [Fact]
+    public void Condition_LeafOnly_IsValid()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1, "objective": "leaf only",
+              "nodes": [
+                { "id": "s", "type": "start", "title": "Start", "next": ["c"] },
+                {
+                  "id": "c", "type": "conditional", "title": "Gate",
+                  "branches": [ { "when": { "op": "gt", "path": "state.x", "value": 0 }, "to": "t" } ],
+                  "else": "t"
+                },
+                { "id": "t", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+
+        var result = Validate(json);
+        result.IsValid.Should().BeTrue(because: string.Join(" | ", result.Errors));
+    }
+
     // ---- Invalid: agent / write rules ----------------------------------------------------------
 
     [Fact]

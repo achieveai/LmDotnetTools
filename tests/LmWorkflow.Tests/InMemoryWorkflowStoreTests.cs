@@ -89,6 +89,28 @@ public class InMemoryWorkflowStoreTests
     }
 
     [Fact]
+    public void FromJson_NewerSchemaVersion_Throws()
+    {
+        // A snapshot written by a newer, unknown schema must be refused rather than silently mis-read.
+        const string json = """{ "schemaVersion": 999, "instanceId": "wf-future" }""";
+
+        var act = () => WorkflowInstanceSnapshot.FromJson(json);
+
+        act.Should().Throw<NotSupportedException>().WithMessage("*newer than supported*");
+    }
+
+    [Fact]
+    public void FromJson_CurrentSchemaVersion_Loads()
+    {
+        const string json = """{ "schemaVersion": 1, "instanceId": "wf-current" }""";
+
+        var snapshot = WorkflowInstanceSnapshot.FromJson(json);
+
+        snapshot.SchemaVersion.Should().Be(WorkflowInstanceSnapshot.CurrentSchemaVersion);
+        snapshot.InstanceId.Should().Be("wf-current");
+    }
+
+    [Fact]
     public async Task SaveAsync_StoresIsolatedCopy_LaterRuntimeMutationDoesNotLeak()
     {
         var store = new InMemoryWorkflowStore();
@@ -101,7 +123,7 @@ public class InMemoryWorkflowStoreTests
         afterAdvance!.CurrentNodeId.Should().Be("analyze");
 
         // A subsequent runtime mutation persists a NEW snapshot, but the already-loaded copy is frozen.
-        runtime.SetState("state.injected", JsonValue.Create("later"), "set", null);
+        runtime.SetState("state.injected", JsonValue.Create("later"), "set");
         afterAdvance.State.Should().NotContainKey("injected");
     }
 }

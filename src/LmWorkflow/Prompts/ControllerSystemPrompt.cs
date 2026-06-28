@@ -31,7 +31,7 @@ public static class ControllerSystemPrompt
           notes, or all to include those channels; pass prose (or text) to get a human-readable summary.
         - SetCurrentNode(completedNodeId?, nextNodeId, result?): advance along a declared edge. Supply a
           result object only when entering a terminal node.
-        - SetState(path, value, mode?, key?): write into the state channel (set, append, or merge).
+        - SetState(path, value, mode?): write into the state channel (set, append, or merge).
         - SetNotes(scope, key, value): record a scoped note for later reference.
         - Agent(subagent_type, prompt, name, ...): the shared sub-agent tool. This is how a task is
           actually executed. The runtime correlates the result back to the task by the name argument, so
