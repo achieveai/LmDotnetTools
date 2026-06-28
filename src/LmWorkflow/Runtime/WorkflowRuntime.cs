@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
@@ -40,33 +39,16 @@ public sealed class WorkflowRuntime
         TaskCreationOptions.RunContinuationsAsynchronously
     );
 
-    // Correlation: the surfaced unit name -> its task ref (populated by ComposeNextExpectedAction), the
-    // observed Agent tool_call_id -> the same task ref (populated by RegisterSpawn), and the background
-    // spawn receipt agent_id -> the same task ref (populated by ObserveSpawnResult).
-    private readonly Dictionary<string, TaskRef> _tasksByName = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, TaskRef> _tasksByToolCallId = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, TaskRef> _tasksByAgentId = new(StringComparer.Ordinal);
-
-    // Per-task status and the last composed spawn unit, both keyed by the unit name.
-    private readonly Dictionary<string, WorkflowTaskStatus> _status = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SpawnUnit> _composed = new(StringComparer.Ordinal);
-
-    // Per-unit validation-retry bookkeeping: how many times a unit's result has failed (attempts) and the
-    // most recent failure reason (surfaced to the controller so it can re-author the re-spawned unit).
-    private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _lastError = new(StringComparer.Ordinal);
+    // The authored-task lifecycle (compose / spawn correlation / result recording) and the per-task
+    // status/attempt/error bookkeeping are owned by the coordinator. It holds no lock of its own: the runtime
+    // invokes every coordinator method while holding _lock, so all its state is mutated under the one lock.
+    private readonly TaskCoordinator _coordinator;
 
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
-    private readonly List<string> _unmatched = [];
 
     // O(1) node-id -> node lookup rebuilt whenever Definition changes (Fix: FindNodeNoLock was O(N) and is
     // called 4-5x per GetProjection/AdvanceTo). Empty when no definition is loaded.
     private readonly Dictionary<string, WorkflowNode> _nodeIndex = new(StringComparer.Ordinal);
-
-    // The cap on the surfaced "unmatched" diagnostic list: a misbehaving controller emitting an unbounded
-    // stream of uncorrelated ids must not inflate the projection (and the LLM context) without limit. The
-    // most recent entries are kept (Fix: bound the diagnostic list).
-    private const int MaxUnmatchedDiagnostics = 50;
 
     // The live data channels the runtime mutates IN PLACE under _lock. They are exposed only through the
     // public getters below, which hand back a deep copy taken under the lock so a host can never observe a
@@ -82,11 +64,9 @@ public sealed class WorkflowRuntime
     private IWorkflowStore? _store;
     private string? _instanceId;
 
-    // Persistence is serialized so saves apply in capture order (save N completes before save N+1 starts),
-    // preventing a slow stale save from overwriting a newer one (Fix M2). The chain is advanced under a
-    // dedicated lock so it never blocks the main runtime lock.
-    private readonly object _saveLock = new();
-    private Task _saveChain = Task.CompletedTask;
+    // Persistence sequencing is delegated to a collaborator that owns its OWN save-chain lock (independent of
+    // _lock): the runtime captures the snapshot under _lock, releases it, then enqueues the save (Fix M2/M3).
+    private readonly SnapshotPersister _persister = new();
 
     // Optional logger so a swallowed best-effort persistence fault is at least visible (Fix M3).
     private readonly ILogger? _logger;
@@ -99,6 +79,20 @@ public sealed class WorkflowRuntime
     {
         _schemaValidator = schemaValidator ?? new JsonSchemaValidator();
         _logger = logger;
+
+        // The coordinator reads/mutates runtime state through these delegates. They capture the runtime's live
+        // fields (read each call), so a re-load/restore that reassigns a channel is observed without staleness.
+        // Every delegate is only invoked from a coordinator method called by the runtime under _lock.
+        _coordinator = new TaskCoordinator(
+            _schemaValidator,
+            definition: () => Definition,
+            currentNodeId: () => CurrentNodeId,
+            findNode: FindNodeNoLock,
+            currentVisit: nodeId => _visits.TryGetValue(nodeId, out var count) ? count : 1,
+            liveState: () => _state,
+            liveOutputs: () => _outputs,
+            buildContext: (item, index, count) => BuildContextNoLock(item, index, count)
+        );
     }
 
     /// <summary>
@@ -231,7 +225,7 @@ public sealed class WorkflowRuntime
         {
             lock (_lock)
             {
-                return new Dictionary<string, SpawnUnit>(_composed, StringComparer.Ordinal);
+                return _coordinator.SnapshotComposed();
             }
         }
     }
@@ -269,14 +263,7 @@ public sealed class WorkflowRuntime
             IsComplete = false;
             _result = null;
 
-            _tasksByName.Clear();
-            _tasksByToolCallId.Clear();
-            _tasksByAgentId.Clear();
-            _status.Clear();
-            _composed.Clear();
-            _attempts.Clear();
-            _lastError.Clear();
-            _unmatched.Clear();
+            _coordinator.Reset();
 
             snapshot = CaptureSnapshotNoLock();
         }
@@ -321,7 +308,7 @@ public sealed class WorkflowRuntime
     {
         lock (_lock)
         {
-            return ComposeNoLock();
+            return _coordinator.Compose();
         }
     }
 
@@ -337,24 +324,7 @@ public sealed class WorkflowRuntime
 
         lock (_lock)
         {
-            if (!_tasksByName.TryGetValue(name, out var taskRef))
-            {
-                return;
-            }
-
-            // A unit that has already validated or terminally failed is SETTLED. A controller re-issuing an
-            // Agent call for it (e.g. after completion) must not reset its status or re-map the toolCallId,
-            // or the eventual ObserveResult would re-run ValidateAndRecordNoLock and re-apply its
-            // append/merge writes — silently corrupting state (Fix M1). Only a Pending unit transitions to
-            // InFlight; an already-InFlight unit re-correlates as before.
-            var status = StatusOfNoLock(name);
-            if (status is WorkflowTaskStatus.Validated or WorkflowTaskStatus.Failed)
-            {
-                return;
-            }
-
-            _tasksByToolCallId[toolCallId] = taskRef;
-            _status[name] = WorkflowTaskStatus.InFlight;
+            _coordinator.RegisterSpawn(toolCallId, name);
         }
     }
 
@@ -363,7 +333,7 @@ public sealed class WorkflowRuntime
     {
         lock (_lock)
         {
-            return _tasksByName.ContainsKey(name);
+            return _coordinator.IsExpectedUnit(name);
         }
     }
 
@@ -372,7 +342,7 @@ public sealed class WorkflowRuntime
     {
         lock (_lock)
         {
-            return _tasksByToolCallId.ContainsKey(toolCallId);
+            return _coordinator.IsRegisteredSpawn(toolCallId);
         }
     }
 
@@ -390,15 +360,7 @@ public sealed class WorkflowRuntime
         WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
-            {
-                ObserveAnswerNoLock(taskRef, resultText, isError);
-            }
-            else
-            {
-                AddUnmatchedNoLock(toolCallId);
-            }
-
+            _coordinator.ObserveResult(toolCallId, resultText, isError);
             snapshot = CaptureSnapshotNoLock();
         }
 
@@ -420,24 +382,7 @@ public sealed class WorkflowRuntime
         WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
-            {
-                AddUnmatchedNoLock(toolCallId);
-            }
-            else if (isError)
-            {
-                HandleFailureNoLock(taskRef, $"sub-agent returned an error: {resultText}");
-            }
-            else if (TryReadSpawnReceipt(resultText, out var agentId))
-            {
-                // Background spawn: correlate by the receipt agent_id and wait for the injected result.
-                _tasksByAgentId[agentId] = taskRef;
-            }
-            else
-            {
-                ValidateAndRecordNoLock(taskRef, resultText);
-            }
-
+            _coordinator.ObserveSpawnResult(toolCallId, resultText, isError);
             snapshot = CaptureSnapshotNoLock();
         }
 
@@ -457,15 +402,7 @@ public sealed class WorkflowRuntime
         WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (_tasksByAgentId.TryGetValue(agentId, out var taskRef))
-            {
-                ObserveAnswerNoLock(taskRef, resultText, isError);
-            }
-            else
-            {
-                AddUnmatchedNoLock(agentId);
-            }
-
+            _coordinator.ObserveInjectedResult(agentId, resultText, isError);
             snapshot = CaptureSnapshotNoLock();
         }
 
@@ -659,84 +596,52 @@ public sealed class WorkflowRuntime
     {
         lock (_lock)
         {
-            var nextActions = ComposeNoLock();
-            var result = new JsonObject
-            {
-                ["currentNodeId"] = CurrentNodeId,
-                ["isComplete"] = IsComplete,
-                ["step"] = Step,
-                ["visits"] = VisitsToJsonNoLock(),
-                ["tasks"] = StatusToJsonNoLock(),
-                ["nextExpectedAction"] = NextActionsToJsonNoLock(nextActions),
-            };
-
-            // For the active procedural node, surface the join progress (a SURFACE for the controller — the
-            // runtime never auto-advances) and, if a unit has terminally failed, the node's onFailure route.
-            if (CurrentNodeId is { } nodeId && FindNodeNoLock(nodeId) is ProceduralNode procedural)
-            {
-                var activeUnits = ActiveUnitsNoLock(procedural);
-                result["join"] = BuildJoinNoLock(procedural, activeUnits);
-                if (OnFailureRouteNoLock(procedural, activeUnits) is { } route)
-                {
-                    result["onFailure"] = route;
-                }
-            }
-
-            // For the active conditional node, surface the deterministic recommended branch plus a
-            // per-branch evaluation view (read-only hints; AdvanceTo still accepts any declared edge).
-            if (
-                CurrentNodeId is { } conditionalId
-                && FindNodeNoLock(conditionalId) is ConditionalNode conditional
-            )
-            {
-                AddConditionalRoutingNoLock(result, conditional);
-            }
-
-            // Safety-rail surfaces for the active node: a reached visit ceiling (route to onMaxVisits)
-            // and a global step-budget exhaustion (route to onBudgetExhausted).
-            AddVisitCeilingNoLock(result);
-            AddBudgetSurfaceNoLock(result);
-
-            // Surface per-unit validation/parse errors so the controller can re-author a re-surfaced unit.
-            if (_lastError.Count > 0)
-            {
-                var errors = new JsonObject();
-                foreach (var (name, error) in _lastError)
-                {
-                    errors[name] = error;
-                }
-
-                result["taskErrors"] = errors;
-            }
-
-            if (IncludesChannel(projection, "state"))
-            {
-                result["state"] = _state.DeepClone();
-            }
-
-            if (IncludesChannel(projection, "outputs"))
-            {
-                result["outputs"] = _outputs.DeepClone();
-            }
-
-            if (IncludesChannel(projection, "notes"))
-            {
-                result["notes"] = _notes.DeepClone();
-            }
-
-            if (_unmatched.Count > 0)
-            {
-                var unmatched = new JsonArray();
-                foreach (var id in _unmatched)
-                {
-                    unmatched.Add(id);
-                }
-
-                result["unmatched"] = unmatched;
-            }
-
-            return result;
+            // Compose first (the side-effecting registration stays in the coordinator), capture the read
+            // state under the lock, then hand it to the pure renderer.
+            var nextActions = _coordinator.Compose();
+            return WorkflowProjectionBuilder.Build(BuildProjectionInputsNoLock(nextActions, projection));
         }
+    }
+
+    /// <summary>
+    ///     Assembles the read-only <see cref="ProjectionInputs"/> snapshot the projection renderer consumes.
+    ///     Caller MUST hold <see cref="_lock"/>; the live channels/maps are passed by reference and read
+    ///     synchronously by the renderer under the lock (the visit ceiling's <c>maxVisits</c>/<c>onMaxVisits</c>
+    ///     are pre-resolved here so the node-policy lookup stays in one place, shared with <c>AdvanceTo</c>).
+    /// </summary>
+    private ProjectionInputs BuildProjectionInputsNoLock(
+        IReadOnlyList<SpawnUnit> nextActions,
+        string? projection
+    )
+    {
+        var activeNode = CurrentNodeId is { } nodeId ? FindNodeNoLock(nodeId) : null;
+        IReadOnlyList<ProjectionActiveUnit> activeUnits = [];
+        if (activeNode is ProceduralNode procedural)
+        {
+            activeUnits = _coordinator.ActiveUnits(procedural.Id);
+        }
+
+        return new ProjectionInputs
+        {
+            CurrentNodeId = CurrentNodeId,
+            IsComplete = IsComplete,
+            Step = Step,
+            Definition = Definition,
+            ActiveNode = activeNode,
+            ActiveNodeMaxVisits = MaxVisitsOf(activeNode),
+            ActiveNodeOnMaxVisits = OnMaxVisitsOf(activeNode),
+            Visits = _visits,
+            Statuses = _coordinator.Statuses,
+            NextActions = nextActions,
+            ActiveUnits = activeUnits,
+            ContextFactory = () => BuildContextNoLock(null, null, null),
+            LastErrors = _coordinator.LastErrors,
+            Unmatched = _coordinator.Unmatched,
+            State = _state,
+            Outputs = _outputs,
+            Notes = _notes,
+            Projection = projection,
+        };
     }
 
     /// <summary>Signals normal completion of the controller run to <see cref="Completion"/> waiters.</summary>
@@ -809,117 +714,14 @@ public sealed class WorkflowRuntime
                 _visits[nodeId] = count;
             }
 
-            _tasksByName.Clear();
-            _tasksByToolCallId.Clear();
-            _tasksByAgentId.Clear();
-            _status.Clear();
-            _attempts.Clear();
-            _lastError.Clear();
-            _composed.Clear();
-            _unmatched.Clear();
-
-            foreach (var task in snapshot.Tasks)
-            {
-                RestoreTaskNoLock(task);
-            }
-        }
-    }
-
-    /// <summary>Rebuilds one task occurrence's correlation/status from its snapshot, applying orphan reset.</summary>
-    private void RestoreTaskNoLock(WorkflowTaskSnapshot task)
-    {
-        var taskRef = new TaskRef
-        {
-            NodeId = task.NodeId,
-            Visit = task.Visit,
-            TaskId = task.TaskId,
-            Index = task.Index,
-            OutputSchema = task.OutputSchema?.DeepClone(),
-            Writes = task.Writes,
-            OnFailure = task.OnFailure,
-            MaxValidationRetries = task.MaxValidationRetries,
-        };
-        _tasksByName[task.Name] = taskRef;
-
-        // An in-flight unit (or a pending one still holding a live spawn correlation, hence no recorded
-        // output) is an orphan after a restart: reset it to pending and drop its correlation so the
-        // controller re-spawns it. Everything else keeps its status and (for completeness) its correlation.
-        var hasLiveCorrelation = task.ToolCallId is not null || task.AgentId is not null;
-        var isOrphan =
-            task.Status == WorkflowTaskStatus.InFlight
-            || (task.Status == WorkflowTaskStatus.Pending && hasLiveCorrelation);
-
-        if (isOrphan)
-        {
-            _status[task.Name] = WorkflowTaskStatus.Pending;
-        }
-        else
-        {
-            _status[task.Name] = task.Status;
-            if (task.ToolCallId is { } toolCallId)
-            {
-                _tasksByToolCallId[toolCallId] = taskRef;
-            }
-
-            if (task.AgentId is { } agentId)
-            {
-                _tasksByAgentId[agentId] = taskRef;
-            }
-        }
-
-        // Preserve the validation-retry budget and last error across the restart.
-        if (task.Attempts > 0)
-        {
-            _attempts[task.Name] = task.Attempts;
-        }
-
-        if (task.LastError is { } error)
-        {
-            _lastError[task.Name] = error;
+            // The coordinator rebuilds its task maps (applying orphan reset per occurrence).
+            _coordinator.Restore(snapshot.Tasks);
         }
     }
 
     /// <summary>Builds a snapshot of the current state. Caller MUST hold <see cref="_lock"/>.</summary>
-    private WorkflowInstanceSnapshot BuildSnapshotNoLock(string instanceId)
-    {
-        // Reverse-index the live spawn correlation so each task carries its own tool-call / agent id.
-        var toolCallByName = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (toolCallId, taskRef) in _tasksByToolCallId)
-        {
-            toolCallByName[taskRef.Name] = toolCallId;
-        }
-
-        var agentByName = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (agentId, taskRef) in _tasksByAgentId)
-        {
-            agentByName[taskRef.Name] = agentId;
-        }
-
-        var tasks = new List<WorkflowTaskSnapshot>(_tasksByName.Count);
-        foreach (var (name, taskRef) in _tasksByName)
-        {
-            tasks.Add(
-                new WorkflowTaskSnapshot
-                {
-                    Name = name,
-                    NodeId = taskRef.NodeId,
-                    Visit = taskRef.Visit,
-                    TaskId = taskRef.TaskId,
-                    Index = taskRef.Index,
-                    OutputSchema = taskRef.OutputSchema?.DeepClone(),
-                    Writes = taskRef.Writes,
-                    OnFailure = taskRef.OnFailure,
-                    MaxValidationRetries = taskRef.MaxValidationRetries,
-                    Status = StatusOfNoLock(name),
-                    Attempts = _attempts.TryGetValue(name, out var attempts) ? attempts : 0,
-                    LastError = _lastError.TryGetValue(name, out var error) ? error : null,
-                    ToolCallId = toolCallByName.TryGetValue(name, out var toolCallId) ? toolCallId : null,
-                    AgentId = agentByName.TryGetValue(name, out var agentId) ? agentId : null,
-                }
-            );
-        }
-
-        return new WorkflowInstanceSnapshot
+    private WorkflowInstanceSnapshot BuildSnapshotNoLock(string instanceId) =>
+        new()
         {
             SchemaVersion = WorkflowInstanceSnapshot.CurrentSchemaVersion,
             InstanceId = instanceId,
@@ -933,18 +735,17 @@ public sealed class WorkflowRuntime
             Outputs = CloneObject(_outputs),
             Notes = CloneObject(_notes),
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
-            Tasks = tasks,
+            Tasks = _coordinator.BuildTaskSnapshots(),
         };
-    }
 
     /// <summary>Builds a snapshot for persistence, or <c>null</c> when no store is attached. Caller holds the lock.</summary>
     private WorkflowInstanceSnapshot? CaptureSnapshotNoLock() =>
         _store is not null && _instanceId is not null ? BuildSnapshotNoLock(_instanceId) : null;
 
     /// <summary>
-    ///     Best-effort persistence of a captured snapshot (no-op when not attached). Saves are SERIALIZED on a
-    ///     per-instance chain so they apply in capture order — save N completes before save N+1 starts — which
-    ///     prevents a slow, stale save from overwriting a newer snapshot (Fix M2). Use
+    ///     Best-effort persistence of a captured snapshot (no-op when not attached). The captured snapshot is
+    ///     handed to the <see cref="SnapshotPersister"/>, which serializes saves on a per-instance chain so a
+    ///     stale save never overwrites a newer one (Fix M2). Called AFTER releasing <see cref="_lock"/>; use
     ///     <see cref="DrainPersistAsync"/> to flush pending saves before disposal.
     /// </summary>
     private void Persist(WorkflowInstanceSnapshot? snapshot)
@@ -954,22 +755,7 @@ public sealed class WorkflowRuntime
             return;
         }
 
-        var store = _store;
-        var instanceId = _instanceId;
-        lock (_saveLock)
-        {
-            // ExecuteSynchronously keeps a save inline when its antecedent is ALREADY complete (the common
-            // case for a synchronous store), so persistence stays as prompt as the prior fire-and-forget for
-            // such stores; an async store's save simply chains the next save behind its still-running task.
-            _saveChain = _saveChain
-                .ContinueWith(
-                    _ => SaveBestEffortAsync(store, instanceId, snapshot),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default
-                )
-                .Unwrap();
-        }
+        _persister.Enqueue(_store, _instanceId, snapshot, _logger);
     }
 
     /// <summary>
@@ -977,31 +763,7 @@ public sealed class WorkflowRuntime
     ///     before disposing the run. Best-effort saves never fault the chain, so this never throws; it is a
     ///     no-op (already-completed task) when no store is attached.
     /// </summary>
-    internal Task DrainPersistAsync()
-    {
-        lock (_saveLock)
-        {
-            return _saveChain;
-        }
-    }
-
-    private async Task SaveBestEffortAsync(
-        IWorkflowStore store,
-        string instanceId,
-        WorkflowInstanceSnapshot snapshot
-    )
-    {
-        try
-        {
-            await store.SaveAsync(instanceId, snapshot).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // Best-effort: a persistence fault must never corrupt or fail the live run. Surface it at Warning
-            // (Fix M3) so a store outage is visible; the next mutation re-attempts with a fresh snapshot.
-            _logger?.LogWarning(ex, "Workflow {InstanceId} snapshot persistence failed", instanceId);
-        }
-    }
+    internal Task DrainPersistAsync() => _persister.DrainAsync();
 
     /// <summary>
     ///     Builds a binding context over the live channels. Internal callers use it read-only under the lock
@@ -1030,332 +792,6 @@ public sealed class WorkflowRuntime
             Index = index,
             Count = count,
         };
-
-    private IReadOnlyList<SpawnUnit> ComposeNoLock()
-    {
-        if (
-            Definition is null
-            || CurrentNodeId is null
-            || FindNodeNoLock(CurrentNodeId) is not ProceduralNode node
-            || node.TasksMode != TasksMode.Authored
-            || node.TaskList is not { Count: > 0 } tasks
-        )
-        {
-            return [];
-        }
-
-        var visit = _visits.TryGetValue(node.Id, out var count) ? count : 1;
-        var units = new List<SpawnUnit>();
-        foreach (var task in tasks)
-        {
-            if (task.Delegate != DelegateKind.Agent || string.IsNullOrEmpty(task.SubagentType))
-            {
-                continue;
-            }
-
-            if (string.IsNullOrEmpty(task.ForEach))
-            {
-                ComposeUnitNoLock(node, visit, task, index: null, item: null, count: null, units);
-                continue;
-            }
-
-            // forEach fan-out: resolve the source binding to an array and spawn one unit per element.
-            if (BuildContextNoLock(null, null, null).Resolve(task.ForEach) is not JsonArray source)
-            {
-                continue;
-            }
-
-            for (var i = 0; i < source.Count; i++)
-            {
-                ComposeUnitNoLock(node, visit, task, i, source[i], source.Count, units);
-            }
-        }
-
-        return units;
-    }
-
-    /// <summary>
-    ///     Registers one task occurrence (a non-forEach unit when <paramref name="index"/> is <c>null</c>, or a
-    ///     single forEach element otherwise): records its <see cref="TaskRef"/> and seeds a <c>pending</c>
-    ///     status so the unit counts toward the node's join totals, then surfaces it (rendering its prompt with
-    ///     the loop locals) only when it is still <c>pending</c> — an <c>in_flight</c>/<c>validated</c>/terminal
-    ///     <c>failed</c> unit is registered but not re-surfaced, so polling <c>GetWorkflow</c> never re-spawns it.
-    /// </summary>
-    private void ComposeUnitNoLock(
-        ProceduralNode node,
-        int visit,
-        WorkflowTask task,
-        int? index,
-        JsonNode? item,
-        int? count,
-        List<SpawnUnit> units
-    )
-    {
-        var taskRef = new TaskRef
-        {
-            NodeId = node.Id,
-            Visit = visit,
-            TaskId = task.Id,
-            Index = index,
-            OutputSchema = task.OutputSchema,
-            Writes = task.Writes,
-            OnFailure = task.OnFailure,
-            MaxValidationRetries = task.MaxValidationRetries,
-        };
-
-        _tasksByName[taskRef.Name] = taskRef;
-        _ = _status.TryAdd(taskRef.Name, WorkflowTaskStatus.Pending);
-
-        if (_status[taskRef.Name] != WorkflowTaskStatus.Pending)
-        {
-            return;
-        }
-
-        var unit = new SpawnUnit
-        {
-            Name = taskRef.Name,
-            SubagentType = task.SubagentType!,
-            Prompt = ComposePrompt(task, BuildContextNoLock(item, index, count)),
-            OutputSchema = task.OutputSchema?.DeepClone(),
-        };
-        _composed[taskRef.Name] = unit;
-        units.Add(unit);
-    }
-
-    private string ComposePrompt(WorkflowTask task, BindingContext context)
-    {
-        var parts = new List<string>();
-
-        if (!string.IsNullOrEmpty(Definition!.SharedContext))
-        {
-            parts.Add(Definition.SharedContext);
-        }
-
-        parts.Add(TemplateRenderer.Render(task.PromptTemplate, context));
-
-        if (task.OutputSchema is { } schema)
-        {
-            parts.Add(
-                "Return ONLY a JSON object that conforms to this schema:\n" + schema.ToJsonString()
-            );
-        }
-
-        return string.Join("\n\n", parts);
-    }
-
-    /// <summary>
-    ///     Shared "blocking answer" handling for the P3 tool-result path and the injected-result path: an
-    ///     error fails the task; otherwise the answer is validated and recorded.
-    /// </summary>
-    private void ObserveAnswerNoLock(TaskRef taskRef, string resultText, bool isError)
-    {
-        if (isError)
-        {
-            HandleFailureNoLock(taskRef, $"sub-agent returned an error: {resultText}");
-            return;
-        }
-
-        ValidateAndRecordNoLock(taskRef, resultText);
-    }
-
-    /// <summary>
-    ///     Parses, schema-validates, records and applies the writes of a successful task answer. Any
-    ///     parse/validation failure is routed through <see cref="HandleFailureNoLock"/> (which decides between
-    ///     a retry and a terminal failure). On success the unit is marked validated and its last error cleared.
-    /// </summary>
-    private void ValidateAndRecordNoLock(TaskRef taskRef, string resultText)
-    {
-        JsonNode? parsed;
-        try
-        {
-            parsed = JsonNode.Parse(resultText);
-        }
-        catch (JsonException ex)
-        {
-            HandleFailureNoLock(taskRef, $"task output is not valid JSON: {ex.Message}");
-            return;
-        }
-
-        if (parsed is null)
-        {
-            HandleFailureNoLock(taskRef, "task output parsed to a null JSON value.");
-            return;
-        }
-
-        if (taskRef.OutputSchemaJson is { } schemaJson)
-        {
-            var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
-            if (!validation.IsValid)
-            {
-                HandleFailureNoLock(
-                    taskRef,
-                    "task output failed schema validation: " + string.Join("; ", validation.Errors)
-                );
-                return;
-            }
-        }
-
-        WriteOutputSlotNoLock(taskRef, parsed);
-        if (taskRef.Writes is { } writes)
-        {
-            // A validated output can still be un-writable (e.g. a merge whose value is not an object).
-            // Route that through the failure policy instead of letting it propagate out of the observe
-            // path and fault the ENTIRE workflow, mirroring the JSON-parse handling above and the
-            // SetState handler's catch (Fix: guard the task-output state write).
-            try
-            {
-                StateWriter.Apply(_state, writes, parsed);
-            }
-            catch (Exception ex)
-                when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
-            {
-                HandleFailureNoLock(
-                    taskRef,
-                    $"task output could not be written to state: {ex.Message}"
-                );
-                return;
-            }
-        }
-
-        _status[taskRef.Name] = WorkflowTaskStatus.Validated;
-        _ = _lastError.Remove(taskRef.Name);
-    }
-
-    /// <summary>
-    ///     Applies the "controller re-spawns; runtime bounds the attempts" retry policy. The attempt counter
-    ///     for the unit is incremented; while it stays within <see cref="WorkflowTask.MaxValidationRetries"/>
-    ///     the unit is marked <c>pending</c> again (so it re-surfaces in <c>nextExpectedAction</c>), its error
-    ///     surfaced, and its spawn correlation cleared so the next spawn re-correlates. Once the budget is
-    ///     exhausted the unit is terminally failed and an <c>{ "_error": ... }</c> marker recorded into outputs.
-    /// </summary>
-    private void HandleFailureNoLock(TaskRef taskRef, string error)
-    {
-        var attempts = (_attempts.TryGetValue(taskRef.Name, out var prior) ? prior : 0) + 1;
-        _attempts[taskRef.Name] = attempts;
-        _lastError[taskRef.Name] = error;
-
-        if (attempts <= taskRef.MaxValidationRetries)
-        {
-            _status[taskRef.Name] = WorkflowTaskStatus.Pending;
-            ClearCorrelationNoLock(taskRef.Name);
-            return;
-        }
-
-        WriteOutputSlotNoLock(taskRef, new JsonObject { ["_error"] = error });
-        _status[taskRef.Name] = WorkflowTaskStatus.Failed;
-    }
-
-    /// <summary>
-    ///     Writes <paramref name="value"/> into the output slot for <paramref name="taskRef"/>: a forEach unit
-    ///     (one with an <see cref="TaskRef.Index"/>) lands at its index in an array under
-    ///     <c>outputs[nodeId][taskId]</c> (the array is grown/padded with nulls so out-of-order completions
-    ///     land correctly); a non-forEach unit is written directly as the scalar/object value.
-    /// </summary>
-    private void WriteOutputSlotNoLock(TaskRef taskRef, JsonNode value)
-    {
-        if (_outputs[taskRef.NodeId] is not JsonObject nodeOutputs)
-        {
-            nodeOutputs = [];
-            _outputs[taskRef.NodeId] = nodeOutputs;
-        }
-
-        if (taskRef.Index is not { } index)
-        {
-            nodeOutputs[taskRef.TaskId] = value.DeepClone();
-            return;
-        }
-
-        if (nodeOutputs[taskRef.TaskId] is not JsonArray array)
-        {
-            array = [];
-            nodeOutputs[taskRef.TaskId] = array;
-        }
-
-        while (array.Count <= index)
-        {
-            array.Add(null);
-        }
-
-        array[index] = value.DeepClone();
-    }
-
-    /// <summary>
-    ///     Records an uncorrelated <paramref name="id"/> in the bounded diagnostic list surfaced by
-    ///     <see cref="GetProjection"/>. At most <see cref="MaxUnmatchedDiagnostics"/> entries are retained — when
-    ///     adding would exceed the cap the oldest entry is dropped, keeping the most recent ids so a misbehaving
-    ///     controller cannot inflate the projection (and the LLM context) without bound.
-    /// </summary>
-    private void AddUnmatchedNoLock(string id)
-    {
-        _unmatched.Add(id);
-        if (_unmatched.Count > MaxUnmatchedDiagnostics)
-        {
-            _unmatched.RemoveAt(0);
-        }
-    }
-
-    /// <summary>Removes any tool-call-id / agent-id correlation pointing at the unit named <paramref name="unitName"/>.</summary>
-    private void ClearCorrelationNoLock(string unitName)
-    {
-        RemoveByUnit(_tasksByToolCallId, unitName);
-        RemoveByUnit(_tasksByAgentId, unitName);
-
-        static void RemoveByUnit(Dictionary<string, TaskRef> map, string unitName)
-        {
-            foreach (var key in map.Where(kv => kv.Value.Name == unitName).Select(kv => kv.Key).ToList())
-            {
-                _ = map.Remove(key);
-            }
-        }
-    }
-
-    /// <summary>
-    ///     Detects a background spawn receipt (<c>{ "status": "spawned", "agent_id": "..." }</c>) and extracts
-    ///     its <paramref name="agentId"/>. Anything else (including a blocking JSON answer that happens to be an
-    ///     object) returns <c>false</c>.
-    /// </summary>
-    private static bool TryReadSpawnReceipt(string resultText, out string agentId)
-    {
-        agentId = string.Empty;
-        if (string.IsNullOrWhiteSpace(resultText))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(resultText);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (
-                !doc.RootElement.TryGetProperty("status", out var status)
-                || status.ValueKind != JsonValueKind.String
-                || status.GetString() != "spawned"
-            )
-            {
-                return false;
-            }
-
-            if (
-                !doc.RootElement.TryGetProperty("agent_id", out var id)
-                || id.ValueKind != JsonValueKind.String
-                || string.IsNullOrEmpty(id.GetString())
-            )
-            {
-                return false;
-            }
-
-            agentId = id.GetString()!;
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
 
     private bool IsDeclaredEdgeNoLock(string from, string to) =>
         FindNodeNoLock(from) switch
@@ -1394,149 +830,6 @@ public sealed class WorkflowRuntime
         }
     }
 
-    private JsonObject VisitsToJsonNoLock()
-    {
-        var visits = new JsonObject();
-        foreach (var (key, value) in _visits)
-        {
-            visits[key] = value;
-        }
-
-        return visits;
-    }
-
-    private JsonObject StatusToJsonNoLock()
-    {
-        var statuses = new JsonObject();
-        foreach (var (key, value) in _status)
-        {
-            statuses[key] = Wire(value);
-        }
-
-        return statuses;
-    }
-
-    /// <summary>The registered units for the active visit of <paramref name="node"/> (the join's working set).</summary>
-    private List<TaskRef> ActiveUnitsNoLock(ProceduralNode node)
-    {
-        var visit = _visits.TryGetValue(node.Id, out var count) ? count : 1;
-        return [.. _tasksByName.Values.Where(t => t.NodeId == node.Id && t.Visit == visit)];
-    }
-
-    /// <summary>
-    ///     Computes the controller-facing join surface for the active node: counts by status plus a
-    ///     <c>satisfied</c> flag (mode <c>all</c> → every unit validated; mode <c>any</c> → at least one).
-    /// </summary>
-    private JsonObject BuildJoinNoLock(ProceduralNode node, IReadOnlyList<TaskRef> units)
-    {
-        var validated = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Validated);
-        var failed = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Failed);
-        var inFlight = units.Count(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.InFlight);
-
-        var mode = node.JoinPolicy?.Mode ?? JoinMode.All;
-        var total = units.Count;
-
-        // An all-join is satisfied once every COMPOSED unit validated — including the vacuous total == 0
-        // case: a node whose working set is empty (a forEach over an empty array, or a procedural node whose
-        // TaskList yields no spawnable units) has nothing to spawn and is therefore vacuously satisfied, so
-        // the controller can route on instead of livelocking until the budget rail trips (Fix M5). This is
-        // only ever evaluated AFTER compose has run for the node — GetProjection calls ComposeNoLock before
-        // ActiveUnitsNoLock/BuildJoinNoLock — so a not-yet-composed node is never falsely reported satisfied.
-        var satisfied = mode == JoinMode.Any ? validated >= 1 : validated == total;
-
-        return new JsonObject
-        {
-            ["mode"] = mode == JoinMode.Any ? "any" : "all",
-            ["total"] = total,
-            ["validated"] = validated,
-            ["failed"] = failed,
-            ["inFlight"] = inFlight,
-            ["satisfied"] = satisfied,
-        };
-    }
-
-    /// <summary>
-    ///     The node id the controller should route to when a unit of the active node has terminally failed:
-    ///     the failed task's <see cref="WorkflowTask.OnFailure"/> if set, else the node's
-    ///     <see cref="ProceduralNode.OnFailure"/>; <c>null</c> when nothing has failed or no route exists.
-    /// </summary>
-    private string? OnFailureRouteNoLock(ProceduralNode node, IReadOnlyList<TaskRef> units)
-    {
-        var failed = units.FirstOrDefault(u => StatusOfNoLock(u.Name) == WorkflowTaskStatus.Failed);
-        if (failed is null)
-        {
-            return null;
-        }
-
-        var route = failed.OnFailure ?? node.OnFailure;
-        return string.IsNullOrEmpty(route) ? null : route;
-    }
-
-    /// <summary>
-    ///     Surfaces the deterministic recommended branch for an active conditional node: the first branch
-    ///     whose structured condition holds (prose <c>when</c> branches have no structured form and are
-    ///     skipped), else the <c>else</c> target. A per-branch <c>{ to, matched }</c> view is surfaced too.
-    /// </summary>
-    private void AddConditionalRoutingNoLock(JsonObject result, ConditionalNode conditional)
-    {
-        var context = BuildContextNoLock(null, null, null);
-        var evaluations = new JsonArray();
-        string? recommended = null;
-        foreach (var branch in conditional.Branches)
-        {
-            var matched =
-                branch.StructuredCondition is { } condition
-                && ConditionEvaluator.Evaluate(condition, context);
-            evaluations.Add(new JsonObject { ["to"] = branch.To, ["matched"] = matched });
-            recommended ??= matched ? branch.To : null;
-        }
-
-        result["recommendedBranch"] = recommended ?? conditional.Else;
-        result["branchEvaluations"] = evaluations;
-    }
-
-    /// <summary>
-    ///     Surfaces <c>atVisitCeiling</c>/<c>onMaxVisits</c> when the active node has been entered its
-    ///     declared <c>maxVisits</c> times, so the controller routes to its <c>onMaxVisits</c> instead of
-    ///     re-entering it.
-    /// </summary>
-    private void AddVisitCeilingNoLock(JsonObject result)
-    {
-        if (CurrentNodeId is not { } nodeId)
-        {
-            return;
-        }
-
-        var node = FindNodeNoLock(nodeId);
-        if (
-            MaxVisitsOf(node) is { } maxVisits
-            && (_visits.TryGetValue(nodeId, out var entered) ? entered : 0) >= maxVisits
-        )
-        {
-            result["atVisitCeiling"] = true;
-            if (OnMaxVisitsOf(node) is { } onMaxVisits && !string.IsNullOrEmpty(onMaxVisits))
-            {
-                result["onMaxVisits"] = onMaxVisits;
-            }
-        }
-    }
-
-    /// <summary>
-    ///     Surfaces <c>budgetExhausted</c>/<c>onBudgetExhausted</c> when the global step counter has reached
-    ///     the definition's <c>maxStepBudget</c>, so the controller routes to the escape.
-    /// </summary>
-    private void AddBudgetSurfaceNoLock(JsonObject result)
-    {
-        if (Definition is { } definition && Step >= definition.MaxStepBudget)
-        {
-            result["budgetExhausted"] = true;
-            if (!string.IsNullOrEmpty(definition.OnBudgetExhausted))
-            {
-                result["onBudgetExhausted"] = definition.OnBudgetExhausted;
-            }
-        }
-    }
-
     /// <summary>The visit ceiling declared on a node (procedural/conditional), or <c>null</c> when unbounded.</summary>
     private static int? MaxVisitsOf(WorkflowNode? node) =>
         node switch
@@ -1555,36 +848,6 @@ public sealed class WorkflowRuntime
             _ => null,
         };
 
-    private WorkflowTaskStatus StatusOfNoLock(string unitName) =>
-        _status.TryGetValue(unitName, out var status) ? status : WorkflowTaskStatus.Pending;
-
-    private static JsonArray NextActionsToJsonNoLock(IReadOnlyList<SpawnUnit> units)
-    {
-        var array = new JsonArray();
-        foreach (var unit in units)
-        {
-            array.Add(
-                new JsonObject
-                {
-                    ["name"] = unit.Name,
-                    ["subagentType"] = unit.SubagentType,
-                    ["prompt"] = unit.Prompt,
-                    ["outputSchema"] = unit.OutputSchema?.DeepClone(),
-                }
-            );
-        }
-
-        return array;
-    }
-
-    private static bool IncludesChannel(string? projection, string channel) =>
-        projection is not null
-        && (
-            projection.Contains("all", StringComparison.OrdinalIgnoreCase)
-            || projection.Contains("full", StringComparison.OrdinalIgnoreCase)
-            || projection.Contains(channel, StringComparison.OrdinalIgnoreCase)
-        );
-
     private static JsonObject CloneObject(JsonObject? source) =>
         source?.DeepClone() as JsonObject ?? [];
 
@@ -1600,49 +863,4 @@ public sealed class WorkflowRuntime
             ),
         };
 
-    private static string Wire(WorkflowTaskStatus status) =>
-        status switch
-        {
-            WorkflowTaskStatus.Pending => "pending",
-            WorkflowTaskStatus.InFlight => "in_flight",
-            WorkflowTaskStatus.Validated => "validated",
-            WorkflowTaskStatus.Failed => "failed",
-            _ => status.ToString().ToLowerInvariant(),
-        };
-
-    /// <summary>
-    ///     Correlation record for one authored task occurrence: which node/visit/task it belongs to, the
-    ///     optional forEach index (<c>null</c> for a non-forEach unit, the element index for a fan-out unit),
-    ///     the schema/writes the observed result is validated against and applied through, the per-task
-    ///     <see cref="WorkflowTask.OnFailure"/> route, and the validation-retry budget.
-    /// </summary>
-    private sealed record TaskRef
-    {
-        // Lazily-computed caches: Name and the serialized OutputSchema are derived purely from the immutable
-        // init properties, so caching them on first access is behavior-identical while avoiding a fresh
-        // allocation/serialization on every access (Name is read many times per unit; the schema JSON is
-        // re-validated for every forEach element sharing one schema).
-        private string? _name;
-        private string? _outputSchemaJson;
-
-        public required string NodeId { get; init; }
-        public required int Visit { get; init; }
-        public required string TaskId { get; init; }
-        public int? Index { get; init; }
-        public JsonNode? OutputSchema { get; init; }
-        public WriteSpec? Writes { get; init; }
-        public string? OnFailure { get; init; }
-        public int MaxValidationRetries { get; init; }
-
-        /// <summary>The stable unit name, computed once and cached.</summary>
-        public string Name =>
-            _name ??=
-                Index is { } index
-                    ? $"{NodeId}:{Visit}:{TaskId}:{index}"
-                    : $"{NodeId}:{Visit}:{TaskId}";
-
-        /// <summary>The serialized <see cref="OutputSchema"/>, serialized once and cached; <c>null</c> when there is no schema.</summary>
-        public string? OutputSchemaJson =>
-            OutputSchema is null ? null : (_outputSchemaJson ??= OutputSchema.ToJsonString());
-    }
 }
