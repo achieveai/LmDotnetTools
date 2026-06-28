@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 
@@ -57,10 +58,32 @@ public sealed class WorkflowRuntime
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
     private readonly List<string> _unmatched = [];
 
+    // Optional best-effort persistence: when attached, a fresh snapshot is saved after every state-mutating
+    // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
+    private IWorkflowStore? _store;
+    private string? _instanceId;
+
     /// <summary>Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests.</summary>
     public WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null)
     {
         _schemaValidator = schemaValidator ?? new JsonSchemaValidator();
+    }
+
+    /// <summary>
+    ///     Attaches a persistence <paramref name="store"/> and the <paramref name="instanceId"/> to save under.
+    ///     Once attached, every state-mutating method persists a fresh snapshot (best-effort). Idempotent and
+    ///     safe to call before any state exists; it does not itself persist.
+    /// </summary>
+    public void AttachStore(IWorkflowStore store, string instanceId)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentException.ThrowIfNullOrEmpty(instanceId);
+
+        lock (_lock)
+        {
+            _store = store;
+            _instanceId = instanceId;
+        }
     }
 
     /// <summary>The loaded definition, or <c>null</c> before <see cref="LoadDefinition"/>.</summary>
@@ -132,6 +155,7 @@ public sealed class WorkflowRuntime
         ArgumentNullException.ThrowIfNull(def);
         _validator.ValidateAndThrow(def);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
             Definition = def;
@@ -160,7 +184,11 @@ public sealed class WorkflowRuntime
             _attempts.Clear();
             _lastError.Clear();
             _unmatched.Clear();
+
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>Shallow-merges <paramref name="inputs"/> into the inputs channel (caller-supplied seed).</summary>
@@ -254,16 +282,22 @@ public sealed class WorkflowRuntime
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
+            if (_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
+            {
+                ObserveAnswerNoLock(taskRef, resultText, isError);
+            }
+            else
             {
                 _unmatched.Add(toolCallId);
-                return;
             }
 
-            ObserveAnswerNoLock(taskRef, resultText, isError);
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>
@@ -278,29 +312,31 @@ public sealed class WorkflowRuntime
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
             if (!_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef))
             {
                 _unmatched.Add(toolCallId);
-                return;
             }
-
-            if (isError)
+            else if (isError)
             {
                 HandleFailureNoLock(taskRef, $"sub-agent returned an error: {resultText}");
-                return;
             }
-
-            if (TryReadSpawnReceipt(resultText, out var agentId))
+            else if (TryReadSpawnReceipt(resultText, out var agentId))
             {
                 // Background spawn: correlate by the receipt agent_id and wait for the injected result.
                 _tasksByAgentId[agentId] = taskRef;
-                return;
+            }
+            else
+            {
+                ValidateAndRecordNoLock(taskRef, resultText);
             }
 
-            ValidateAndRecordNoLock(taskRef, resultText);
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>
@@ -313,16 +349,22 @@ public sealed class WorkflowRuntime
     {
         ArgumentException.ThrowIfNullOrEmpty(agentId);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
-            if (!_tasksByAgentId.TryGetValue(agentId, out var taskRef))
+            if (_tasksByAgentId.TryGetValue(agentId, out var taskRef))
+            {
+                ObserveAnswerNoLock(taskRef, resultText, isError);
+            }
+            else
             {
                 _unmatched.Add(agentId);
-                return;
             }
 
-            ObserveAnswerNoLock(taskRef, resultText, isError);
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>
@@ -345,6 +387,7 @@ public sealed class WorkflowRuntime
     {
         ArgumentException.ThrowIfNullOrEmpty(nextNodeId);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
             if (Definition is null || CurrentNodeId is null)
@@ -453,13 +496,19 @@ public sealed class WorkflowRuntime
 
                 IsComplete = true;
             }
+
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>Writes <paramref name="value"/> into the state channel at <paramref name="path"/> using the given mode.</summary>
     public void SetState(string path, JsonNode? value, string? mode, string? key)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
             var spec = new WriteSpec
@@ -469,7 +518,11 @@ public sealed class WorkflowRuntime
                 Key = key,
             };
             StateWriter.Apply(State, spec, value);
+
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>Sets a scoped note (<c>notes[scope][key] = value</c>).</summary>
@@ -478,6 +531,7 @@ public sealed class WorkflowRuntime
         ArgumentException.ThrowIfNullOrEmpty(scope);
         ArgumentException.ThrowIfNullOrEmpty(key);
 
+        WorkflowInstanceSnapshot? snapshot;
         lock (_lock)
         {
             if (Notes[scope] is not JsonObject scopeObject)
@@ -487,7 +541,11 @@ public sealed class WorkflowRuntime
             }
 
             scopeObject[key] = JsonValue.Create(value);
+
+            snapshot = CaptureSnapshotNoLock();
         }
+
+        Persist(snapshot);
     }
 
     /// <summary>
@@ -584,6 +642,228 @@ public sealed class WorkflowRuntime
 
     /// <summary>Faults <see cref="Completion"/> with <paramref name="ex"/> (controller run threw).</summary>
     internal void SignalFailure(Exception ex) => _completion.TrySetException(ex);
+
+    /// <summary>
+    ///     Captures a deep-cloned <see cref="WorkflowInstanceSnapshot"/> of all mutable runtime state under
+    ///     the lock. The snapshot is self-contained (definition + channels + bookkeeping + per-task
+    ///     correlation) so <see cref="FromSnapshot"/> can rebuild an equivalent runtime without re-running the
+    ///     definition's ingest mutation of the channels.
+    /// </summary>
+    public WorkflowInstanceSnapshot Snapshot()
+    {
+        lock (_lock)
+        {
+            return BuildSnapshotNoLock(_instanceId ?? string.Empty);
+        }
+    }
+
+    /// <summary>
+    ///     Rebuilds a runtime from <paramref name="snapshot"/> with its state restored verbatim — the
+    ///     definition is set WITHOUT re-running ingest (channels are restored as captured, not re-seeded), and
+    ///     <c>currentNodeId</c>/<c>visits</c>/<c>step</c>/<c>outputs</c>/<c>state</c>/<c>notes</c>/<c>result</c>/
+    ///     <c>isComplete</c> are all restored.
+    /// </summary>
+    /// <remarks>
+    ///     <b>Orphan handling.</b> A task that was <c>in_flight</c> at snapshot time — or <c>pending</c> while
+    ///     still holding a live <c>Agent</c> tool-call / background agent correlation but no recorded output —
+    ///     cannot be resumed, because its sub-agent no longer exists after a restart. Such a task is reset to
+    ///     <c>pending</c> and its tool-call/agent-id correlation is dropped, so the resumed controller
+    ///     re-spawns it. Its attempt budget is preserved so bounded validation retries survive the restart. A
+    ///     <c>validated</c> or terminally <c>failed</c> task keeps its status and recorded output untouched.
+    /// </remarks>
+    public static WorkflowRuntime FromSnapshot(
+        WorkflowInstanceSnapshot snapshot,
+        IJsonSchemaValidator? validator = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        var runtime = new WorkflowRuntime(validator);
+        runtime.RestoreFromSnapshot(snapshot);
+        return runtime;
+    }
+
+    private void RestoreFromSnapshot(WorkflowInstanceSnapshot snapshot)
+    {
+        lock (_lock)
+        {
+            // Restore the definition verbatim (no validator, no channel re-seeding) and the channels as
+            // captured — a deep copy so the runtime never aliases the caller's snapshot nodes.
+            Definition = snapshot.Definition;
+            CurrentNodeId = snapshot.CurrentNodeId;
+            IsComplete = snapshot.IsComplete;
+            Result = snapshot.Result?.DeepClone();
+            Step = snapshot.Step;
+            Inputs = CloneObject(snapshot.Inputs);
+            State = CloneObject(snapshot.State);
+            Outputs = CloneObject(snapshot.Outputs);
+            Notes = CloneObject(snapshot.Notes);
+
+            _visits.Clear();
+            foreach (var (nodeId, count) in snapshot.Visits)
+            {
+                _visits[nodeId] = count;
+            }
+
+            _tasksByName.Clear();
+            _tasksByToolCallId.Clear();
+            _tasksByAgentId.Clear();
+            _status.Clear();
+            _attempts.Clear();
+            _lastError.Clear();
+            _composed.Clear();
+            _unmatched.Clear();
+
+            foreach (var task in snapshot.Tasks)
+            {
+                RestoreTaskNoLock(task);
+            }
+        }
+    }
+
+    /// <summary>Rebuilds one task occurrence's correlation/status from its snapshot, applying orphan reset.</summary>
+    private void RestoreTaskNoLock(WorkflowTaskSnapshot task)
+    {
+        var taskRef = new TaskRef
+        {
+            NodeId = task.NodeId,
+            Visit = task.Visit,
+            TaskId = task.TaskId,
+            Index = task.Index,
+            OutputSchema = task.OutputSchema?.DeepClone(),
+            Writes = task.Writes,
+            OnFailure = task.OnFailure,
+            MaxValidationRetries = task.MaxValidationRetries,
+        };
+        _tasksByName[task.Name] = taskRef;
+
+        // An in-flight unit (or a pending one still holding a live spawn correlation, hence no recorded
+        // output) is an orphan after a restart: reset it to pending and drop its correlation so the
+        // controller re-spawns it. Everything else keeps its status and (for completeness) its correlation.
+        var hasLiveCorrelation = task.ToolCallId is not null || task.AgentId is not null;
+        var isOrphan =
+            task.Status == WorkflowTaskStatus.InFlight
+            || (task.Status == WorkflowTaskStatus.Pending && hasLiveCorrelation);
+
+        if (isOrphan)
+        {
+            _status[task.Name] = WorkflowTaskStatus.Pending;
+        }
+        else
+        {
+            _status[task.Name] = task.Status;
+            if (task.ToolCallId is { } toolCallId)
+            {
+                _tasksByToolCallId[toolCallId] = taskRef;
+            }
+
+            if (task.AgentId is { } agentId)
+            {
+                _tasksByAgentId[agentId] = taskRef;
+            }
+        }
+
+        // Preserve the validation-retry budget and last error across the restart.
+        if (task.Attempts > 0)
+        {
+            _attempts[task.Name] = task.Attempts;
+        }
+
+        if (task.LastError is { } error)
+        {
+            _lastError[task.Name] = error;
+        }
+    }
+
+    /// <summary>Builds a snapshot of the current state. Caller MUST hold <see cref="_lock"/>.</summary>
+    private WorkflowInstanceSnapshot BuildSnapshotNoLock(string instanceId)
+    {
+        // Reverse-index the live spawn correlation so each task carries its own tool-call / agent id.
+        var toolCallByName = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (toolCallId, taskRef) in _tasksByToolCallId)
+        {
+            toolCallByName[taskRef.Name] = toolCallId;
+        }
+
+        var agentByName = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (agentId, taskRef) in _tasksByAgentId)
+        {
+            agentByName[taskRef.Name] = agentId;
+        }
+
+        var tasks = new List<WorkflowTaskSnapshot>(_tasksByName.Count);
+        foreach (var (name, taskRef) in _tasksByName)
+        {
+            tasks.Add(
+                new WorkflowTaskSnapshot
+                {
+                    Name = name,
+                    NodeId = taskRef.NodeId,
+                    Visit = taskRef.Visit,
+                    TaskId = taskRef.TaskId,
+                    Index = taskRef.Index,
+                    OutputSchema = taskRef.OutputSchema?.DeepClone(),
+                    Writes = taskRef.Writes,
+                    OnFailure = taskRef.OnFailure,
+                    MaxValidationRetries = taskRef.MaxValidationRetries,
+                    Status = StatusOfNoLock(name),
+                    Attempts = _attempts.TryGetValue(name, out var attempts) ? attempts : 0,
+                    LastError = _lastError.TryGetValue(name, out var error) ? error : null,
+                    ToolCallId = toolCallByName.TryGetValue(name, out var toolCallId) ? toolCallId : null,
+                    AgentId = agentByName.TryGetValue(name, out var agentId) ? agentId : null,
+                }
+            );
+        }
+
+        return new WorkflowInstanceSnapshot
+        {
+            SchemaVersion = WorkflowInstanceSnapshot.CurrentSchemaVersion,
+            InstanceId = instanceId,
+            Definition = Definition,
+            CurrentNodeId = CurrentNodeId,
+            IsComplete = IsComplete,
+            Result = Result?.DeepClone(),
+            Step = Step,
+            Inputs = CloneObject(Inputs),
+            State = CloneObject(State),
+            Outputs = CloneObject(Outputs),
+            Notes = CloneObject(Notes),
+            Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
+            Tasks = tasks,
+        };
+    }
+
+    /// <summary>Builds a snapshot for persistence, or <c>null</c> when no store is attached. Caller holds the lock.</summary>
+    private WorkflowInstanceSnapshot? CaptureSnapshotNoLock() =>
+        _store is not null && _instanceId is not null ? BuildSnapshotNoLock(_instanceId) : null;
+
+    /// <summary>Fire-and-forget, best-effort persistence of a captured snapshot (no-op when not attached).</summary>
+    private void Persist(WorkflowInstanceSnapshot? snapshot)
+    {
+        if (snapshot is null || _store is null || _instanceId is null)
+        {
+            return;
+        }
+
+        _ = SaveBestEffortAsync(_store, _instanceId, snapshot);
+    }
+
+    private static async Task SaveBestEffortAsync(
+        IWorkflowStore store,
+        string instanceId,
+        WorkflowInstanceSnapshot snapshot
+    )
+    {
+        try
+        {
+            await store.SaveAsync(instanceId, snapshot).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort: a persistence fault must never corrupt or fail the live run. The next mutation
+            // re-attempts with a fresh snapshot.
+        }
+    }
 
     private BindingContext BuildContextNoLock(JsonNode? item, int? index, int? count) =>
         new()

@@ -5,8 +5,10 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 
@@ -33,6 +35,14 @@ public static class WorkflowSession
         + "the final result object to complete the workflow.";
 
     /// <summary>
+    ///     The nudge handed to a resumed controller as the initial user message: its full prior conversation
+    ///     is restored from the conversation store first, so it only needs to re-read the workflow and continue.
+    /// </summary>
+    internal const string ResumeObjective =
+        "Resume the workflow from its persisted state. Call GetWorkflow to read the current node and its "
+        + "ready-to-spawn nextExpectedAction unit(s), then continue driving it to completion.";
+
+    /// <summary>
     ///     Starts a workflow run and returns a handle whose <see cref="WorkflowRunHandle.Completion"/>
     ///     completes when the controller advances into a terminal node (after the observer has recorded all
     ///     preceding sub-agent results).
@@ -43,6 +53,9 @@ public static class WorkflowSession
     /// <param name="subAgentOptions">The sub-agent templates available to the controller.</param>
     /// <param name="controllerAgent">The controller LLM that authors and drives the workflow.</param>
     /// <param name="threadId">The conversation thread id for the controller loop.</param>
+    /// <param name="store">An optional workflow store; when supplied with <paramref name="instanceId"/> the runtime persists a snapshot after every mutation so the run can be resumed.</param>
+    /// <param name="instanceId">The instance id to persist under; required for persistence to be enabled.</param>
+    /// <param name="conversationStore">An optional conversation store; when supplied the controller's history is persisted under <paramref name="threadId"/> (and recoverable on resume).</param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
@@ -51,6 +64,9 @@ public static class WorkflowSession
         SubAgentOptions subAgentOptions,
         IStreamingAgent controllerAgent,
         string threadId,
+        IWorkflowStore? store = null,
+        string? instanceId = null,
+        IConversationStore? conversationStore = null,
         CancellationToken ct = default
     )
     {
@@ -70,23 +86,103 @@ public static class WorkflowSession
             runtime.MergeInputs(inputs);
         }
 
+        // Attach AFTER seeding so the first persisted snapshot (taken at the first controller mutation)
+        // already reflects the loaded definition and merged inputs.
+        if (store is not null && instanceId is not null)
+        {
+            runtime.AttachStore(store, instanceId);
+        }
+
+        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
+        return Task.FromResult(BeginRun(loop, runtime, objective, ct));
+    }
+
+    /// <summary>
+    ///     Resumes a previously-persisted workflow: loads its latest snapshot, rebuilds the runtime with
+    ///     orphaned in-flight tasks reset, restores the controller's conversation history, and continues the
+    ///     run. The returned handle behaves exactly like a freshly started one.
+    /// </summary>
+    /// <param name="instanceId">The instance id whose snapshot is loaded and re-persisted under.</param>
+    /// <param name="store">The workflow store holding the snapshot.</param>
+    /// <param name="subAgentOptions">The sub-agent templates available to the resumed controller.</param>
+    /// <param name="controllerAgent">The controller LLM that continues driving the workflow.</param>
+    /// <param name="threadId">The same conversation thread id the run was started under.</param>
+    /// <param name="conversationStore">The conversation store the controller history was persisted to; when supplied, history is recovered before driving.</param>
+    /// <param name="ct">A cancellation token bound to the run.</param>
+    /// <exception cref="InvalidOperationException">No snapshot exists for <paramref name="instanceId"/>.</exception>
+    public static async Task<WorkflowRunHandle> ResumeAsync(
+        string instanceId,
+        IWorkflowStore store,
+        SubAgentOptions subAgentOptions,
+        IStreamingAgent controllerAgent,
+        string threadId,
+        IConversationStore? conversationStore = null,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrEmpty(instanceId);
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(subAgentOptions);
+        ArgumentNullException.ThrowIfNull(controllerAgent);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+
+        var snapshot =
+            await store.LoadAsync(instanceId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Cannot resume: no persisted workflow snapshot found for instance '{instanceId}'."
+            );
+
+        // Rebuild the runtime (orphaned in-flight tasks reset) and keep persisting under the same id.
+        var runtime = WorkflowRuntime.FromSnapshot(snapshot);
+        runtime.AttachStore(store, instanceId);
+
+        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
+
+        // Restore the controller's prior conversation BEFORE driving so it continues with full context.
+        // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
+        if (conversationStore is not null)
+        {
+            _ = await loop.RecoverAsync(ct).ConfigureAwait(false);
+        }
+
+        return BeginRun(loop, runtime, ResumeObjective, ct);
+    }
+
+    /// <summary>Builds the controller loop over a fresh registry carrying the workflow tools.</summary>
+    private static MultiTurnAgentLoop BuildLoop(
+        IStreamingAgent controllerAgent,
+        WorkflowRuntime runtime,
+        string threadId,
+        SubAgentOptions subAgentOptions,
+        IConversationStore? conversationStore
+    )
+    {
         var registry = new FunctionRegistry();
         _ = registry.AddProvider(new WorkflowToolProvider(runtime));
 
-        var loop = new MultiTurnAgentLoop(
+        return new MultiTurnAgentLoop(
             controllerAgent,
             registry,
             threadId,
             systemPrompt: ControllerSystemPrompt,
+            store: conversationStore,
             subAgentOptions: subAgentOptions
         );
+    }
 
-        // Start the controller loop, then drive + observe it from a single ordered consumer.
+    /// <summary>Starts the loop, drives + observes it from a single ordered consumer, and wraps a handle.</summary>
+    private static WorkflowRunHandle BeginRun(
+        MultiTurnAgentLoop loop,
+        WorkflowRuntime runtime,
+        string initialMessage,
+        CancellationToken ct
+    )
+    {
         _ = loop.RunAsync(ct);
-        var objectiveInput = new UserInput([new TextMessage { Text = objective, Role = Role.User }]);
-        var driveTask = DriveAndObserveAsync(loop, runtime, objectiveInput, ct);
+        var input = new UserInput([new TextMessage { Text = initialMessage, Role = Role.User }]);
+        var driveTask = DriveAndObserveAsync(loop, runtime, input, ct);
 
-        return Task.FromResult(new WorkflowRunHandle(runtime, loop, driveTask));
+        return new WorkflowRunHandle(runtime, loop, driveTask);
     }
 
     /// <summary>
