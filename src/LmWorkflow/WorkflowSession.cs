@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
+using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 
@@ -22,18 +23,6 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow;
 /// </summary>
 public static class WorkflowSession
 {
-    /// <summary>
-    ///     The system prompt that tells the controller how to drive the workflow. The integration test
-    ///     scripts this contract directly; a future phase (P6) will expand it into the production prompt.
-    /// </summary>
-    internal const string ControllerSystemPrompt =
-        "You drive a workflow. First author it with SetWorkflow, then loop: call GetWorkflow to read "
-        + "the current node and its ready-to-spawn nextExpectedAction unit(s). For each surfaced unit, "
-        + "spawn it by calling the Agent tool with subagent_type and prompt taken from the unit, and set "
-        + "the Agent tool's 'name' argument to the unit's name verbatim (this is how results are recorded). "
-        + "After a node's tasks are done, route on with SetCurrentNode; when entering a terminal node pass "
-        + "the final result object to complete the workflow.";
-
     /// <summary>
     ///     The nudge handed to a resumed controller as the initial user message: its full prior conversation
     ///     is restored from the conversation store first, so it only needs to re-read the workflow and continue.
@@ -164,7 +153,7 @@ public static class WorkflowSession
             controllerAgent,
             registry,
             threadId,
-            systemPrompt: ControllerSystemPrompt,
+            systemPrompt: ControllerSystemPrompt.Default,
             store: conversationStore,
             subAgentOptions: subAgentOptions
         );

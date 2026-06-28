@@ -56,7 +56,8 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             [
                 Param(
                     "projection",
-                    "Optional projection selector; mention state/outputs/notes (or all) to include channels.",
+                    "Optional projection selector; mention state/outputs/notes (or all) to include channels, "
+                        + "or prose/text for a human-readable summary instead of JSON.",
                     JsonSchemaObject.String(),
                     required: false
                 ),
@@ -150,8 +151,21 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     {
         using var doc = JsonDocument.Parse(argsJson);
         var projection = OptionalString(doc.RootElement, "projection");
-        return Text(_runtime.GetProjection(projection).ToJsonString());
+        var state = _runtime.GetProjection(projection);
+
+        // A prose/text projection asks for the human-readable rendering; everything else stays JSON.
+        return Text(
+            WantsProse(projection) ? WorkflowProseRenderer.Render(state) : state.ToJsonString()
+        );
     }
+
+    /// <summary>Whether the controller asked for the prose rendering via a <c>prose</c>/<c>text</c> projection.</summary>
+    private static bool WantsProse(string? projection) =>
+        projection is not null
+        && (
+            projection.Contains("prose", StringComparison.OrdinalIgnoreCase)
+            || projection.Contains("text", StringComparison.OrdinalIgnoreCase)
+        );
 
     private Task<ToolHandlerResult> HandleSetCurrentNodeAsync(
         string argsJson,
