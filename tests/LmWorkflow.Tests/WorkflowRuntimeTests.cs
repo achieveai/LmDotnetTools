@@ -180,7 +180,7 @@ public class WorkflowRuntimeTests
         runtime.RegisterSpawn("tc_agent", AnalyzeUnit);
         runtime.ObserveResult("tc_agent", """{ "summary": "v1" }""", isError: false);
 
-        // Fix H1: the getters hand back DEEP COPIES — two reads are not the same instance, and mutating a
+        // The getters hand back DEEP COPIES — two reads are not the same instance, and mutating a
         // returned copy must NOT change runtime state.
         ReferenceEquals(runtime.Outputs, runtime.Outputs).Should().BeFalse();
 
@@ -205,7 +205,7 @@ public class WorkflowRuntimeTests
         var captured = runtime.State;
         runtime.SetState("state.analysis.summary", JsonValue.Create("v2"), "set");
 
-        // Fix H1: the previously-returned copy is STABLE (the in-place mutation cannot race into it),
+        // The previously-returned copy is STABLE (the in-place mutation cannot race into it),
         // while a fresh read observes the update.
         captured["analysis"]!["summary"]!.GetValue<string>().Should().Be("v1");
         runtime.State["analysis"]!["summary"]!.GetValue<string>().Should().Be("v2");
@@ -219,7 +219,7 @@ public class WorkflowRuntimeTests
         runtime.RegisterSpawn("tc_agent", AnalyzeUnit);
         runtime.ObserveResult("tc_agent", """{ "summary": "v1" }""", isError: false);
 
-        // Fix H1: the PUBLIC BuildContext clones the channels, so mutating the returned context's state does
+        // The PUBLIC BuildContext clones the channels, so mutating the returned context's state does
         // not leak back into the runtime.
         var context = runtime.BuildContext();
         context.State["analysis"]!["summary"] = JsonValue.Create("HACKED");

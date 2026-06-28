@@ -46,13 +46,13 @@ public sealed class WorkflowRuntime
 
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
 
-    // O(1) node-id -> node lookup rebuilt whenever Definition changes (Fix: FindNodeNoLock was O(N) and is
-    // called 4-5x per GetProjection/AdvanceTo). Empty when no definition is loaded.
+    // O(1) node-id -> node lookup rebuilt whenever Definition changes; it replaces a linear node-list scan
+    // that ran 4-5x per GetProjection/AdvanceTo. Empty when no definition is loaded.
     private readonly Dictionary<string, WorkflowNode> _nodeIndex = new(StringComparer.Ordinal);
 
     // The live data channels the runtime mutates IN PLACE under _lock. They are exposed only through the
     // public getters below, which hand back a deep copy taken under the lock so a host can never observe a
-    // half-mutated channel or mutate internal state by writing into the returned node (Fix H1).
+    // half-mutated channel or mutate internal state by writing into the returned node.
     private JsonObject _inputs = [];
     private JsonObject _state = [];
     private JsonObject _outputs = [];
@@ -65,10 +65,12 @@ public sealed class WorkflowRuntime
     private string? _instanceId;
 
     // Persistence sequencing is delegated to a collaborator that owns its OWN save-chain lock (independent of
-    // _lock): the runtime captures the snapshot under _lock, releases it, then enqueues the save (Fix M2/M3).
+    // _lock): the runtime captures the snapshot under _lock, releases it, then enqueues the save. The
+    // collaborator serializes saves in capture order and swallows/logs faults, so persistence never blocks or
+    // faults the live run.
     private readonly SnapshotPersister _persister = new();
 
-    // Optional logger so a swallowed best-effort persistence fault is at least visible (Fix M3).
+    // Optional logger so a swallowed best-effort persistence fault is at least visible (surfaced at Warning).
     private readonly ILogger? _logger;
 
     /// <summary>
@@ -123,7 +125,7 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     The validated final result captured when the workflow completed, or <c>null</c>. Returns a deep
-    ///     copy taken under the lock, so a host reading it never aliases live runtime state (Fix H1).
+    ///     copy taken under the lock, so a host reading it never aliases live runtime state.
     /// </summary>
     public JsonNode? Result
     {
@@ -141,7 +143,7 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     The workflow inputs channel (<c>inputs.&lt;...&gt;</c>). Returns a deep copy taken under the lock;
-    ///     mutating the returned object does not change runtime state (Fix H1).
+    ///     mutating the returned object does not change runtime state.
     /// </summary>
     public JsonObject Inputs
     {
@@ -156,7 +158,7 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     The mutable state channel (<c>state.&lt;...&gt;</c>). Returns a deep copy taken under the lock;
-    ///     mutating the returned object does not change runtime state (Fix H1).
+    ///     mutating the returned object does not change runtime state.
     /// </summary>
     public JsonObject State
     {
@@ -171,7 +173,7 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     The per-node task outputs channel (<c>{ nodeId: { taskId: value } }</c>). Returns a deep copy taken
-    ///     under the lock; mutating the returned object does not change runtime state (Fix H1).
+    ///     under the lock; mutating the returned object does not change runtime state.
     /// </summary>
     public JsonObject Outputs
     {
@@ -186,7 +188,7 @@ public sealed class WorkflowRuntime
 
     /// <summary>
     ///     The scoped notes channel (<c>{ scope: { key: value } }</c>). Returns a deep copy taken under the
-    ///     lock; mutating the returned object does not change runtime state (Fix H1).
+    ///     lock; mutating the returned object does not change runtime state.
     /// </summary>
     public JsonObject Notes
     {
@@ -287,7 +289,7 @@ public sealed class WorkflowRuntime
     /// <summary>
     ///     Builds a <see cref="BindingContext"/> over the current channels (plus optional loop locals) for
     ///     template rendering and condition evaluation. The channels are deep-copied under the lock so the
-    ///     returned context never aliases live runtime state (Fix H1).
+    ///     returned context never aliases live runtime state.
     /// </summary>
     internal BindingContext BuildContext(JsonNode? item = null, int? index = null, int? count = null)
     {
@@ -554,7 +556,7 @@ public sealed class WorkflowRuntime
         lock (_lock)
         {
             // WriteSpec.Key is only meaningful for the deferred upsert mode (out of V1 scope); set/append/
-            // merge never read it, so the controller-facing SetState carries no key (Fix: drop dead param).
+            // merge never read it, so the controller-facing SetState carries no key.
             var spec = new WriteSpec { To = path, Mode = ParseWriteMode(mode) };
             StateWriter.Apply(_state, spec, value);
 
@@ -746,7 +748,7 @@ public sealed class WorkflowRuntime
     /// <summary>
     ///     Best-effort persistence of a captured snapshot (no-op when not attached). The captured snapshot is
     ///     handed to the <see cref="SnapshotPersister"/>, which serializes saves on a per-instance chain so a
-    ///     stale save never overwrites a newer one (Fix M2). Called AFTER releasing <see cref="_lock"/>; use
+    ///     stale save never overwrites a newer one. Called AFTER releasing <see cref="_lock"/>; use
     ///     <see cref="DrainPersistAsync"/> to flush pending saves before disposal.
     /// </summary>
     private void Persist(WorkflowInstanceSnapshot? snapshot)
@@ -770,7 +772,7 @@ public sealed class WorkflowRuntime
     ///     Builds a binding context over the live channels. Internal callers use it read-only under the lock
     ///     and may keep aliasing the live channels (<paramref name="clone"/> = <c>false</c>); the public
     ///     <see cref="BuildContext"/> passes <paramref name="clone"/> = <c>true</c> so its returned context is
-    ///     isolated from later runtime mutation (Fix H1).
+    ///     isolated from later runtime mutation.
     /// </summary>
     private BindingContext BuildContextNoLock(
         JsonNode? item,
@@ -786,7 +788,7 @@ public sealed class WorkflowRuntime
             Notes = clone ? CloneObject(_notes) : _notes,
             // Internal (clone:false) callers read the context synchronously under _lock and never let it
             // escape, so the live _visits map can be aliased; the public (clone:true) BuildContext keeps the
-            // defensive copy so its returned context is isolated from later runtime mutation (Fix H1).
+            // defensive copy so its returned context is isolated from later runtime mutation.
             Visits = clone ? new Dictionary<string, int>(_visits, StringComparer.Ordinal) : _visits,
             Step = Step,
             Item = item,

@@ -191,8 +191,8 @@ public static class WorkflowSession
         // propagates an OperationCanceledException while nothing was cancelled (which the async state machine
         // surfaces as a CANCELED task, not a faulted one) — before the drive enumeration observes a run
         // completion, the consumer awaiting Completion would otherwise hang forever. Fault Completion with the
-        // pump's exception so the wait resolves (Fix M4). SignalFailure uses TrySetException (first-wins), so
-        // a normal completion or a cancellation already signalled by the drive is unaffected. NotOnRanToCompletion
+        // pump's exception so the wait resolves. SignalFailure uses TrySetException (first-wins), so a normal
+        // completion or a cancellation already signalled by the drive is unaffected. NotOnRanToCompletion
         // covers both the faulted and canceled antecedent states.
         _ = runTask.ContinueWith(
             t =>
@@ -274,6 +274,10 @@ public static class WorkflowSession
                 runtime.ObserveSpawnResult(resultId, result.Result, result.IsError);
                 break;
 
+            // Injected <sub-agent> completion (EXPERIMENTAL / not observable end-to-end in V1):
+            // MultiTurnAgentLoop does not publish injected sub-agent completions to its subscribers, so this
+            // case does not fire in V1. The supported deterministic path is blocking forEach; this is
+            // forward-built for when injected completions become observable.
             case TextMessage { Role: Role.User, Text: { } text }
                 when text.TrimStart().StartsWith("<sub-agent", StringComparison.Ordinal):
                 if (SubAgentResultParser.TryParse(text, out var agentId, out var payload, out var isError))
@@ -369,8 +373,9 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
     {
         // Dispose the loop FIRST: it stops the controller pump and completes its output channels, which
         // releases the drive enumeration even if the pump faulted WITHOUT publishing a run completion (the
-        // hang Fix M4 guards against). Then observe BOTH background tasks so neither fault goes unobserved —
-        // each is already surfaced via Completion (SignalFailure / SignalCompletion).
+        // hang the pump continuation in BeginRun guards against by faulting Completion). Then observe BOTH
+        // background tasks so neither fault goes unobserved — each is already surfaced via Completion
+        // (SignalFailure / SignalCompletion).
         await Loop.DisposeAsync().ConfigureAwait(false);
 
         try
@@ -391,7 +396,8 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
             // The pump fault is surfaced via Completion (SignalFailure); disposal must not throw.
         }
 
-        // Flush any pending best-effort snapshot saves before the handle goes away (Fix M2/M3).
+        // Flush any pending best-effort snapshot saves (serialized in capture order; faults are swallowed and
+        // logged) before the handle goes away.
         await Runtime.DrainPersistAsync().ConfigureAwait(false);
     }
 }

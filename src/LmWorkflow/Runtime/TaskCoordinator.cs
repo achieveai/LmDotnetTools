@@ -42,6 +42,12 @@ internal sealed class TaskCoordinator
     // agent_id -> the same task ref (populated by ObserveSpawnResult).
     private readonly Dictionary<string, TaskRef> _tasksByName = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskRef> _tasksByToolCallId = new(StringComparer.Ordinal);
+
+    // EXPERIMENTAL / not observable end-to-end in V1. Correlates a background spawn receipt's agent_id to its
+    // task so an injected completion can later be validated. That live background path is NOT observable
+    // end-to-end in V1: MultiTurnAgentLoop does not publish injected sub-agent completions to its subscribers,
+    // so the session never feeds those completions back here. The supported, deterministic path is blocking
+    // forEach; this map is forward-built for when injected completions become observable.
     private readonly Dictionary<string, TaskRef> _tasksByAgentId = new(StringComparer.Ordinal);
 
     // Per-task status and the last composed spawn unit, both keyed by the unit name.
@@ -55,18 +61,11 @@ internal sealed class TaskCoordinator
 
     private readonly List<string> _unmatched = [];
 
-    // The cap on the surfaced "unmatched" diagnostic list: a misbehaving controller emitting an unbounded
-    // stream of uncorrelated ids must not inflate the projection (and the LLM context) without limit. The
-    // most recent entries are kept (Fix: bound the diagnostic list).
+    // The cap on the surfaced "unmatched" diagnostic list. The list is surfaced in every projection (and so
+    // into the LLM context), so a misbehaving controller emitting an unbounded stream of uncorrelated ids
+    // must not be able to grow it without limit; once the cap is reached the oldest entry is dropped and the
+    // most recent ids are kept.
     private const int MaxUnmatchedDiagnostics = 50;
-
-    // The cap on the VARIABLE, potentially-EUII tail embedded in a task failure reason (the raw sub-agent
-    // output or the joined schema-validation errors). A failure reason flows into _lastError, the
-    // {"_error": ...} output marker, the GetWorkflow taskErrors projection AND the persisted
-    // WorkflowTaskSnapshot.LastError, so the raw tail is truncated to bound data-retention / EUII exposure
-    // (and keep the controller context small). The stable prefix is always kept so the controller still has
-    // enough signal to decide retry/route (Fix: bound the failure reason).
-    private const int MaxFailureReasonChars = 300;
 
     /// <summary>Creates a coordinator over the supplied schema validator and runtime-state accessors.</summary>
     public TaskCoordinator(
@@ -188,7 +187,7 @@ internal sealed class TaskCoordinator
         // A unit that has already validated or terminally failed is SETTLED. A controller re-issuing an Agent
         // call for it (e.g. after completion) must not reset its status or re-map the toolCallId, or the
         // eventual ObserveResult would re-run ValidateAndRecord and re-apply its append/merge writes — silently
-        // corrupting state (Fix M1). Only a Pending unit transitions to InFlight; an already-InFlight unit
+        // corrupting state. Only a Pending unit transitions to InFlight; an already-InFlight unit
         // re-correlates as before.
         var status = StatusOf(name);
         if (status is WorkflowTaskStatus.Validated or WorkflowTaskStatus.Failed)
@@ -231,11 +230,16 @@ internal sealed class TaskCoordinator
         }
         else if (isError)
         {
-            HandleFailure(taskRef, $"sub-agent returned an error: {Sanitize(resultText)}");
+            // Stable, non-sensitive reason only: the raw sub-agent text may carry EUII (prompts, names,
+            // emails, document excerpts) and must not land in durable/projected state (see HandleFailure).
+            HandleFailure(taskRef, $"sub-agent reported an error ({resultText.Length} chars)");
         }
         else if (TryReadSpawnReceipt(resultText, out var agentId))
         {
-            // Background spawn: correlate by the receipt agent_id and wait for the injected result.
+            // Background spawn (EXPERIMENTAL / not observable end-to-end in V1): correlate by the receipt
+            // agent_id and wait for the injected result. MultiTurnAgentLoop does not publish injected
+            // sub-agent completions to subscribers, so this branch never drives a completion in V1 — the
+            // supported deterministic path is blocking forEach. Forward-built for when injection is observable.
             _tasksByAgentId[agentId] = taskRef;
         }
         else
@@ -250,6 +254,12 @@ internal sealed class TaskCoordinator
     ///     fails) exactly as the blocking path does. An unknown <paramref name="agentId"/> is surfaced as
     ///     "unmatched" rather than dropped.
     /// </summary>
+    /// <remarks>
+    ///     EXPERIMENTAL / not observable end-to-end in V1: <c>MultiTurnAgentLoop</c> does not publish injected
+    ///     sub-agent completions to its subscribers, so the session never calls this in V1. The supported
+    ///     deterministic path is blocking <c>forEach</c>; this is forward-built for when injected completions
+    ///     become observable.
+    /// </remarks>
     public void ObserveInjectedResult(string agentId, string resultText, bool isError)
     {
         if (_tasksByAgentId.TryGetValue(agentId, out var taskRef))
@@ -454,7 +464,8 @@ internal sealed class TaskCoordinator
     {
         if (isError)
         {
-            HandleFailure(taskRef, $"sub-agent returned an error: {Sanitize(resultText)}");
+            // Stable, non-sensitive reason only (see HandleFailure); the raw sub-agent text is not embedded.
+            HandleFailure(taskRef, $"sub-agent reported an error ({resultText.Length} chars)");
             return;
         }
 
@@ -473,9 +484,10 @@ internal sealed class TaskCoordinator
         {
             parsed = JsonNode.Parse(resultText);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            HandleFailure(taskRef, $"task output is not valid JSON: {Sanitize(ex.Message)}");
+            // The parser message can echo the payload, so only the payload length is recorded.
+            HandleFailure(taskRef, $"task output was not valid JSON ({resultText.Length} chars)");
             return;
         }
 
@@ -490,8 +502,11 @@ internal sealed class TaskCoordinator
             var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
             if (!validation.IsValid)
             {
-                var errors = string.Join("; ", validation.Errors);
-                HandleFailure(taskRef, "task output failed schema validation: " + Sanitize(errors));
+                // Only the error COUNT is recorded; the joined error strings can echo submitted values.
+                HandleFailure(
+                    taskRef,
+                    $"task output did not match the required schema ({validation.Errors.Count} validation error(s))"
+                );
                 return;
             }
         }
@@ -502,7 +517,7 @@ internal sealed class TaskCoordinator
             // A validated output can still be un-writable (e.g. a merge whose value is not an object). Route
             // that through the failure policy instead of letting it propagate out of the observe path and
             // fault the ENTIRE workflow, mirroring the JSON-parse handling above and the SetState handler's
-            // catch (Fix: guard the task-output state write).
+            // catch.
             try
             {
                 StateWriter.Apply(_liveState(), writes, parsed);
@@ -510,9 +525,11 @@ internal sealed class TaskCoordinator
             catch (Exception ex)
                 when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
             {
+                // Only the structural exception TYPE name is recorded; ex.Message can echo the submitted
+                // value and must not land in durable/projected state (see HandleFailure).
                 HandleFailure(
                     taskRef,
-                    $"task output could not be written to state: {Sanitize(ex.Message)}"
+                    $"task output could not be written to state ({ex.GetType().Name})"
                 );
                 return;
             }
@@ -523,23 +540,23 @@ internal sealed class TaskCoordinator
     }
 
     /// <summary>
-    ///     Truncates the variable, potentially-EUII tail of a failure reason (the raw sub-agent output or the
-    ///     joined schema-validation errors) to <see cref="MaxFailureReasonChars"/> characters. Failure reasons
-    ///     are persisted and surfaced (see <see cref="HandleFailure"/>), so capping the raw tail bounds the
-    ///     data-retention / EUII exposure while keeping a short, useful prefix for the controller.
-    /// </summary>
-    private static string Sanitize(string raw) =>
-        raw.Length <= MaxFailureReasonChars ? raw : raw[..MaxFailureReasonChars] + "…[truncated]";
-
-    /// <summary>
     ///     Applies the "controller re-spawns; runtime bounds the attempts" retry policy. The attempt counter
     ///     for the unit is incremented; while it stays within <see cref="WorkflowTask.MaxValidationRetries"/>
     ///     the unit is marked <c>pending</c> again (so it re-surfaces in <c>nextExpectedAction</c>), its error
     ///     surfaced, and its spawn correlation cleared so the next spawn re-correlates. Once the budget is
     ///     exhausted the unit is terminally failed and an <c>{ "_error": ... }</c> marker recorded into outputs.
-    ///     The <paramref name="error"/> reason is already truncated by <see cref="Sanitize"/> at every call
-    ///     site that embeds raw text, bounding what is persisted/surfaced.
     /// </summary>
+    /// <remarks>
+    ///     The <paramref name="error"/> reason composed at every call site is a STABLE, non-sensitive message
+    ///     plus safe metadata (a length or a count) only — never the raw sub-agent payload, the parser /
+    ///     exception message, or the joined validation errors. Those externally-sourced strings commonly carry
+    ///     EUII (prompts, names, emails, document excerpts) at their START, so truncating them would not
+    ///     de-identify what is kept. The reason flows into <see cref="_lastError"/>, the
+    ///     <c>{ "_error": ... }</c> output marker, the <c>taskErrors</c> projection AND the persisted
+    ///     <see cref="WorkflowTaskSnapshot.LastError"/>, so it must stay clean. The controller loses no real
+    ///     signal by this: it already observes the raw sub-agent result in its own conversation context (the
+    ///     <c>Agent</c> tool result), so the raw payload would be redundant here.
+    /// </remarks>
     private void HandleFailure(TaskRef taskRef, string error)
     {
         var attempts = (_attempts.TryGetValue(taskRef.Name, out var prior) ? prior : 0) + 1;

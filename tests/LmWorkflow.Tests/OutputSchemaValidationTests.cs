@@ -55,7 +55,10 @@ public class OutputSchemaValidationTests
 
         var projection = runtime.GetProjection(null);
         projection["tasks"]![Unit]!.GetValue<string>().Should().Be("pending");
-        projection["taskErrors"]![Unit]!.GetValue<string>().Should().Contain("schema validation");
+        projection["taskErrors"]![Unit]!
+            .GetValue<string>()
+            .Should()
+            .Contain("did not match the required schema");
         ReSurfaced(runtime, Unit).Should().BeTrue();
 
         // No terminal error marker is recorded while the unit is still retryable.
@@ -97,27 +100,26 @@ public class OutputSchemaValidationTests
     }
 
     /// <summary>
-    ///     A raw sub-agent payload far longer than the 300-char cap is truncated before it reaches any of the
-    ///     three sinks a failure reason flows into — the <c>taskErrors</c> projection, the <c>_error</c> output
-    ///     marker, and the persisted <see cref="Persistence.WorkflowTaskSnapshot.LastError"/> — so unbounded,
-    ///     potentially-EUII content is neither surfaced to the controller nor persisted.
+    ///     A sub-agent error failure reason is a STABLE, non-sensitive message plus safe metadata (the payload
+    ///     length) only — never the raw payload — across all three sinks it flows into: the <c>taskErrors</c>
+    ///     projection, the <c>_error</c> output marker, and the persisted
+    ///     <see cref="Persistence.WorkflowTaskSnapshot.LastError"/>. Sensitive content (EUII) commonly appears
+    ///     at the START of the payload, so truncation would not de-identify it; the raw text is dropped entirely.
     /// </summary>
     [Fact]
-    public void LongFailureReason_IsTruncated_AcrossProjectionOutputAndSnapshot()
+    public void FailureReason_IsStableMessageWithoutRawPayload_AcrossProjectionOutputAndSnapshot()
     {
         var runtime = RuntimeAtAnalyze(maxValidationRetries: 0);
         runtime.RegisterSpawn("tc1", Unit);
 
-        // The raw payload ends in a sentinel that sits past the 300-char cap; it stands in for EUII (prompts,
-        // document excerpts, names, emails) that must be dropped rather than persisted/surfaced verbatim.
-        const string sentinel = "EUII_TAIL_must_be_dropped";
-        var rawPayload = new string('x', 600) + sentinel;
+        // EUII sits at the very START of the payload (an email, standing in for prompts, names, document
+        // excerpts), so a leading-prefix truncation would have leaked it. It must be dropped entirely.
+        const string sentinel = "EUII_SECRET_user@example.com";
+        var rawPayload = sentinel + new string('x', 600);
 
         runtime.ObserveResult("tc1", rawPayload, isError: true);
 
-        const string prefix = "sub-agent returned an error: ";
-        const string marker = "…[truncated]";
-        var expectedLength = prefix.Length + 300 + marker.Length;
+        var expected = $"sub-agent reported an error ({rawPayload.Length} chars)";
 
         var projected = runtime.GetProjection(null)["taskErrors"]![Unit]!.GetValue<string>();
         var outputMarker = runtime.Outputs["analyze"]!["task"]!["_error"]!.GetValue<string>();
@@ -125,12 +127,9 @@ public class OutputSchemaValidationTests
 
         foreach (var reason in new[] { projected, outputMarker, persisted })
         {
-            // The stable prefix is kept (so the controller can decide retry/route), the raw EUII tail beyond
-            // the cap is dropped, and the bounded reason is marked truncated.
-            reason.Should().StartWith(prefix);
-            reason.Should().EndWith(marker);
+            // The stable message with safe length metadata is recorded; the raw EUII payload is never present.
+            reason.Should().Be(expected);
             reason.Should().NotContain(sentinel);
-            reason.Length.Should().Be(expectedLength);
         }
     }
 }

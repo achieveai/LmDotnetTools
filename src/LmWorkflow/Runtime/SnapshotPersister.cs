@@ -6,8 +6,8 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 /// <summary>
 ///     Sequences best-effort snapshot saves for a single workflow instance. Saves are SERIALIZED on a
 ///     per-instance chain so they apply in capture order — save N completes before save N+1 starts — which
-///     prevents a slow, stale save from overwriting a newer snapshot (Fix M2). A persistence fault never
-///     faults the chain or the live run; it is surfaced at Warning (Fix M3) and the next save re-attempts.
+///     prevents a slow, stale save from overwriting a newer snapshot. A persistence fault never faults the
+///     chain or the live run; it is surfaced at Warning and the next save re-attempts.
 /// </summary>
 /// <remarks>
 ///     This collaborator owns its OWN <c>_saveLock</c>, independent of the runtime's state lock: the runtime
@@ -75,7 +75,7 @@ internal sealed class SnapshotPersister
         catch (Exception ex)
         {
             // Best-effort: a persistence fault must never corrupt or fail the live run. Surface it at Warning
-            // (Fix M3) so a store outage is visible; the next mutation re-attempts with a fresh snapshot.
+            // so a store outage is visible; the next mutation re-attempts with a fresh snapshot.
             logger?.LogWarning(ex, "Workflow {InstanceId} snapshot persistence failed", instanceId);
         }
     }

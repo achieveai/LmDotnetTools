@@ -9,7 +9,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     Proves the run-observation hardening (Fix M4): when the controller pump faults early — before the
+///     Proves the run-observation hardening: when the controller pump faults early — before the
 ///     drive enumeration observes a run completion — the run handle's <see cref="WorkflowRunHandle.Completion"/>
 ///     FAULTS instead of hanging forever, and disposal still completes promptly.
 /// </summary>

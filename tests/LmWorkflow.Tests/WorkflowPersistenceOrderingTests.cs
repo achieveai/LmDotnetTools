@@ -8,7 +8,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     Proves the persistence hardening (Fix M2/M3): snapshot saves are SERIALIZED per instance so they
+///     Proves the persistence hardening: snapshot saves are SERIALIZED per instance so they
 ///     apply in capture order (a slow, stale save can never overtake a newer one), a store outage is
 ///     swallowed-but-logged so the run continues, and <see cref="WorkflowRuntime.DrainPersistAsync"/> flushes
 ///     every pending save.

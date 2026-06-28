@@ -159,9 +159,9 @@ internal static class WorkflowProjectionBuilder
         // An all-join is satisfied once every COMPOSED unit validated — including the vacuous total == 0
         // case: a node whose working set is empty (a forEach over an empty array, or a procedural node whose
         // TaskList yields no spawnable units) has nothing to spawn and is therefore vacuously satisfied, so
-        // the controller can route on instead of livelocking until the budget rail trips (Fix M5). This is
-        // only ever evaluated AFTER compose has run for the node — the runtime composes before rendering — so
-        // a not-yet-composed node is never falsely reported satisfied.
+        // the controller can route on instead of livelocking until the budget rail trips. This is only ever
+        // evaluated AFTER compose has run for the node — the runtime composes before rendering — so a
+        // not-yet-composed node is never falsely reported satisfied.
         var satisfied = mode == JoinMode.Any ? validated >= 1 : validated == total;
 
         return new JsonObject

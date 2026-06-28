@@ -77,7 +77,7 @@ public class JoinSurfacingTests
 
         var projection = runtime.GetProjection(null);
 
-        // Fix M5: a node whose forEach is empty has nothing to spawn, so the all-join is VACUOUSLY satisfied
+        // A node whose forEach is empty has nothing to spawn, so the all-join is VACUOUSLY satisfied
         // (validated == total == 0) and the controller can route on — instead of livelocking until the
         // budget rail trips. The satisfied flag is only computed after GetProjection has composed the node.
         var join = projection["join"]!;

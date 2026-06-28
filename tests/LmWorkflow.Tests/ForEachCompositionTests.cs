@@ -102,8 +102,8 @@ public class ForEachCompositionTests
         runtime.State["results"]!.AsArray().Should().HaveCount(1);
         runtime.Outputs["fan"]!["task"]![0]!["text"]!.GetValue<string>().Should().Be("first");
 
-        // Fix M1: re-issuing an Agent call for the already-validated unit must NOT reset its status, re-map
-        // the toolCallId, or re-run validation — otherwise the append write would be applied a second time
+        // Re-issuing an Agent call for the already-validated unit must NOT reset its status, re-map the
+        // toolCallId, or re-run validation — otherwise the append write would be applied a second time
         // (silent state corruption). The second result is therefore surfaced as unmatched and changes nothing.
         runtime.RegisterSpawn("tc_0_again", "fan:1:task:0");
         runtime.ObserveResult("tc_0_again", """{ "text": "second" }""", isError: false);
