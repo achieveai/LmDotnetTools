@@ -90,6 +90,48 @@ public sealed class OpenAiResponsesAgentRunIdTests
             },
         ];
 
+    /// <summary>A function call surfaced ONLY via the terminal output_item.done fallback (no
+    /// function_call_arguments.done) — the path used by backends that rotate the per-event item_id.</summary>
+    private static ResponseEvent[] ToolCallViaOutputItemDoneOnly() =>
+        [
+            new ResponseLifecycleEvent
+            {
+                Type = ResponseEventTypes.ResponseCreated,
+                Response = El("{\"id\":\"resp_OPAQUE\"}"),
+            },
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemAdded,
+                OutputIndex = 0,
+                Item = El("{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call_1\",\"name\":\"add\"}"),
+            },
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemDone,
+                OutputIndex = 0,
+                Item = El(
+                    "{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call_1\",\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1}\"}"
+                ),
+            },
+        ];
+
+    /// <summary>A reasoning part surfaced via the output_item.done "reasoning" branch (summary array),
+    /// a distinct code path from the reasoning_summary_text delta/done events.</summary>
+    private static ResponseEvent[] ReasoningViaOutputItemDone() =>
+        [
+            new ResponseLifecycleEvent
+            {
+                Type = ResponseEventTypes.ResponseCreated,
+                Response = El("{\"id\":\"resp_OPAQUE\"}"),
+            },
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemDone,
+                OutputIndex = 0,
+                Item = El("{\"type\":\"reasoning\",\"summary\":[{\"text\":\"deep thought\"}]}"),
+            },
+        ];
+
     [Fact]
     public async Task Every_emitted_message_carries_the_runs_run_id()
     {
@@ -124,6 +166,80 @@ public sealed class OpenAiResponsesAgentRunIdTests
                 "every Responses-path message emitted during a run must carry the run's RunId "
                     + "(parity with OpenAgent/AnthropicAgent .WithIds(options))"
             );
+        messages
+            .Should()
+            .OnlyContain(m => m.ThreadId == threadId, "WithIds stamps ThreadId on every emitted type");
+        messages
+            .Where(m => m is not UsageMessage)
+            .Should()
+            .OnlyContain(
+                m => m.ParentRunId == parentRunId,
+                "WithIds stamps ParentRunId on every emitted type except UsageMessage (which carries none)"
+            );
+    }
+
+    [Fact]
+    public async Task Tool_call_via_output_item_done_fallback_carries_run_ids()
+    {
+        const string runId = "run-123";
+        const string parentRunId = "parent-456";
+        const string threadId = "thread-789";
+        const string runGenerationId = "run-gen-ABC";
+
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(ToolCallViaOutputItemDoneOnly()));
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "go" }],
+            new GenerateReplyOptions
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = runGenerationId,
+            }
+        );
+
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        var toolCall = messages.OfType<ToolsCallMessage>().Single();
+        toolCall.RunId.Should().Be(runId);
+        toolCall.ParentRunId.Should().Be(parentRunId);
+        toolCall.ThreadId.Should().Be(threadId);
+    }
+
+    [Fact]
+    public async Task Reasoning_via_output_item_done_carries_run_ids()
+    {
+        const string runId = "run-123";
+        const string parentRunId = "parent-456";
+        const string threadId = "thread-789";
+        const string runGenerationId = "run-gen-ABC";
+
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(ReasoningViaOutputItemDone()));
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "go" }],
+            new GenerateReplyOptions
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = runGenerationId,
+            }
+        );
+
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        var reasoning = messages.OfType<ReasoningMessage>().Single();
+        reasoning.RunId.Should().Be(runId);
+        reasoning.ParentRunId.Should().Be(parentRunId);
+        reasoning.ThreadId.Should().Be(threadId);
     }
 
     [Fact]
