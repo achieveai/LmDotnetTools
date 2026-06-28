@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -82,6 +83,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Track the number of completed tool calls for ToolCallIdx assignment
         var completedToolCallCount = 0;
 
+        // Ids of query-less server (provider-executed) tool calls — e.g. a web_search the model
+        // emitted with empty {} input — that the joiner skipped building. Their now-orphaned empty
+        // results (which arrive as standalone messages) are dropped too, so neither half is persisted
+        // or replayed (the "empty web_search loop").
+        var skippedServerToolCallIds = new HashSet<string>(StringComparer.Ordinal);
+
         // Use the usage accumulator to track usage data
         var usageAccumulator = new UsageAccumulator();
 
@@ -144,10 +151,13 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                     }
 
                     // Complete the previous builder before processing the new message
-                    var builtMessage = activeBuilder.Build();
+                    var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
                     activeBuilder = null;
                     activeBuilderType = null;
-                    yield return builtMessage;
+                    if (builtMessage != null)
+                    {
+                        yield return builtMessage;
+                    }
                 }
             }
 
@@ -167,10 +177,13 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 {
                     // Complete the previous tool call before starting the new one
                     completedToolCallCount++;
-                    var builtMessage = activeBuilder.Build();
+                    var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
                     activeBuilder = null;
                     activeBuilderType = null;
-                    yield return builtMessage;
+                    if (builtMessage != null)
+                    {
+                        yield return builtMessage;
+                    }
                 }
             }
 
@@ -198,6 +211,17 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 
             if (!isBeingAccumulated)
             {
+                // Drop the empty server-tool RESULT whose query-less call the joiner just skipped.
+                // Without its matching call it is an orphan tool_result the provider rejects on replay,
+                // and keeping it would defeat the point of not recording the empty search at all.
+                if (processedMessage is ToolCallResultMessage serverResult
+                    && serverResult.ExecutionTarget == ExecutionTarget.ProviderServer
+                    && !string.IsNullOrEmpty(serverResult.ToolCallId)
+                    && skippedServerToolCallIds.Contains(serverResult.ToolCallId))
+                {
+                    continue;
+                }
+
                 yield return processedMessage;
             }
         }
@@ -205,7 +229,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Process final built message at the end of the stream
         if (activeBuilder != null)
         {
-            yield return activeBuilder.Build();
+            var builtMessage = BuildJoinedOrSkip(activeBuilder, skippedServerToolCallIds, logger);
+            if (builtMessage != null)
+            {
+                yield return builtMessage;
+            }
         }
 
         // Emit accumulated usage message at the end if we have one
@@ -249,6 +277,78 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         return message is ReasoningUpdateMessage reasoningUpdate
             ? ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType)
             : message;
+    }
+
+    /// <summary>
+    ///     Builds the active builder's message, but returns <c>null</c> (skipping it) when the result
+    ///     is a query-less server (provider-executed) tool call — e.g. a web_search the model emitted
+    ///     with empty <c>{}</c> input. The provider answers such a call with empty results, and
+    ///     recording/replaying the degenerate call teaches the model to repeat it every turn until
+    ///     "Max turns reached" (the "empty web_search loop"). Not creating the message keeps the empty
+    ///     search out of joined history (and therefore out of the next request) entirely. The skipped
+    ///     call id is recorded so its orphaned empty result can be dropped too. Real, query-bearing
+    ///     searches build normally.
+    /// </summary>
+    private static IMessage? BuildJoinedOrSkip(
+        IMessageBuilder builder,
+        HashSet<string> skippedServerToolCallIds,
+        ILogger logger
+    )
+    {
+        var built = builder.Build();
+        if (built is ToolCallMessage toolCall && IsQuerylessServerToolCall(toolCall))
+        {
+            if (!string.IsNullOrEmpty(toolCall.ToolCallId))
+            {
+                _ = skippedServerToolCallIds.Add(toolCall.ToolCallId);
+            }
+
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    "Joiner skipped query-less server tool call {FunctionName} (id {ToolCallId}); not creating a history message for an empty server-tool call",
+                    toolCall.FunctionName,
+                    toolCall.ToolCallId
+                );
+            }
+
+            return null;
+        }
+
+        return built;
+    }
+
+    /// <summary>
+    ///     True for a provider-executed (server-side) tool call whose arguments are empty — null,
+    ///     blank, or an empty object (<c>{}</c>). Mirrors the request-side guard
+    ///     (<c>AnthropicRequest.IsQuerylessServerToolUse</c>) but at the joiner, so the empty call is
+    ///     never recorded in the first place. Conservative: any arguments object with at least one
+    ///     property (a real query) is left intact, and unparseable arguments are kept rather than risk
+    ///     dropping signal.
+    /// </summary>
+    private static bool IsQuerylessServerToolCall(ToolCallMessage toolCall)
+    {
+        if (toolCall.ExecutionTarget != ExecutionTarget.ProviderServer)
+        {
+            return false;
+        }
+
+        var args = toolCall.FunctionArgs;
+        if (string.IsNullOrWhiteSpace(args))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(args);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && !doc.RootElement.EnumerateObject().MoveNext();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static IMessage ProcessToolCallUpdate(
