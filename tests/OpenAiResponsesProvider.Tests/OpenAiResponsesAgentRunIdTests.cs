@@ -132,6 +132,25 @@ public sealed class OpenAiResponsesAgentRunIdTests
             },
         ];
 
+    /// <summary>Text deltas with NO finalizing output_text.done — a truncated/aborted stream. The
+    /// non-streaming <c>GenerateReplyAsync</c> then synthesizes a leftover <c>TextMessage</c> at its
+    /// OWN fix site (distinct from the streaming <c>StampRunIds</c> wrapper), which must still stamp
+    /// the run ids.</summary>
+    private static ResponseEvent[] TextDeltasOnlyStream() =>
+        [
+            new ResponseLifecycleEvent
+            {
+                Type = ResponseEventTypes.ResponseCreated,
+                Response = El("{\"id\":\"resp_OPAQUE\"}"),
+            },
+            new ResponseOutputTextDeltaEvent
+            {
+                Type = ResponseEventTypes.OutputTextDelta,
+                OutputIndex = 0,
+                Delta = "Hello",
+            },
+        ];
+
     [Fact]
     public async Task Every_emitted_message_carries_the_runs_run_id()
     {
@@ -176,6 +195,14 @@ public sealed class OpenAiResponsesAgentRunIdTests
                 m => m.ParentRunId == parentRunId,
                 "WithIds stamps ParentRunId on every emitted type except UsageMessage (which carries none)"
             );
+
+        // BUG H1: the run's GenerationId must be preserved on the finalized tool call (folded in from
+        // a former near-duplicate test, asserted against the same MixedStream run).
+        messages
+            .OfType<ToolsCallMessage>()
+            .Single()
+            .GenerationId.Should()
+            .Be(runGenerationId, "the BUG H1 GenerationId behavior must be preserved");
     }
 
     [Fact]
@@ -243,36 +270,32 @@ public sealed class OpenAiResponsesAgentRunIdTests
     }
 
     [Fact]
-    public async Task Tool_call_carries_full_run_thread_and_parent_ids()
+    public async Task GenerateReplyAsync_leftover_text_carries_run_ids()
     {
+        // The non-streaming path has its OWN fix site: when the stream emits text deltas but no
+        // finalizing output_text.done (truncated/aborted), GenerateReplyAsync synthesizes the leftover
+        // TextMessage itself and stamps it directly with .WithIds(options) — separate from the
+        // streaming StampRunIds wrapper the other tests exercise. This pins that path against the
+        // null-RunId identity bug it is most prone to.
         const string runId = "run-123";
         const string parentRunId = "parent-456";
         const string threadId = "thread-789";
-        const string runGenerationId = "run-gen-ABC";
 
-        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(MixedStream()));
-        var stream = await agent.GenerateReplyStreamingAsync(
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(TextDeltasOnlyStream()));
+        var result = await agent.GenerateReplyAsync(
             [new TextMessage { Role = Role.User, Text = "go" }],
             new GenerateReplyOptions
             {
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                GenerationId = runGenerationId,
             }
         );
 
-        var messages = new List<IMessage>();
-        await foreach (var message in stream)
-        {
-            messages.Add(message);
-        }
-
-        var toolCall = messages.OfType<ToolsCallMessage>().Single();
-        toolCall.RunId.Should().Be(runId);
-        toolCall.ParentRunId.Should().Be(parentRunId);
-        toolCall.ThreadId.Should().Be(threadId);
-        toolCall.GenerationId.Should().Be(runGenerationId, "the BUG H1 GenerationId behavior must be preserved");
+        var text = result.OfType<TextMessage>().Single();
+        text.RunId.Should().Be(runId);
+        text.ParentRunId.Should().Be(parentRunId);
+        text.ThreadId.Should().Be(threadId);
     }
 
     [Fact]

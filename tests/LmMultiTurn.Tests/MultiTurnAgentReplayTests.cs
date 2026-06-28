@@ -17,8 +17,24 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public sealed class MultiTurnAgentReplayTests
 {
-    private sealed class ReplayTestAgent(string threadId) : MultiTurnAgentBase(threadId, systemPrompt: null, store: null, logger: null)
+    private sealed class ReplayTestAgent : MultiTurnAgentBase
     {
+        public ReplayTestAgent(
+            string threadId,
+            int outputChannelCapacity = 1000,
+            int maxReplayBufferSize = 10_000,
+            long maxReplayBufferBytes = 8L * 1024 * 1024)
+            : base(
+                threadId,
+                systemPrompt: null,
+                store: null,
+                logger: null,
+                outputChannelCapacity: outputChannelCapacity,
+                maxReplayBufferSize: maxReplayBufferSize,
+                maxReplayBufferBytes: maxReplayBufferBytes)
+        {
+        }
+
         // The loop is driven manually in these tests via PublishForTest; never started.
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
@@ -266,5 +282,94 @@ public sealed class MultiTurnAgentReplayTests
             .BeOfType<TextUpdateMessage>()
             .Which.Text.Should()
             .Be("SENTINEL", "the in-flight replay buffer is bounded at the cap, so the overflow delta was dropped");
+    }
+
+    [Fact]
+    public async Task A_stalled_subscriber_neither_blocks_the_publisher_nor_starves_other_subscribers()
+    {
+        // Regression for the publisher hot-path BLOCKER: a slow/stalled subscriber whose bounded
+        // output channel fills must NOT backpressure the live run (or other subscribers). Before the
+        // fix, the publisher awaited each subscriber's WriteAsync via Task.WhenAll, so one full channel
+        // hung PublishToAllAsync indefinitely; now a full subscriber is dropped instead.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 4);
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        const int burst = 50; // >> the slow subscriber's capacity, so its channel overflows
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        // Fast subscriber B and slow subscriber A are both registered before the run starts.
+        var bEnum = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var bFirst = bEnum.MoveNextAsync();
+        var aEnum = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var aFirst = aEnum.MoveNextAsync(); // A consumes only the assignment below, then never drains.
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        (await aFirst).Should().BeTrue("A receives the assignment, then stops draining (its channel fills)");
+        (await bFirst).Should().BeTrue();
+        bEnum.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        // Publish a burst far exceeding A's capacity, draining B one message per publish so B never
+        // backs up. Each publish must return PROMPTLY: before the fix, the (capacity+1)th write to the
+        // stalled A would await forever inside Task.WhenAll, so the per-publish timeout would fire.
+        for (var i = 0; i < burst; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()))
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(3), cts.Token);
+
+            (await bEnum.MoveNextAsync()).Should().BeTrue("the fast subscriber keeps receiving while A is stalled");
+            bEnum.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be(i.ToString());
+        }
+
+        await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" })
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(3), cts.Token);
+
+        // B (which kept pace) received every delta in order plus RunCompleted, even though A stalled
+        // on the same publisher and was dropped.
+        (await bEnum.MoveNextAsync()).Should().BeTrue();
+        bEnum.Current.Should().BeOfType<RunCompletedMessage>();
+
+        await aEnum.DisposeAsync();
+        await bEnum.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Replay_buffer_is_capped_by_estimated_bytes_not_just_count()
+    {
+        // Generous count cap, tiny byte budget: prove the BYTE cap stops buffering before the count
+        // cap would. EstimateMessageBytes ≈ 128 + text.Length*2, so a 200-char delta ≈ 528 bytes:
+        // assignment (≈128) + two deltas (≈528 each = 1184) crosses the 1000-byte budget, so only the
+        // assignment + first two deltas are retained; the third and all later deltas are dropped.
+        await using var agent = new ReplayTestAgent(
+            "thread-1",
+            maxReplayBufferSize: 1_000_000,
+            maxReplayBufferBytes: 1_000);
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        var big = new string('x', 200);
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        for (var i = 0; i < 20; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, big));
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // Exactly three messages were buffered before the byte budget tripped.
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>();
+
+        // Prove the buffer held EXACTLY those three: the next message must be a sentinel published live
+        // AFTER subscribing, not the byte-capped (dropped) third delta.
+        await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("SENTINEL");
     }
 }
