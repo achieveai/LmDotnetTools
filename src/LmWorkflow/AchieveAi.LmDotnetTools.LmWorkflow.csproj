@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmWorkflow</PackageId>
+    <Description>LLM-authored, LLM-driven workflow orchestration over sub-agents: an LLM authors a typed, cyclic workflow and drives it via a controller loop built on MultiTurnAgentLoop.</Description>
+    <PackageTags>$(PackageTags);workflow;orchestration;agentic;sub-agents</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LmWorkflow.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+  </ItemGroup>
+</Project>
