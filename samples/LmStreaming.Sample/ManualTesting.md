@@ -21,9 +21,24 @@ Provider modes:
 |------|-------------|--------------|
 | `test` | Mock OpenAI SSE streaming | None |
 | `test-anthropic` | Mock Anthropic SSE with server tools | web_search |
-| `openai` | Real OpenAI API (gpt-4o) | None |
+| `openai` | Real OpenAI API (gpt-4o) | None native; Jina `WebFetch`/`WebSearch` fallback |
 | `anthropic` | Real Anthropic API (claude-sonnet) | web_search |
 | `codex` | OpenAI Codex SDK (multi-turn via Node bridge) | MCP `sample_tools` (calculate, get_weather) |
+
+### Fallback web tools (Jina-backed `WebFetch` / `WebSearch`)
+
+Providers **without** a native web capability receive the Jina-backed function tools `WebFetch`
+(read a page as Markdown) and `WebSearch` (ranked results as Markdown) as a fallback. Only the
+no-native providers get them: `openai`, `sonnet`, `haiku`, `gpt-5.5`, `gpt-5.5-mini` (the last four
+are Copilot-routed provider ids). Providers with native web — `anthropic`/`test-anthropic`
+(`web_search`), the Claude/Codex CLIs, plain `copilot`, and the `*-mock`/`test` providers — do
+**not** get them, so a conversation never has both native web and the Jina fallback. `WebSearch` is
+only registered when `JINA_API_KEY` is set; `WebFetch` works without a key. Both are also gated by
+the mode's enabled-tools list (see below).
+
+> **Privacy note:** the fallback tools send the requested URL (`WebFetch`) or query (`WebSearch`) to
+> Jina's hosted endpoints (`r.jina.ai` / `s.jina.ai`) to fetch and convert content. Do not use them
+> for sensitive URLs/queries you would not share with that third party.
 
 Chat modes (switch via dropdown, top-right):
 | Mode | Enabled Tools |
@@ -31,7 +46,7 @@ Chat modes (switch via dropdown, top-right):
 | General Assistant | all (calculate, get_weather, web_search) |
 | Math Helper | calculate only |
 | Weather Assistant | get_weather only |
-| Research Assistant | calculate, get_weather, web_search |
+| Research Assistant | calculate, get_weather, web_search, WebFetch, WebSearch |
 
 Prompts reference `PromptExamples.txt` in this directory. Test provider prompts use the
 `<|instruction_start|>...<|instruction_end|>` format parsed by `InstructionChainParser`.
@@ -268,7 +283,7 @@ The MetadataPill shows a "Show all N items" header when `items.length > 3`.
   - General Assistant: calculate, get_weather, web_search
   - Math Helper: calculate
   - Weather Assistant: get_weather
-  - Research Assistant: calculate, get_weather, web_search
+  - Research Assistant: calculate, get_weather, web_search (plus `WebFetch`/`WebSearch` on no-native providers such as `openai`)
 
 ### 7.6 Dropdown closes on outside click
 

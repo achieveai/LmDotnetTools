@@ -24,7 +24,9 @@ using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Utils;
+using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using LmStreaming.Sample.Agents;
 using LmStreaming.Sample.Models;
@@ -337,6 +339,28 @@ try
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
+
+        // Web tools (WebFetch/WebSearch) fallback provider. Built ONCE for the process (this factory
+        // runs once for the singleton pool) and shared across conversations — the provider owns a
+        // single app-lifetime HttpClient. Invalid configuration degrades gracefully: we log the
+        // errors and leave the provider null so the sample still boots without web tools.
+        var webToolsOptions = WebToolsOptions.FromEnvironment();
+        var webToolsErrors = webToolsOptions.Validate();
+        JinaWebProvider? jinaWebProvider = null;
+        if (webToolsErrors.Count == 0
+            && string.Equals(webToolsOptions.Backend, "jina", StringComparison.OrdinalIgnoreCase))
+        {
+            jinaWebProvider = new JinaWebProvider(
+                webToolsOptions,
+                loggerFactory.CreateLogger<JinaWebProvider>()
+            );
+        }
+        else if (webToolsErrors.Count > 0)
+        {
+            loggerFactory
+                .CreateLogger<Program>()
+                .LogWarning("Web tools disabled (invalid configuration): {Errors}", string.Join("; ", webToolsErrors));
+        }
 
         var pool = new MultiTurnAgentPool(
             context =>
@@ -698,6 +722,28 @@ try
                                     + "the system prompt now reports degraded mode instead of claiming tools",
                                 threadId
                             );
+                    }
+                }
+
+                // WebFetch/WebSearch fallback tools for providers without a native web capability.
+                // Applied AFTER the MCP additions so collision detection sees the final per-conversation
+                // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
+                // list); the native built-in path (modeBuiltInAllowList, below) is governed separately
+                // and left untouched.
+                var webToolStatuses = WebToolRegistrationPolicy.Apply(
+                    filteredRegistry,
+                    normalizedProviderId,
+                    mode.EnabledTools,
+                    jinaWebProvider,
+                    webToolsOptions,
+                    loggerFactory
+                );
+                if (webToolStatuses.Count > 0)
+                {
+                    var webToolsLogger = loggerFactory.CreateLogger<Program>();
+                    foreach (var status in webToolStatuses)
+                    {
+                        webToolsLogger.LogInformation("WebTools: {Status}", status);
                     }
                 }
 
