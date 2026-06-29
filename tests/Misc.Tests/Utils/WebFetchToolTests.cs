@@ -174,4 +174,17 @@ public class WebFetchToolTests
         text.Should().EndWith(WebToolOutput.TruncationMarker);
         text.Length.Should().BeLessThanOrEqualTo(50 + WebToolOutput.TruncationMarker.Length);
     }
+
+    [Fact]
+    public async Task HandleAsync_ThreadsCallerTokenToProvider()
+    {
+        var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
+        var tool = CreateTool(provider);
+        using var cts = new CancellationTokenSource();
+
+        _ = await InvokeAsync(tool, Args(SampleUrl), cts.Token);
+
+        // Proves the handler threads the caller's token straight through to the provider call.
+        provider.ReceivedToken.Should().Be(cts.Token);
+    }
 }

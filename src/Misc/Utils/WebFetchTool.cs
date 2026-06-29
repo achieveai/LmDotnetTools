@@ -127,7 +127,8 @@ public sealed class WebFetchTool
             );
 
             var markdown = WebToolOutput.FormatFetch(result);
-            var framed = WebToolOutput.WrapUntrusted(markdown, url!);
+            // Use the validated, fragment-stripped URL actually fetched as the source label (not the raw arg).
+            var framed = WebToolOutput.WrapUntrusted(markdown, validation.Value!);
             var sanitized = WebToolOutput.Sanitize(framed, _options.JinaApiKey);
             var bounded = WebToolOutput.Truncate(sanitized, _options.OutputCap);
             return ToolHandlerResult.FromText(bounded);

@@ -16,6 +16,13 @@ namespace AchieveAi.LmDotnetTools.Misc.Web.Jina;
 ///     Ownership: <see cref="BaseHttpService" /> does NOT dispose the injected
 ///     <see cref="HttpClient" />. The default constructor creates a plain <see cref="HttpClient" />
 ///     that is intended to be owned for the process lifetime (the provider is a process singleton).
+///
+///     Log hygiene: the base service's HTTP-retry logging is deliberately suppressed by passing
+///     <see cref="NullLogger.Instance" /> to <see cref="BaseHttpService" />, because the inherited
+///     retry helper can log <c>HttpRequestException.Message</c> — which may embed the raw upstream
+///     response body (and therefore secrets) — at Warning. The caller-supplied logger is retained and
+///     used only for the provider's own minimal, sanitized diagnostics: a single host-only debug line.
+///     URLs, query strings, request/response bodies, and the Authorization header are never logged.
 /// </summary>
 public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSearchProvider
 {
@@ -29,11 +36,18 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
     private readonly RetryOptions _retryOptions;
 
     /// <summary>
+    ///     The provider's own logger, used only for minimal, sanitized host-only diagnostics. The base
+    ///     service is intentionally wired to <see cref="NullLogger.Instance" /> (see class remarks) so
+    ///     the inherited retry logging never emits raw upstream bodies or secrets.
+    /// </summary>
+    private readonly ILogger _logger;
+
+    /// <summary>
     ///     Initializes the provider with a caller-supplied <see cref="HttpClient" /> (used by tests).
     /// </summary>
     /// <param name="httpClient">The HTTP client used to issue requests.</param>
     /// <param name="options">Web tools configuration (API key, per-call timeout).</param>
-    /// <param name="logger">Optional logger; defaults to <see cref="NullLogger.Instance" />.</param>
+    /// <param name="logger">Optional logger for host-only diagnostics; defaults to <see cref="NullLogger.Instance" />.</param>
     /// <param name="retryOptions">Optional retry configuration; defaults to <see cref="RetryOptions.Default" />.</param>
     public JinaWebProvider(
         HttpClient httpClient,
@@ -41,10 +55,11 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
         ILogger? logger = null,
         RetryOptions? retryOptions = null
     )
-        : base(logger ?? NullLogger.Instance, httpClient)
+        : base(NullLogger.Instance, httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _retryOptions = retryOptions ?? RetryOptions.Default;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -53,13 +68,14 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
     ///     must work with no API key, and authorization is applied per-request when a key is present.
     /// </summary>
     /// <param name="options">Web tools configuration (API key, per-call timeout).</param>
-    /// <param name="logger">Optional logger; defaults to <see cref="NullLogger.Instance" />.</param>
+    /// <param name="logger">Optional logger for host-only diagnostics; defaults to <see cref="NullLogger.Instance" />.</param>
     /// <param name="retryOptions">Optional retry configuration; defaults to <see cref="RetryOptions.Default" />.</param>
     public JinaWebProvider(WebToolsOptions options, ILogger? logger = null, RetryOptions? retryOptions = null)
-        : base(logger ?? NullLogger.Instance, new HttpClient())
+        : base(NullLogger.Instance, new HttpClient())
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _retryOptions = retryOptions ?? RetryOptions.Default;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <inheritdoc />
@@ -71,6 +87,8 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
     {
         ArgumentNullException.ThrowIfNull(url);
         ArgumentNullException.ThrowIfNull(options);
+
+        LogTargetHost("WebFetch", url);
 
         // Bound the whole call (including retries) by the configured per-call timeout.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -99,6 +117,9 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(options);
+
+        // Log only the search endpoint host; the query itself is never logged.
+        LogTargetHost("WebSearch", SearchUrl);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_options.TimeoutMs);
@@ -174,6 +195,19 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
         request.Headers.Accept.ParseAdd("application/json");
         ApplyAuthorization(request);
         return request;
+    }
+
+    /// <summary>
+    ///     Emits a single host-only debug line for diagnostics. Deliberately logs the destination host
+    ///     and nothing else: the full URL, query string, request/response bodies, and Authorization
+    ///     header are never logged (see the class remarks on log hygiene).
+    /// </summary>
+    private void LogTargetHost(string operation, string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            _logger.LogDebug("{Operation} requesting host {Host}", operation, uri.Host);
+        }
     }
 
     /// <summary>

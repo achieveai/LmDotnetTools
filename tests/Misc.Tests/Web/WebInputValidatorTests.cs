@@ -42,6 +42,16 @@ public class WebInputValidatorTests
     [InlineData("http://192.168.1.1/")] // private 192.168/16
     [InlineData("http://169.254.1.1/")] // link-local
     [InlineData("http://foo.local/")] // internal suffix
+    [InlineData("http://0.0.0.0/")] // IPv4 unspecified / "any" address
+    [InlineData("http://[::]/")] // IPv6 unspecified / "any" address
+    [InlineData("http://[::1]/")] // IPv6 loopback
+    [InlineData("http://[fd00::1]/")] // IPv6 unique-local (ULA)
+    [InlineData("http://[fe80::1]/")] // IPv6 link-local
+    [InlineData("http://172.16.0.1/")] // private 172.16/12 (lower boundary)
+    [InlineData("http://172.31.255.255/")] // private 172.16/12 (upper boundary)
+    [InlineData("http://224.0.0.1/")] // multicast 224/4
+    [InlineData("http://foo.internal/")] // internal suffix
+    [InlineData("http://foo.localhost/")] // localhost suffix
     public void ValidateUrl_WithDisallowedTargets_Rejects(string url)
     {
         // Act
@@ -51,6 +61,22 @@ public class WebInputValidatorTests
         result.IsValid.Should().BeFalse();
         result.Value.Should().BeNull();
         result.Error.Should().NotBeNullOrEmpty();
+    }
+
+    [Theory]
+    [InlineData("http://172.15.0.1/")] // just below the 172.16/12 private block
+    [InlineData("http://172.32.0.1/")] // just above the 172.16/12 private block
+    [InlineData("http://93.184.216.34/")] // ordinary public IPv4 host
+    [InlineData("https://example.com/")] // ordinary public hostname
+    public void ValidateUrl_WithPublicTargets_Accepts(string url)
+    {
+        // Act
+        var result = WebInputValidator.ValidateUrl(url);
+
+        // Assert
+        result.IsValid.Should().BeTrue();
+        result.Value.Should().NotBeNullOrEmpty();
+        result.Error.Should().BeNull();
     }
 
     [Fact]

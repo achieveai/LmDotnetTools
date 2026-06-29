@@ -132,4 +132,59 @@ public class WebSearchToolTests
         provider.ReceivedOptions.Country.Should().Be("US");
         provider.ReceivedOptions.Language.Should().Be("en");
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task HandleAsync_InvalidQuery_ReturnsErrorAndDoesNotCallProvider(string query)
+    {
+        var provider = new FakeWebSearchProvider();
+        var tool = CreateTool(provider);
+
+        var text = await InvokeAsync(tool, JsonSerializer.Serialize(new { query }));
+
+        text.Should().Contain("WebSearch error");
+        provider.Called.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleAsync_ControlCharQuery_ReturnsErrorAndDoesNotCallProvider()
+    {
+        var provider = new FakeWebSearchProvider();
+        var tool = CreateTool(provider);
+        // (char)1 is SOH, a control character built at runtime (never typed into the file).
+        var query = "bad" + (char)1 + "query";
+
+        var text = await InvokeAsync(tool, JsonSerializer.Serialize(new { query }));
+
+        text.Should().Contain("WebSearch error");
+        provider.Called.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleAsync_TimeoutWithoutCallerCancellation_ReturnsTimedOutMessage()
+    {
+        var provider = new FakeWebSearchProvider { Exception = new OperationCanceledException() };
+        var tool = CreateTool(provider);
+
+        var text = await InvokeAsync(tool, JsonSerializer.Serialize(new { query = "cats" }));
+
+        text.Should().Contain("timed out");
+    }
+
+    [Fact]
+    public async Task HandleAsync_ThreadsCallerTokenToProvider()
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+        using var cts = new CancellationTokenSource();
+
+        _ = await tool.Handler(JsonSerializer.Serialize(new { query = "cats" }), new ToolCallContext(), cts.Token);
+
+        // Proves the handler threads the caller's token straight through to the provider call.
+        provider.ReceivedToken.Should().Be(cts.Token);
+    }
 }

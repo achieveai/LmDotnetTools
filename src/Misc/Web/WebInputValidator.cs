@@ -142,6 +142,13 @@ public static class WebInputValidator
     /// </summary>
     private static bool IsBlockedIp(IPAddress ip)
     {
+        // Unspecified / "any" address (0.0.0.0 or [::]): routes to every local interface, so it is an
+        // SSRF vector equivalent to loopback and must be rejected.
+        if (IPAddress.Any.Equals(ip) || IPAddress.IPv6Any.Equals(ip))
+        {
+            return true;
+        }
+
         if (IPAddress.IsLoopback(ip))
         {
             return true;
