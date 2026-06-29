@@ -171,6 +171,9 @@ export function useChat(options: UseChatOptions = {}) {
   const usage = ref<UsageMessage | null>(null);
   const cumulativeUsage = ref({
     promptTokens: 0,
+    // Fresh (uncached) input tokens — promptTokens minus the cached read. For the OpenAI family
+    // cachedTokens is a SUBSET of promptTokens, so In/Cached/Out are disjoint and sum to Total.
+    uncachedInputTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
     cachedTokens: 0,
@@ -558,8 +561,14 @@ export function useChat(options: UseChatOptions = {}) {
       const totalTokens = u.total_tokens ?? (promptTokens + completionTokens);
       const cachedTokens = u.input_tokens_details?.cached_tokens ?? u.cacheReadTokens ?? 0;
       const cacheCreationTokens = u.cache_creation_input_tokens ?? u.cacheCreationTokens ?? 0;
+      // Fresh input for this turn = prompt minus the cached read. cachedTokens is a SUBSET of
+      // promptTokens for the OpenAI family; if it ever exceeds it (e.g. providers that report cache
+      // reads additively) fall back to the prompt so this never goes negative. Accumulate per-turn so
+      // In + Cached + Out == Total holds across the whole conversation.
+      const uncachedInputTokens = cachedTokens <= promptTokens ? promptTokens - cachedTokens : promptTokens;
       cumulativeUsage.value = {
         promptTokens: cumulativeUsage.value.promptTokens + promptTokens,
+        uncachedInputTokens: cumulativeUsage.value.uncachedInputTokens + uncachedInputTokens,
         completionTokens: cumulativeUsage.value.completionTokens + completionTokens,
         totalTokens: cumulativeUsage.value.totalTokens + totalTokens,
         cachedTokens: cumulativeUsage.value.cachedTokens + cachedTokens,
@@ -1112,7 +1121,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageIndex.value.clear();
     messageOrder.value = [];
     usage.value = null;
-    cumulativeUsage.value = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
+    cumulativeUsage.value = { promptTokens: 0, uncachedInputTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;

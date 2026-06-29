@@ -26,7 +26,7 @@ public record OpenAIProviderUsage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public double? TotalCost { get; init; }
 
-    // OpenAI-style nested token details
+    // OpenAI Responses-style nested token details (input_tokens_details / output_tokens_details)
     [JsonPropertyName("input_tokens_details")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public OpenAIInputTokenDetails? InputTokenDetails { get; init; }
@@ -34,6 +34,17 @@ public record OpenAIProviderUsage
     [JsonPropertyName("output_tokens_details")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public OpenAIOutputTokenDetails? OutputTokenDetails { get; init; }
+
+    // OpenAI Chat Completions-style nested token details. The /v1/chat/completions endpoint reports
+    // cache/reasoning under prompt_tokens_details / completion_tokens_details (different names than
+    // the Responses API above); without these the cached/reasoning counts are silently dropped.
+    [JsonPropertyName("prompt_tokens_details")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpenAIInputTokenDetails? PromptTokenDetails { get; init; }
+
+    [JsonPropertyName("completion_tokens_details")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpenAIOutputTokenDetails? CompletionTokenDetails { get; init; }
 
     // OpenRouter-style direct fields (for compatibility)
     [JsonPropertyName("reasoning_tokens")]
@@ -50,19 +61,19 @@ public record OpenAIProviderUsage
     // Unified access properties with precedence logic
     [JsonIgnore]
     public int TotalReasoningTokens =>
-        // OpenRouter direct field takes precedence
+        // OpenRouter direct field takes precedence, then the Responses-API nested shape, then the
+        // Chat Completions nested shape.
         ReasoningTokens != 0
             ? ReasoningTokens
-            // Fallback to OpenAI nested structure
-            : OutputTokenDetails?.ReasoningTokens ?? 0;
+            : OutputTokenDetails?.ReasoningTokens ?? CompletionTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
     public int TotalCachedTokens =>
-        // OpenRouter direct field takes precedence
+        // OpenRouter direct field takes precedence, then the Responses-API nested shape, then the
+        // Chat Completions nested shape.
         CachedTokens != 0
             ? CachedTokens
-            // Fallback to OpenAI nested structure
-            : InputTokenDetails?.CachedTokens ?? 0;
+            : InputTokenDetails?.CachedTokens ?? PromptTokenDetails?.CachedTokens ?? 0;
 
     /// <summary>
     ///     Convert to core Usage model
@@ -78,24 +89,9 @@ public record OpenAIProviderUsage
             ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value),
         };
 
-        // Convert nested token details if present
-        if (InputTokenDetails != null)
-        {
-            usage = usage with
-            {
-                InputTokenDetails = new InputTokenDetails { CachedTokens = InputTokenDetails.CachedTokens },
-            };
-        }
-
-        if (OutputTokenDetails != null)
-        {
-            usage = usage with
-            {
-                OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = OutputTokenDetails.ReasoningTokens },
-            };
-        }
-
-        return usage;
+        // Convert nested token details using the unified accessors so every shape (Responses-API
+        // nesting, Chat Completions nesting, and OpenRouter direct fields) maps to core consistently.
+        return usage.WithTokenDetails(TotalCachedTokens, TotalReasoningTokens);
     }
 
     /// <summary>

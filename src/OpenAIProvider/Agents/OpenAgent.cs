@@ -135,6 +135,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 PromptTokens = response.Usage?.PromptTokens ?? 0,
                 CompletionTokens = response.Usage?.CompletionTokens ?? 0,
                 TotalCost = totalCost,
+                CachedTokens = response.Usage?.TotalCachedTokens ?? 0,
+                ReasoningTokens = response.Usage?.TotalReasoningTokens ?? 0,
             };
 
             var openMessage = new OpenMessage
@@ -307,6 +309,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                                 item.Usage.ExtraProperties?.TryGetValue("estimated_cost", out var cost) == true
                                     ? cost as double?
                                     : null,
+                            CachedTokens = item.Usage.TotalCachedTokens,
+                            ReasoningTokens = item.Usage.TotalReasoningTokens,
                         }
                         : null,
             };

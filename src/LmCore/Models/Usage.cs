@@ -44,6 +44,21 @@ public record Usage
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
         ImmutableDictionary<string, object?>.Empty;
 
+    /// <summary>
+    ///     Returns a copy with the nested cached/reasoning detail objects populated from raw counts.
+    ///     A non-positive count leaves the corresponding detail untouched. Centralizes the
+    ///     provider → core token-detail mapping so every provider surfaces details the same way.
+    /// </summary>
+    public Usage WithTokenDetails(int cachedTokens, int reasoningTokens)
+    {
+        return this with
+        {
+            InputTokenDetails = cachedTokens > 0 ? new InputTokenDetails { CachedTokens = cachedTokens } : InputTokenDetails,
+            OutputTokenDetails =
+                reasoningTokens > 0 ? new OutputTokenDetails { ReasoningTokens = reasoningTokens } : OutputTokenDetails,
+        };
+    }
+
     public Usage SetExtraProperty<T>(string key, T value)
     {
         var rv = this;

@@ -122,6 +122,51 @@ public sealed class OpenAiResponsesEventStreamWriterTests
     }
 
     [Fact]
+    public void Completed_lifecycle_emits_nested_token_details_when_plan_simulates_cache_and_reasoning()
+    {
+        var plan = new InstructionPlan("with-cache", reasoningLength: 8, [InstructionMessage.ForExplicitText("ok")])
+        {
+            CacheReadInputTokens = 13696,
+        };
+
+        var events = OpenAiResponsesEventStreamWriter.Write(plan);
+
+        var usage = events
+            .OfType<ResponseLifecycleEvent>()
+            .Single(e => e.Type == ResponseEventTypes.ResponseCompleted)
+            .Response.GetProperty("usage");
+
+        usage
+            .GetProperty("input_tokens_details")
+            .GetProperty("cached_tokens")
+            .GetInt32()
+            .Should()
+            .Be(13696, "the mock must reproduce the real Responses API's nested cached_tokens shape");
+        usage
+            .GetProperty("output_tokens_details")
+            .GetProperty("reasoning_tokens")
+            .GetInt32()
+            .Should()
+            .Be(8);
+    }
+
+    [Fact]
+    public void Completed_lifecycle_omits_token_details_when_plan_simulates_no_cache_or_reasoning()
+    {
+        var plan = new InstructionPlan("no-cache", null, [InstructionMessage.ForExplicitText("ok")]);
+
+        var events = OpenAiResponsesEventStreamWriter.Write(plan);
+
+        var usage = events
+            .OfType<ResponseLifecycleEvent>()
+            .Single(e => e.Type == ResponseEventTypes.ResponseCompleted)
+            .Response.GetProperty("usage");
+
+        usage.TryGetProperty("input_tokens_details", out _).Should().BeFalse();
+        usage.TryGetProperty("output_tokens_details", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void Multiple_messages_get_distinct_output_indexes()
     {
         var plan = new InstructionPlan(

@@ -483,13 +483,31 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                 ? totEl.GetInt32()
                 : inputTokens + outputTokens;
 
+        // The Responses API reports prompt-cache hits and reasoning spend in NESTED detail objects.
+        // Surface them so consumers see real cache/reasoning counts (otherwise every cache hit reads 0).
+        var cachedTokens = TryReadNestedInt(usageEl, "input_tokens_details", "cached_tokens");
+        var reasoningTokens = TryReadNestedInt(usageEl, "output_tokens_details", "reasoning_tokens");
+
         usage = new Usage
         {
             PromptTokens = inputTokens,
             CompletionTokens = outputTokens,
             TotalTokens = totalTokens,
-        };
+        }.WithTokenDetails(cachedTokens, reasoningTokens);
         return true;
+    }
+
+    private static int TryReadNestedInt(JsonElement parent, string objectProperty, string numberProperty)
+    {
+        // Non-throwing: optional usage telemetry must never abort an otherwise valid stream just
+        // because a count is encoded in a way GetInt32() would reject (out-of-range / non-int number).
+        return parent.TryGetProperty(objectProperty, out var nestedEl)
+            && nestedEl.ValueKind == JsonValueKind.Object
+            && nestedEl.TryGetProperty(numberProperty, out var valueEl)
+            && valueEl.ValueKind == JsonValueKind.Number
+            && valueEl.TryGetInt32(out var value)
+            ? value
+            : 0;
     }
 
     private sealed record PendingFunctionCall(
