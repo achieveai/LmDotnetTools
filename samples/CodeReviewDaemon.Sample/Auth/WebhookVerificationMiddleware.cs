@@ -42,13 +42,32 @@ internal sealed class WebhookVerificationMiddleware
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    /// <summary>
+    /// The exact route shape this layer guards: <c>POST /api/auth/webhook/{provider}</c> with exactly one
+    /// non-empty provider segment and no trailing path. Used both by the <c>UseWhen</c> branch in
+    /// <c>Program.cs</c> and here, so a suffix path like <c>/api/auth/webhook/github/extra</c> is never
+    /// HMAC-verified or allowed to consume a delivery id — it simply falls through to MVC (which 404s it).
+    /// </summary>
+    public static bool IsWebhookRoute(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!HttpMethods.IsPost(request.Method)
+            || !request.Path.StartsWithSegments(RoutePrefix, StringComparison.OrdinalIgnoreCase, out var remaining))
+        {
+            return false;
+        }
+
+        var segment = (remaining.Value ?? string.Empty).Trim('/');
+        return segment.Length > 0 && !segment.Contains('/', StringComparison.Ordinal);
+    }
+
     public async Task InvokeAsync(HttpContext context)
     {
         var request = context.Request;
 
-        // Only POSTs to the webhook route are verified; anything else (there is nothing else) passes.
-        if (!HttpMethods.IsPost(request.Method)
-            || !request.Path.StartsWithSegments(RoutePrefix, StringComparison.OrdinalIgnoreCase))
+        // Verify only the exact webhook route; anything else passes straight through.
+        if (!IsWebhookRoute(request))
         {
             await _next(context).ConfigureAwait(false);
             return;
@@ -88,7 +107,12 @@ internal sealed class WebhookVerificationMiddleware
         // Signature is valid → the delivery id is trustworthy; reject a replay of it.
         if (!_replayCache.TryRegister(input.DeliveryId!, now))
         {
-            _logger.LogWarning("Rejected replayed webhook delivery {DeliveryId} for provider {Provider}.", input.DeliveryId, input.Provider);
+            // Log only a truncated prefix of the (single-use) delivery id — enough to correlate, without
+            // preserving the full replay identifier in the logs.
+            _logger.LogWarning(
+                "Rejected replayed webhook delivery {DeliveryIdPrefix} for provider {Provider}.",
+                Truncate(input.DeliveryId!),
+                input.Provider);
             await RejectAsync(context, StatusCodes.Status409Conflict, "duplicate delivery").ConfigureAwait(false);
             return;
         }
@@ -132,6 +156,10 @@ internal sealed class WebhookVerificationMiddleware
         var slash = rest.IndexOf('/');
         return (slash < 0 ? rest : rest[..slash]).ToString();
     }
+
+    /// <summary>A short, correlation-only prefix of a delivery id (never the full single-use value).</summary>
+    private static string Truncate(string deliveryId) =>
+        deliveryId.Length <= 8 ? "…" : deliveryId[..8] + "…";
 
     private static int StatusFor(WebhookRejection rejection) => rejection switch
     {

@@ -121,7 +121,9 @@ internal sealed class WebhookRequestVerifier
             return new WebhookVerificationResult(WebhookRejection.StaleTimestamp);
         }
 
-        return _signingSecret.Matches(input.Signature, input.Timestamp, input.Body)
+        // Delivery id is non-null here (the MissingHeaders guard above). Signing over it authenticates
+        // the replay-cache key, so a captured callback cannot be replayed under a fresh delivery id.
+        return _signingSecret.Matches(input.Signature, input.Timestamp, input.DeliveryId, input.Body)
             ? WebhookVerificationResult.Valid
             : new WebhookVerificationResult(WebhookRejection.InvalidSignature);
     }

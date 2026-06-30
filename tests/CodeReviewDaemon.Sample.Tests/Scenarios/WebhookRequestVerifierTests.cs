@@ -29,7 +29,7 @@ public sealed class WebhookRequestVerifierTests
     {
         body ??= Body;
         var ts = (timestamp ?? Now).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var sig = new WebhookSigningSecret(Secret).ComputeHex(ts, body);
+        var sig = new WebhookSigningSecret(Secret).ComputeHex(ts, deliveryId, body);
         return new WebhookVerificationInput(provider, contentType, body, sig, ts, deliveryId);
     }
 
@@ -61,6 +61,18 @@ public sealed class WebhookRequestVerifierTests
     }
 
     [Fact]
+    public void A_replay_with_a_changed_delivery_id_is_rejected()
+    {
+        // Capture a valid callback, then resend it verbatim except for a fresh delivery id (the vector
+        // that would dodge the replay cache). Because the delivery id is bound into the signed payload,
+        // the signature no longer matches — the swap is caught before the cache is even consulted.
+        var captured = SignedInput(deliveryId: "delivery-1");
+        var replayed = captured with { DeliveryId = "delivery-2" };
+
+        Verifier().Verify(replayed, Now).Rejection.Should().Be(WebhookRejection.InvalidSignature);
+    }
+
+    [Fact]
     public void An_unknown_provider_is_rejected()
     {
         Verifier().Verify(SignedInput(provider: "gitlab"), Now).Rejection.Should().Be(WebhookRejection.UnknownProvider);
@@ -88,7 +100,7 @@ public sealed class WebhookRequestVerifierTests
         var big = new byte[8];
         var verifier = new WebhookRequestVerifier(new WebhookSigningSecret(Secret), ["github"], TimeSpan.FromMinutes(5), maxBodyBytes: 4);
         var ts = Now.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var input = new WebhookVerificationInput("github", "application/json", big, new WebhookSigningSecret(Secret).ComputeHex(ts, big), ts, "d");
+        var input = new WebhookVerificationInput("github", "application/json", big, new WebhookSigningSecret(Secret).ComputeHex(ts, "d", big), ts, "d");
 
         verifier.Verify(input, Now).Rejection.Should().Be(WebhookRejection.BodyTooLarge);
     }

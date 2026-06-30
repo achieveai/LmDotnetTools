@@ -37,7 +37,7 @@ public sealed class WebhookVerificationEndpointTests
     {
         var ts = (timestamp ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
         // Sign over signatureBody when provided (to forge a body/signature mismatch), else over body.
-        var sig = new WebhookSigningSecret(SigningSecret).ComputeHex(ts, Encoding.UTF8.GetBytes(signatureBody ?? body));
+        var sig = new WebhookSigningSecret(SigningSecret).ComputeHex(ts, deliveryId, Encoding.UTF8.GetBytes(signatureBody ?? body));
 
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{provider}")
         {
@@ -151,6 +151,62 @@ public sealed class WebhookVerificationEndpointTests
         (await client.SendAsync(Signed(deliveryId: "dup-1"))).StatusCode.Should().Be(HttpStatusCode.OK);
         // Re-send the identical callback (a fresh request object, same delivery id) — a replay.
         (await client.SendAsync(Signed(deliveryId: "dup-1"))).StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task A_replay_with_a_changed_delivery_id_is_rejected_401()
+    {
+        using var baseFactory = new DaemonWebAppFactory();
+        using var factory = Factory(baseFactory);
+        using var client = factory.CreateClient();
+
+        // Accept a valid callback, then resend the SAME signed body/timestamp/signature but swap the
+        // delivery id (the vector that would dodge the cache if the id were not part of the signature).
+        var captured = Signed(deliveryId: "orig");
+        var capturedSig = captured.Headers.GetValues(WebhookVerificationMiddleware.SignatureHeader).Single();
+        var capturedTs = captured.Headers.GetValues(WebhookVerificationMiddleware.TimestampHeader).Single();
+        (await client.SendAsync(captured)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var replay = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
+        {
+            Content = new StringContent(Body, Encoding.UTF8, "application/json"),
+        };
+        replay.Headers.TryAddWithoutValidation(WebhookVerificationMiddleware.SignatureHeader, capturedSig);
+        replay.Headers.TryAddWithoutValidation(WebhookVerificationMiddleware.TimestampHeader, capturedTs);
+        replay.Headers.TryAddWithoutValidation(WebhookVerificationMiddleware.DeliveryHeader, "swapped");
+        replay.Headers.TryAddWithoutValidation("Authorization", SharedSecret);
+
+        (await client.SendAsync(replay)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task An_oversized_body_is_rejected_413()
+    {
+        using var baseFactory = new DaemonWebAppFactory();
+        using var factory = Factory(baseFactory);
+        using var client = factory.CreateClient();
+
+        // Just over the 1 MiB default cap. The middleware rejects on the declared Content-Length before
+        // reading or verifying, so no valid signature is needed — this pins the real buffering/413 path.
+        var oversized = new string('x', 1_048_577);
+        var request = Signed(body: oversized);
+
+        (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+    }
+
+    [Fact]
+    public async Task A_suffix_path_under_the_webhook_prefix_is_not_verified_and_404s()
+    {
+        using var baseFactory = new DaemonWebAppFactory();
+        using var factory = Factory(baseFactory);
+        using var client = factory.CreateClient();
+
+        // A path with an extra segment is outside the exact webhook route: the verifier branch must not
+        // run (so no delivery id is consumed) and MVC has no matching route → 404, never a 4xx from the
+        // verification layer.
+        var request = Signed(provider: "github/extra");
+
+        (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]

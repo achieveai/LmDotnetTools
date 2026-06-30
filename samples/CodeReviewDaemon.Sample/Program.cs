@@ -184,9 +184,10 @@ builder.Services
 var app = builder.Build();
 
 // Verify the gateway's signature/timestamp/delivery + body before MVC binds it (plan §9). Scoped to the
-// webhook path via UseWhen so it adds NO route — the daemon's single-endpoint surface (AC#4) is intact.
+// EXACT webhook route (POST + single provider segment) so it adds NO route — the daemon's single-endpoint
+// surface (AC#4) is intact and a suffix path is never HMAC-verified or allowed to consume a delivery id.
 app.UseWhen(
-    context => context.Request.Path.StartsWithSegments("/api/auth/webhook", StringComparison.OrdinalIgnoreCase),
+    context => WebhookVerificationMiddleware.IsWebhookRoute(context.Request),
     branch => branch.UseMiddleware<WebhookVerificationMiddleware>());
 
 app.MapControllers();

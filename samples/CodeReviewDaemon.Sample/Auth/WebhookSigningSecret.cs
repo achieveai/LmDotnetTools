@@ -30,24 +30,25 @@ internal sealed class WebhookSigningSecret
     public string Value { get; }
 
     /// <summary>
-    /// Computes the lowercase-hex HMAC-SHA256 over <c>{timestamp}.{body}</c> (Stripe-style). Binding the
-    /// timestamp into the signed payload means an attacker cannot replay a captured body under a fresh
-    /// timestamp without also re-signing — which they cannot do without the secret.
+    /// Computes the lowercase-hex HMAC-SHA256 over <c>{timestamp}.{deliveryId}.{body}</c> (Stripe-style).
+    /// Binding BOTH the timestamp and the delivery id into the signed payload means a captured callback
+    /// cannot be replayed under a fresh timestamp <em>or</em> a fresh delivery id without re-signing —
+    /// which an attacker cannot do without the secret. Authenticating the delivery id is what makes the
+    /// replay cache's key trustworthy.
     /// </summary>
-    public string ComputeHex(string timestamp, ReadOnlySpan<byte> body)
+    public string ComputeHex(string timestamp, string deliveryId, ReadOnlySpan<byte> body)
     {
-        ArgumentNullException.ThrowIfNull(timestamp);
-
-        var hash = HMACSHA256.HashData(_key, BuildSigned(timestamp, body));
+        var hash = HMACSHA256.HashData(_key, BuildSigned(timestamp, deliveryId, body));
         return Convert.ToHexStringLower(hash);
     }
 
     /// <summary>
     /// Constant-time check that <paramref name="presentedHex"/> is the valid signature for
-    /// <paramref name="timestamp"/> + <paramref name="body"/>. Returns false for a null/empty/odd-length
-    /// presented value rather than throwing (the "missing/garbage header" case).
+    /// <paramref name="timestamp"/> + <paramref name="deliveryId"/> + <paramref name="body"/>. Returns
+    /// false for a null/empty/odd-length presented value rather than throwing (the "missing/garbage
+    /// header" case).
     /// </summary>
-    public bool Matches(string? presentedHex, string timestamp, ReadOnlySpan<byte> body)
+    public bool Matches(string? presentedHex, string timestamp, string deliveryId, ReadOnlySpan<byte> body)
     {
         if (string.IsNullOrEmpty(presentedHex))
         {
@@ -64,13 +65,16 @@ internal sealed class WebhookSigningSecret
             return false;
         }
 
-        var expected = HMACSHA256.HashData(_key, BuildSigned(timestamp, body));
+        var expected = HMACSHA256.HashData(_key, BuildSigned(timestamp, deliveryId, body));
         return CryptographicOperations.FixedTimeEquals(presented, expected);
     }
 
-    private static byte[] BuildSigned(string timestamp, ReadOnlySpan<byte> body)
+    private static byte[] BuildSigned(string timestamp, string deliveryId, ReadOnlySpan<byte> body)
     {
-        var prefix = Encoding.UTF8.GetBytes(timestamp + ".");
+        ArgumentNullException.ThrowIfNull(timestamp);
+        ArgumentNullException.ThrowIfNull(deliveryId);
+
+        var prefix = Encoding.UTF8.GetBytes(timestamp + "." + deliveryId + ".");
         var buffer = new byte[prefix.Length + body.Length];
         prefix.CopyTo(buffer.AsSpan());
         body.CopyTo(buffer.AsSpan(prefix.Length));
