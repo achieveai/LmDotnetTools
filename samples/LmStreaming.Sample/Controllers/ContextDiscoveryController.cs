@@ -97,6 +97,15 @@ public sealed class ContextDiscoveryController(
             payloads.Add(payload);
         }
 
+        // Dispatch the batch concurrently. Sub-agent activations are independent (first-wins
+        // registration into a ConcurrentDictionary) and run in parallel. Context-file injections
+        // must preserve their delivery order — the injected user-turn messages should reach the
+        // model in a deterministic sequence (e.g. a nested CLAUDE.md after the root one), and the
+        // agent input channel gives no ordering guarantee across concurrent writers — so they run
+        // as one ordered chain. Both groups are awaited together.
+        var pending = new List<Task>(payloads.Count);
+        var contextFiles = new List<ContextDiscoveryPayload>();
+
         foreach (var payload in payloads)
         {
             logger.LogInformation(
@@ -111,20 +120,45 @@ public sealed class ContextDiscoveryController(
             // Record the arrival for the diagnostics endpoint BEFORE the kind-specific handling
             // (which is best-effort and may no-op). This is what lets an operator confirm webhooks
             // are reaching the app at all — the count staying at zero is the signature of an
-            // unreachable callback host OR a rejected (401) delivery.
+            // unreachable callback host OR a rejected (401) delivery. RecordReceived is a fast,
+            // thread-safe, order-independent counter update.
             diagnostics.RecordReceived(payload.SessionId, payload.Kind, payload.Path ?? payload.Name);
 
             if (string.Equals(payload.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
             {
-                await TryActivateSubAgentAsync(payload, cancellationToken).ConfigureAwait(false);
+                pending.Add(TryActivateSubAgentAsync(payload, cancellationToken));
             }
             else if (string.Equals(payload.Kind, ContextDiscoveryKinds.ContextFile, StringComparison.Ordinal))
             {
-                await contextInjector.InjectAsync(payload, cancellationToken).ConfigureAwait(false);
+                contextFiles.Add(payload);
             }
         }
 
+        if (contextFiles.Count > 0)
+        {
+            pending.Add(InjectContextFilesInOrderAsync(contextFiles, cancellationToken));
+        }
+
+        await Task.WhenAll(pending).ConfigureAwait(false);
+
         return Ok();
+    }
+
+    /// <summary>
+    /// Injects the batch's context files into the conversation in delivery order. Kept sequential
+    /// on purpose: the injected user-turn messages must reach the model in a deterministic sequence
+    /// (e.g. a nested CLAUDE.md after the root one), and concurrent writes to the agent input
+    /// channel carry no ordering guarantee. Each injection is a fast non-blocking enqueue, so the
+    /// chain adds no meaningful latency.
+    /// </summary>
+    private async Task InjectContextFilesInOrderAsync(
+        IReadOnlyList<ContextDiscoveryPayload> contextFiles,
+        CancellationToken cancellationToken)
+    {
+        foreach (var payload in contextFiles)
+        {
+            await contextInjector.InjectAsync(payload, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
