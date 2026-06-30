@@ -304,6 +304,42 @@ public sealed class ReviewStoreTests
         artifacts[0].ArtifactSchemaVersion.Should().Be(1);
     }
 
+    // ── §7 GetRepo rehydration ──────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void GetRepo_rehydrates_the_identity_for_a_stored_repo()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var adoIdentity = new RepoIdentity
+        {
+            Provider = "azure-devops",
+            OrgOrOwner = "contoso",
+            Project = "Platform",
+            RepoName = "widgets",
+            RepoStableId = "repo-guid-1",
+        };
+        var id = store.EnsureRepo(adoIdentity);
+
+        var loaded = store.GetRepo(id);
+
+        loaded.Should().NotBeNull();
+        loaded!.Provider.Should().Be("azure-devops");
+        loaded.OrgOrOwner.Should().Be("contoso");
+        loaded.Project.Should().Be("Platform");
+        loaded.RepoName.Should().Be("widgets");
+        loaded.RepoStableId.Should().Be("repo-guid-1");
+    }
+
+    [Fact]
+    public void GetRepo_returns_null_for_an_unknown_id()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        store.GetRepo(9999).Should().BeNull();
+    }
+
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
     private static RepoIdentity SampleRepo() => new()

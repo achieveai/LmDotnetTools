@@ -60,6 +60,33 @@ internal sealed class ReviewStore : IDisposable
         return Convert.ToInt64(insert.ExecuteScalar());
     }
 
+    /// <summary>
+    /// Rehydrates the <see cref="RepoIdentity"/> for a <c>repo</c> row id, or <c>null</c> when no such
+    /// row exists. Consumed by the poster/executor, which carry only the run's <c>repo_id</c> and need
+    /// the provider/owner/project/name to address the PR for posting.
+    /// </summary>
+    public RepoIdentity? GetRepo(long id)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText =
+            "SELECT provider, org_or_owner, project, repo_name, repo_stable_id FROM repo WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new RepoIdentity
+        {
+            Provider = reader.GetString(reader.GetOrdinal("provider")),
+            OrgOrOwner = reader.GetString(reader.GetOrdinal("org_or_owner")),
+            Project = GetNullableString(reader, "project"),
+            RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
+            RepoStableId = GetNullableString(reader, "repo_stable_id"),
+        };
+    }
+
     // ── review_run (§6) ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>
