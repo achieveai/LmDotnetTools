@@ -134,30 +134,38 @@ public static class HttpRetryHelper
                     continue;
                 }
 
-                // Not retryable or max retries exceeded, throw
+                // Not retryable or max retries exceeded. Capture the diagnostics BEFORE disposing, read
+                // the body in a try, dispose the failed response in the finally (so the connection is
+                // not leaked — the success path at :116 keeps the response alive for the caller, and the
+                // retryable branch at :132 already disposes), then throw with the captured values.
+                var statusCode = response.StatusCode;
+                var reasonPhrase = response.ReasonPhrase;
+                string responseBody;
                 try
                 {
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        // Try to read the response body for better error information
-                        var responseBody = await response.Content.ReadAsStringAsync();
-                        var errorMessage =
-                            $"HTTP request failed with status {response.StatusCode} ({response.ReasonPhrase})";
-                        if (!string.IsNullOrWhiteSpace(responseBody))
-                        {
-                            errorMessage += $". Response body: {responseBody}";
-                        }
-
-                        throw new HttpRequestException(errorMessage, null, response.StatusCode);
-                    }
+                    responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is not HttpRequestException)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // If reading response body fails, fall back to standard behavior
-                    _ = response.EnsureSuccessStatusCode();
+                    // A failed body read is diagnostic-only: fall back to status-only diagnostics and throw
+                    // with the ALREADY-CAPTURED original status below. This deliberately also swallows an
+                    // HttpRequestException raised by the body read itself — otherwise it would escape to the
+                    // outer retry catch and could retry a non-retryable status (or mask the real status).
+                    // Deliberate cancellation is NOT swallowed — it must surface as cancellation.
+                    responseBody = string.Empty;
+                }
+                finally
+                {
+                    response.Dispose();
                 }
 
-                return default!; // This line should never be reached
+                var errorMessage = $"HTTP request failed with status {statusCode} ({reasonPhrase})";
+                if (!string.IsNullOrWhiteSpace(responseBody))
+                {
+                    errorMessage += $". Response body: {responseBody}";
+                }
+
+                throw new HttpRequestException(errorMessage, null, statusCode);
             }
             catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex))
             {
@@ -212,7 +220,17 @@ public static class HttpRetryHelper
     public static bool IsRetryableError(HttpRequestException exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        // Retry on network errors, timeouts, connection errors, and server errors (5xx)
+
+        // When the exception carries an HTTP status code, classify strictly by that status. This avoids
+        // wrongly retrying a non-retryable status (e.g. 400/401) just because its response body, which the
+        // helper embeds in the exception message, happens to mention "500"/"timeout"/etc.
+        if (exception.StatusCode is { } statusCode)
+        {
+            return IsRetryableStatusCode(statusCode);
+        }
+
+        // No status code is present (genuine network/transport failures from SendAsync). Fall back to
+        // substring detection over the message: network errors, timeouts, connection errors, and 5xx/429.
         var message = exception.Message;
 
         // Check for network/timeout errors

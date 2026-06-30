@@ -28,12 +28,18 @@ public sealed class ContextDiscoveryEndToEndTests
         var agent = harness.RegisterLiveThread(SessionId, ThreadId);
 
         var controller = harness.CreateController(authorizationHeader: Secret);
-        var payload = new ContextDiscoveryPayload
+        var payload = new ContextDiscoveryEnvelope
         {
             SessionId = SessionId,
-            Kind = "context_file",
-            Path = "CLAUDE.md",
-            Content = "# Project rules\nAlways be concise.",
+            Discoveries =
+            [
+                new ContextDiscoveryItem
+                {
+                    Kind = "context_file",
+                    Path = "CLAUDE.md",
+                    Content = "# Project rules\nAlways be concise.",
+                },
+            ],
         };
 
         var result = await controller.NotifyAsync(payload, CancellationToken.None);
@@ -49,6 +55,80 @@ public sealed class ContextDiscoveryEndToEndTests
     }
 
     [Fact]
+    public async Task BatchedContextFiles_AreInjectedInDeliveryOrder()
+    {
+        // The controller dispatches the batch with Task.WhenAll but keeps context-file injection
+        // in an ordered chain, so a multi-file batch reaches the model in delivery order (root
+        // before nested) rather than the non-deterministic order of concurrent channel writes.
+        using var harness = new Harness();
+        var agent = harness.RegisterLiveThread(SessionId, ThreadId);
+
+        var controller = harness.CreateController(authorizationHeader: Secret);
+        var payload = new ContextDiscoveryEnvelope
+        {
+            SessionId = SessionId,
+            Discoveries =
+            [
+                new ContextDiscoveryItem { Kind = "context_file", Path = "AGENTS.md", Content = "ROOT_MARKER" },
+                new ContextDiscoveryItem { Kind = "context_file", Path = "sub/CLAUDE.md", Content = "NESTED_MARKER" },
+            ],
+        };
+
+        var result = await controller.NotifyAsync(payload, CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        agent.SentMessages.Should().SatisfyRespectively(
+            first => first.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+            second => second.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+    }
+
+    [Fact]
+    public async Task MixedBatch_InjectsContextFilesInOrder_AlongsideSubAgent()
+    {
+        // The batch partitions by kind: the sub-agent dispatches in parallel (a no-op here — the
+        // harness has no gateway session/binding for it, so it logs-and-skips), while the two
+        // context files still inject into the live thread in delivery order.
+        using var harness = new Harness();
+        var agent = harness.RegisterLiveThread(SessionId, ThreadId);
+
+        var controller = harness.CreateController(authorizationHeader: Secret);
+        var payload = new ContextDiscoveryEnvelope
+        {
+            SessionId = SessionId,
+            Discoveries =
+            [
+                new ContextDiscoveryItem { Kind = "subagent", Name = "reviewer", Path = ".claude/agents/reviewer.md" },
+                new ContextDiscoveryItem { Kind = "context_file", Path = "AGENTS.md", Content = "ROOT_MARKER" },
+                new ContextDiscoveryItem { Kind = "context_file", Path = "sub/CLAUDE.md", Content = "NESTED_MARKER" },
+            ],
+        };
+
+        var result = await controller.NotifyAsync(payload, CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        agent.SentMessages.Should().SatisfyRespectively(
+            first => first.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+            second => second.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+    }
+
+    [Fact]
+    public async Task EmptyBatch_ReturnsOkWithoutInjecting()
+    {
+        // An authenticated envelope with no discoveries is a valid no-op: Task.WhenAll over an empty
+        // set completes immediately, the controller returns 200, and nothing is injected.
+        using var harness = new Harness();
+        var agent = harness.RegisterLiveThread(SessionId, ThreadId);
+
+        var controller = harness.CreateController(authorizationHeader: Secret);
+        var result = await controller.NotifyAsync(
+            new ContextDiscoveryEnvelope { SessionId = SessionId, Discoveries = [] },
+            CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        agent.SentMessages.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ContextFileWebhook_WrongSecret_DoesNotReachAgent()
     {
         // The auth gate is part of the chain: a bad secret must 401 and never inject.
@@ -57,12 +137,18 @@ public sealed class ContextDiscoveryEndToEndTests
 
         var controller = harness.CreateController(authorizationHeader: "not-the-secret");
         var result = await controller.NotifyAsync(
-            new ContextDiscoveryPayload
+            new ContextDiscoveryEnvelope
             {
                 SessionId = SessionId,
-                Kind = "context_file",
-                Path = "CLAUDE.md",
-                Content = "secret-gated",
+                Discoveries =
+                [
+                    new ContextDiscoveryItem
+                    {
+                        Kind = "context_file",
+                        Path = "CLAUDE.md",
+                        Content = "secret-gated",
+                    },
+                ],
             },
             CancellationToken.None);
 
@@ -71,33 +157,38 @@ public sealed class ContextDiscoveryEndToEndTests
     }
 
     [Fact]
-    public void GatewayPayload_SnakeCaseJson_BindsToContextDiscoveryPayload()
+    public void GatewayPayload_SnakeCaseBatchedEnvelope_BindsToContextDiscoveryEnvelope()
     {
-        // The gateway's wire contract is snake_case. The [JsonPropertyName] bindings on the DTO are
-        // what make a real POST body map correctly; this pins them deterministically (the over-HTTP
-        // test exercises the same path through the live ASP.NET pipeline).
+        // The gateway's wire contract is a snake_case BATCHED envelope: a top-level `session_id`
+        // plus a `discoveries` array (with `event`/`app_id` the app ignores). The [JsonPropertyName]
+        // bindings are what make a real POST body map correctly; this pins them deterministically
+        // (the over-HTTP test exercises the same path through the live ASP.NET pipeline).
         const string json = """
             {
+              "event": "context_discovery",
               "session_id": "sess-1",
-              "kind": "context_file",
-              "name": "CLAUDE.md",
-              "description": "root context",
-              "path": "CLAUDE.md",
-              "content": "hello world",
-              "truncated": true
+              "app_id": "lmstreaming",
+              "discoveries": [
+                {
+                  "kind": "context_file",
+                  "path": "CLAUDE.md",
+                  "content": "hello world",
+                  "truncated": true
+                }
+              ]
             }
             """;
 
-        var payload = JsonSerializer.Deserialize<ContextDiscoveryPayload>(json);
+        var envelope = JsonSerializer.Deserialize<ContextDiscoveryEnvelope>(json);
 
-        payload.Should().NotBeNull();
-        payload!.SessionId.Should().Be("sess-1");
-        payload.Kind.Should().Be("context_file");
-        payload.Name.Should().Be("CLAUDE.md");
-        payload.Description.Should().Be("root context");
-        payload.Path.Should().Be("CLAUDE.md");
-        payload.Content.Should().Be("hello world");
-        payload.Truncated.Should().BeTrue();
+        envelope.Should().NotBeNull();
+        envelope!.SessionId.Should().Be("sess-1");
+        envelope.Discoveries.Should().ContainSingle();
+        var item = envelope.Discoveries![0];
+        item.Kind.Should().Be("context_file");
+        item.Path.Should().Be("CLAUDE.md");
+        item.Content.Should().Be("hello world");
+        item.Truncated.Should().BeTrue();
     }
 
     private sealed class Harness : IDisposable

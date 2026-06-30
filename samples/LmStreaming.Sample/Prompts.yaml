@@ -37,6 +37,8 @@ chatModes:
       - calculate
       - get_weather
       - web_search
+      - WebFetch
+      - WebSearch
 
   - id: medical-knowledge
     name: Medical Knowledge Assistant

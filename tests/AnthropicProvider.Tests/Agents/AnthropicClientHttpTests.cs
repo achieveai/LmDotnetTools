@@ -1,4 +1,5 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
@@ -217,6 +218,58 @@ public class AnthropicClientHttpTests : LoggingTestBase
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
         Assert.Equal(1, metrics.TotalRequests);
+        Assert.Equal(1, metrics.SuccessfulRequests);
+    }
+
+    /// <summary>
+    ///     Verify-only (#114): the Copilot-Anthropic path already retries a transient pre-stream 502 via
+    ///     <see cref="AnthropicClient"/> streaming. Confirms a 502-then-200 sequence streams successfully
+    ///     using <see cref="RetryOptions.FastForTests"/> (no separate fix needed for that transport).
+    /// </summary>
+    [Fact]
+    public async Task StreamingChatCompletionsAsync_RetriesTransient502_ShouldSucceed()
+    {
+        // Arrange
+        var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(
+            LoggerFactory,
+            statusSequence: [HttpStatusCode.BadGateway, HttpStatusCode.OK],
+            chunkDelayMs: 0
+        );
+        var client = new AnthropicClient(
+            httpClient,
+            performanceTracker: _performanceTracker,
+            logger: _anthropicClientLogger,
+            retryOptions: RetryOptions.FastForTests
+        );
+
+        var request = new AnthropicRequest
+        {
+            Model = "claude-3-sonnet-20240229",
+            MaxTokens = 1000,
+            Stream = true,
+            Messages =
+            [
+                new AnthropicMessage
+                {
+                    Role = "user",
+                    Content = [new AnthropicContent { Type = "text", Text = "Hello" }],
+                },
+            ],
+        };
+
+        // Act
+        var responseStream = await client.StreamingChatCompletionsAsync(request);
+        var events = new List<AnthropicStreamEvent>();
+        await foreach (var streamEvent in responseStream)
+        {
+            events.Add(streamEvent);
+        }
+
+        // Assert — the 502 was retried and the stream completed.
+        Assert.NotEmpty(events);
+
+        var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
+        Assert.NotNull(metrics);
         Assert.Equal(1, metrics.SuccessfulRequests);
     }
 
