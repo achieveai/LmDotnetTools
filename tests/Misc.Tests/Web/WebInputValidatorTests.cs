@@ -52,6 +52,9 @@ public class WebInputValidatorTests
     [InlineData("http://224.0.0.1/")] // multicast 224/4
     [InlineData("http://foo.internal/")] // internal suffix
     [InlineData("http://foo.localhost/")] // localhost suffix
+    [InlineData("http://foo.test/")] // RFC 6761 reserved TLD
+    [InlineData("http://foo.example/")] // RFC 6761 reserved TLD
+    [InlineData("http://foo.invalid/")] // RFC 6761 reserved TLD
     public void ValidateUrl_WithDisallowedTargets_Rejects(string url)
     {
         // Act

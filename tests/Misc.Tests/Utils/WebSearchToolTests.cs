@@ -63,6 +63,24 @@ public class WebSearchToolTests
     }
 
     [Fact]
+    public async Task HandleAsync_DoesNotEchoQueryIntoOutput()
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+        const string query = "john.doe@corp.com SSN 123-45-6789";
+
+        var text = await InvokeAsync(tool, JsonSerializer.Serialize(new { query }));
+
+        // The user's query may carry PII/secrets, so it must never be echoed back into the output.
+        text.Should().NotContain(query);
+        // The full query still reaches the provider so the search itself is unaffected.
+        provider.ReceivedQuery.Should().Be(query);
+    }
+
+    [Fact]
     public async Task HandleAsync_MissingApiKey_ReturnsUnavailableAndDoesNotCallProvider()
     {
         var provider = new FakeWebSearchProvider();

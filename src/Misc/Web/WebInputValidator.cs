@@ -33,7 +33,17 @@ public static class WebInputValidator
 {
     private const int MaxUrlLength = 2048;
 
-    private static readonly string[] BlockedHostSuffixes = [".local", ".internal", ".localhost"];
+    // Internal/loopback suffixes plus the RFC 6761 reserved TLDs (.test/.example/.invalid), which must
+    // never resolve to a real, fetchable host.
+    private static readonly string[] BlockedHostSuffixes =
+    [
+        ".local",
+        ".internal",
+        ".localhost",
+        ".test",
+        ".example",
+        ".invalid",
+    ];
 
     /// <summary>
     ///     Validates an absolute http/https <paramref name="url" />.

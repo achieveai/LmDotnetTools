@@ -27,9 +27,49 @@ public class WebToolOutputTests
         var result = WebToolOutput.Truncate(text, 100);
 
         // Assert
-        result.Should().StartWith(new string('a', 100));
         result.Should().EndWith("…[truncated]");
-        result.Length.Should().Be(100 + WebToolOutput.TruncationMarker.Length);
+        // The marker counts toward the cap, so the final length never exceeds it.
+        result.Length.Should().BeLessThanOrEqualTo(100);
+        result.Should().StartWith(new string('a', 100 - WebToolOutput.TruncationMarker.Length));
+    }
+
+    [Theory]
+    [InlineData("https://example.com/reset?email=user@example.com&token=sek-ret#frag", "https://example.com/reset")]
+    [InlineData("https://x.com/p?secret=abc", "https://x.com/p")]
+    [InlineData("http://user:pass@host.com/path#f", "http://host.com/path")]
+    [InlineData("https://host.com:8443/a/b?q=1", "https://host.com:8443/a/b")]
+    [InlineData("https://example.com", "https://example.com/")]
+    public void MinimizeUrl_DropsQueryFragmentAndUserInfo(string input, string expected)
+    {
+        // Act & Assert
+        WebToolOutput.MinimizeUrl(input).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not a url")]
+    [InlineData("ftp://example.com/file")]
+    [InlineData("/relative/path")]
+    public void MinimizeUrl_WithUnparsableInput_ReturnsPlaceholder(string? input)
+    {
+        // Act & Assert
+        WebToolOutput.MinimizeUrl(input).Should().Be("(web page)");
+    }
+
+    [Fact]
+    public void Truncate_WhenCapSmallerThanMarker_ReturnsTruncatedMarkerWithoutThrowing()
+    {
+        // Arrange - a cap below the marker length must be handled gracefully.
+        var text = new string('a', 500);
+
+        // Act
+        var result = WebToolOutput.Truncate(text, 5);
+
+        // Assert
+        result.Length.Should().BeLessThanOrEqualTo(5);
+        result.Should().Be(WebToolOutput.TruncationMarker[..5]);
     }
 
     [Fact]

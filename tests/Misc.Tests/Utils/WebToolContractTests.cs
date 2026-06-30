@@ -104,4 +104,20 @@ public class WebToolContractTests
         fetch.ReceivedUrl.Should().Be("https://e.com/");
         result.ResultText.Should().Contain("routed-content");
     }
+
+    [Fact]
+    public async Task Build_WebSearchHandler_RoutesToProvider()
+    {
+        var (registry, _, search) = BuildRegistry();
+
+        var (_, handlers) = registry.Build();
+        _ = await handlers[WebSearchTool.ToolName](
+            "{\"query\":\"hello\"}",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        search.Called.Should().BeTrue();
+        search.ReceivedQuery.Should().Be("hello");
+    }
 }

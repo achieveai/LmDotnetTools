@@ -153,7 +153,8 @@ public sealed class WebSearchTool
             }
 
             var markdown = WebToolOutput.FormatSearch(result);
-            var framed = WebToolOutput.WrapUntrusted(markdown, "web search: " + validation.Value);
+            // Use a generic source label: the query may carry PII/secrets and must not be echoed back.
+            var framed = WebToolOutput.WrapUntrusted(markdown, "web search");
             var sanitized = WebToolOutput.Sanitize(framed, _options.JinaApiKey);
             var bounded = WebToolOutput.Truncate(sanitized, _options.OutputCap);
             return ToolHandlerResult.FromText(bounded);

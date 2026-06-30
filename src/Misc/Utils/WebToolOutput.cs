@@ -17,6 +17,40 @@ public static class WebToolOutput
     private const string Redaction = "***";
 
     /// <summary>
+    ///     The placeholder returned by <see cref="MinimizeUrl" /> when the input cannot be parsed as an
+    ///     absolute http/https URL.
+    /// </summary>
+    private const string UrlPlaceholder = "(web page)";
+
+    /// <summary>
+    ///     Reduces a URL to <c>scheme://host[:port]/path</c>, dropping the query string, fragment, and
+    ///     any userinfo so that secrets/PII carried in those parts are never echoed back to the model.
+    ///     Returns a safe placeholder when the input is not an absolute http/https URL.
+    /// </summary>
+    /// <param name="url">The URL to minimize.</param>
+    /// <returns>The minimized URL, or <c>"(web page)"</c> when it cannot be parsed.</returns>
+    public static string MinimizeUrl(string? url)
+    {
+        if (
+            string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+        )
+        {
+            return UrlPlaceholder;
+        }
+
+        var builder = new StringBuilder();
+        _ = builder.Append(uri.Scheme).Append("://").Append(uri.Host);
+        if (!uri.IsDefaultPort)
+        {
+            _ = builder.Append(':').Append(uri.Port);
+        }
+
+        return builder.Append(uri.AbsolutePath).ToString();
+    }
+
+    /// <summary>
     ///     Renders a <see cref="WebFetchResult" /> as Markdown: an optional title heading, a source line,
     ///     the content, and an optional warning.
     /// </summary>
@@ -33,7 +67,8 @@ public static class WebToolOutput
 
         if (!string.IsNullOrWhiteSpace(result.Url))
         {
-            _ = builder.Append("Source: ").Append(result.Url.Trim()).Append("\n\n");
+            // Minimize the provider-returned URL so a query string is not echoed verbatim.
+            _ = builder.Append("Source: ").Append(MinimizeUrl(result.Url)).Append("\n\n");
         }
 
         _ = builder.Append(result.Content);
@@ -136,11 +171,13 @@ public static class WebToolOutput
 
     /// <summary>
     ///     Returns <paramref name="text" /> unchanged when it fits within <paramref name="cap" /> characters;
-    ///     otherwise returns the first <paramref name="cap" /> characters followed by <see cref="TruncationMarker" />.
+    ///     otherwise truncates so the result (including <see cref="TruncationMarker" />) is at most
+    ///     <paramref name="cap" /> characters long. The marker counts toward the cap, so <paramref name="cap" />
+    ///     is the final length bound, not the pre-marker length.
     /// </summary>
     /// <param name="text">The text to bound.</param>
-    /// <param name="cap">The maximum number of characters to keep before appending the marker.</param>
-    /// <returns>The original or truncated text.</returns>
+    /// <param name="cap">The maximum number of characters the returned text may contain in total.</param>
+    /// <returns>The original or truncated text, never longer than <paramref name="cap" />.</returns>
     public static string Truncate(string text, int cap)
     {
         if (text is null)
@@ -153,6 +190,14 @@ public static class WebToolOutput
             cap = 0;
         }
 
-        return text.Length <= cap ? text : text[..cap] + TruncationMarker;
+        if (text.Length <= cap)
+        {
+            return text;
+        }
+
+        // Reserve room for the marker so the final length never exceeds the cap. When the cap is too
+        // small to hold even the marker, return as much of the marker as fits (possibly empty).
+        var keep = cap - TruncationMarker.Length;
+        return keep <= 0 ? TruncationMarker[..cap] : text[..keep] + TruncationMarker;
     }
 }

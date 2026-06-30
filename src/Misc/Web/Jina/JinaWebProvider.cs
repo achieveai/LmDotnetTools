@@ -90,7 +90,8 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
 
         LogTargetHost("WebFetch", url);
 
-        // Bound the whole call (including retries) by the configured per-call timeout.
+        // This timeout bounds ALL retry attempts collectively (not per-attempt), capping total
+        // user-facing latency. Intentional trade-off: a slow first attempt leaves less time for retries.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_options.TimeoutMs);
 
@@ -121,6 +122,8 @@ public sealed class JinaWebProvider : BaseHttpService, IWebFetchProvider, IWebSe
         // Log only the search endpoint host; the query itself is never logged.
         LogTargetHost("WebSearch", SearchUrl);
 
+        // This timeout bounds ALL retry attempts collectively (not per-attempt), capping total
+        // user-facing latency. Intentional trade-off: a slow first attempt leaves less time for retries.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_options.TimeoutMs);
 

@@ -235,4 +235,88 @@ public class JinaWebProviderTests
 
         result.Items.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task SearchAsync_RetriesOn429ThenSucceeds()
+    {
+        const string successJson = "{\"data\":[{\"title\":\"A\",\"url\":\"https://a\"}]}";
+        var handler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
+            [HttpStatusCode.TooManyRequests, HttpStatusCode.OK],
+            successJson
+        );
+        var provider = CreateProvider(handler);
+
+        var result = await provider.SearchAsync("q", new WebSearchOptions(), CancellationToken.None);
+
+        result.Items.Should().HaveCount(1);
+        result.Items[0].Title.Should().Be("A");
+    }
+
+    [Fact]
+    public async Task SearchAsync_RetriesOn500ThenSucceeds()
+    {
+        const string successJson = "{\"data\":[{\"title\":\"A\",\"url\":\"https://a\"}]}";
+        var handler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
+            [HttpStatusCode.InternalServerError, HttpStatusCode.OK],
+            successJson
+        );
+        var provider = CreateProvider(handler);
+
+        var result = await provider.SearchAsync("q", new WebSearchOptions(), CancellationToken.None);
+
+        result.Items.Should().HaveCount(1);
+        result.Items[0].Title.Should().Be("A");
+    }
+
+    [Fact]
+    public async Task FetchAsync_CallerCancellation_PropagatesToSendAsync()
+    {
+        // The handler blocks until the token it RECEIVES cancels, so a thrown OperationCanceledException
+        // proves the caller's token threads all the way into HttpClient.SendAsync.
+        var handler = new FakeHttpMessageHandler(
+            async (request, ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+        );
+        var provider = new JinaWebProvider(
+            new HttpClient(handler),
+            new WebToolsOptions(),
+            logger: null,
+            retryOptions: RetryOptions.FastForTests
+        );
+        using var cts = new CancellationTokenSource();
+
+        var task = provider.FetchAsync("https://example.com", new WebFetchOptions(), cts.Token);
+        cts.Cancel();
+
+        var act = async () => await task;
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task FetchAsync_PerCallTimeout_CancelsRequest()
+    {
+        // The handler never completes on its own; the only completion path is cancellation, so the
+        // linked CTS's CancelAfter(TimeoutMs) firing is what surfaces the OperationCanceledException.
+        var handler = new FakeHttpMessageHandler(
+            async (request, ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+        );
+        var provider = new JinaWebProvider(
+            new HttpClient(handler),
+            new WebToolsOptions { TimeoutMs = 30 },
+            logger: null,
+            retryOptions: RetryOptions.FastForTests
+        );
+
+        var act = async () =>
+            await provider.FetchAsync("https://example.com", new WebFetchOptions(), CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+    }
 }

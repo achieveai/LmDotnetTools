@@ -81,6 +81,44 @@ public class WebFetchToolTests
     }
 
     [Fact]
+    public async Task HandleAsync_MinimizesEchoedUrl_DropsQueryAndFragmentButFetchesFullUrl()
+    {
+        var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
+        var tool = CreateTool(provider);
+
+        var text = await InvokeAsync(
+            tool,
+            Args("https://example.com/reset?email=user@example.com&token=sek-ret#frag")
+        );
+
+        // The displayed source label is minimized: query, fragment, and any secrets are dropped.
+        text.Should().NotContain("email=user@example.com");
+        text.Should().NotContain("token=sek-ret");
+        text.Should().NotContain("frag");
+        text.Should().Contain("example.com/reset");
+
+        // Fetching still uses the full URL (only the fragment is stripped by validation), so the
+        // minimization is display-only and does not break the request.
+        provider.ReceivedUrl.Should().Be("https://example.com/reset?email=user@example.com&token=sek-ret");
+    }
+
+    [Fact]
+    public async Task HandleAsync_ProviderUrlWithQuery_NotEchoedVerbatim()
+    {
+        var provider = new FakeWebFetchProvider
+        {
+            Result = new WebFetchResult { Content = "ok", Url = "https://x.com/p?secret=abc" },
+        };
+        var tool = CreateTool(provider);
+
+        var text = await InvokeAsync(tool, Args(SampleUrl));
+
+        // A provider-returned URL carrying a query must not be echoed verbatim into the Source line.
+        text.Should().NotContain("secret=abc");
+        text.Should().Contain("x.com/p");
+    }
+
+    [Fact]
     public async Task HandleAsync_TargetSelectorAndNoCache_ReachProvider()
     {
         var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
@@ -172,7 +210,8 @@ public class WebFetchToolTests
         var text = await InvokeAsync(tool, Args(SampleUrl));
 
         text.Should().EndWith(WebToolOutput.TruncationMarker);
-        text.Length.Should().BeLessThanOrEqualTo(50 + WebToolOutput.TruncationMarker.Length);
+        // OutputCap is the FINAL cap: the truncation marker counts toward it.
+        text.Length.Should().BeLessThanOrEqualTo(50);
     }
 
     [Fact]

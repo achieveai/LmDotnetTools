@@ -127,8 +127,9 @@ public sealed class WebFetchTool
             );
 
             var markdown = WebToolOutput.FormatFetch(result);
-            // Use the validated, fragment-stripped URL actually fetched as the source label (not the raw arg).
-            var framed = WebToolOutput.WrapUntrusted(markdown, validation.Value!);
+            // Minimize the URL for display: the full URL is still fetched, but the source label drops the
+            // query, fragment, and userinfo so secrets/PII in those parts are never echoed to the model.
+            var framed = WebToolOutput.WrapUntrusted(markdown, WebToolOutput.MinimizeUrl(validation.Value));
             var sanitized = WebToolOutput.Sanitize(framed, _options.JinaApiKey);
             var bounded = WebToolOutput.Truncate(sanitized, _options.OutputCap);
             return ToolHandlerResult.FromText(bounded);
