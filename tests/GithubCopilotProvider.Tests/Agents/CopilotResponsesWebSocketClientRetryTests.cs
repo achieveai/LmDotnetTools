@@ -223,6 +223,32 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
     }
 
     [Fact]
+    public async Task Connect_dns_host_not_found_is_not_retried()
+    {
+        var created = new List<FakeSocket>();
+        // WSAHOST_NOT_FOUND — an authoritative DNS "no such host" name-resolution failure (permanent),
+        // distinct from the transient WSATRY_AGAIN. It must NOT consume the retry budget.
+        var dnsFailure = new WebSocketException(
+            WebSocketError.Faulted,
+            new SocketException((int)SocketError.HostNotFound)
+        );
+        await using var client = NewClient(() =>
+        {
+            var socket = new FakeSocket { ConnectError = dnsFailure };
+            created.Add(socket);
+            return socket;
+        });
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        await act.Should().ThrowAsync<WebSocketException>();
+
+        created.Should().ContainSingle("a DNS name-resolution failure (HostNotFound) is permanent and not retried");
+        created[0].Disposed.Should().BeTrue();
+        created[0].Sent.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Cancel_during_connect_throws_and_disposes_socket()
     {
         using var cts = new CancellationTokenSource();
@@ -329,6 +355,9 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
         _ = await CollectAsync(client.StreamResponseAsync(Request()));
 
         created.Should().HaveCount(2);
+        created[0]
+            .Disposed.Should()
+            .BeTrue("the stale, disconnected socket from the truncated turn must be disposed on reconnect, not leaked");
         var secondFrame = JsonDocument.Parse(created[1].Sent.Single()).RootElement;
         secondFrame.TryGetProperty("previous_response_id", out _).Should().BeFalse();
     }

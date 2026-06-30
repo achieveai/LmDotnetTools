@@ -162,6 +162,16 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
             return _socket;
         }
 
+        // A previously-stored socket that is no longer connected (e.g. after a faulted/truncated turn)
+        // must be disposed before we replace it, otherwise its underlying connection leaks until
+        // finalization. Null it out first so a failed reconnect never leaves a half-open socket stored.
+        if (_socket is not null)
+        {
+            var stale = _socket;
+            _socket = null;
+            await DisposeSocketSafelyAsync(stale).ConfigureAwait(false);
+        }
+
         // Pre-turn connect-retry: this runs ONLY before the first response.create frame is sent, so a
         // retry is safe (idempotent). Each attempt refreshes the token + headers (fresh x-interaction-id)
         // and creates a NEW socket; a failed socket is disposed locally and _socket is assigned ONLY
@@ -228,12 +238,14 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
 
         return wsEx.InnerException switch
         {
+            // TryAgain (WSATRY_AGAIN) is the non-authoritative "DNS hiccup, retry" case. HostNotFound
+            // (WSAHOST_NOT_FOUND) is an authoritative "no such host" name-resolution failure and is NOT
+            // retried — see the doc comment above.
             SocketException socketEx => socketEx.SocketErrorCode
                 is SocketError.ConnectionRefused
                     or SocketError.TimedOut
                     or SocketError.HostUnreachable
-                    or SocketError.TryAgain
-                    or SocketError.HostNotFound,
+                    or SocketError.TryAgain,
             HttpRequestException { StatusCode: { } status } => HttpRetryHelper.IsRetryableStatusCode(status),
             _ => false,
         };
