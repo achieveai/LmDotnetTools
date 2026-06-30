@@ -14,6 +14,10 @@
          review_outbox / review_artifact). Pinned to the version already used across LmCore /
          LmMultiTurn / Misc. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
+    <!-- The daemon drives the sandbox gateway as a DIRECT MCP client (plan D12): it connects an
+         McpClient over HttpClientTransport (X-Session-ID header) and calls the gateway's Bash tool
+         to run all deterministic git/fs work. Pinned to the version used across the MCP projects. -->
+    <PackageReference Include="ModelContextProtocol" Version="1.3.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- All reusable agent/sandbox/OAuth/webhook machinery lives in LmAgentInfra (shared with
