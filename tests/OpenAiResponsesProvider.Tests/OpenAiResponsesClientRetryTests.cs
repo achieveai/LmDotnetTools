@@ -154,6 +154,24 @@ public sealed class OpenAiResponsesClientRetryTests
     }
 
     [Fact]
+    public async Task ReadSseAsync_cancels_promptly_on_idle_open_stream()
+    {
+        using var stream = new NeverEndingStream();
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+
+        var act = async () =>
+        {
+            await foreach (var _ in OpenAiResponsesClient.ReadSseAsync(stream, cts.Token)) { }
+        };
+
+        // The async/cancellation-driven loop surfaces cancellation promptly on an idle-but-open stream.
+        // The old `while (!reader.EndOfStream)` would instead perform a SYNCHRONOUS read to probe EOF —
+        // which this stream forbids (throws) and would block — so this fails under the old implementation.
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
     public async Task StreamResponseAsync_emits_retry_warning_through_supplied_logger()
     {
         var logger = new ListLogger();
@@ -225,5 +243,40 @@ public sealed class OpenAiResponsesClientRetryTests
             length = 0;
             return false;
         }
+    }
+
+    /// <summary>
+    ///     An open stream that never yields data or EOF until cancelled (an idle-but-open SSE stream).
+    ///     The synchronous <see cref="Read(byte[], int, int)"/> throws so a synchronous EOF probe (the
+    ///     old <c>StreamReader.EndOfStream</c> code path) is caught immediately rather than blocking.
+    /// </summary>
+    private sealed class NeverEndingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0; // unreachable — the await above only completes by throwing on cancellation
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException("synchronous Read must not be used on a live SSE stream");
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
