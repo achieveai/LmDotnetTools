@@ -79,6 +79,27 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
 
+// Webhook security layer (plan §9). Enforced by a daemon-only middleware in front of the shared
+// AuthWebhookController: HMAC over the raw body, ±5min timestamp, single-use delivery id, JSON-only and
+// max-body checks, provider allow-list. The signing secret is shared with the gateway (config or a
+// random fallback so an unconfigured daemon fails closed). The allow-list mirrors the registered
+// providers (GitHub always; ADO when enabled).
+builder.Services.AddSingleton(new WebhookVerificationLimits());
+builder.Services.AddSingleton(new WebhookSigningSecret(
+    builder.Configuration["Auth:Webhook:SigningSecret"]));
+builder.Services.AddSingleton(sp =>
+{
+    var limits = sp.GetRequiredService<WebhookVerificationLimits>();
+    var allowed = daemonOptions.EnableAdoProvider ? new[] { "github", "ado" } : ["github"];
+    return new WebhookRequestVerifier(
+        sp.GetRequiredService<WebhookSigningSecret>(),
+        allowed,
+        limits.TimestampTolerance,
+        limits.MaxBodyBytes);
+});
+builder.Services.AddSingleton(sp =>
+    new DeliveryReplayCache(sp.GetRequiredService<WebhookVerificationLimits>().ReplayWindow));
+
 // ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
 // The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
 // so the path is test-isolated via CodeReviewDaemon:DatabasePath; the default lives beside the binary.
@@ -161,6 +182,12 @@ builder.Services
     });
 
 var app = builder.Build();
+
+// Verify the gateway's signature/timestamp/delivery + body before MVC binds it (plan §9). Scoped to the
+// webhook path via UseWhen so it adds NO route — the daemon's single-endpoint surface (AC#4) is intact.
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/api/auth/webhook", StringComparison.OrdinalIgnoreCase),
+    branch => branch.UseMiddleware<WebhookVerificationMiddleware>());
 
 app.MapControllers();
 
