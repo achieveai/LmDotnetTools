@@ -34,8 +34,9 @@ builder.WebHost.ConfigureKestrel(options =>
 {
     options.Listen(IPAddress.Loopback, config.Port);
     options.Listen(IPAddress.IPv6Loopback, config.Port);
-    // Local dev proxy: allow large request bodies (big contexts) on a trusted loopback socket.
-    options.Limits.MaxRequestBodySize = null;
+    // Local dev proxy on a trusted loopback socket: allow large request bodies (big contexts /
+    // images) but keep a finite cap so a pathological body can't grow the buffer unbounded.
+    options.Limits.MaxRequestBodySize = 100L * 1024 * 1024; // 100 MB
 });
 
 // --- Dependency injection ----------------------------------------------------
@@ -573,12 +574,20 @@ internal static class ProxyHttp
                     }
                     catch (Exception ex)
                     {
-                        // Mid-stream upstream failure (drop, idle timeout, decode error) AFTER headers were
-                        // sent. Synthesize a terminal SSE error so the client doesn't hang forever.
+                        // Mid-stream upstream failure (drop, idle timeout, decode error). For SSE, synthesize a
+                        // terminal error event so the client doesn't hang. For a non-SSE response we can still
+                        // return a clean 502 *if* the body hasn't started; once bytes are flushed the status is
+                        // locked and the only option is to stop (truncated).
                         logger.LogWarning("Mid-stream upstream failure: {Reason}", ex.Message);
                         if (isSse)
                         {
                             await WriteTerminalSseErrorAsync(ctx);
+                        }
+                        else if (!ctx.Response.HasStarted)
+                        {
+                            await WriteAnthropicErrorAsync(
+                                ctx, StatusCodes.Status502BadGateway, "api_error",
+                                "The upstream Copilot stream failed before completion.");
                         }
 
                         return;
@@ -596,9 +605,10 @@ internal static class ProxyHttp
                         await ctx.Response.Body.WriteAsync(buffer.AsMemory(0, read), linked.Token);
                         await ctx.Response.Body.FlushAsync(linked.Token);
                     }
-                    catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+                    catch (OperationCanceledException)
+                        when (ctx.RequestAborted.IsCancellationRequested || idleCts.IsCancellationRequested)
                     {
-                        return; // Client gone.
+                        return; // Client gone, or the idle deadline fired on a stalled client.
                     }
                 }
             }

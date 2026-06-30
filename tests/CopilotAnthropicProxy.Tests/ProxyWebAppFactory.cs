@@ -29,16 +29,30 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     private readonly ICopilotTokenProvider _tokenProvider;
 
     /// <summary>Creates a factory whose upstream is driven by <paramref name="upstream"/>.</summary>
+    /// <param name="upstream">Fake upstream handler invoked for every forwarded request.</param>
+    /// <param name="tokenProvider">Token provider to inject; defaults to a fixed fake token.</param>
+    /// <param name="model">The model id the proxy is configured to rewrite every request to.</param>
+    /// <param name="idleTimeoutSeconds">
+    ///     Optional per-request idle timeout for the proxy (sets <c>COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS</c>);
+    ///     used by the 504 test to make a stalled upstream time out quickly.
+    /// </param>
     public ProxyWebAppFactory(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> upstream,
         ICopilotTokenProvider? tokenProvider = null,
-        string model = ConfiguredModel)
+        string model = ConfiguredModel,
+        int? idleTimeoutSeconds = null)
     {
         ArgumentNullException.ThrowIfNull(upstream);
 
         _upstreamHandler = new FakeHttpMessageHandler(upstream);
         _tokenProvider = tokenProvider ?? new FakeCopilotTokenProvider("fake-token");
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", model);
+        if (idleTimeoutSeconds is not null)
+        {
+            Environment.SetEnvironmentVariable(
+                "COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS",
+                idleTimeoutSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -68,6 +82,7 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             if (disposing)
             {
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", null);
+                Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS", null);
             }
         }
     }

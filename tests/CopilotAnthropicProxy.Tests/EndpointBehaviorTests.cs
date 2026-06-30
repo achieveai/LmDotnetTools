@@ -42,6 +42,23 @@ public sealed class EndpointBehaviorTests
     }
 
     [Fact]
+    public async Task CountTokens_rewrites_model_in_the_forwarded_body()
+    {
+        string? forwardedBody = null;
+        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
+        {
+            forwardedBody = await req.Content!.ReadAsStringAsync(ct);
+            return TestUpstream.Json("{\"input_tokens\":7}");
+        });
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/v1/messages/count_tokens", ValidBody());
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>().Should().Be(ProxyWebAppFactory.ConfiguredModel);
+    }
+
+    [Fact]
     public async Task Malformed_request_body_returns_400_without_calling_upstream()
     {
         var upstreamCalled = false;
