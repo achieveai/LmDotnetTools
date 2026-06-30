@@ -24,4 +24,18 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         Writes.Add(path);
         return Task.CompletedTask;
     }
+
+    public Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken)
+    {
+        var prefix = directory.TrimEnd('/') + "/";
+        IReadOnlyList<string> names =
+        [
+            .. Files.Keys
+                .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
+                .Select(key => key[prefix.Length..])
+                .Where(rest => !rest.Contains('/', StringComparison.Ordinal))
+                .OrderBy(name => name, StringComparer.Ordinal),
+        ];
+        return Task.FromResult(names);
+    }
 }

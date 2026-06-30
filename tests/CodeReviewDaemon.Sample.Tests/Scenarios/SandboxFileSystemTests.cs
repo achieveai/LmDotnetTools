@@ -57,4 +57,28 @@ public sealed class SandboxFileSystemTests
 
         content.Should().BeNull();
     }
+
+    [Fact]
+    public async Task List_splits_ls_output_into_entry_names()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains("ls -1A '/work/reviewbot/KnowledgeBase'", new SandboxCommandResult(0, "_toc.md\n.gitkeep\nnull-checks.md\n", string.Empty));
+        var fs = new SandboxFileSystem(runner);
+
+        var names = await fs.ListFilesAsync("/work/reviewbot/KnowledgeBase", CancellationToken.None);
+
+        names.Should().Equal("_toc.md", ".gitkeep", "null-checks.md");
+    }
+
+    [Fact]
+    public async Task List_returns_empty_when_the_directory_is_missing()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains("ls -1A", new SandboxCommandResult(2, string.Empty, "No such file or directory"));
+        var fs = new SandboxFileSystem(runner);
+
+        var names = await fs.ListFilesAsync("/work/reviewbot/absent", CancellationToken.None);
+
+        names.Should().BeEmpty();
+    }
 }

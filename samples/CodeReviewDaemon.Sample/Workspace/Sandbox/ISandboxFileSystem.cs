@@ -14,4 +14,12 @@ internal interface ISandboxFileSystem
 
     /// <summary>Writes UTF-8 text, creating parent directories as needed (overwrites if present).</summary>
     Task WriteFileAsync(string path, string content, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Lists the entry names directly under <paramref name="directory"/> (non-recursive; names only,
+    /// not full paths), or an empty list when the directory does not exist. The single consumer is the
+    /// Knowledge Base table-of-contents regeneration, which enumerates <c>KnowledgeBase/</c> to rebuild
+    /// <c>_toc.md</c> from the entries actually present.
+    /// </summary>
+    Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken);
 }

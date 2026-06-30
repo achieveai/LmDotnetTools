@@ -59,6 +59,23 @@ internal sealed class SandboxFileSystem : ISandboxFileSystem
         }
     }
 
+    public async Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+
+        // ls -1A: one entry per line, including dotfiles (.gitkeep) but not . / .. — a missing directory
+        // fails the command and is reported as an empty listing, matching the interface contract.
+        var result = await _runner
+            .RunAsync(new SandboxCommand(["sh", "-lc", $"ls -1A {PosixShell.Quote(directory)}"]), cancellationToken)
+            .ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            return [];
+        }
+
+        return result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
     private static string ParentDirectory(string path)
     {
         var slash = path.LastIndexOf('/');
