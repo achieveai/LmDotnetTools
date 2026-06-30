@@ -145,11 +145,13 @@ public static class HttpRetryHelper
                 {
                     responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is not HttpRequestException and not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // If reading the body fails, fall back to status-only diagnostics. Deliberate
-                    // cancellation is NOT swallowed here — it must surface as cancellation, not as a
-                    // synthesized HttpRequestException transport failure.
+                    // A failed body read is diagnostic-only: fall back to status-only diagnostics and throw
+                    // with the ALREADY-CAPTURED original status below. This deliberately also swallows an
+                    // HttpRequestException raised by the body read itself — otherwise it would escape to the
+                    // outer retry catch and could retry a non-retryable status (or mask the real status).
+                    // Deliberate cancellation is NOT swallowed — it must surface as cancellation.
                     responseBody = string.Empty;
                 }
                 finally

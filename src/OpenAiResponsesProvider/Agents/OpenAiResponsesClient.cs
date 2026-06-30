@@ -164,7 +164,10 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, 1024, leaveOpen: true);
         var dataBuffer = new StringBuilder();
 
-        while (!reader.EndOfStream)
+        // Fully async/cancellation-driven: do NOT gate on StreamReader.EndOfStream, which performs a
+        // synchronous read to detect EOF and can block on an idle-but-open SSE stream. ReadLineAsync
+        // returns null at EOF, which terminates the loop.
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 

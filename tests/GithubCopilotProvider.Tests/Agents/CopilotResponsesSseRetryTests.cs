@@ -2,6 +2,7 @@ using System.Net;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
@@ -24,24 +25,6 @@ public sealed class CopilotResponsesSseRetryTests
     private sealed class StubTokenProvider : ICopilotTokenProvider
     {
         public Task<string> GetTokenAsync(CancellationToken cancellationToken = default) => Task.FromResult("gho_test");
-    }
-
-    private sealed class ListLogger : ILogger
-    {
-        public List<(LogLevel Level, string Message)> Entries { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter
-        ) => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private static ResponseCreateRequest Request() =>

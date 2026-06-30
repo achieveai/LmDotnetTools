@@ -82,6 +82,39 @@ public sealed class HttpRetryHelperDisposalTests
         responses[0].Disposed.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task ExecuteHttpWithRetryAsync_body_read_failure_keeps_status_and_does_not_retry()
+    {
+        var responses = new List<TrackingHttpResponseMessage>();
+        var attempts = 0;
+
+        var act = async () =>
+            await HttpRetryHelper.ExecuteHttpWithRetryAsync(
+                () =>
+                {
+                    attempts++;
+                    var resp = new TrackingHttpResponseMessage(HttpStatusCode.BadRequest)
+                    {
+                        // The body read fails with an exception whose message LOOKS retryable.
+                        Content = new ThrowOnReadContent(new HttpRequestException("502 Bad Gateway")),
+                    };
+                    responses.Add(resp);
+                    return Task.FromResult<HttpResponseMessage>(resp);
+                },
+                resp => Task.FromResult(resp),
+                NullLogger.Instance,
+                RetryOptions.FastForTests
+            );
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+
+        // The ORIGINAL 400 status is preserved, and a non-retryable status is NOT retried just because the
+        // body read threw a retryable-looking exception (it must not escape to the outer retry catch).
+        ex.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        attempts.Should().Be(1);
+        responses.Should().ContainSingle().Which.Disposed.Should().BeTrue();
+    }
+
     private static Task<HttpResponseMessage> NewResponse(
         List<TrackingHttpResponseMessage> sink,
         HttpStatusCode status
@@ -97,6 +130,22 @@ public sealed class HttpRetryHelperDisposalTests
     {
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
             throw new OperationCanceledException();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    /// <summary>Content that throws a supplied exception when its body is read.</summary>
+    private sealed class ThrowOnReadContent : HttpContent
+    {
+        private readonly Exception _exception;
+
+        public ThrowOnReadContent(Exception exception) => _exception = exception;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw _exception;
 
         protected override bool TryComputeLength(out long length)
         {
