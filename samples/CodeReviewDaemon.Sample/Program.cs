@@ -1,10 +1,15 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Hosting;
+using CodeReviewDaemon.Sample.Orchestration;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
+using Microsoft.Data.Sqlite;
 
 // ── One-time setup subcommand ────────────────────────────────────────────────────────────────────
 // `CodeReviewDaemon reviewbot init --url <ReviewBotRepoUrl>` seeds/validates the ReviewBot repo and
@@ -72,6 +77,67 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 // interactive sign-in that no one is present to complete.
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
+
+// ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
+// The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
+// so the path is test-isolated via CodeReviewDaemon:DatabasePath; the default lives beside the binary.
+var databasePath = string.IsNullOrWhiteSpace(daemonOptions.DatabasePath)
+    ? Path.Combine(AppContext.BaseDirectory, "review.db")
+    : daemonOptions.DatabasePath;
+var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+// Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is the serial PrPollingService
+// loop (each PR is orchestrated to completion before the next), so concurrent use never arises today.
+// Any future fan-out (parallel arms, a second poller) MUST serialize access before sharing this store.
+builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
+
+// Sandbox: all deterministic git/fs work runs in the gateway, driven as a direct MCP client. The
+// connection is lazy (opened on first command), so registering it does no work at boot and the daemon
+// stays inert until a repo is allow-listed. The gateway base URL / session come from the environment.
+builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrator(
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
+    sp.GetRequiredService<ILogger<SandboxOrchestrator>>()));
+builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
+    new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
+
+// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run.
+builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactory>();
+
+// PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
+// OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
+builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
+    new HttpClient(),
+    sp.GetRequiredService<GitHubOAuthProvider>(),
+    sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
+builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
+    new HttpClient(),
+    sp.GetRequiredService<GitHubOAuthProvider>(),
+    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
+
+if (daemonOptions.EnableAdoProvider)
+{
+    builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
+        new HttpClient(),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoPrProvider>>()));
+    builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
+        new HttpClient(),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+}
+
+// The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
+builder.Services.AddSingleton<IReviewStageExecutor, DaemonReviewStageExecutor>();
+builder.Services.AddSingleton<PrOrchestrator>();
+
+// The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
+// exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
+builder.Services.AddHostedService(sp => new PrPollingService(
+    PrPollTargetBuilder.Build(daemonOptions, sp.GetRequiredService<ILogger<PrPollingService>>()),
+    sp.GetServices<IPrProvider>(),
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<PrOrchestrator>(),
+    sp.GetRequiredService<ILogger<PrPollingService>>()));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth

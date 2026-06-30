@@ -13,10 +13,16 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
     private readonly string _tokenStoreDir =
         Path.Combine(Path.GetTempPath(), "codereviewdaemon-tests", Guid.NewGuid().ToString("N"));
 
+    private readonly string _databasePath =
+        Path.Combine(Path.GetTempPath(), "codereviewdaemon-tests", Guid.NewGuid().ToString("N") + ".db");
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
         builder.UseSetting("Auth:TokenStoreDir", _tokenStoreDir);
+        // Isolate the orchestration store (it migrates SQLite at construction) to a throwaway file so
+        // booting the host for a test never touches a developer's review.db beside the binary.
+        builder.UseSetting("CodeReviewDaemon:DatabasePath", _databasePath);
     }
 
     protected override void Dispose(bool disposing)
@@ -27,15 +33,34 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
         }
         finally
         {
-            if (disposing && Directory.Exists(_tokenStoreDir))
+            if (disposing)
             {
-                try
+                if (Directory.Exists(_tokenStoreDir))
                 {
-                    Directory.Delete(_tokenStoreDir, recursive: true);
+                    try
+                    {
+                        Directory.Delete(_tokenStoreDir, recursive: true);
+                    }
+                    catch
+                    {
+                        // best-effort temp cleanup
+                    }
                 }
-                catch
+
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                foreach (var suffix in new[] { "", "-wal", "-shm" })
                 {
-                    // best-effort temp cleanup
+                    try
+                    {
+                        if (File.Exists(_databasePath + suffix))
+                        {
+                            File.Delete(_databasePath + suffix);
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort temp cleanup
+                    }
                 }
             }
         }

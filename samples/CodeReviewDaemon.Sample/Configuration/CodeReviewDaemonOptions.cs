@@ -44,4 +44,11 @@ internal sealed class CodeReviewDaemonOptions
     /// added before the daemon will poll or review it.
     /// </summary>
     public IReadOnlyList<string> EnabledRepos { get; init; } = [];
+
+    /// <summary>
+    /// Path to the SQLite orchestration database. When unset (default) the daemon uses
+    /// <c>review.db</c> under <see cref="AppContext.BaseDirectory"/>. Tests override it to a throwaway
+    /// file so the store's migrate-on-construction side effect stays isolated.
+    /// </summary>
+    public string? DatabasePath { get; init; }
 }

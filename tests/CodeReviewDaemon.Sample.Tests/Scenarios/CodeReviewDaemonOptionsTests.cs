@@ -20,6 +20,7 @@ public sealed class CodeReviewDaemonOptionsTests
         options.EnableABVariants.Should().BeFalse();
         options.EnableAdoProvider.Should().BeFalse("the daemon is GitHub-only until ADO is enabled");
         options.EnabledRepos.Should().BeEmpty("no repo is reviewed until explicitly allow-listed");
+        options.DatabasePath.Should().BeNull("the default database path is resolved at startup, not bound");
     }
 
     [Fact]
