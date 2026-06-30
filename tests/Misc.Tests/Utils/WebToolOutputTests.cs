@@ -164,10 +164,36 @@ public class WebToolOutputTests
         // Act
         var markdown = WebToolOutput.FormatSearch(result);
 
-        // Assert
-        markdown.Should().Contain("### 1. [First](https://a.example.com)");
+        // Assert (result URLs are minimized, so an empty path renders as a trailing slash)
+        markdown.Should().Contain("### 1. [First](https://a.example.com/)");
         markdown.Should().Contain("first snippet");
-        markdown.Should().Contain("### 2. [Second](https://b.example.com)");
+        markdown.Should().Contain("### 2. [Second](https://b.example.com/)");
+    }
+
+    [Fact]
+    public void FormatSearch_MinimizesItemUrls_DropsQueryFragmentAndUserInfo()
+    {
+        // Arrange - a result URL carrying PII/secrets in its query, fragment, and userinfo.
+        var result = new WebSearchResult
+        {
+            Items =
+            [
+                new WebSearchItem
+                {
+                    Title = "Reset",
+                    Url = "https://example.com/reset?email=user@example.com&token=secret#frag",
+                },
+            ],
+        };
+
+        // Act
+        var markdown = WebToolOutput.FormatSearch(result);
+
+        // Assert - only scheme://host/path survives in the rendered link target.
+        markdown.Should().Contain("example.com/reset");
+        markdown.Should().NotContain("email=user@example.com");
+        markdown.Should().NotContain("token=secret");
+        markdown.Should().NotContain("frag");
     }
 
     [Fact]

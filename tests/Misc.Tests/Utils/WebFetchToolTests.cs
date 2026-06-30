@@ -139,6 +139,35 @@ public class WebFetchToolTests
     }
 
     [Fact]
+    public async Task HandleAsync_TargetSelectorWithControlChar_OmittedFromProviderOptions()
+    {
+        var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
+        var tool = CreateTool(provider);
+        // (char)10 is LF: a CR/LF in the selector could enable header injection via X-Target-Selector,
+        // which is added with TryAddWithoutValidation. Built at runtime, never typed into the file.
+        var selector = "a" + (char)10 + "b";
+        var argsJson = JsonSerializer.Serialize(new { url = SampleUrl, targetSelector = selector });
+
+        _ = await InvokeAsync(tool, argsJson);
+
+        provider.ReceivedOptions!.TargetSelector.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task HandleAsync_OverlongTargetSelector_OmittedFromProviderOptions()
+    {
+        var provider = new FakeWebFetchProvider { Result = new WebFetchResult { Content = "ok" } };
+        var tool = CreateTool(provider);
+        var selector = new string('a', 257); // exceeds the 256-character cap
+
+        var argsJson = JsonSerializer.Serialize(new { url = SampleUrl, targetSelector = selector });
+
+        _ = await InvokeAsync(tool, argsJson);
+
+        provider.ReceivedOptions!.TargetSelector.Should().BeNull();
+    }
+
+    [Fact]
     public async Task HandleAsync_HttpRequestException404_ReturnsFriendlyMessageWithoutBody()
     {
         var provider = new FakeWebFetchProvider

@@ -47,6 +47,10 @@ public class WebInputValidatorTests
     [InlineData("http://[::1]/")] // IPv6 loopback
     [InlineData("http://[fd00::1]/")] // IPv6 unique-local (ULA)
     [InlineData("http://[fe80::1]/")] // IPv6 link-local
+    [InlineData("http://[::ffff:127.0.0.1]/")] // IPv4-mapped IPv6 loopback
+    [InlineData("http://[::ffff:10.0.0.1]/")] // IPv4-mapped IPv6 private 10/8
+    [InlineData("http://[::ffff:192.168.1.1]/")] // IPv4-mapped IPv6 private 192.168/16
+    [InlineData("http://[::ffff:169.254.169.254]/")] // IPv4-mapped IPv6 link-local (cloud metadata)
     [InlineData("http://172.16.0.1/")] // private 172.16/12 (lower boundary)
     [InlineData("http://172.31.255.255/")] // private 172.16/12 (upper boundary)
     [InlineData("http://224.0.0.1/")] // multicast 224/4

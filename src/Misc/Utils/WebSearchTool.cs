@@ -136,13 +136,16 @@ public sealed class WebSearchTool
 
         try
         {
+            // The optional parameters are LLM-controlled, so validate them at this trust boundary before
+            // they flow into the provider request: clamp the count and drop malformed locale codes
+            // (rather than failing the whole call).
             var result = await _provider.SearchAsync(
                 validation.Value!,
                 new WebSearchOptions
                 {
-                    Count = count,
-                    Country = country,
-                    Language = language,
+                    Count = ClampCount(count),
+                    Country = NormalizeCountry(country),
+                    Language = NormalizeLanguage(language),
                 },
                 cancellationToken
             );
@@ -181,6 +184,49 @@ public sealed class WebSearchTool
         {
             return Error("WebSearch error: could not run the search.");
         }
+    }
+
+    /// <summary>
+    ///     Clamps a requested result count into the supported <c>[1, 20]</c> range, leaving an absent
+    ///     count (<c>null</c>) untouched so the backend default applies.
+    /// </summary>
+    private static int? ClampCount(int? count) => count is int value ? Math.Clamp(value, 1, 20) : null;
+
+    /// <summary>
+    ///     Accepts a country (Jina <c>gl</c>) only when it is a two-letter alpha code; otherwise omits it.
+    /// </summary>
+    private static string? NormalizeCountry(string? country) =>
+        country is { Length: 2 } && char.IsAsciiLetter(country[0]) && char.IsAsciiLetter(country[1])
+            ? country
+            : null;
+
+    /// <summary>
+    ///     Accepts a language (Jina <c>hl</c>) only when it matches <c>^[A-Za-z]{2,5}(-[A-Za-z0-9]{1,8})?$</c>
+    ///     (a short primary subtag with an optional single secondary subtag); otherwise omits it.
+    /// </summary>
+    private static string? NormalizeLanguage(string? language) => IsValidLanguage(language) ? language : null;
+
+    private static bool IsValidLanguage(string? language)
+    {
+        if (string.IsNullOrEmpty(language))
+        {
+            return false;
+        }
+
+        var dash = language.IndexOf('-');
+        var primary = dash < 0 ? language : language[..dash];
+        if (primary.Length is < 2 or > 5 || !primary.All(char.IsAsciiLetter))
+        {
+            return false;
+        }
+
+        if (dash < 0)
+        {
+            return true;
+        }
+
+        var secondary = language[(dash + 1)..];
+        return secondary.Length is >= 1 and <= 8 && secondary.All(char.IsAsciiLetterOrDigit);
     }
 
     /// <summary>

@@ -139,8 +139,9 @@ public static class HttpRetryHelper
                 {
                     if (!response.IsSuccessStatusCode)
                     {
-                        // Try to read the response body for better error information
-                        var responseBody = await response.Content.ReadAsStringAsync();
+                        // Try to read the response body for better error information. Honor the
+                        // cancellation token so a body that never completes cannot hang the call.
+                        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
                         var errorMessage =
                             $"HTTP request failed with status {response.StatusCode} ({response.ReasonPhrase})";
                         if (!string.IsNullOrWhiteSpace(responseBody))
@@ -151,9 +152,11 @@ public static class HttpRetryHelper
                         throw new HttpRequestException(errorMessage, null, response.StatusCode);
                     }
                 }
-                catch (Exception ex) when (ex is not HttpRequestException)
+                catch (Exception ex) when (ex is not HttpRequestException and not OperationCanceledException)
                 {
-                    // If reading response body fails, fall back to standard behavior
+                    // If reading the response body fails for some other reason, fall back to standard
+                    // behavior. Cancellation is deliberately excluded above so it surfaces as an
+                    // OperationCanceledException instead of being masked as a status error.
                     _ = response.EnsureSuccessStatusCode();
                 }
 

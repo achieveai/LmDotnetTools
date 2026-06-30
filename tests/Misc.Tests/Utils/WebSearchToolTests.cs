@@ -152,6 +152,73 @@ public class WebSearchToolTests
     }
 
     [Theory]
+    [InlineData(-5, 1)] // negative clamps up to the minimum
+    [InlineData(0, 1)] // zero clamps up to the minimum
+    [InlineData(9999, 20)] // huge clamps down to the maximum
+    [InlineData(10, 10)] // in-range passes through unchanged
+    public async Task HandleAsync_CountOutOfRange_ClampedBeforeReachingProvider(int requested, int expected)
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+
+        _ = await InvokeAsync(tool, JsonSerializer.Serialize(new { query = "cats", count = requested }));
+
+        provider.ReceivedOptions!.Count.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("USA")] // 3 letters, not a 2-letter code
+    [InlineData("1!")] // non-alpha
+    [InlineData("u")] // too short
+    public async Task HandleAsync_MalformedCountry_OmittedFromProviderOptions(string country)
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+
+        _ = await InvokeAsync(tool, JsonSerializer.Serialize(new { query = "cats", country }));
+
+        provider.ReceivedOptions!.Country.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("abcdef")] // 6 letters, exceeds the {2,5} primary subtag
+    [InlineData("e")] // 1 letter, below the {2,5} primary subtag
+    [InlineData("en_US")] // underscore is not an allowed separator
+    [InlineData("en-")] // trailing separator with empty subtag
+    public async Task HandleAsync_MalformedLanguage_OmittedFromProviderOptions(string language)
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+
+        _ = await InvokeAsync(tool, JsonSerializer.Serialize(new { query = "cats", language }));
+
+        provider.ReceivedOptions!.Language.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task HandleAsync_ValidLocaleWithSubtag_ReachesProviderOptions()
+    {
+        var provider = new FakeWebSearchProvider
+        {
+            Result = new WebSearchResult { Items = [new WebSearchItem { Title = "T", Url = "https://t.example" }] },
+        };
+        var tool = CreateTool(provider);
+
+        _ = await InvokeAsync(tool, JsonSerializer.Serialize(new { query = "cats", language = "en-US" }));
+
+        provider.ReceivedOptions!.Language.Should().Be("en-US");
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("   ")]
     public async Task HandleAsync_InvalidQuery_ReturnsErrorAndDoesNotCallProvider(string query)

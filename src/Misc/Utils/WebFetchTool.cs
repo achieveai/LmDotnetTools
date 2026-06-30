@@ -120,9 +120,12 @@ public sealed class WebFetchTool
 
         try
         {
+            // targetSelector is LLM-controlled and is later added to the X-Target-Selector header via
+            // TryAddWithoutValidation, so validate it at this trust boundary: a control character (CR/LF)
+            // or an overlong value could enable header injection. Omit it rather than failing the call.
             var result = await _provider.FetchAsync(
                 validation.Value!,
-                new WebFetchOptions { TargetSelector = targetSelector, NoCache = noCache },
+                new WebFetchOptions { TargetSelector = NormalizeTargetSelector(targetSelector), NoCache = noCache },
                 cancellationToken
             );
 
@@ -153,6 +156,21 @@ public sealed class WebFetchTool
             return Error("WebFetch error: could not fetch the page.");
         }
     }
+
+    /// <summary>
+    ///     The maximum length accepted for <c>targetSelector</c>; longer values are omitted.
+    /// </summary>
+    private const int MaxTargetSelectorLength = 256;
+
+    /// <summary>
+    ///     Accepts a <c>targetSelector</c> only when it carries no control characters (including CR/LF,
+    ///     which could enable header injection) and stays within <see cref="MaxTargetSelectorLength" />;
+    ///     otherwise omits it (<c>null</c>) so no <c>X-Target-Selector</c> header is sent.
+    /// </summary>
+    private static string? NormalizeTargetSelector(string? selector) =>
+        selector is not null && selector.Length <= MaxTargetSelectorLength && !selector.Any(char.IsControl)
+            ? selector
+            : null;
 
     /// <summary>
     ///     Maps an HTTP failure to a bounded message. The status code is the only upstream detail

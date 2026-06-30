@@ -111,7 +111,9 @@ public static class WebToolOutput
                 .Append(". [")
                 .Append(item.Title)
                 .Append("](")
-                .Append(item.Url)
+                // Minimize the result URL so query/fragment/userinfo (which may carry PII/secrets) are
+                // never echoed back to the model; only scheme://host[:port]/path survives.
+                .Append(MinimizeUrl(item.Url))
                 .Append(')');
 
             if (!string.IsNullOrWhiteSpace(item.Snippet))

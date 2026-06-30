@@ -152,6 +152,14 @@ public static class WebInputValidator
     /// </summary>
     private static bool IsBlockedIp(IPAddress ip)
     {
+        // IPv4-mapped IPv6 literals (e.g. ::ffff:127.0.0.1, ::ffff:169.254.169.254) must be evaluated
+        // as their underlying IPv4 address; otherwise the IPv4 private/loopback/link-local checks below
+        // are bypassed and the mapped form becomes an SSRF hole.
+        if (ip.IsIPv4MappedToIPv6)
+        {
+            ip = ip.MapToIPv4();
+        }
+
         // Unspecified / "any" address (0.0.0.0 or [::]): routes to every local interface, so it is an
         // SSRF vector equivalent to loopback and must be rejected.
         if (IPAddress.Any.Equals(ip) || IPAddress.IPv6Any.Equals(ip))
