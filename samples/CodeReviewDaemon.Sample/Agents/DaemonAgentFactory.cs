@@ -41,4 +41,25 @@ internal static class DaemonAgentFactory
             SystemPrompt: ReviewSystemPrompt,
             EnabledTools: null,
             EnabledBuiltInTools: []);
+
+    /// <summary>
+    /// Builds the review profile for one A/B <paramref name="variant"/>. The variant's
+    /// <see cref="ReviewVariant.SystemPrompt"/> becomes the profile's prompt — the prompt/skill axis of
+    /// the comparison — while tool gating stays identical to <see cref="CreateReviewProfile"/> (no
+    /// built-ins; MCP allow-list deferred to the executor). The <see cref="ReviewVariant.ModelId"/> and
+    /// the <see cref="ReviewVariant.CanWrite"/> capability are applied by the executor, not the profile,
+    /// so the profile stays a plain declaration.
+    /// </summary>
+    public static AgentProfile CreateVariantProfile(ReviewVariant variant)
+    {
+        ArgumentNullException.ThrowIfNull(variant);
+        ArgumentException.ThrowIfNullOrWhiteSpace(variant.SystemPrompt);
+
+        return new AgentProfile(
+            Id: $"{ReviewProfileId}-{variant.VariantId}",
+            Name: $"Review Agent ({variant.VariantId})",
+            SystemPrompt: variant.SystemPrompt,
+            EnabledTools: null,
+            EnabledBuiltInTools: []);
+    }
 }

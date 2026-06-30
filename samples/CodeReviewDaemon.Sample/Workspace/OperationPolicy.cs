@@ -89,10 +89,21 @@ internal sealed record ReviewScope(
 internal sealed class OperationPolicy
 {
     private readonly ReviewScope _scope;
+    private readonly bool _allowWriteOperations;
 
-    public OperationPolicy(ReviewScope scope)
+    /// <param name="scope">The repos this review may legitimately touch.</param>
+    /// <param name="allowWriteOperations">
+    /// Whether this policy grants the two write operations (<see cref="SandboxOperation.PushReviewBot"/>
+    /// and <see cref="SandboxOperation.PostReviewComment"/>). The primary variant gets <c>true</c>; an
+    /// A/B comparison (B) variant is collect-only and gets <c>false</c>, which makes push and post a
+    /// <b>hard capability denial</b> regardless of host/path (plan §5) — and because
+    /// <see cref="ShouldInjectCredential"/> mirrors <see cref="Decide"/>, the B variant is also never
+    /// handed a write credential (fail closed both ways).
+    /// </param>
+    public OperationPolicy(ReviewScope scope, bool allowWriteOperations = true)
     {
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
+        _allowWriteOperations = allowWriteOperations;
     }
 
     /// <summary>Evaluates an outbound request. Unknown shapes fall through to a deny.</summary>
@@ -114,12 +125,15 @@ internal sealed class OperationPolicy
 
             SandboxOperation.FetchSubmodule => DecideSubmodule(request),
 
-            SandboxOperation.PushReviewBot => DecideReceivePack(
-                request,
-                _scope.ReviewBotHost,
-                _scope.ReviewBotRepoPath),
+            // Write operations are gated by the capability FIRST: a collect-only (B) variant is denied
+            // before any host/path is even considered, so isolation cannot be defeated by a scope quirk.
+            SandboxOperation.PushReviewBot => !_allowWriteOperations
+                ? PolicyDecision.Deny("this variant is collect-only and has no push capability")
+                : DecideReceivePack(request, _scope.ReviewBotHost, _scope.ReviewBotRepoPath),
 
-            SandboxOperation.PostReviewComment => DecideApi(request, "POST", "post review comment"),
+            SandboxOperation.PostReviewComment => !_allowWriteOperations
+                ? PolicyDecision.Deny("this variant is collect-only and has no post capability")
+                : DecideApi(request, "POST", "post review comment"),
 
             SandboxOperation.ReadProviderMetadata => DecideApi(request, "GET", "read provider metadata"),
 

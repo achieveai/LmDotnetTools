@@ -45,4 +45,33 @@ public sealed class DaemonAgentFactoryTests
         first.EnabledTools.Should().BeEquivalentTo(second.EnabledTools);
         first.EnabledBuiltInTools.Should().BeEquivalentTo(second.EnabledBuiltInTools);
     }
+
+    [Fact]
+    public void CreateVariantProfile_carries_the_variant_prompt_and_keeps_the_same_tool_gating()
+    {
+        // P4.2 — the prompt/skill axis of an A/B comparison feeds the profile; the model and the
+        // write capability are applied by the executor, not baked into the declarative profile.
+        var variant = new ReviewVariant(
+            VariantId: "b",
+            ModelId: "anthropic/claude-haiku-4-5",
+            SystemPrompt: "Review tersely; flag only blocking issues.",
+            CanWrite: false);
+
+        var profile = DaemonAgentFactory.CreateVariantProfile(variant);
+
+        profile.Id.Should().Be($"{DaemonAgentFactory.ReviewProfileId}-b");
+        profile.SystemPrompt.Should().Be("Review tersely; flag only blocking issues.");
+        profile.EnabledBuiltInTools.Should().BeEmpty();
+        profile.EnabledTools.Should().BeNull();
+    }
+
+    [Fact]
+    public void CreateVariantProfile_rejects_a_blank_prompt()
+    {
+        var variant = new ReviewVariant("b", "model", SystemPrompt: "   ", CanWrite: false);
+
+        var act = () => DaemonAgentFactory.CreateVariantProfile(variant);
+
+        act.Should().Throw<ArgumentException>();
+    }
 }

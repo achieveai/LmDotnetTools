@@ -11,7 +11,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class OperationPolicyTests
 {
-    private static OperationPolicy CreatePolicy() =>
+    private static OperationPolicy CreatePolicy(bool allowWriteOperations = true) =>
         new(
             new ReviewScope(
                 Provider: "github",
@@ -25,7 +25,8 @@ public sealed class OperationPolicyTests
                 AllowedSubmodules:
                 [
                     new SubmoduleAllowRule("github.com", "/acme/shared-lib"),
-                ]));
+                ]),
+            allowWriteOperations);
 
     [Fact]
     public void FetchTarget_allows_upload_pack_on_the_target_repo()
@@ -234,6 +235,75 @@ public sealed class OperationPolicyTests
         ok.IsAllowed.Should().BeTrue();
         wrongMethod.IsAllowed.Should().BeFalse();
         wrongHost.IsAllowed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_hard_denies_push_and_post_on_their_own_scoped_repos()
+    {
+        // P4.2 — the A/B comparison (B) variant runs under a collect-only policy. Even the operations
+        // that the primary variant is legitimately allowed (push to the ReviewBot repo, post to the API
+        // host) are HARD-denied here: the capability is withheld before host/path is ever considered.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var push = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.PushReviewBot,
+                "github",
+                "github.com",
+                "POST",
+                "/acme/reviewbot.git/git-receive-pack"));
+        var post = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.PostReviewComment,
+                "github",
+                "api.github.com",
+                "POST",
+                "/repos/acme/widgets/pulls/7/comments"));
+
+        push.IsAllowed.Should().BeFalse("a collect-only B variant has no push capability");
+        post.IsAllowed.Should().BeFalse("a collect-only B variant has no post capability");
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_is_never_handed_a_write_credential()
+    {
+        // The credential decision mirrors the deny, so the B variant is also never injected with a
+        // push/post token (fail closed both ways) — there is no token for it to misuse.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        collectOnly.ShouldInjectCredential(
+            new OperationRequest(
+                SandboxOperation.PushReviewBot,
+                "github",
+                "github.com",
+                "POST",
+                "/acme/reviewbot.git/git-receive-pack"))
+            .Should().BeFalse();
+        collectOnly.ShouldInjectCredential(
+            new OperationRequest(
+                SandboxOperation.PostReviewComment,
+                "github",
+                "api.github.com",
+                "POST",
+                "/repos/acme/widgets/pulls/7/comments"))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void CollectOnlyVariant_still_allows_read_only_fetches()
+    {
+        // Collect-only removes WRITE capability only — the B variant must still fetch the code to review.
+        var collectOnly = CreatePolicy(allowWriteOperations: false);
+
+        var fetch = collectOnly.Decide(
+            new OperationRequest(
+                SandboxOperation.FetchTarget,
+                "github",
+                "github.com",
+                "GET",
+                "/acme/widgets.git/info/refs?service=git-upload-pack"));
+
+        fetch.IsAllowed.Should().BeTrue("fetching the target repo is read-only, not a write operation");
     }
 
     [Fact]
