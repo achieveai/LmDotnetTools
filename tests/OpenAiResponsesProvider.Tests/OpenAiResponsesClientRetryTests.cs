@@ -63,6 +63,9 @@ public sealed class OpenAiResponsesClientRetryTests
 
         // Initial attempt + MaxRetries retries.
         handler.SendCount.Should().Be(RetryOptions.FastForTests.MaxRetries + 1);
+
+        // Every failed response — including the final one — is disposed (no leaked connection).
+        handler.Responses.Should().OnlyContain(r => r.Disposed);
     }
 
     [Fact]
@@ -79,6 +82,9 @@ public sealed class OpenAiResponsesClientRetryTests
 
         // No retry on a non-retryable status: exactly one POST.
         handler.SendCount.Should().Be(1);
+
+        // The final failed response is disposed (no leaked connection).
+        handler.Responses.Should().ContainSingle().Which.Disposed.Should().BeTrue();
     }
 
     [Fact]
