@@ -215,7 +215,17 @@ public static class HttpRetryHelper
     public static bool IsRetryableError(HttpRequestException exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        // Retry on network errors, timeouts, connection errors, and server errors (5xx)
+
+        // When the exception carries an HTTP status code, classify strictly by that status. This avoids
+        // wrongly retrying a non-retryable status (e.g. 400/401) just because its response body, which the
+        // helper embeds in the exception message, happens to mention "500"/"timeout"/etc.
+        if (exception.StatusCode is { } statusCode)
+        {
+            return IsRetryableStatusCode(statusCode);
+        }
+
+        // No status code is present (genuine network/transport failures from SendAsync). Fall back to
+        // substring detection over the message: network errors, timeouts, connection errors, and 5xx/429.
         var message = exception.Message;
 
         // Check for network/timeout errors
