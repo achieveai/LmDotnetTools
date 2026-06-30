@@ -1,0 +1,46 @@
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+
+namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
+
+/// <summary>
+/// Boots the <c>CodeReviewDaemon.Sample</c> host in-process (no bound ports — in-memory test server)
+/// with an isolated, throwaway OAuth token-store directory so the test never touches a developer's
+/// real <c>oauth-tokens</c> directory and leaves nothing behind.
+/// </summary>
+public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
+{
+    private readonly string _tokenStoreDir =
+        Path.Combine(Path.GetTempPath(), "codereviewdaemon-tests", Guid.NewGuid().ToString("N"));
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Production");
+        builder.UseSetting("Auth:TokenStoreDir", _tokenStoreDir);
+        // Deferred-auth disabled in the daemon; pin it here too so a stray default can't make a
+        // not-signed-in webhook call block the route-exposure host build.
+        builder.UseSetting("Auth:Webhook:HoldTimeoutSeconds", "0");
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        try
+        {
+            base.Dispose(disposing);
+        }
+        finally
+        {
+            if (disposing && Directory.Exists(_tokenStoreDir))
+            {
+                try
+                {
+                    Directory.Delete(_tokenStoreDir, recursive: true);
+                }
+                catch
+                {
+                    // best-effort temp cleanup
+                }
+            }
+        }
+    }
+}

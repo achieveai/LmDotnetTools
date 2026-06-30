@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Console-launchable daemon: the in-process MultiTurnAgentLoop harness polls PR providers and
+         drives the sandbox; ASP.NET Core hosts ONLY the sandbox auth webhook (one route). -->
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- All reusable agent/sandbox/OAuth/webhook machinery lives in LmAgentInfra (shared with
+         LmStreaming.Sample); LmCore + LmMultiTurn flow transitively. -->
+    <ProjectReference Include="..\..\src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The route-exposure test (AC#4) boots this host via WebApplicationFactory<Program> and
+         inspects internal wiring, so the generated top-level Program and any internal types must be
+         visible to the test assembly. -->
+    <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
+  </ItemGroup>
+</Project>
