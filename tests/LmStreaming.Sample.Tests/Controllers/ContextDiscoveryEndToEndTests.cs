@@ -85,6 +85,52 @@ public sealed class ContextDiscoveryEndToEndTests
     }
 
     [Fact]
+    public async Task MixedBatch_InjectsContextFilesInOrder_AlongsideSubAgent()
+    {
+        // The batch partitions by kind: the sub-agent dispatches in parallel (a no-op here — the
+        // harness has no gateway session/binding for it, so it logs-and-skips), while the two
+        // context files still inject into the live thread in delivery order.
+        using var harness = new Harness();
+        var agent = harness.RegisterLiveThread(SessionId, ThreadId);
+
+        var controller = harness.CreateController(authorizationHeader: Secret);
+        var payload = new ContextDiscoveryEnvelope
+        {
+            SessionId = SessionId,
+            Discoveries =
+            [
+                new ContextDiscoveryItem { Kind = "subagent", Name = "reviewer", Path = ".claude/agents/reviewer.md" },
+                new ContextDiscoveryItem { Kind = "context_file", Path = "AGENTS.md", Content = "ROOT_MARKER" },
+                new ContextDiscoveryItem { Kind = "context_file", Path = "sub/CLAUDE.md", Content = "NESTED_MARKER" },
+            ],
+        };
+
+        var result = await controller.NotifyAsync(payload, CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        agent.SentMessages.Should().SatisfyRespectively(
+            first => first.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+            second => second.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+    }
+
+    [Fact]
+    public async Task EmptyBatch_ReturnsOkWithoutInjecting()
+    {
+        // An authenticated envelope with no discoveries is a valid no-op: Task.WhenAll over an empty
+        // set completes immediately, the controller returns 200, and nothing is injected.
+        using var harness = new Harness();
+        var agent = harness.RegisterLiveThread(SessionId, ThreadId);
+
+        var controller = harness.CreateController(authorizationHeader: Secret);
+        var result = await controller.NotifyAsync(
+            new ContextDiscoveryEnvelope { SessionId = SessionId, Discoveries = [] },
+            CancellationToken.None);
+
+        result.Should().BeOfType<OkResult>();
+        agent.SentMessages.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ContextFileWebhook_WrongSecret_DoesNotReachAgent()
     {
         // The auth gate is part of the chain: a bad secret must 401 and never inject.
