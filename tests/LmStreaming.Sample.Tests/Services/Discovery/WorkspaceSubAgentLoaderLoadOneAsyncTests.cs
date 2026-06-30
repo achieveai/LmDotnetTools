@@ -1,6 +1,4 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;

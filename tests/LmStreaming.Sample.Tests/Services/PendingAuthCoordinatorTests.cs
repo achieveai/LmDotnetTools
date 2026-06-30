@@ -1,4 +1,3 @@
-using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Tests.Services;
 

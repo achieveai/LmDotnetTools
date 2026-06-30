@@ -3,8 +3,6 @@ using FluentAssertions;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Persistence;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 

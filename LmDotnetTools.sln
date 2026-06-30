@@ -142,6 +142,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.Pro
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.LmWorkflow", "src\LmWorkflow\AchieveAi.LmDotnetTools.LmWorkflow.csproj", "{AA525EFC-B9F6-465C-A55F-2661097064EE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.LmAgentInfra", "src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj", "{D55B2287-F3E0-426D-9374-1F85E352AC4D}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LmWorkflow.Tests", "tests\LmWorkflow.Tests\LmWorkflow.Tests.csproj", "{93637A84-FF07-4BE1-A727-023570E14C2C}"
 EndProject
 Global
@@ -682,6 +684,18 @@ Global
 		{AA525EFC-B9F6-465C-A55F-2661097064EE}.Release|x64.Build.0 = Release|Any CPU
 		{AA525EFC-B9F6-465C-A55F-2661097064EE}.Release|x86.ActiveCfg = Release|Any CPU
 		{AA525EFC-B9F6-465C-A55F-2661097064EE}.Release|x86.Build.0 = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|x64.Build.0 = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Debug|x86.Build.0 = Debug|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|x64.ActiveCfg = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|x64.Build.0 = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|x86.ActiveCfg = Release|Any CPU
+		{D55B2287-F3E0-426D-9374-1F85E352AC4D}.Release|x86.Build.0 = Release|Any CPU
 		{93637A84-FF07-4BE1-A727-023570E14C2C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{93637A84-FF07-4BE1-A727-023570E14C2C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{93637A84-FF07-4BE1-A727-023570E14C2C}.Debug|x64.ActiveCfg = Debug|Any CPU

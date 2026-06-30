@@ -1,4 +1,3 @@
-using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 

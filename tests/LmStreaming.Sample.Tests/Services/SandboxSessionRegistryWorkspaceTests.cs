@@ -1,7 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Tests.Services;
 

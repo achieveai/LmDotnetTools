@@ -2,7 +2,6 @@ using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
-using LmStreaming.Sample.Services.Auth;
 using Microsoft.Identity.Client;
 using Xunit.Abstractions;
 

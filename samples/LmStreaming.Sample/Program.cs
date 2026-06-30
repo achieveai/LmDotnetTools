@@ -26,11 +26,14 @@ using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using LmStreaming.Sample.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
@@ -1204,7 +1207,7 @@ public partial class Program
 
     private static CodexAgentLoop CreateCodexAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
@@ -1779,7 +1782,7 @@ public partial class Program
 
     private static ClaudeAgentLoop CreateClaudeAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
@@ -1834,7 +1837,7 @@ public partial class Program
 
     private static CopilotAgentLoop CreateCopilotAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,

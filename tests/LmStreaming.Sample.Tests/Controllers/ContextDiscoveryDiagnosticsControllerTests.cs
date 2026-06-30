@@ -1,6 +1,4 @@
 using System.Net;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 

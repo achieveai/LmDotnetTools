@@ -1,6 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using LmStreaming.Sample.Services.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 
 namespace LmStreaming.Sample.WebSocket;
 

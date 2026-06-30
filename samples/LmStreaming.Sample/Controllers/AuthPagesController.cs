@@ -1,5 +1,5 @@
 using System.Net;
-using LmStreaming.Sample.Services.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
