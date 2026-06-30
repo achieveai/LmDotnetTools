@@ -17,9 +17,6 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Production");
         builder.UseSetting("Auth:TokenStoreDir", _tokenStoreDir);
-        // Deferred-auth disabled in the daemon; pin it here too so a stray default can't make a
-        // not-signed-in webhook call block the route-exposure host build.
-        builder.UseSetting("Auth:Webhook:HoldTimeoutSeconds", "0");
     }
 
     protected override void Dispose(bool disposing)

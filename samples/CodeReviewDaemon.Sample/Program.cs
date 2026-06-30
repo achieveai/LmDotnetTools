@@ -1,15 +1,25 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using CodeReviewDaemon.Sample.Auth;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Hosting;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Feature flags ────────────────────────────────────────────────────────────────────────────────
+// Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
+// operator opt-in to a higher-blast-radius behavior. See CodeReviewDaemonOptions.
+var daemonOptions =
+    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
+    ?? new CodeReviewDaemonOptions();
+builder.Services.AddSingleton(daemonOptions);
+
 // ── OAuth auth-provider services ───────────────────────────────────────────────────────────────
 // Shared with LmStreaming.Sample (see its Program.cs): the sandbox gateway calls back into the
 // auth webhook to obtain a per-provider bearer/basic credential for an outbound request, and these
-// providers mint it. The daemon reviews GitHub + Azure DevOps PRs, so it registers those two.
+// providers mint it. The daemon reviews GitHub PRs by default; Azure DevOps is opt-in via
+// CodeReviewDaemon:EnableAdoProvider.
 var authOptions =
     builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
 builder.Services.AddSingleton(authOptions);
@@ -32,20 +42,26 @@ builder.Services.AddSingleton(sp => new GitHubOAuthProvider(
     sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()));
 builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<GitHubOAuthProvider>());
 
-builder.Services.AddSingleton(sp => new AdoOAuthProvider(
-    authOptions.Ado,
-    Path.Combine(oauthTokenDir, "msal-ado.bin"),
-    sp.GetRequiredService<ILogger<AdoOAuthProvider>>()));
-builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
+// Azure DevOps is opt-in: when EnableAdoProvider is off (default) the provider is never registered,
+// so an "ado" webhook call resolves no provider and is denied as unknown — the daemon stays GitHub-only.
+if (daemonOptions.EnableAdoProvider)
+{
+    builder.Services.AddSingleton(sp => new AdoOAuthProvider(
+        authOptions.Ado,
+        Path.Combine(oauthTokenDir, "msal-ado.bin"),
+        sp.GetRequiredService<ILogger<AdoOAuthProvider>>()));
+    builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
+}
 
 // Restore persisted sign-in state at startup so token injection reflects a prior console sign-in.
 builder.Services.AddHostedService<OAuthTokenHydrator>();
 
-// Deferred-auth coordinator. The daemon is unattended, so its notifier only logs the lifecycle
-// (no browser to prompt), and holds are disabled via Auth:Webhook:HoldTimeoutSeconds = 0 → a
-// not-signed-in webhook call denies immediately instead of blocking.
+// Auth-resolution policy. The daemon is unattended, so its notifier only logs the lifecycle (no
+// browser to prompt) and its policy fails fast: a not-signed-in webhook call raises an operator
+// "auth required" signal and denies immediately, rather than holding the call open for an
+// interactive sign-in that no one is present to complete.
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
-builder.Services.AddSingleton<PendingAuthCoordinator>();
+builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth

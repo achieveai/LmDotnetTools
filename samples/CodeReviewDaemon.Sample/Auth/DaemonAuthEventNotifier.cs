@@ -10,10 +10,11 @@ namespace CodeReviewDaemon.Sample.Auth;
 /// so this notifier only records the lifecycle events to the operator log.
 /// </summary>
 /// <remarks>
-/// The daemon disables deferred-auth holds (<c>Auth:Webhook:HoldTimeoutSeconds = 0</c>) so a
-/// not-signed-in webhook call denies immediately rather than blocking; the "auth required" log line
-/// here is the operator's signal that a credential needs the one-time human sign-in / refresh. A
-/// later phase routes that signal to a durable auth-required surface; logging is the seam.
+/// The daemon's <see cref="FailFastDaemonAuthPolicy"/> denies a not-signed-in webhook call
+/// immediately (rather than holding it open for an interactive sign-in) and raises an "auth required"
+/// signal through this notifier; the log line here is the operator's cue that a credential needs the
+/// one-time human sign-in / refresh. A later phase routes that signal to a durable auth-required
+/// surface; logging is the seam.
 /// </remarks>
 internal sealed class DaemonAuthEventNotifier(ILogger<DaemonAuthEventNotifier> logger) : IAuthEventNotifier
 {

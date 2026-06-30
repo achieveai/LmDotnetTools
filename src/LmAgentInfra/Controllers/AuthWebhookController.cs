@@ -22,7 +22,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 public sealed class AuthWebhookController(
     IEnumerable<IOAuthTokenProvider> providers,
     AuthSharedSecret sharedSecret,
-    PendingAuthCoordinator pendingAuth,
+    IAuthResolutionPolicy authPolicy,
     ILogger<AuthWebhookController> logger) : ControllerBase
 {
     /// <summary>
@@ -71,10 +71,10 @@ public sealed class AuthWebhookController(
         }
 
         // First attempt: a token may already be available (signed in / refreshable). Only the
-        // "not signed in" case (InvalidOperationException) falls through to deferral — and that
-        // decision is hoisted OUT of the catch so the deferred hold runs under its own try/catch.
+        // "not signed in" case (InvalidOperationException) falls through to the auth policy — and that
+        // decision is hoisted OUT of the catch so the policy runs under its own try/catch.
         // An await inside a catch block is not protected by the sibling catches of the same try,
-        // so running the hold there would let any non-OCE failure escape as a 500, breaking the
+        // so running the policy there would let any non-OCE failure escape as a 500, breaking the
         // always-200 allow/deny contract the broad catch below exists to guarantee.
         bool defer = false;
         try
@@ -90,9 +90,10 @@ public sealed class AuthWebhookController(
         {
             // Not signed in / refresh failed. Keep the provider's error detail in the server log
             // ONLY — never echo it back to the gateway, where it could surface in aggregated logs.
+            // Hand off to the host's auth-resolution policy (hold-and-prompt vs. fail-fast).
             logger.LogInformation(
                 ex,
-                "Auth-webhook found no valid token for provider {ProviderId} (host {DestinationHost}); deferring.",
+                "Auth-webhook found no valid token for provider {ProviderId} (host {DestinationHost}); applying auth-resolution policy.",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
             defer = true;
@@ -122,20 +123,20 @@ public sealed class AuthWebhookController(
             return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
         }
 
-        // Deferred auth: hold this call open while connected chat clients are prompted to sign in
-        // (auth_required WebSocket frame). Resolves allow the moment a token lands; resolves deny
-        // when the hold times out, sign-in fails, or deferral is disabled. Runs under its own
-        // try/catch so the always-200 contract holds for the deferred path too.
+        // No immediately-available token: defer to the host's auth-resolution policy. The attended
+        // app holds the call open and prompts a connected client to sign in (allow once a token
+        // lands, deny on timeout); the unattended daemon raises an operator "auth required" signal
+        // and denies at once. Runs under its own try/catch so the always-200 contract holds here too.
         try
         {
-            var deferred = await pendingAuth.WaitForTokenAsync(tokenProvider, body.RequiredScopes, ct);
-            if (deferred is not null)
+            var resolved = await authPolicy.ResolveAsync(tokenProvider, body.RequiredScopes, ct);
+            if (resolved is not null)
             {
                 logger.LogInformation(
-                    "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}) after deferred sign-in.",
+                    "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}) after policy resolution.",
                     tokenProvider.ProviderId,
                     body.DestinationHost);
-                return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, deferred));
+                return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, resolved));
             }
 
             logger.LogInformation(
@@ -151,11 +152,11 @@ public sealed class AuthWebhookController(
         }
         catch (Exception ex)
         {
-            // Same always-200 guarantee for the deferred path: a token-store/MSAL/HTTP failure
-            // surfaced during the hold becomes a clean, token-free deny, not an opaque 500.
+            // Same always-200 guarantee for the policy path: a token-store/MSAL/HTTP failure
+            // surfaced during resolution becomes a clean, token-free deny, not an opaque 500.
             logger.LogWarning(
                 ex,
-                "Auth-webhook deferred-hold failure for provider {ProviderId} (host {DestinationHost}); denying.",
+                "Auth-webhook policy-resolution failure for provider {ProviderId} (host {DestinationHost}); denying.",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));

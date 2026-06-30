@@ -214,9 +214,11 @@ try
     _ = builder.Services.AddHostedService<OAuthTokenHydrator>();
 
     // Deferred auth: not-signed-in webhook calls are held while connected chat clients are
-    // prompted (auth_required WebSocket frame) to sign in interactively.
+    // prompted (auth_required WebSocket frame) to sign in interactively. The webhook resolves the
+    // hold through the deferred-interactive policy (the daemon swaps in a fail-fast policy instead).
     _ = builder.Services.AddSingleton<IAuthEventNotifier, WebSocketAuthEventNotifier>();
     _ = builder.Services.AddSingleton<PendingAuthCoordinator>();
+    _ = builder.Services.AddSingleton<IAuthResolutionPolicy, DeferredInteractiveAuthPolicy>();
 
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
