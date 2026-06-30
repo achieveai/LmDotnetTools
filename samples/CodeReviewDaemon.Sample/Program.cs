@@ -3,7 +3,17 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Hosting;
+using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
+
+// ── One-time setup subcommand ────────────────────────────────────────────────────────────────────
+// `CodeReviewDaemon reviewbot init --url <ReviewBotRepoUrl>` seeds/validates the ReviewBot repo and
+// exits (plan §1). This runs BEFORE the web host is built so the long-running daemon and the setup
+// path never share a process; the no-arg run used by the route-exposure test host is unaffected.
+if (args is ["reviewbot", "init", ..])
+{
+    return await ReviewBotInitCommand.RunAsync(args);
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -85,6 +95,8 @@ var app = builder.Build();
 app.MapControllers();
 
 app.Run();
+
+return 0;
 
 /// <summary>Exposed for the route-exposure test host (WebApplicationFactory&lt;Program&gt;).</summary>
 public partial class Program;
