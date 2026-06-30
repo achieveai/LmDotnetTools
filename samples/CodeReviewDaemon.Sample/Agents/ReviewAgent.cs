@@ -1,7 +1,4 @@
-using System.Text;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -29,51 +26,18 @@ internal sealed class ReviewAgent
     /// </summary>
     public async Task<ReviewAgentResult> ReviewAsync(string reviewInput, CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reviewInput);
+        var collected = await AgentTextCollector
+            .CollectAsync(_agent, reviewInput, cancellationToken)
+            .ConfigureAwait(false);
 
-        var userInput = new UserInput([new TextMessage { Text = reviewInput, Role = Role.User }]);
-
-        var review = new StringBuilder();
-        var assistantMessageCount = 0;
-        string? runId = null;
-
-        await foreach (
-            var message in _agent.ExecuteRunAsync(userInput, cancellationToken).ConfigureAwait(false)
-        )
-        {
-            // Collect only finalized assistant prose. TextUpdateMessage deltas are a distinct type and
-            // are skipped (the finalizing TextMessage carries the full text); thinking text (IsThinking)
-            // is the agent's scratch work, not the review body.
-            if (message is not TextMessage text)
-            {
-                continue;
-            }
-
-            runId ??= text.RunId;
-
-            if (text.IsThinking || text.Role != Role.Assistant || string.IsNullOrEmpty(text.Text))
-            {
-                continue;
-            }
-
-            if (review.Length > 0)
-            {
-                _ = review.Append('\n');
-            }
-
-            _ = review.Append(text.Text);
-            assistantMessageCount++;
-        }
-
-        var reviewText = review.ToString();
         _logger.LogInformation(
             "Collect-only review run {RunId} produced {Count} assistant message(s), {Length} chars.",
-            runId ?? _agent.CurrentRunId,
-            assistantMessageCount,
-            reviewText.Length
+            collected.RunId,
+            collected.AssistantMessageCount,
+            collected.Text.Length
         );
 
-        return new ReviewAgentResult(reviewText, runId ?? _agent.CurrentRunId);
+        return new ReviewAgentResult(collected.Text, collected.RunId);
     }
 }
 
