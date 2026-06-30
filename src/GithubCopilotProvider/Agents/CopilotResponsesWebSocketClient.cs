@@ -1,8 +1,10 @@
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
@@ -36,6 +38,7 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
     private readonly CopilotOptions _options;
     private readonly Func<ICopilotResponsesSocket> _socketFactory;
     private readonly ILogger _logger;
+    private readonly RetryOptions _retryOptions;
     private readonly SemaphoreSlim _turnGate = new(1, 1);
 
     private ICopilotResponsesSocket? _socket;
@@ -53,13 +56,18 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
     /// <param name="socketFactory">
     ///     Optional socket factory (override in tests). Defaults to a real <see cref="ClientWebSocket"/>.
     /// </param>
+    /// <param name="retryOptions">
+    ///     Optional connect-retry configuration (bounds the pre-turn connect-retry loop). Defaults to
+    ///     <see cref="RetryOptions.Default"/>.
+    /// </param>
     public CopilotResponsesWebSocketClient(
         Uri endpoint,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext session,
         CopilotOptions? options = null,
         ILogger? logger = null,
-        Func<ICopilotResponsesSocket>? socketFactory = null
+        Func<ICopilotResponsesSocket>? socketFactory = null,
+        RetryOptions? retryOptions = null
     )
     {
         _endpoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
@@ -68,6 +76,7 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
         _options = options ?? new CopilotOptions();
         _logger = logger ?? NullLogger.Instance;
         _socketFactory = socketFactory ?? (() => new ClientWebSocketResponsesSocket());
+        _retryOptions = retryOptions ?? RetryOptions.Default;
     }
 
     /// <inheritdoc />
@@ -107,12 +116,15 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var text = await socket.ReceiveTextAsync(cancellationToken).ConfigureAwait(false);
-                if (text is null)
-                {
-                    // Socket closed mid-turn.
-                    yield break;
-                }
+                // A null is a genuine peer Close frame. Reaching here means the socket closed BEFORE a
+                // terminal response.completed/response.failed event, i.e. the turn was truncated. Surface
+                // it as an error instead of silently ending the stream as though the turn had completed
+                // (which would also wrongly leave _previousResponseId chained to a partial turn).
+                var text =
+                    await socket.ReceiveTextAsync(cancellationToken).ConfigureAwait(false)
+                    ?? throw new IOException(
+                        "WebSocket closed before turn completion (no response.completed/response.failed received)."
+                    );
 
                 if (string.IsNullOrWhiteSpace(text))
                 {
@@ -150,21 +162,107 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
             return _socket;
         }
 
-        var token = await _tokenProvider.GetTokenAsync(cancellationToken).ConfigureAwait(false);
-
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        // A previously-stored socket that is no longer connected (e.g. after a faulted/truncated turn)
+        // must be disposed before we replace it, otherwise its underlying connection leaks until
+        // finalization. Null it out first so a failed reconnect never leaves a half-open socket stored.
+        if (_socket is not null)
         {
-            ["Authorization"] = $"Bearer {token}",
-        };
-        foreach (var header in CopilotRequestHeaders.Build(_options, _session, Guid.NewGuid().ToString()))
-        {
-            headers[header.Key] = header.Value;
+            var stale = _socket;
+            _socket = null;
+            await DisposeSocketSafelyAsync(stale).ConfigureAwait(false);
         }
 
-        var socket = _socketFactory();
-        await socket.ConnectAsync(_endpoint, headers, cancellationToken).ConfigureAwait(false);
-        _socket = socket;
-        return socket;
+        // Pre-turn connect-retry: this runs ONLY before the first response.create frame is sent, so a
+        // retry is safe (idempotent). Each attempt refreshes the token + headers (fresh x-interaction-id)
+        // and creates a NEW socket; a failed socket is disposed locally and _socket is assigned ONLY
+        // after a successful connect, so a half-open socket is never observed by a turn.
+        var attempt = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var token = await _tokenProvider.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Authorization"] = $"Bearer {token}",
+            };
+            foreach (var header in CopilotRequestHeaders.Build(_options, _session, Guid.NewGuid().ToString()))
+            {
+                headers[header.Key] = header.Value;
+            }
+
+            var socket = _socketFactory();
+            try
+            {
+                await socket.ConnectAsync(_endpoint, headers, cancellationToken).ConfigureAwait(false);
+                _socket = socket;
+                return socket;
+            }
+            catch (Exception ex) when (attempt < _retryOptions.MaxRetries && IsRetryableConnect(ex))
+            {
+                attempt++;
+                var delay = _retryOptions.CalculateDelay(attempt);
+                _logger.LogWarning(
+                    "WebSocket connect failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
+                    attempt,
+                    _retryOptions.MaxRetries + 1,
+                    delay.TotalMilliseconds,
+                    ex.Message
+                );
+
+                await DisposeSocketSafelyAsync(socket).ConfigureAwait(false);
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Non-retryable, retries exhausted, or cancelled: dispose the failed socket and surface.
+                await DisposeSocketSafelyAsync(socket).ConfigureAwait(false);
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Classifies a connect/upgrade failure as transient (retryable). Retries when a
+    ///     <see cref="WebSocketException"/> wraps a transient <see cref="SocketException"/>
+    ///     (connection refused / timed out / host unreachable / DNS hiccup) or an inner
+    ///     <see cref="HttpRequestException"/> whose status is a retryable 5xx/429. Auth/permanent
+    ///     failures (401/403/400/404, DNS name-resolution failure) are NOT retried.
+    /// </summary>
+    private static bool IsRetryableConnect(Exception exception)
+    {
+        if (exception is not WebSocketException wsEx)
+        {
+            return false;
+        }
+
+        return wsEx.InnerException switch
+        {
+            // Transient transport-layer failures. TryAgain (WSATRY_AGAIN) is the non-authoritative
+            // "DNS hiccup, retry" case; HostUnreachable/NetworkUnreachable are transient routing
+            // failures. HostNotFound (WSAHOST_NOT_FOUND, authoritative "no such host") is NOT here —
+            // it is a permanent name-resolution failure (see the doc comment above).
+            SocketException socketEx => socketEx.SocketErrorCode
+                is SocketError.ConnectionRefused
+                    or SocketError.TimedOut
+                    or SocketError.HostUnreachable
+                    or SocketError.NetworkUnreachable
+                    or SocketError.TryAgain,
+            HttpRequestException { StatusCode: { } status } => HttpRetryHelper.IsRetryableStatusCode(status),
+            _ => false,
+        };
+    }
+
+    private static async Task DisposeSocketSafelyAsync(ICopilotResponsesSocket socket)
+    {
+        try
+        {
+            await socket.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is WebSocketException or OperationCanceledException)
+        {
+            // Best-effort cleanup of a failed socket — never mask the original connect failure.
+        }
     }
 
     private static string? TryGetResponseId(JsonElement response)
@@ -245,8 +343,10 @@ public interface ICopilotResponsesSocket : IAsyncDisposable
     Task SendTextAsync(string text, CancellationToken cancellationToken);
 
     /// <summary>
-    ///     Receives the next complete text message (reassembling fragments). Returns null when the
-    ///     peer closes the connection.
+    ///     Receives the next complete text message (reassembling fragments). Returns null ONLY on a
+    ///     graceful peer Close frame; an abnormal/abrupt close surfaces as a thrown
+    ///     <see cref="WebSocketException"/> rather than null, so the caller can distinguish a clean
+    ///     close from a fault.
     /// </summary>
     Task<string?> ReceiveTextAsync(CancellationToken cancellationToken);
 }
@@ -292,15 +392,10 @@ public sealed class ClientWebSocketResponsesSocket : ICopilotResponsesSocket
 
         while (true)
         {
-            WebSocketReceiveResult result;
-            try
-            {
-                result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            }
-            catch (WebSocketException)
-            {
-                return null;
-            }
+            // A WebSocketException (abnormal/abrupt close, protocol error) is a FAULT, not a graceful
+            // close — let it propagate so the caller can surface it instead of silently truncating the
+            // turn. A null is reserved for a genuine peer Close frame below.
+            var result = await _socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
 
             if (result.MessageType == WebSocketMessageType.Close)
             {

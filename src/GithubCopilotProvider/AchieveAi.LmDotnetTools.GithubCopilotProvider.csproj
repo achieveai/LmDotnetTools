@@ -8,6 +8,9 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="System.Net.Http.Json" Version="9.0.5" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests" />
+  </ItemGroup>
   <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>

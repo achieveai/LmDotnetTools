@@ -1,0 +1,282 @@
+using System.Net;
+using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+
+namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests;
+
+/// <summary>
+///     Pre-stream retry coverage for <see cref="OpenAiResponsesClient.StreamResponseAsync"/>. A
+///     transient 502 (and other 5xx/429) must be retried by reusing <see cref="HttpRetryHelper"/>,
+///     building a FRESH <see cref="HttpRequestMessage"/> per attempt, and the SSE stream must still be
+///     enumerated end-to-end. Persistent / non-retryable failures surface unchanged, cancellation is
+///     honoured, and the response + stream are always disposed.
+/// </summary>
+public sealed class OpenAiResponsesClientRetryTests
+{
+    private const string ResponsesPath = "/v1/responses";
+
+    [Fact]
+    public async Task StreamResponseAsync_retries_once_after_502_then_yields_full_sequence()
+    {
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 1, failStatus: HttpStatusCode.BadGateway);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        var events = await CollectAsync(client.StreamResponseAsync(Request()));
+
+        events
+            .Select(e => e.Type)
+            .Should()
+            .ContainInOrder(
+                ResponseEventTypes.ResponseCreated,
+                ResponseEventTypes.OutputTextDelta,
+                ResponseEventTypes.ResponseCompleted
+            );
+
+        // Exactly one retry: the 502 attempt + the successful SSE attempt.
+        handler.SendCount.Should().Be(2);
+        handler.Requests.Should().HaveCount(2);
+
+        // Each attempt is a DISTINCT, freshly-built request (a single HttpRequestMessage cannot be re-sent).
+        ReferenceEquals(handler.Requests[0], handler.Requests[1]).Should().BeFalse();
+
+        // Both attempts carried a readable JSON body and the SSE Accept header.
+        handler.Bodies.Should().HaveCount(2);
+        handler.Bodies.Should().OnlyContain(b => b.Contains("\"model\"", StringComparison.Ordinal));
+        handler.AcceptHeaders.Should().OnlyContain(a => a.Contains("text/event-stream", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_persistent_502_throws_BadGateway_after_max_retries()
+    {
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 99, failStatus: HttpStatusCode.BadGateway);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        ex.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        // Initial attempt + MaxRetries retries.
+        handler.SendCount.Should().Be(RetryOptions.FastForTests.MaxRetries + 1);
+
+        // Every failed response — including the final one — is disposed (no leaked connection).
+        handler.Responses.Should().OnlyContain(r => r.Disposed);
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_non_retryable_400_throws_immediately()
+    {
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 1, failStatus: HttpStatusCode.BadRequest);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        ex.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        // No retry on a non-retryable status: exactly one POST.
+        handler.SendCount.Should().Be(1);
+
+        // The final failed response is disposed (no leaked connection).
+        handler.Responses.Should().ContainSingle().Which.Disposed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_consumer_break_disposes_response_and_stream()
+    {
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 0);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        // Break after the first event so the iterator's finally must dispose the in-flight stream + response.
+        await foreach (var _ in client.StreamResponseAsync(Request()))
+        {
+            break;
+        }
+
+        handler.SendCount.Should().Be(1);
+        var response = handler.Responses.Should().ContainSingle().Subject;
+        response.Disposed.Should().BeTrue("the iterator must dispose the HttpResponseMessage when the consumer stops early");
+        response.BodyStream.Should().NotBeNull();
+        response.BodyStream!.Disposed.Should().BeTrue("the iterator must dispose the SSE stream when the consumer stops early");
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_disposes_response_when_stream_acquisition_fails()
+    {
+        var handler = new StreamAcquisitionFailureHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        // A 200 whose body stream cannot be opened: the (Response, Stream) tuple is never produced, so the
+        // iterator's finally never runs — responseProcessor must dispose the response before rethrowing.
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        await act.Should().ThrowAsync<IOException>();
+        handler.Response.Should().NotBeNull();
+        handler
+            .Response!.Disposed.Should()
+            .BeTrue("the successful response must be disposed when its stream cannot be acquired");
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_cancel_during_backoff_throws_and_stops()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 99, failStatus: HttpStatusCode.BadGateway)
+        {
+            // Cancel as soon as the first (failing) attempt is observed, so the backoff delay is cancelled.
+            OnSend = n =>
+            {
+                if (n == 1)
+                {
+                    cts.Cancel();
+                }
+            },
+        };
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request(), cts.Token));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // The retry never fires a second POST after cancellation.
+        handler.SendCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReadSseAsync_cancels_promptly_on_idle_open_stream()
+    {
+        using var stream = new NeverEndingStream();
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+
+        var act = async () =>
+        {
+            await foreach (var _ in OpenAiResponsesClient.ReadSseAsync(stream, cts.Token)) { }
+        };
+
+        // The async/cancellation-driven loop surfaces cancellation promptly on an idle-but-open stream.
+        // The old `while (!reader.EndOfStream)` would instead perform a SYNCHRONOUS read to probe EOF —
+        // which this stream forbids (throws) and would block — so this fails under the old implementation.
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task StreamResponseAsync_emits_retry_warning_through_supplied_logger()
+    {
+        var logger = new ListLogger();
+        var handler = new RecordingResponsesSseHandler(Sse(), failFirst: 1, failStatus: HttpStatusCode.BadGateway);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+
+        // Built the way the Copilot SSE factory builds it: a non-null logger + a custom responses path.
+        using var client = new OpenAiResponsesClient(
+            http,
+            disposeClient: false,
+            logger: logger,
+            responsesPath: ResponsesPath,
+            retryOptions: RetryOptions.FastForTests
+        );
+
+        _ = await CollectAsync(client.StreamResponseAsync(Request()));
+
+        logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning);
+    }
+
+    private static ResponseCreateRequest Request() =>
+        new()
+        {
+            Model = "gpt-5.5",
+            Input = [new ResponseInputItem { Role = "user", Content = [new ResponseInputContent { Text = "hi" }] }],
+        };
+
+    private static string Sse() =>
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\"}}\n\n"
+        + "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"i\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"
+        + "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_1\"}}\n\n";
+
+    private static async Task<List<ResponseEvent>> CollectAsync(IAsyncEnumerable<ResponseEvent> stream)
+    {
+        var list = new List<ResponseEvent>();
+        await foreach (var ev in stream)
+        {
+            list.Add(ev);
+        }
+
+        return list;
+    }
+
+    /// <summary>Returns a single 200 whose body stream cannot be opened (models a post-headers fault).</summary>
+    private sealed class StreamAcquisitionFailureHandler : HttpMessageHandler
+    {
+        public TrackingHttpResponseMessage? Response { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            Response = new TrackingHttpResponseMessage(HttpStatusCode.OK) { Content = new ThrowOnReadStreamContent() };
+            return Task.FromResult<HttpResponseMessage>(Response);
+        }
+    }
+
+    /// <summary>Content whose read stream cannot be acquired — <see cref="HttpContent.ReadAsStreamAsync()"/> throws.</summary>
+    private sealed class ThrowOnReadStreamContent : HttpContent
+    {
+        protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("stream boom");
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new IOException("stream boom");
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     An open stream that never yields data or EOF until cancelled (an idle-but-open SSE stream).
+    ///     The synchronous <see cref="Read(byte[], int, int)"/> throws so a synchronous EOF probe (the
+    ///     old <c>StreamReader.EndOfStream</c> code path) is caught immediately rather than blocking.
+    /// </summary>
+    private sealed class NeverEndingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0; // unreachable — the await above only completes by throwing on cancellation
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException("synchronous Read must not be used on a live SSE stream");
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+}
