@@ -10,6 +10,12 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
+    <!-- SQLite is the daemon's orchestration source of truth (review_run / poll_cursor /
+         review_outbox / review_artifact). Pinned to the version already used across LmCore /
+         LmMultiTurn / Misc. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- All reusable agent/sandbox/OAuth/webhook machinery lives in LmAgentInfra (shared with
          LmStreaming.Sample); LmCore + LmMultiTurn flow transitively. -->
     <ProjectReference Include="..\..\src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj" />
