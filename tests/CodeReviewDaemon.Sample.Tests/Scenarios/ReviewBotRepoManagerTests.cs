@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,7 +15,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// succeeds must leave the review branch intact and report <see cref="ReviewBotPublishOutcome.GitSyncFailed"/>
 /// so the orchestrator can reconcile — there is no window where artifacts are lost.
 /// </summary>
-public sealed class ReviewBotRepoManagerTests
+public sealed class ReviewBotRepoManagerTests : LoggingTestBase
 {
     private const string RepoRoot = "/work/reviewbot";
     private const string DefaultBranch = "main";
@@ -37,7 +39,12 @@ public sealed class ReviewBotRepoManagerTests
             new ReviewArtifactFile("KnowledgeBase/_toc.md", "# ToC"),
         ]);
 
-    private static ReviewBotRepoManager CreateManager(
+    public ReviewBotRepoManagerTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private ReviewBotRepoManager CreateManager(
         ISandboxCommandRunner runner,
         ISandboxFileSystem fileSystem
     ) =>
@@ -45,7 +52,7 @@ public sealed class ReviewBotRepoManagerTests
             new GitRunner(runner),
             fileSystem,
             "github",
-            NullLogger<ReviewBotRepoManager>.Instance);
+            LoggerFactory.CreateLogger<ReviewBotRepoManager>());
 
     [Fact]
     public async Task Publishes_in_the_documented_order_and_deletes_the_review_branch()

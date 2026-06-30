@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -41,7 +42,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         ArgumentNullException.ThrowIfNull(target);
 
         var url = $"{CommentsUrl(target)}?per_page=100";
-        using var request = await BuildRequestAsync(HttpMethod.Get, url, cancellationToken);
+        using var request = await BuildRequestAsync(
+            HttpMethod.Get, url, SandboxOperation.ReadProviderMetadata, cancellationToken);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -67,7 +69,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        using var request = await BuildRequestAsync(HttpMethod.Post, CommentsUrl(target), cancellationToken);
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post, CommentsUrl(target), SandboxOperation.PostReviewComment, cancellationToken);
         request.Content = JsonContent.Create(new { body = IdempotencyMarker.Embed(body, idempotencyKey) });
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -83,9 +86,10 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     private static string CommentsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/issues/{target.PrId}/comments";
 
-    private async Task<HttpRequestMessage> BuildRequestAsync(HttpMethod method, string url, CancellationToken cancellationToken)
+    private async Task<HttpRequestMessage> BuildRequestAsync(
+        HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)
     {
-        var request = new HttpRequestMessage(method, url);
+        var request = new HttpRequestMessage(method, url).WithOperation(operation);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         request.Headers.UserAgent.ParseAdd(UserAgent);

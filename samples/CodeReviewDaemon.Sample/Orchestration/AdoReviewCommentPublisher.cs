@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -42,7 +43,8 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        using var request = await BuildRequestAsync(HttpMethod.Get, ThreadsUrl(target), cancellationToken);
+        using var request = await BuildRequestAsync(
+            HttpMethod.Get, ThreadsUrl(target), SandboxOperation.ReadProviderMetadata, cancellationToken);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -76,7 +78,8 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        using var request = await BuildRequestAsync(HttpMethod.Post, ThreadsUrl(target), cancellationToken);
+        using var request = await BuildRequestAsync(
+            HttpMethod.Post, ThreadsUrl(target), SandboxOperation.PostReviewComment, cancellationToken);
         request.Content = JsonContent.Create(
             new
             {
@@ -98,9 +101,10 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
         $"{BaseUrl}/{target.Repo.OrgOrOwner}/{target.Repo.Project}/_apis/git/repositories/{target.Repo.RepoName}"
         + $"/pullRequests/{target.PrId}/threads?api-version={ApiVersion}";
 
-    private async Task<HttpRequestMessage> BuildRequestAsync(HttpMethod method, string url, CancellationToken cancellationToken)
+    private async Task<HttpRequestMessage> BuildRequestAsync(
+        HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)
     {
-        var request = new HttpRequestMessage(method, url);
+        var request = new HttpRequestMessage(method, url).WithOperation(operation);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);

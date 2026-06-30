@@ -312,6 +312,25 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapOutbox(reader) : null;
     }
 
+    /// <summary>
+    /// Returns every outbox row for a run, in id order. Consumed by the reconcile path (and tests) to
+    /// inspect the recorded side effects of a run — e.g. the <c>push-reviewbot</c> retention outcome.
+    /// </summary>
+    public IReadOnlyList<OutboxEntry> GetOutboxForRun(long reviewRunId)
+    {
+        var results = new List<OutboxEntry>();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT * FROM review_outbox WHERE review_run_id = $runId ORDER BY id;";
+        _ = command.Parameters.AddWithValue("$runId", reviewRunId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(MapOutbox(reader));
+        }
+
+        return results;
+    }
+
     private OutboxEntry? GetOutboxByKey(string idempotencyKey)
     {
         using var command = _connection.CreateCommand();

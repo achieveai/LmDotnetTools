@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,11 +13,16 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// behavior against in-memory fakes: the entry lands at the slugified path, the ToC links every
 /// Markdown entry (sorted, excluding itself and non-entries), and the entry is always heading-prefixed.
 /// </summary>
-public sealed class KnowledgeAgentTests
+public sealed class KnowledgeAgentTests : LoggingTestBase
 {
     private const string RunId = "knowledge-run-1";
     private const string RepoRoot = "/work/reviewbot";
     private const string KbDir = RepoRoot + "/KnowledgeBase";
+
+    public KnowledgeAgentTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task WriteEntryAsync_writes_the_entry_at_the_slugified_path()
@@ -106,6 +113,6 @@ public sealed class KnowledgeAgentTests
     private static FakeMultiTurnAgent AgentReturning(string text) =>
         new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
 
-    private static KnowledgeAgent Knowledge(FakeMultiTurnAgent agent, FakeSandboxFileSystem fs) =>
-        new(agent, fs, NullLogger<KnowledgeAgent>.Instance);
+    private KnowledgeAgent Knowledge(FakeMultiTurnAgent agent, FakeSandboxFileSystem fs) =>
+        new(agent, fs, LoggerFactory.CreateLogger<KnowledgeAgent>());
 }

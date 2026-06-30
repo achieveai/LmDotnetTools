@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -12,13 +14,18 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// is exactly what the config-only path (<c>HoldTimeoutSeconds = 0</c>) could not do — it denies
 /// silently.
 /// </summary>
-public sealed class FailFastDaemonAuthPolicyTests
+public sealed class FailFastDaemonAuthPolicyTests : LoggingTestBase
 {
+    public FailFastDaemonAuthPolicyTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
     [Fact]
     public async Task Resolve_denies_immediately_by_returning_null()
     {
         var notifier = new RecordingAuthEventNotifier();
-        var policy = new FailFastDaemonAuthPolicy(notifier, NullLogger<FailFastDaemonAuthPolicy>.Instance);
+        var policy = new FailFastDaemonAuthPolicy(notifier, LoggerFactory.CreateLogger<FailFastDaemonAuthPolicy>());
 
         var result = await policy.ResolveAsync(new StubProvider("github"), scopes: null, CancellationToken.None);
 
@@ -29,7 +36,7 @@ public sealed class FailFastDaemonAuthPolicyTests
     public async Task Resolve_raises_the_operator_auth_required_signal()
     {
         var notifier = new RecordingAuthEventNotifier();
-        var policy = new FailFastDaemonAuthPolicy(notifier, NullLogger<FailFastDaemonAuthPolicy>.Instance);
+        var policy = new FailFastDaemonAuthPolicy(notifier, LoggerFactory.CreateLogger<FailFastDaemonAuthPolicy>());
 
         _ = await policy.ResolveAsync(new StubProvider("ado"), scopes: null, CancellationToken.None);
 

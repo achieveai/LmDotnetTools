@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -14,7 +16,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// marker, the scan recognizes a previously-posted thread by that marker, the request shape (basic auth,
 /// the threads endpoint), and the failure mode.
 /// </summary>
-public sealed class AdoReviewCommentPublisherTests
+public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
 {
     private const string Key = "v1:ado:contoso:Platform:repo-guid-1:7:post-review-comment:review:summary:wm-1:primary";
 
@@ -29,11 +31,16 @@ public sealed class AdoReviewCommentPublisherTests
         },
         "7");
 
-    private static AdoReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
+    public AdoReviewCommentPublisherTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private AdoReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            NullLogger<AdoReviewCommentPublisher>.Instance);
+            LoggerFactory.CreateLogger<AdoReviewCommentPublisher>());
 
     [Fact]
     public void Provider_id_is_ado()

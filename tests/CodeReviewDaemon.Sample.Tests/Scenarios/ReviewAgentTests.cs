@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,12 +13,17 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// text, joins multiple assistant messages, and reports the run id — all without any posting side
 /// effect (it touches only the <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.IMultiTurnAgent"/> seam).
 /// </summary>
-public sealed class ReviewAgentTests
+public sealed class ReviewAgentTests : LoggingTestBase
 {
     private const string RunId = "run-42";
 
-    private static ReviewAgent Create(FakeMultiTurnAgent agent) =>
-        new(agent, NullLogger<ReviewAgent>.Instance);
+    public ReviewAgentTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private ReviewAgent Create(FakeMultiTurnAgent agent) =>
+        new(agent, LoggerFactory.CreateLogger<ReviewAgent>());
 
     [Fact]
     public async Task ReviewAsync_sends_the_input_as_a_single_user_turn()

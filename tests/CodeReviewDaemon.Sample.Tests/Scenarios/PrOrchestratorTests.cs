@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,15 +13,20 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// crash resumes from the first incomplete step (§6). Covers the happy path, idempotent creation,
 /// resume-from-mid-pipeline, the merged/closed short-circuit, and the failure→RetryPending contract.
 /// </summary>
-public sealed class PrOrchestratorTests
+public sealed class PrOrchestratorTests : LoggingTestBase
 {
+    public PrOrchestratorTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
     [Fact]
     public async Task A_fresh_run_executes_every_stage_in_order_and_completes()
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor();
-        var orchestrator = new PrOrchestrator(store, executor, NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
 
         var run = await orchestrator.RunAsync(SeedRun(store), CancellationToken.None);
 
@@ -39,10 +46,10 @@ public sealed class PrOrchestratorTests
         using var store = new ReviewStore(db.ConnectionString);
         var first = new RecordingStageExecutor();
         var seed = SeedRun(store);
-        _ = await new PrOrchestrator(store, first, NullLogger<PrOrchestrator>.Instance).RunAsync(seed, CancellationToken.None);
+        _ = await new PrOrchestrator(store, first, LoggerFactory.CreateLogger<PrOrchestrator>()).RunAsync(seed, CancellationToken.None);
 
         var second = new RecordingStageExecutor();
-        var run = await new PrOrchestrator(store, second, NullLogger<PrOrchestrator>.Instance).RunAsync(seed, CancellationToken.None);
+        var run = await new PrOrchestrator(store, second, LoggerFactory.CreateLogger<PrOrchestrator>()).RunAsync(seed, CancellationToken.None);
 
         second.ExecutedStages.Should().BeEmpty("a run already at the terminal stage has no outstanding work");
         run.Stage.Should().Be(ReviewStage.Posted);
@@ -57,7 +64,7 @@ public sealed class PrOrchestratorTests
         // First attempt fails at Judged: ContextReady + Reviewed complete and persist, then it throws.
         var crashing = new RecordingStageExecutor(throwAtStage: ReviewStage.Judged);
         var seed = SeedRun(store);
-        var crashingOrchestrator = new PrOrchestrator(store, crashing, NullLogger<PrOrchestrator>.Instance);
+        var crashingOrchestrator = new PrOrchestrator(store, crashing, LoggerFactory.CreateLogger<PrOrchestrator>());
 
         var act = async () => await crashingOrchestrator.RunAsync(seed, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -71,7 +78,7 @@ public sealed class PrOrchestratorTests
 
         // Second attempt resumes: only Judged + Posted run, no completed stage replays.
         var resuming = new RecordingStageExecutor();
-        var run = await new PrOrchestrator(store, resuming, NullLogger<PrOrchestrator>.Instance)
+        var run = await new PrOrchestrator(store, resuming, LoggerFactory.CreateLogger<PrOrchestrator>())
             .RunAsync(seed, CancellationToken.None);
 
         resuming.ExecutedStages.Should().Equal(ReviewStage.Judged, ReviewStage.Posted);
@@ -85,7 +92,7 @@ public sealed class PrOrchestratorTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor();
-        var orchestrator = new PrOrchestrator(store, executor, NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
         var repoId = store.EnsureRepo(SampleRepo());
 
         var seed = SampleSeed(repoId) with { PrLifecycleState = PrLifecycleState.Merged };
@@ -102,7 +109,7 @@ public sealed class PrOrchestratorTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor(throwAtStage: ReviewStage.ContextReady);
-        var orchestrator = new PrOrchestrator(store, executor, NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
         var seed = SeedRun(store);
 
         var act = async () => await orchestrator.RunAsync(seed, CancellationToken.None);

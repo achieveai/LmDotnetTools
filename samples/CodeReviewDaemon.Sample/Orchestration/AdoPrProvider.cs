@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -44,7 +45,8 @@ internal sealed class AdoPrProvider : IPrProvider
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
             + $"?searchCriteria.status=active&api-version={ApiVersion}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+            .WithOperation(SandboxOperation.ReadProviderMetadata);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);

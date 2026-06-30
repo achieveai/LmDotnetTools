@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,16 +13,21 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// fully-seeded checkout is a no-op; a partially-seeded checkout is reported malformed (with the exact
 /// gaps) and is never silently mutated.
 /// </summary>
-public sealed class ReviewBotInitializerTests
+public sealed class ReviewBotInitializerTests : LoggingTestBase
 {
     private const string RepoRoot = "/work/reviewbot";
     private const string DefaultBranch = "main";
 
-    private static ReviewBotInitializer CreateInitializer(
+    public ReviewBotInitializerTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private ReviewBotInitializer CreateInitializer(
         ISandboxCommandRunner runner,
         ISandboxFileSystem fileSystem
     ) =>
-        new(new GitRunner(runner), fileSystem, NullLogger<ReviewBotInitializer>.Instance);
+        new(new GitRunner(runner), fileSystem, LoggerFactory.CreateLogger<ReviewBotInitializer>());
 
     [Fact]
     public async Task Seeds_and_pushes_the_skeleton_for_an_empty_checkout()

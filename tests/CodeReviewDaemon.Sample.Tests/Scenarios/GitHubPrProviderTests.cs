@@ -1,8 +1,10 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,8 +15,13 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// the <c>state=open</c> query), the descriptor mapping (number/head/base/updated_at/lifecycle), and the
 /// versioned opaque cursor it advances.
 /// </summary>
-public sealed class GitHubPrProviderTests
+public sealed class GitHubPrProviderTests : LoggingTestBase
 {
+    public GitHubPrProviderTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
     private static readonly RepoIdentity Repo = new()
     {
         Provider = "github",
@@ -51,11 +58,11 @@ public sealed class GitHubPrProviderTests
         Cursor = cursor,
     };
 
-    private static GitHubPrProvider Provider(FakeHttpMessageHandler handler) =>
+    private GitHubPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            NullLogger<GitHubPrProvider>.Instance);
+            LoggerFactory.CreateLogger<GitHubPrProvider>());
 
     [Fact]
     public void Provider_id_is_github()

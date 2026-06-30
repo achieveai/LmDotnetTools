@@ -1,10 +1,12 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -15,13 +17,18 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// the output lands only in SQLite, that the varied model and variant id are recorded, and that a
 /// writing variant is rejected from this isolated path.
 /// </summary>
-public sealed class VariantReviewerTests
+public sealed class VariantReviewerTests : LoggingTestBase
 {
     private const string RunId = "b-variant-run-1";
     private const string Provider = "github";
 
     private static readonly ReviewVariant ComparisonVariant =
         new(VariantId: "b", ModelId: "anthropic/claude-haiku-4-5", SystemPrompt: "Be terse.", CanWrite: false);
+
+    public VariantReviewerTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task ReviewAsync_persists_b_variant_output_to_sqlite_with_model_and_variant()
@@ -91,8 +98,8 @@ public sealed class VariantReviewerTests
     private static FakeMultiTurnAgent AgentReturning(string text) =>
         new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
 
-    private static VariantReviewer Reviewer(FakeMultiTurnAgent agent, ReviewStore store) =>
-        new(agent, store, NullLogger<VariantReviewer>.Instance);
+    private VariantReviewer Reviewer(FakeMultiTurnAgent agent, ReviewStore store) =>
+        new(agent, store, LoggerFactory.CreateLogger<VariantReviewer>());
 
     private static string? ReadString(JsonDocument document, string property) =>
         document.RootElement.GetProperty(property).GetString();

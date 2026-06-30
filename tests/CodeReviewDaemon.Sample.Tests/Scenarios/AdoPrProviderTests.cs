@@ -1,8 +1,10 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,8 +15,13 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// <c>{ "value": [...] }</c> envelope mapping (pullRequestId/merge-source/merge-target/status), and the
 /// versioned opaque cursor.
 /// </summary>
-public sealed class AdoPrProviderTests
+public sealed class AdoPrProviderTests : LoggingTestBase
 {
+    public AdoPrProviderTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
     private static readonly RepoIdentity Repo = new()
     {
         Provider = "azure-devops",
@@ -51,11 +58,11 @@ public sealed class AdoPrProviderTests
         Cursor = cursor,
     };
 
-    private static AdoPrProvider Provider(FakeHttpMessageHandler handler) =>
+    private AdoPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            NullLogger<AdoPrProvider>.Instance);
+            LoggerFactory.CreateLogger<AdoPrProvider>());
 
     [Fact]
     public void Provider_id_is_ado()

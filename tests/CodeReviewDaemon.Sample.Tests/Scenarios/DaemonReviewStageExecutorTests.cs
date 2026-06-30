@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -6,7 +7,8 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -18,14 +20,19 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// and an Azure DevOps run maps to the <c>ado</c> provider/publisher. The executor re-reads the store
 /// each stage (no state threaded through the run), so the tests drive the same run object across stages.
 /// </summary>
-public sealed class DaemonReviewStageExecutorTests
+public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 {
     private const string DiffText = "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;";
+
+    public DaemonReviewStageExecutorTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task ContextReady_fetches_the_diff_and_persists_a_context_artifact()
     {
-        using var fixture = Fixture.GitHub();
+        using var fixture = Fixture.GitHub(LoggerFactory);
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -42,7 +49,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default()
     {
-        using var fixture = Fixture.GitHub();
+        using var fixture = Fixture.GitHub(LoggerFactory);
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -60,7 +67,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task EnableABVariants_also_persists_a_b_variant_review_artifact()
     {
-        using var fixture = Fixture.GitHub(new CodeReviewDaemonOptions { EnableABVariants = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableABVariants = true });
         fixture.Factory.TextByProfileId[$"{DaemonAgentFactory.ReviewProfileId}-b"] = "## Review (B)\nConsider: extract.";
         var run = fixture.SeedRun();
 
@@ -78,7 +85,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task EnableKnowledgeAgent_writes_a_knowledge_base_entry_to_the_sandbox()
     {
-        using var fixture = Fixture.GitHub(new CodeReviewDaemonOptions { EnableKnowledgeAgent = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableKnowledgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.KnowledgeProfileId] = "# Null-check lesson\nAlways guard.";
         var run = fixture.SeedRun();
 
@@ -93,7 +100,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Judged_skips_the_judge_artifact_when_the_flag_is_off()
     {
-        using var fixture = Fixture.GitHub();
+        using var fixture = Fixture.GitHub(LoggerFactory);
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -106,7 +113,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Judged_persists_a_judge_artifact_when_enabled()
     {
-        using var fixture = Fixture.GitHub(new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
@@ -123,7 +130,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Posted_records_collect_only_and_does_not_post_by_default()
     {
-        using var fixture = Fixture.GitHub();
+        using var fixture = Fixture.GitHub(LoggerFactory);
         var run = fixture.SeedRun();
 
         await RunAllStagesAsync(fixture, run);
@@ -134,7 +141,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Posted_posts_exactly_once_when_comment_posting_is_authorized()
     {
-        using var fixture = Fixture.GitHub(new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
         // An ISO trigger watermark carries ':' — the executor must sanitize it before the idempotency
         // key is built (IdempotencyKey.Build rejects ':' in any component), or this throws.
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
@@ -148,7 +155,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
     {
-        using var fixture = Fixture.Ado(new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -160,9 +167,74 @@ public sealed class DaemonReviewStageExecutorTests
     }
 
     [Fact]
+    public async Task Posted_publishes_the_review_artifacts_to_the_reviewbot_repo_when_configured()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // The push must succeed so the retention sequence reaches the reviewbot_push record.
+        fixture.Runner.OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // The §2 durable one-commit retention sequence ran in the ReviewBot checkout.
+        commands.Should().Contain(a => a.Contains("checkout -B review/github/achieveai-lmdotnettools/118"));
+        commands.Should().Contain(a => a.Contains("commit -m"));
+        commands.Should().Contain(a => a.Contains("push origin main"));
+
+        // The PRs/... review artifact was written into the checkout before the commit.
+        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+
+        // The reviewbot_push outcome is persisted in SQLite (outbox row, terminal Posted with the pushed SHA).
+        var push = fixture.Store
+            .GetOutboxForRun(run.Id)
+            .Should().ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation).Subject;
+        push.Status.Should().Be(OutboxStatus.Posted);
+        push.ProviderResponseId.Should().Be("f00dcafef00dcafe");
+    }
+
+    [Fact]
+    public async Task Posted_skips_reviewbot_retention_when_no_repo_is_configured()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("checkout -B review/"), "retention is off without a ReviewBotRepoUrl");
+        fixture.Store.GetOutboxForRun(run.Id)
+            .Should().NotContain(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation);
+    }
+
+    [Fact]
+    public async Task Posted_records_GitSyncFailed_and_keeps_the_review_branch_when_the_push_fails()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
+        fixture.Runner.OnArgvContains("push origin main", new SandboxCommandResult(1, string.Empty, "rejected"));
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("branch -D review/"), "a failed push must keep the review branch");
+
+        var push = fixture.Store
+            .GetOutboxForRun(run.Id)
+            .Should().ContainSingle(o => o.Operation == DaemonReviewStageExecutor.PushReviewBotOperation).Subject;
+        push.Status.Should().Be(OutboxStatus.Pending, "a GitSyncFailed push is left non-terminal so reconcile retries");
+        push.ProviderResponseId.Should().BeNull();
+    }
+
+    [Fact]
     public async Task ContextReady_throws_and_persists_nothing_when_the_diff_fetch_fails()
     {
-        using var fixture = Fixture.GitHub(diffResult: new SandboxCommandResult(1, string.Empty, "fatal: bad revision"));
+        using var fixture = Fixture.GitHub(LoggerFactory, diffResult: new SandboxCommandResult(1, string.Empty, "fatal: bad revision"));
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -176,6 +248,7 @@ public sealed class DaemonReviewStageExecutorTests
     {
         // A github run but only an 'ado' publisher registered → the provider lookup must fail fast.
         using var fixture = Fixture.GitHub(
+            LoggerFactory,
             new CodeReviewDaemonOptions { EnableCommentPosting = true },
             publishersOverride: [new FakeReviewCommentPublisher("ado")]);
         var run = fixture.SeedRun();
@@ -190,7 +263,7 @@ public sealed class DaemonReviewStageExecutorTests
     [Fact]
     public async Task Posted_substitutes_a_placeholder_body_when_the_review_is_empty()
     {
-        using var fixture = Fixture.GitHub(new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
         // The agent produces no review prose → ReadReviewText is empty → the poster needs a non-blank body.
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
@@ -215,6 +288,7 @@ public sealed class DaemonReviewStageExecutorTests
         private readonly string _repoProvider;
 
         private Fixture(
+            ILoggerFactory loggerFactory,
             string repoProvider,
             CodeReviewDaemonOptions? options,
             SandboxCommandResult? diffResult,
@@ -242,7 +316,7 @@ public sealed class DaemonReviewStageExecutorTests
                 FileSystem,
                 options,
                 publishers,
-                NullLoggerFactory.Instance);
+                loggerFactory);
         }
 
         public ReviewStore Store { get; }
@@ -254,13 +328,14 @@ public sealed class DaemonReviewStageExecutorTests
         public DaemonReviewStageExecutor Executor { get; }
 
         public static Fixture GitHub(
+            ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
             SandboxCommandResult? diffResult = null,
             IReviewCommentPublisher[]? publishersOverride = null) =>
-            new("github", options, diffResult, publishersOverride);
+            new(loggerFactory, "github", options, diffResult, publishersOverride);
 
-        public static Fixture Ado(CodeReviewDaemonOptions? options = null) =>
-            new("azure-devops", options, diffResult: null, publishersOverride: null);
+        public static Fixture Ado(ILoggerFactory loggerFactory, CodeReviewDaemonOptions? options = null) =>
+            new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride: null);
 
         public ReviewRun SeedRun(string watermark = "wm-1")
         {

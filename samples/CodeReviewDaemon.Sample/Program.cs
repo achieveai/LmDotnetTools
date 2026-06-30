@@ -6,6 +6,7 @@ using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
@@ -105,23 +106,26 @@ builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactor
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
+// Their HttpClient flows through the OperationPolicyHandler (plan §4): every outbound provider-API call
+// is classified into a SandboxOperation and a denied op is both egress-blocked AND credential-withheld,
+// so reviewing untrusted PR code can never coax the daemon into an off-scope or wrong-method request.
 builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
-    new HttpClient(),
+    PolicyEnforcedHttpClient(sp, "github", DaemonOperationPolicy.ForGitHub()),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
 builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
-    new HttpClient(),
+    PolicyEnforcedHttpClient(sp, "github", DaemonOperationPolicy.ForGitHub()),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
 
 if (daemonOptions.EnableAdoProvider)
 {
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
-        new HttpClient(),
+        PolicyEnforcedHttpClient(sp, "ado", DaemonOperationPolicy.ForAdo()),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
     builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
-        new HttpClient(),
+        PolicyEnforcedHttpClient(sp, "ado", DaemonOperationPolicy.ForAdo()),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
@@ -163,6 +167,18 @@ app.MapControllers();
 app.Run();
 
 return 0;
+
+// Builds an HttpClient whose pipeline is OperationPolicyHandler → HttpClientHandler, so every request
+// the wrapped provider/publisher issues is classified + enforced by the daemon's OperationPolicy before
+// it can reach the network (Thread #1 / plan §4). The client is owned by the singleton that gets it.
+static HttpClient PolicyEnforcedHttpClient(IServiceProvider sp, string provider, OperationPolicy policy) =>
+    new(new OperationPolicyHandler(
+        policy,
+        provider,
+        sp.GetRequiredService<ILogger<OperationPolicyHandler>>())
+    {
+        InnerHandler = new HttpClientHandler(),
+    });
 
 /// <summary>Exposed for the route-exposure test host (WebApplicationFactory&lt;Program&gt;).</summary>
 public partial class Program;

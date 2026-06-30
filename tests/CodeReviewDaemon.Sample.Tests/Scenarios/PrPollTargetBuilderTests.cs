@@ -1,6 +1,8 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,10 +13,15 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// targets are emitted only when <c>EnableAdoProvider</c> is set (no provider is registered otherwise);
 /// and the default (empty allow-list) yields no targets so the daemon reviews nothing.
 /// </summary>
-public sealed class PrPollTargetBuilderTests
+public sealed class PrPollTargetBuilderTests : LoggingTestBase
 {
-    private static IReadOnlyList<PrPollTarget> Build(CodeReviewDaemonOptions options) =>
-        PrPollTargetBuilder.Build(options, NullLogger.Instance);
+    public PrPollTargetBuilderTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private IReadOnlyList<PrPollTarget> Build(CodeReviewDaemonOptions options) =>
+        PrPollTargetBuilder.Build(options, LoggerFactory.CreateLogger<PrPollTargetBuilderTests>());
 
     [Fact]
     public void Empty_allow_list_yields_no_targets()

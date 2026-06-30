@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -39,7 +40,8 @@ internal sealed class GitHubPrProvider : IPrProvider
         var repo = request.Repo.RepoName;
         var url = $"{BaseUrl}/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=100";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+            .WithOperation(SandboxOperation.ReadProviderMetadata);
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);

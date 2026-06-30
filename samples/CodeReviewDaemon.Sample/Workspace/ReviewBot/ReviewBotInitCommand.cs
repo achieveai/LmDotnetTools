@@ -6,11 +6,15 @@ namespace CodeReviewDaemon.Sample.Workspace.ReviewBot;
 /// <summary>
 /// The checked-in, human-run setup subcommand: <c>CodeReviewDaemon reviewbot init --url &lt;url&gt;</c>
 /// (plan §1). This is the thin integration glue around the unit-tested <see cref="ReviewBotInitializer"/>:
-/// it clones the ReviewBot repo into the sandbox (or reuses an existing checkout), runs the idempotent
-/// seed/validate, and maps the outcome to a process exit code — <c>0</c> when the repo is created or
-/// already well-formed, non-zero when it is malformed or the sandbox/clone step fails. All decision
-/// logic lives in <see cref="ReviewBotInitializer"/> + <see cref="SandboxFileSystem"/>, which are
-/// verifiable against fakes; only the live sandbox connection and clone live here.
+/// it clones the <b>pre-created</b> ReviewBot remote into the sandbox (or reuses an existing checkout),
+/// runs the idempotent seed/validate, and maps the outcome to a process exit code — <c>0</c> when the
+/// repo is created or already well-formed, non-zero otherwise. The command does <b>not</b> create a
+/// provider repository: the ReviewBot remote must be created out-of-band and the bot identity granted
+/// access first. When the clone fails it returns a precise, classified exit code + message
+/// (<see cref="CloneFailureClassifier"/>) — not-found vs permission vs bad-credential vs transient —
+/// rather than a generic failure. All decision logic lives in <see cref="ReviewBotInitializer"/>,
+/// <see cref="CloneFailureClassifier"/>, and <see cref="SandboxFileSystem"/>, which are verifiable
+/// against fakes; only the live sandbox connection and clone live here.
 /// </summary>
 internal static class ReviewBotInitCommand
 {
@@ -53,9 +57,12 @@ internal static class ReviewBotInitCommand
         var git = new GitRunner(sandbox);
         var fileSystem = new SandboxFileSystem(sandbox);
 
-        if (!await EnsureCheckoutAsync(git, url, workdir, logger, cancellationToken).ConfigureAwait(false))
+        var cloneFailure = await EnsureCheckoutAsync(git, url, workdir, logger, cancellationToken)
+            .ConfigureAwait(false);
+        if (cloneFailure is not null)
         {
-            return 70; // EX_SOFTWARE — clone/connect failed.
+            logger.LogError("{Message}", cloneFailure.Message);
+            return cloneFailure.ExitCode;
         }
 
         var initializer = new ReviewBotInitializer(
@@ -84,8 +91,12 @@ internal static class ReviewBotInitCommand
         return 65; // EX_DATAERR
     }
 
-    /// <summary>Clones <paramref name="url"/> into <paramref name="workdir"/>, or reuses an existing checkout.</summary>
-    private static async Task<bool> EnsureCheckoutAsync(
+    /// <summary>
+    /// Clones the pre-created <paramref name="url"/> into <paramref name="workdir"/>, or reuses an
+    /// existing checkout. Returns <c>null</c> on success, or a classified
+    /// <see cref="CloneFailureDiagnosis"/> describing exactly why the clone failed.
+    /// </summary>
+    private static async Task<CloneFailureDiagnosis?> EnsureCheckoutAsync(
         GitRunner git,
         string url,
         string workdir,
@@ -99,22 +110,20 @@ internal static class ReviewBotInitCommand
         if (probe.Succeeded)
         {
             logger.LogInformation("Reusing existing ReviewBot checkout at {Workdir}.", workdir);
-            return true;
+            return null;
         }
 
         var clone = await git
             .RunAsync(["clone", url, workdir], workingDirectory: null, cancellationToken)
             .ConfigureAwait(false);
-        if (!clone.Succeeded)
+        if (clone.Succeeded)
         {
-            logger.LogError(
-                "git clone of ReviewBot repo failed (exit {ExitCode}): {Stderr}",
-                clone.ExitCode,
-                clone.Stderr);
-            return false;
+            return null;
         }
 
-        return true;
+        // The clone of a pre-created remote failed — classify the cause so the operator gets an
+        // actionable reason and a distinct exit code rather than a generic failure.
+        return CloneFailureClassifier.Classify(clone.ExitCode, clone.Stderr);
     }
 
     private static string? GetOption(string[] args, string name)

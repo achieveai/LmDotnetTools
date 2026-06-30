@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -40,8 +41,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>Schema version of the <c>review</c> payload (append-compatible).</summary>
     public const int ReviewArtifactSchemaVersion = 1;
 
+    /// <summary>
+    /// Outbox operation discriminator for the durable ReviewBot retention push (plan §2). The row records
+    /// the <c>reviewbot_push</c> outcome: terminal <see cref="OutboxStatus.Posted"/> (with the pushed SHA)
+    /// on success, left non-terminal <see cref="OutboxStatus.Pending"/> on <c>GitSyncFailed</c> so the
+    /// reconcile path retries.
+    /// </summary>
+    public const string PushReviewBotOperation = "push-reviewbot";
+
     /// <summary>The ReviewBot checkout the sandbox operates in (plan §1).</summary>
     private const string RepoRoot = "/work/reviewbot";
+
+    /// <summary>The ReviewBot default branch artifacts are durably landed on (plan §2).</summary>
+    private const string ReviewBotDefaultBranch = "main";
 
     /// <summary>
     /// The single comparison (B) arm of the bounded 2-way A/B. Collect-only by construction
@@ -247,7 +259,105 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             LivePostingAuthorized: _options.EnableCommentPosting);
 
         _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+
+        // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
+        // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
+        await PublishToReviewBotAsync(run, repo, provider, body, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Runs the §2 durable one-commit retention sequence for the primary review when a ReviewBot repo is
+    /// configured, then records the <c>reviewbot_push</c> outcome in the outbox: terminal
+    /// <see cref="OutboxStatus.Posted"/> (carrying the pushed SHA) on success, or left non-terminal on a
+    /// <see cref="ReviewBotPublishOutcome.GitSyncFailed"/> so the reconcile path retries. Retention is
+    /// skipped (and nothing is pushed) when <c>ReviewBotRepoUrl</c> is unset — the inert default.
+    /// </summary>
+    private async Task PublishToReviewBotAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewBody, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.ReviewBotRepoUrl))
+        {
+            return;
+        }
+
+        var manager = new ReviewBotRepoManager(
+            new GitRunner(_commandRunner),
+            _fileSystem,
+            provider,
+            _loggerFactory.CreateLogger<ReviewBotRepoManager>());
+
+        // Only the PRs/... artifact is supplied explicitly; any KnowledgeBase/... entry the Knowledge arm
+        // wrote into the checkout earlier is committed by the manager's `git add -A` (plan §2 step 2/3).
+        var prArtifactPath =
+            $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{run.PrId}-{ShortSha(run.HeadSha)}/review.md";
+        var request = new ReviewBotPublishRequest(
+            repo,
+            PrNumber: int.Parse(run.PrId, System.Globalization.CultureInfo.InvariantCulture),
+            HeadSha: run.HeadSha,
+            DefaultBranch: ReviewBotDefaultBranch,
+            Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
+
+        var result = await manager.PublishAsync(RepoRoot, request, cancellationToken).ConfigureAwait(false);
+
+        var outbox = _store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = BuildPushKey(run, repo, provider),
+            Provider = provider,
+            ReviewRunId = run.Id,
+            Operation = PushReviewBotOperation,
+            ArtifactKind = ReviewArtifactKind,
+            Status = OutboxStatus.Pending,
+        });
+
+        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
+        {
+            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
+            _logger.LogInformation(
+                "Run {RunId}: ReviewBot retention pushed {Sha}; review branch '{Branch}' deleted.",
+                run.Id, result.PushedSha, result.ReviewBranch);
+        }
+        else
+        {
+            // GitSyncFailed — leave the outbox row non-terminal (Pending) so reconcile retries. The
+            // manager kept the review branch, so no artifacts are lost.
+            _logger.LogWarning(
+                "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
+                run.Id, result.ReviewBranch);
+        }
+    }
+
+    /// <summary>The push retention idempotency key: a single push per (run, primary variant).</summary>
+    private string BuildPushKey(ReviewRun run, RepoIdentity repo, string provider) =>
+        IdempotencyKey.Build(new IdempotencyKeyComponents(
+            Provider: provider,
+            OrgOrOwner: repo.OrgOrOwner,
+            Project: repo.Project,
+            RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
+            PrId: run.PrId,
+            Operation: PushReviewBotOperation,
+            ArtifactKind: ReviewArtifactKind,
+            ArtifactSubject: "retention",
+            TriggerWatermark: SanitizeKeyComponent(run.TriggerWatermark),
+            VariantId: run.VariantId));
+
+    /// <summary>Slugs the target identity into a single ReviewBot path segment (mirrors the branch slug).</summary>
+    private static string ReviewBotRepoManagerSlug(RepoIdentity repo)
+    {
+        var parts = new[] { repo.OrgOrOwner, repo.Project, repo.RepoName }
+            .Where(static p => !string.IsNullOrEmpty(p))
+            .Select(static p => SlugSegment(p!));
+        return string.Join('-', parts);
+    }
+
+    private static string SlugSegment(string value)
+    {
+        var chars = value
+            .ToLowerInvariant()
+            .Select(static c => char.IsLetterOrDigit(c) || c is '.' or '_' ? c : '-');
+        return new string([.. chars]).Trim('-');
+    }
+
+    private static string ShortSha(string sha) => sha.Length <= 8 ? sha : sha[..8];
 
     /// <summary>
     /// Resolves the run's repo and the publisher/artifact provider string. <c>RepoIdentity.Provider</c>

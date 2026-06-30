@@ -1,10 +1,12 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -14,10 +16,15 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// <see cref="ReviewStore"/>: the verdict round-trips, the payload has no extra fields, and a malformed
 /// verdict is still recorded rather than thrown — the judge never auto-routes or rewrites anything.
 /// </summary>
-public sealed class JudgeAgentTests
+public sealed class JudgeAgentTests : LoggingTestBase
 {
     private const string RunId = "judge-run-1";
     private const string Provider = "github";
+
+    public JudgeAgentTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task JudgeAsync_persists_only_a_judge_artifact_with_score_rationale_and_variant()
@@ -140,8 +147,8 @@ public sealed class JudgeAgentTests
         ReadString(payload, "VariantId").Should().Be("primary");
     }
 
-    private static JudgeAgent Judge(FakeMultiTurnAgent agent, ReviewStore store) =>
-        new(agent, store, NullLogger<JudgeAgent>.Instance);
+    private JudgeAgent Judge(FakeMultiTurnAgent agent, ReviewStore store) =>
+        new(agent, store, LoggerFactory.CreateLogger<JudgeAgent>());
 
     private static int ReadInt(JsonDocument document, string property) =>
         document.RootElement.GetProperty(property).GetInt32();

@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,11 +15,16 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// <see cref="SubmoduleDenied"/> and the walk continues with the partial checkout. Recursion re-parses
 /// each freshly initialized submodule's own <c>.gitmodules</c>.
 /// </summary>
-public sealed class SubmoduleInitializerTests
+public sealed class SubmoduleInitializerTests : LoggingTestBase
 {
     private const string RepoRoot = "/work/target";
     private static readonly GitRemoteUrl RepoRemote =
         GitRemoteUrl.Parse("https://github.com/acme/widgets.git");
+
+    public SubmoduleInitializerTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     private static OperationPolicy CreatePolicy() =>
         new(
@@ -35,7 +42,7 @@ public sealed class SubmoduleInitializerTests
                     new SubmoduleAllowRule("github.com", "/acme/shared-lib"),
                 ]));
 
-    private static SubmoduleInitializer CreateInitializer(
+    private SubmoduleInitializer CreateInitializer(
         ISandboxCommandRunner runner,
         ISandboxFileSystem fileSystem
     ) =>
@@ -44,7 +51,7 @@ public sealed class SubmoduleInitializerTests
             fileSystem,
             CreatePolicy(),
             "github",
-            NullLogger<SubmoduleInitializer>.Instance);
+            LoggerFactory.CreateLogger<SubmoduleInitializer>());
 
     [Fact]
     public async Task Initializes_an_allowed_submodule_and_denies_an_off_allow_list_sibling()

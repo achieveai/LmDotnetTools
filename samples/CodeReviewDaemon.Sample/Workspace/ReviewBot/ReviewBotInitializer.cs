@@ -139,7 +139,12 @@ internal sealed class ReviewBotInitializer
         "# ReviewBot\n\n"
         + "Durable store for the Code-Review Daemon.\n\n"
         + "- `KnowledgeBase/` — accumulated review knowledge; `_toc.md` is the generated table of contents.\n"
-        + "- `PRs/` — retained per-PR review artifacts (`{provider}/{owner-repo}/{pr}-{head_sha8}/`).\n";
+        + "- `PRs/` — retained per-PR review artifacts (`{provider}/{owner-repo}/{pr}-{head_sha8}/`).\n\n"
+        + "## Setup\n\n"
+        + "This repository must be **created out-of-band** (the daemon does not create provider repos). "
+        + "Create the empty remote, grant the bot identity access, then run `CodeReviewDaemon reviewbot "
+        + "init --url <remote-url>` once to seed this skeleton. The long-running daemon only clones and "
+        + "pushes; it fails fast if the remote is missing or the skeleton is malformed.\n";
 
     private const string TocStub = "# Knowledge Base\n\n_Table of contents (generated)._\n";
 

@@ -1,9 +1,11 @@
 using System.Net;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,7 +15,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// scan can find it), the scan recognizes a previously-posted comment by that marker, and the request
 /// shape (bearer auth, the comments endpoint).
 /// </summary>
-public sealed class GitHubReviewCommentPublisherTests
+public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 {
     private const string Key = "v1:github:acme::R_node_123:7:post-review-comment:review:summary:wm-1:primary";
 
@@ -27,11 +29,16 @@ public sealed class GitHubReviewCommentPublisherTests
         },
         "7");
 
-    private static GitHubReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
+    public GitHubReviewCommentPublisherTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
+
+    private GitHubReviewCommentPublisher Publisher(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            NullLogger<GitHubReviewCommentPublisher>.Instance);
+            LoggerFactory.CreateLogger<GitHubReviewCommentPublisher>());
 
     [Fact]
     public void Provider_id_is_github()

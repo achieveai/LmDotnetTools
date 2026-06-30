@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -13,7 +15,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// and the provider-side backstop scan adopts a comment that a crashed prior attempt already posted
 /// rather than posting a duplicate.
 /// </summary>
-public sealed class ReviewPosterTests
+public sealed class ReviewPosterTests : LoggingTestBase
 {
     private const string Provider = "github";
     private static readonly RepoIdentity Repo = new()
@@ -23,6 +25,11 @@ public sealed class ReviewPosterTests
         RepoName = "widgets",
         RepoStableId = "R_node_123",
     };
+
+    public ReviewPosterTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task PostReviewAsync_collect_only_default_records_without_posting()
@@ -133,8 +140,8 @@ public sealed class ReviewPosterTests
         entry.ProviderResponseId.Should().Be("resp-already-there");
     }
 
-    private static ReviewPoster Poster(FakeReviewCommentPublisher publisher, ReviewStore store) =>
-        new(publisher, store, NullLogger<ReviewPoster>.Instance);
+    private ReviewPoster Poster(FakeReviewCommentPublisher publisher, ReviewStore store) =>
+        new(publisher, store, LoggerFactory.CreateLogger<ReviewPoster>());
 
     private static PostReviewRequest Request(long runId, bool livePostingAuthorized) =>
         new(

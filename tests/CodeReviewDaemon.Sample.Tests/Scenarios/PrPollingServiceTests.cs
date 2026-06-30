@@ -1,8 +1,10 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,10 +13,15 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// orchestrated <c>review_run</c>, advance and persist the opaque cursor (§12), and skip targets with
 /// no registered provider rather than throwing.
 /// </summary>
-public sealed class PrPollingServiceTests
+public sealed class PrPollingServiceTests : LoggingTestBase
 {
     private const string Provider = "github";
     private const string Scope = "achieveai/lmdotnettools:open-prs";
+
+    public PrPollingServiceTests(ITestOutputHelper output)
+        : base(output)
+    {
+    }
 
     [Fact]
     public async Task First_poll_resyncs_discovers_prs_creates_runs_and_advances_the_cursor()
@@ -76,12 +83,12 @@ public sealed class PrPollingServiceTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
         // Provider registered for "github" but the target asks for "azure-devops".
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
         var target = new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = Scope };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, NullLogger<PrPollingService>.Instance);
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
 
         var act = async () => await poller.PollOnceAsync(CancellationToken.None);
 
@@ -91,12 +98,12 @@ public sealed class PrPollingServiceTests
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
-    private static PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
+    private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
     {
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), NullLogger<PrOrchestrator>.Instance);
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
         var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
         return new PrPollingService(
-            [target], [provider], store, orchestrator, NullLogger<PrPollingService>.Instance);
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
     }
 
     private static OpaqueCursor NextCursor() => new()

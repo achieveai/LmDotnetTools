@@ -51,4 +51,14 @@ internal sealed class CodeReviewDaemonOptions
     /// file so the store's migrate-on-construction side effect stays isolated.
     /// </summary>
     public string? DatabasePath { get; init; }
+
+    /// <summary>
+    /// Remote URL of the ReviewBot workspace repository (seeded once via <c>reviewbot init</c>). When set,
+    /// a completed primary review's artifacts (<c>PRs/...</c> + the regenerated <c>KnowledgeBase/...</c>)
+    /// are durably persisted onto its default branch via the one-commit retention sequence (AC#6). When
+    /// unset (default) retention is <b>skipped</b>, keeping a freshly-deployed daemon inert — review
+    /// output still lands in SQLite, but nothing is pushed to a git remote until an operator points the
+    /// daemon at an initialized ReviewBot repo.
+    /// </summary>
+    public string? ReviewBotRepoUrl { get; init; }
 }
