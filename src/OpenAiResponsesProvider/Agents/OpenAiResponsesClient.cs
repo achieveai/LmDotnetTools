@@ -94,9 +94,12 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         // the processor must NOT call EnsureSuccessStatusCode — it hands back the still-open response
         // and its stream so enumeration happens OUTSIDE the retry scope.
         var setup = await HttpRetryHelper.ExecuteHttpWithRetryAsync(
-            () =>
+            async () =>
             {
-                var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
+                // `using` so the per-attempt request + JsonContent are disposed once the response
+                // headers are read; with ResponseHeadersRead the response stream is owned by the
+                // returned HttpResponseMessage, so disposing the request here does not affect it.
+                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
                 {
                     Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
                 };
@@ -109,12 +112,24 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
                     streamingRequest.Input.Count
                 );
 
-                return _http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                return await _http
+                    .SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .ConfigureAwait(false);
             },
             async response =>
             {
-                var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                return (Response: response, Stream: stream);
+                // If acquiring the stream fails/cancels, the tuple is never returned and the iterator's
+                // finally never runs — dispose the response here so the connection is not pinned.
+                try
+                {
+                    var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                    return (Response: response, Stream: stream);
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
             },
             _logger,
             _retryOptions,

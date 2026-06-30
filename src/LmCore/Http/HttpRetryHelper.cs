@@ -143,11 +143,13 @@ public static class HttpRetryHelper
                 string responseBody;
                 try
                 {
-                    responseBody = await response.Content.ReadAsStringAsync();
+                    responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is not HttpRequestException)
+                catch (Exception ex) when (ex is not HttpRequestException and not OperationCanceledException)
                 {
-                    // If reading the body fails, fall back to status-only diagnostics.
+                    // If reading the body fails, fall back to status-only diagnostics. Deliberate
+                    // cancellation is NOT swallowed here — it must surface as cancellation, not as a
+                    // synthesized HttpRequestException transport failure.
                     responseBody = string.Empty;
                 }
                 finally

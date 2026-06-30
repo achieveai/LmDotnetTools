@@ -1,5 +1,6 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils.Http;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -53,6 +54,34 @@ public sealed class HttpRetryHelperDisposalTests
         responses.Should().OnlyContain(r => r.Disposed);
     }
 
+    [Fact]
+    public async Task ExecuteHttpWithRetryAsync_cancellation_reading_error_body_surfaces_as_cancellation()
+    {
+        var responses = new List<TrackingHttpResponseMessage>();
+
+        var act = async () =>
+            await HttpRetryHelper.ExecuteHttpWithRetryAsync(
+                () =>
+                {
+                    var resp = new TrackingHttpResponseMessage(HttpStatusCode.BadRequest)
+                    {
+                        Content = new CancelOnReadContent(),
+                    };
+                    responses.Add(resp);
+                    return Task.FromResult<HttpResponseMessage>(resp);
+                },
+                resp => Task.FromResult(resp),
+                NullLogger.Instance,
+                RetryOptions.FastForTests
+            );
+
+        // A cancellation raised while reading the final error body must surface AS cancellation, not be
+        // repackaged into an HttpRequestException — and the response is still disposed.
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        responses.Should().ContainSingle();
+        responses[0].Disposed.Should().BeTrue();
+    }
+
     private static Task<HttpResponseMessage> NewResponse(
         List<TrackingHttpResponseMessage> sink,
         HttpStatusCode status
@@ -62,21 +91,17 @@ public sealed class HttpRetryHelperDisposalTests
         sink.Add(response);
         return Task.FromResult<HttpResponseMessage>(response);
     }
-}
 
-/// <summary>An <see cref="HttpResponseMessage"/> that records whether it has been disposed.</summary>
-internal sealed class TrackingHttpResponseMessage : HttpResponseMessage
-{
-    public TrackingHttpResponseMessage(HttpStatusCode statusCode)
-        : base(statusCode) { }
-
-    private int _disposeCount;
-
-    public bool Disposed => Volatile.Read(ref _disposeCount) > 0;
-
-    protected override void Dispose(bool disposing)
+    /// <summary>Content that throws <see cref="OperationCanceledException"/> when its body is read.</summary>
+    private sealed class CancelOnReadContent : HttpContent
     {
-        _ = Interlocked.Increment(ref _disposeCount);
-        base.Dispose(disposing);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new OperationCanceledException();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 }

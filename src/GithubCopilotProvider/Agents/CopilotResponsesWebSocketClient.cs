@@ -238,13 +238,15 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
 
         return wsEx.InnerException switch
         {
-            // TryAgain (WSATRY_AGAIN) is the non-authoritative "DNS hiccup, retry" case. HostNotFound
-            // (WSAHOST_NOT_FOUND) is an authoritative "no such host" name-resolution failure and is NOT
-            // retried — see the doc comment above.
+            // Transient transport-layer failures. TryAgain (WSATRY_AGAIN) is the non-authoritative
+            // "DNS hiccup, retry" case; HostUnreachable/NetworkUnreachable are transient routing
+            // failures. HostNotFound (WSAHOST_NOT_FOUND, authoritative "no such host") is NOT here —
+            // it is a permanent name-resolution failure (see the doc comment above).
             SocketException socketEx => socketEx.SocketErrorCode
                 is SocketError.ConnectionRefused
                     or SocketError.TimedOut
                     or SocketError.HostUnreachable
+                    or SocketError.NetworkUnreachable
                     or SocketError.TryAgain,
             HttpRequestException { StatusCode: { } status } => HttpRetryHelper.IsRetryableStatusCode(status),
             _ => false,

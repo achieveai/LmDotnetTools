@@ -1,5 +1,6 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils.Http;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
@@ -108,6 +109,24 @@ public sealed class OpenAiResponsesClientRetryTests
     }
 
     [Fact]
+    public async Task StreamResponseAsync_disposes_response_when_stream_acquisition_fails()
+    {
+        var handler = new StreamAcquisitionFailureHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://mock.local/") };
+        using var client = new OpenAiResponsesClient(http, retryOptions: RetryOptions.FastForTests);
+
+        // A 200 whose body stream cannot be opened: the (Response, Stream) tuple is never produced, so the
+        // iterator's finally never runs — responseProcessor must dispose the response before rethrowing.
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        await act.Should().ThrowAsync<IOException>();
+        handler.Response.Should().NotBeNull();
+        handler
+            .Response!.Disposed.Should()
+            .BeTrue("the successful response must be disposed when its stream cannot be acquired");
+    }
+
+    [Fact]
     public async Task StreamResponseAsync_cancel_during_backoff_throws_and_stops()
     {
         using var cts = new CancellationTokenSource();
@@ -175,5 +194,35 @@ public sealed class OpenAiResponsesClientRetryTests
         }
 
         return list;
+    }
+
+    /// <summary>Returns a single 200 whose body stream cannot be opened (models a post-headers fault).</summary>
+    private sealed class StreamAcquisitionFailureHandler : HttpMessageHandler
+    {
+        public TrackingHttpResponseMessage? Response { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            Response = new TrackingHttpResponseMessage(HttpStatusCode.OK) { Content = new ThrowOnReadStreamContent() };
+            return Task.FromResult<HttpResponseMessage>(Response);
+        }
+    }
+
+    /// <summary>Content whose read stream cannot be acquired — <see cref="HttpContent.ReadAsStreamAsync()"/> throws.</summary>
+    private sealed class ThrowOnReadStreamContent : HttpContent
+    {
+        protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("stream boom");
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            throw new IOException("stream boom");
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 }

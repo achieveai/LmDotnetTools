@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmTestUtils.Http;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Tests;
@@ -84,43 +85,6 @@ internal sealed class RecordingResponsesSseHandler : HttpMessageHandler
 
         Responses.Add(response);
         return response;
-    }
-}
-
-/// <summary>An <see cref="HttpResponseMessage"/> that records whether it has been disposed.</summary>
-internal sealed class TrackingHttpResponseMessage : HttpResponseMessage
-{
-    public TrackingHttpResponseMessage(HttpStatusCode statusCode)
-        : base(statusCode) { }
-
-    private int _disposeCount;
-
-    public bool Disposed => Volatile.Read(ref _disposeCount) > 0;
-
-    /// <summary>The tracked SSE body stream (success responses only).</summary>
-    public TrackingStream? BodyStream { get; init; }
-
-    protected override void Dispose(bool disposing)
-    {
-        _ = Interlocked.Increment(ref _disposeCount);
-        base.Dispose(disposing);
-    }
-}
-
-/// <summary>A <see cref="MemoryStream"/> that records whether it has been disposed.</summary>
-internal sealed class TrackingStream : MemoryStream
-{
-    public TrackingStream(byte[] buffer)
-        : base(buffer) { }
-
-    private int _disposeCount;
-
-    public bool Disposed => Volatile.Read(ref _disposeCount) > 0;
-
-    protected override void Dispose(bool disposing)
-    {
-        _ = Interlocked.Increment(ref _disposeCount);
-        base.Dispose(disposing);
     }
 }
 

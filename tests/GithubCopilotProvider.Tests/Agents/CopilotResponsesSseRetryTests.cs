@@ -15,9 +15,9 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents;
 ///     <see cref="CopilotResponsesAgentFactory"/>) must retry a transient pre-stream 502 and surface
 ///     the retry through the forwarded logger. Built the way <c>CreateSseClient</c> builds it — a
 ///     <see cref="CopilotHttpClientFactory"/> client (so the Copilot auth/header handler is in the
-///     chain) wrapping an SSE handler that fails once before streaming. The public factory has no
-///     transport seam, so the SSE construction path is exercised directly here; a smoke test confirms
-///     the public <see cref="CopilotResponsesAgentFactory.Create"/> accepts the retry seam.
+///     chain) wrapping an SSE handler that fails once before streaming. The real internal
+///     <c>CreateSseClient</c> construction path is exercised directly through an injected transport
+///     handler to prove it forwards both <c>retryOptions</c> and <c>logger</c> into the client.
 /// </summary>
 public sealed class CopilotResponsesSseRetryTests
 {
@@ -95,15 +95,71 @@ public sealed class CopilotResponsesSseRetryTests
     }
 
     [Fact]
-    public void Factory_create_accepts_retry_options_for_sse_transport()
+    public async Task CreateSseClient_forwards_retry_options_and_logger()
     {
-        using var agent = CopilotResponsesAgentFactory.Create(
-            "copilot-sse",
+        var sse = new OpenAiResponsesTestSseMessageHandler
+        {
+            ChunkDelayMs = 0,
+            FailFirstCount = 1,
+            FailStatusCode = HttpStatusCode.BadGateway,
+        };
+        var logger = new ListLogger();
+
+        // Drive the REAL CreateSseClient construction path (not a hand-rolled replica) through an injected
+        // transport handler, so a regression that stopped forwarding retryOptions/logger would fail here.
+        using var client = CopilotResponsesAgentFactory.CreateSseClient(
+            "https://copilot.test",
             new StubTokenProvider(),
-            CopilotResponsesTransport.Sse,
-            retryOptions: RetryOptions.FastForTests
+            new CopilotSessionContext("m", "s"),
+            new CopilotOptions(),
+            logger,
+            RetryOptions.FastForTests,
+            innerHandler: sse
         );
 
-        agent.Should().NotBeNull();
+        var events = new List<ResponseEvent>();
+        await foreach (var ev in client.StreamResponseAsync(Request()))
+        {
+            events.Add(ev);
+        }
+
+        events.Should().NotBeEmpty();
+        events[^1].Type.Should().Be(ResponseEventTypes.ResponseCompleted);
+        logger
+            .Entries.Should()
+            .Contain(e => e.Level == LogLevel.Warning, "the forwarded logger must observe the retry warning");
+    }
+
+    [Fact]
+    public async Task CreateSseClient_forwarded_retry_options_disable_retry_when_max_retries_zero()
+    {
+        var sse = new OpenAiResponsesTestSseMessageHandler
+        {
+            ChunkDelayMs = 0,
+            FailFirstCount = 1,
+            FailStatusCode = HttpStatusCode.BadGateway,
+        };
+
+        // MaxRetries=0: the single 502 must surface immediately. If CreateSseClient dropped the forwarded
+        // retryOptions and fell back to RetryOptions.Default, the 502 would be retried and SUCCEED — so this
+        // pins the retryOptions wiring (not just that *some* retry happens).
+        var noRetry = RetryOptions.FastForTests with { MaxRetries = 0 };
+        using var client = CopilotResponsesAgentFactory.CreateSseClient(
+            "https://copilot.test",
+            new StubTokenProvider(),
+            new CopilotSessionContext("m", "s"),
+            new CopilotOptions(),
+            logger: null,
+            retryOptions: noRetry,
+            innerHandler: sse
+        );
+
+        var act = async () =>
+        {
+            await foreach (var _ in client.StreamResponseAsync(Request())) { }
+        };
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        ex.StatusCode.Should().Be(HttpStatusCode.BadGateway);
     }
 }

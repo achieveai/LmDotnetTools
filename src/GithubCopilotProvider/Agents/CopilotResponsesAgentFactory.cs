@@ -66,16 +66,20 @@ public static class CopilotResponsesAgentFactory
         return new OpenAiResponsesAgent(name, client, logger);
     }
 
-    private static IOpenAiResponsesClient CreateSseClient(
+    // internal (not private) so a test can drive the REAL SSE construction path through an injected
+    // transport handler and prove that retryOptions + logger are forwarded into the client. The
+    // public Create overload never supplies innerHandler (production uses the default transport).
+    internal static IOpenAiResponsesClient CreateSseClient(
         string host,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext context,
         CopilotOptions options,
         ILogger? logger,
-        RetryOptions? retryOptions
+        RetryOptions? retryOptions,
+        HttpMessageHandler? innerHandler = null
     )
     {
-        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, options);
+        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, options, innerHandler: innerHandler);
         // Forward the factory's logger (an ILogger<OpenAiResponsesAgent> IS an ILogger) so the SSE
         // pre-stream retries are visible, and the shared retry configuration.
         return new OpenAiResponsesClient(

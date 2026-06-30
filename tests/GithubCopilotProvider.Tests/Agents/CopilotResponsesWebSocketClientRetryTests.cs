@@ -105,6 +105,10 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
     private static WebSocketException RetryableConnect() =>
         new(WebSocketError.Faulted, new SocketException((int)SocketError.ConnectionRefused));
 
+    /// <summary>A 502 returned during the WebSocket upgrade — the core gateway case from #114.</summary>
+    private static WebSocketException BadGatewayUpgrade() =>
+        new("upgrade rejected", new HttpRequestException("Bad Gateway", null, HttpStatusCode.BadGateway));
+
     private static IEnumerable<string> ScriptedTurn(int turnIndex)
     {
         var id = "resp-" + turnIndex;
@@ -196,6 +200,58 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
         created.Should().HaveCount(RetryOptions.FastForTests.MaxRetries + 1);
         created.Should().OnlyContain(s => s.Disposed);
         created.Should().OnlyContain(s => s.Sent.Count == 0);
+    }
+
+    [Fact]
+    public async Task Connect_retries_after_transient_bad_gateway_upgrade()
+    {
+        var created = new List<FakeSocket>();
+        var turn = 0;
+        await using var client = NewClient(() =>
+        {
+            var socket = new FakeSocket();
+            if (created.Count == 0)
+            {
+                socket.ConnectError = BadGatewayUpgrade(); // 502 during upgrade -> retryable
+            }
+            else
+            {
+                var index = turn++;
+                socket.Respond = _ => ScriptedTurn(index);
+            }
+
+            created.Add(socket);
+            return socket;
+        });
+
+        var events = await CollectAsync(client.StreamResponseAsync(Request()));
+
+        events.Select(e => e.Type).Should().Contain(ResponseEventTypes.ResponseCompleted);
+        created.Should().HaveCount(2);
+        created[0].Should().NotBeSameAs(created[1]);
+        created[0].Disposed.Should().BeTrue("the failed-upgrade socket must be disposed");
+        created[0].Sent.Should().BeEmpty("response.create must not be sent before a successful connect");
+        created[1].Sent.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Connect_persistent_bad_gateway_upgrade_throws_after_bounded_attempts()
+    {
+        var created = new List<FakeSocket>();
+        await using var client = NewClient(() =>
+        {
+            var socket = new FakeSocket { ConnectError = BadGatewayUpgrade() };
+            created.Add(socket);
+            return socket;
+        });
+
+        var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
+
+        await act.Should().ThrowAsync<WebSocketException>();
+
+        created.Should().HaveCount(RetryOptions.FastForTests.MaxRetries + 1);
+        created.Should().OnlyContain(s => s.Disposed);
+        created.Should().OnlyContain(s => s.Sent.Count == 0, "no response.create is sent before a successful connect");
     }
 
     [Fact]
