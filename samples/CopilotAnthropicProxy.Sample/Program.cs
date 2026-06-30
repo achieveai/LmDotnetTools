@@ -34,9 +34,10 @@ builder.WebHost.ConfigureKestrel(options =>
 {
     options.Listen(IPAddress.Loopback, config.Port);
     options.Listen(IPAddress.IPv6Loopback, config.Port);
-    // Local dev proxy on a trusted loopback socket: allow large request bodies (big contexts /
-    // images) but keep a finite cap so a pathological body can't grow the buffer unbounded.
-    options.Limits.MaxRequestBodySize = 100L * 1024 * 1024; // 100 MB
+    // Local dev proxy on a trusted loopback socket. The forward path buffers and JsonNode-rewrites the
+    // whole body in memory, so the cap matches Anthropic's own ~32 MB request limit rather than being
+    // arbitrarily large; Kestrel rejects an over-limit body mid-read, before full allocation.
+    options.Limits.MaxRequestBodySize = 32L * 1024 * 1024; // 32 MB (matches the Anthropic API request limit)
 });
 
 // --- Dependency injection ----------------------------------------------------
@@ -527,7 +528,7 @@ internal static class ProxyHttp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            await CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, isSse, logger);
+            await CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger);
 
             logger.LogInformation(
                 "{Method} {Path} model {IncomingModel} -> {ResolvedModel} stream={Stream} upstream={Status} {Elapsed}ms",
@@ -543,7 +544,6 @@ internal static class ProxyHttp
         TimeSpan idleTimeout,
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
-        bool isSse,
         ILogger logger)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
@@ -574,20 +574,17 @@ internal static class ProxyHttp
                     }
                     catch (Exception ex)
                     {
-                        // Mid-stream upstream failure (drop, idle timeout, decode error). For SSE, synthesize a
-                        // terminal error event so the client doesn't hang. For a non-SSE response we can still
-                        // return a clean 502 *if* the body hasn't started; once bytes are flushed the status is
-                        // locked and the only option is to stop (truncated).
+                        // Mid-stream upstream failure (drop, idle timeout, decode error). Raw passthrough: never
+                        // fabricate SSE frames. If nothing has reached the client we can still return a clean
+                        // gateway error; once bytes are on the wire the status is locked, so we just stop —
+                        // closing the response without a message_stop signals an incomplete stream (exactly as a
+                        // raw upstream drop would), which the client detects without us inventing a terminal event.
                         logger.LogWarning("Mid-stream upstream failure: {Reason}", ex.Message);
-                        if (isSse)
-                        {
-                            await WriteTerminalSseErrorAsync(ctx);
-                        }
-                        else if (!ctx.Response.HasStarted)
+                        if (!ctx.Response.HasStarted)
                         {
                             await WriteAnthropicErrorAsync(
                                 ctx, StatusCodes.Status502BadGateway, "api_error",
-                                "The upstream Copilot stream failed before completion.");
+                                "The upstream Copilot stream failed before any data was received.");
                         }
 
                         return;
@@ -706,25 +703,6 @@ internal static class ProxyHttp
         });
     }
 
-    /// <summary>Writes a terminal SSE error frame followed by message_stop (best effort, never throws).</summary>
-    private static async Task WriteTerminalSseErrorAsync(HttpContext ctx)
-    {
-        try
-        {
-            const string frame =
-                "event: error\n"
-                + "data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\","
-                + "\"message\":\"Upstream stream failed before completion.\"}}\n\n"
-                + "event: message_stop\n"
-                + "data: {\"type\":\"message_stop\"}\n\n";
-            await ctx.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(frame), CancellationToken.None);
-            await ctx.Response.Body.FlushAsync(CancellationToken.None);
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
-        {
-            // The client is already gone; nothing more we can do.
-        }
-    }
 }
 
 /// <summary>Exposed so <c>WebApplicationFactory&lt;Program&gt;</c> can boot this host in tests.</summary>

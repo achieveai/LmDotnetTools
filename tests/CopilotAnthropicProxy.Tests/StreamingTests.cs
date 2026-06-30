@@ -54,8 +54,37 @@ public sealed class StreamingTests
     }
 
     [Fact]
-    public async Task Mid_stream_upstream_failure_writes_terminal_sse_error_and_message_stop()
+    public async Task First_sse_frame_is_flushed_before_upstream_completes()
     {
+        // Upstream emits frame "a", then blocks until released, then emits frame "b". If the proxy
+        // buffered the whole upstream before flushing, the first client read would block until Release()
+        // and time out. Observing frame "a" before releasing proves incremental flush.
+        var gated = new GatedStream(
+            "event: a\ndata: {\"type\":\"content_block_delta\",\"i\":0}\n\n",
+            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n");
+        await using var factory = new ProxyWebAppFactory((req, ct) =>
+            Task.FromResult(TestUpstream.SseStream(gated)));
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = RequestBody() };
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        await using var body = await response.Content.ReadAsStreamAsync();
+
+        var buffer = new byte[256];
+        var read = await body.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Encoding.UTF8.GetString(buffer, 0, read).Should().Contain("event: a",
+            "the first frame must reach the client before the upstream produces the rest");
+
+        gated.Release();
+        var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        rest.Should().Contain("event: b");
+    }
+
+    [Fact]
+    public async Task Mid_stream_upstream_failure_truncates_without_fabricating_frames()
+    {
+        // Raw passthrough: a mid-stream upstream failure (after some frames were relayed) must NOT
+        // synthesize an SSE error or a (misleading) message_stop — the stream is simply truncated.
         var upstreamStream = new ThrowingStream("event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n");
         await using var factory = new ProxyWebAppFactory((req, ct) =>
             Task.FromResult(TestUpstream.SseStream(upstreamStream)));
@@ -64,9 +93,8 @@ public sealed class StreamingTests
         using var response = await client.PostAsync("/v1/messages", RequestBody());
         var text = await response.Content.ReadAsStringAsync();
 
-        text.Should().Contain("content_block_delta", "the frames received before the failure are relayed");
-        text.Should().Contain("event: error");
-        text.Should().Contain("\"type\":\"api_error\"");
-        text.Should().Contain("event: message_stop");
+        text.Should().Contain("content_block_delta", "frames received before the failure are relayed verbatim");
+        text.Should().NotContain("event: error", "raw passthrough must not fabricate an SSE error frame");
+        text.Should().NotContain("message_stop", "a truncated/failed stream must not claim normal completion");
     }
 }

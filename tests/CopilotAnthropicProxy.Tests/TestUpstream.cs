@@ -96,6 +96,66 @@ internal sealed class CancellationObservingStream : Stream
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
+/// <summary>
+///     Emits <c>first</c> immediately, then blocks the next read until <see cref="Release"/> is called,
+///     then emits <c>second</c>. Lets a test prove the proxy flushes the first frame to the client
+///     before the upstream has produced the rest (i.e. it streams incrementally, not buffer-to-end).
+/// </summary>
+internal sealed class GatedStream : Stream
+{
+    private readonly byte[] _first;
+    private readonly byte[] _second;
+    private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _firstPos;
+    private int _secondPos;
+
+    public GatedStream(string first, string second)
+    {
+        _first = Encoding.UTF8.GetBytes(first);
+        _second = Encoding.UTF8.GetBytes(second);
+    }
+
+    /// <summary>Unblocks emission of the second frame.</summary>
+    public void Release() => _gate.TrySetResult();
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (_firstPos < _first.Length)
+        {
+            var count = Math.Min(buffer.Length, _first.Length - _firstPos);
+            _first.AsMemory(_firstPos, count).CopyTo(buffer);
+            _firstPos += count;
+            return count;
+        }
+
+        if (_secondPos == 0)
+        {
+            await _gate.Task.WaitAsync(cancellationToken);
+        }
+
+        if (_secondPos < _second.Length)
+        {
+            var count = Math.Min(buffer.Length, _second.Length - _secondPos);
+            _second.AsMemory(_secondPos, count).CopyTo(buffer);
+            _secondPos += count;
+            return count;
+        }
+
+        return 0;
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
+
 /// <summary>A stream that emits a fixed prefix once, then throws on the next read (mid-stream failure).</summary>
 internal sealed class ThrowingStream : Stream
 {

@@ -16,7 +16,10 @@ What it does, end to end:
    (`CopilotHttpClientFactory` / `CopilotHeadersHandler` / the CLI credential token provider).
 4. Streams the upstream Server-Sent-Events response straight back to the client as **raw bytes**
    (no parsing, no buffering, incremental flush) and passes status codes and rate-limit headers
-   through unchanged.
+   through unchanged. If the upstream stream fails mid-flight the proxy does **not** fabricate any
+   terminal frames: it returns a `502` when nothing has been sent yet, otherwise it stops and closes
+   the (now incomplete) stream — the client detects the truncation from the missing `message_stop`,
+   exactly as it would if the upstream connection had dropped directly.
 
 > [!WARNING]
 > **Local development only.** This proxy has **no inbound authentication** but attaches **your**
