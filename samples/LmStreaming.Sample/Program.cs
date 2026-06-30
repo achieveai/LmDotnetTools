@@ -1616,12 +1616,16 @@ public partial class Program
     }
 
     /// <summary>
-    /// Asks the gateway for every <c>context_file</c> the workspace contains, host-reads each
-    /// one (via the same containment guard the sub-agent loader uses), and concatenates the
-    /// formatted blocks. Returns an empty string when discovery hasn't surfaced any context
-    /// files yet, the session has no host path, the gateway call fails, or every file fails
-    /// the containment / read step. All failures are logged and swallowed — context-file
-    /// seeding is a best-effort enrichment, never a precondition for the chat session.
+    /// Seeds the workspace's root instruction file (AGENTS.md, else CLAUDE.md) into the system
+    /// prompt at agent build, so the model has the workspace's high-priority instructions on turn 1
+    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway's MCP <c>Read</c>
+    /// tool (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>): the local-host backend
+    /// cannot read the container's <c>/workspace</c> filesystem, and this path is race-free (it does
+    /// not depend on the async discovery webhook, which fires after the system prompt is built).
+    /// AGENTS.md takes precedence over CLAUDE.md — the first file that exists is injected and the
+    /// search stops. Returns an empty string when neither exists, the session has no host path, or
+    /// the read fails; every failure is logged and swallowed — seeding is a best-effort enrichment,
+    /// never a precondition for the chat session.
     /// </summary>
     private static string TryBuildRootContextSuffix(
         SandboxSessionRegistry sandboxRegistry,
@@ -1636,72 +1640,62 @@ public partial class Program
             return string.Empty;
         }
 
-        IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> items;
-        try
+        // The workspace mount root inside the sandbox (e.g. "/workspace"). Root instruction files
+        // sit directly under it; AGENTS.md wins over CLAUDE.md when both are present.
+        var baseDir = sandboxSession.HostPath.TrimEnd('/', '\\');
+        string[] candidates = ["AGENTS.md", "CLAUDE.md"];
+
+        foreach (var name in candidates)
         {
-            // Bound this sync-over-async gateway GET so a slow/unresponsive gateway can't park a
-            // thread-pool thread for the HttpClient default (100s) on every agent creation.
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            items = sandboxRegistry
-                .ListDiscoveredAsync(sandboxSession.SessionId, cts.Token)
-                .GetAwaiter()
-                .GetResult();
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Failed to list discovered context files for session {SessionId}; skipping root context seed.",
-                sandboxSession.SessionId);
-            return string.Empty;
-        }
+            var path = $"{baseDir}/{name}";
 
-        var basePath = WorkspaceSubAgentLoader.NormalizeBasePath(sandboxSession.HostPath);
-        var blocks = new List<string>();
-
-        foreach (var item in items)
-        {
-            if (!string.Equals(item.Kind, ContextFileKind, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!WorkspaceSubAgentLoader.TryResolveContainedPath(basePath, item.Path, out var fullPath))
-            {
-                logger.LogWarning(
-                    "Skipping discovered context file {Path} for session {SessionId}: outside workspace.",
-                    item.Path,
-                    sandboxSession.SessionId);
-                continue;
-            }
-
-            string content;
+            string? content;
             try
             {
-                content = File.ReadAllText(fullPath);
+                // Bound this sync-over-async gateway read so a slow/unresponsive gateway can't park a
+                // thread-pool thread for the HttpClient default (100s) on every agent creation.
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                content = sandboxRegistry
+                    .ReadWorkspaceFileAsync(sandboxSession.SessionId, path, cts.Token)
+                    .GetAwaiter()
+                    .GetResult();
             }
             catch (Exception ex)
             {
                 logger.LogWarning(
                     ex,
-                    "Skipping discovered context file {Path} for session {SessionId}: read failed.",
-                    item.Path,
+                    "Failed to read workspace root context file {Path} for session {SessionId}; skipping seed.",
+                    path,
                     sandboxSession.SessionId);
                 continue;
             }
 
-            var block = formatter.BuildSystemPromptBlock(item.Path, content, truncated: false);
-            if (!string.IsNullOrEmpty(block))
+            if (string.IsNullOrWhiteSpace(content))
             {
-                blocks.Add(block);
-                // Mark each seeded file as seen so a same-file delivery on the webhook side
-                // (the gateway re-emits the same path right after session creation) is dropped
-                // by the injector — otherwise the model would see the file twice on turn 1.
-                _ = sandboxRegistry.TryMarkDiscoverySeen(sandboxSession.SessionId, ContextFileKind, item.Path);
+                continue;
             }
+
+            var block = formatter.BuildSystemPromptBlock(path, content, truncated: false);
+            if (string.IsNullOrEmpty(block))
+            {
+                continue;
+            }
+
+            // Mark the seeded file as seen so a same-file delivery on the webhook side (the gateway
+            // re-emits the root path right after session creation) is dropped by the injector —
+            // otherwise the model would see the file twice on turn 1.
+            _ = sandboxRegistry.TryMarkDiscoverySeen(sandboxSession.SessionId, ContextFileKind, path);
+
+            logger.LogInformation(
+                "Seeded workspace root context file {Path} ({Length} chars) into the system prompt for session {SessionId}.",
+                path,
+                content.Length,
+                sandboxSession.SessionId);
+
+            return "\n\n" + block;
         }
 
-        return blocks.Count == 0 ? string.Empty : "\n\n" + string.Join("\n\n", blocks);
+        return string.Empty;
     }
 
     private static int ResolveCodexMcpPort()

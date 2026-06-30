@@ -43,13 +43,15 @@ public sealed class ContextDiscoveryController(
     ILogger<ContextDiscoveryController> logger) : ControllerBase
 {
     /// <summary>
-    /// Gateway callback for one discovered context item. Returns 200 on success (including
-    /// best-effort no-ops), 401 if the shared secret doesn't match, 400 if the payload is
-    /// malformed.
+    /// Gateway callback for a batch of discovered context items. The gateway batches every newly
+    /// discovered item for a session into one POST — a <see cref="ContextDiscoveryEnvelope"/>
+    /// carrying the session id plus a <c>discoveries</c> array. Returns 200 on success (including
+    /// best-effort no-ops), 401 if the shared secret doesn't match, 400 if the envelope is null or
+    /// any item is malformed for its kind.
     /// </summary>
     [HttpPost("context_discovery")]
     public async Task<IActionResult> NotifyAsync(
-        [FromBody] ContextDiscoveryPayload? body,
+        [FromBody] ContextDiscoveryEnvelope? body,
         CancellationToken cancellationToken)
     {
         if (!sharedSecret.Matches(Request.Headers.Authorization.ToString()))
@@ -59,33 +61,67 @@ public sealed class ContextDiscoveryController(
             return Unauthorized();
         }
 
-        if (body is null || !IsValid(body))
+        if (body is null)
         {
             logger.LogWarning("Rejected context-discovery webhook with malformed payload.");
             return BadRequest();
         }
 
-        logger.LogInformation(
-            "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId} truncated={Truncated}",
-            body.Kind,
-            body.Name,
-            body.Path,
-            body.Description,
-            body.SessionId,
-            body.Truncated);
-
-        // Record the arrival for the diagnostics endpoint BEFORE the kind-specific handling (which is
-        // best-effort and may no-op). This is what lets an operator confirm webhooks are reaching the
-        // app at all — the count staying at zero is the signature of an unreachable callback host.
-        diagnostics.RecordReceived(body.SessionId, body.Kind, body.Path ?? body.Name);
-
-        if (string.Equals(body.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
+        // Project each batched item onto the per-item carrier the downstream handlers consume,
+        // stamping the envelope-level session id onto each. Validate the WHOLE batch up front so a
+        // malformed item is rejected at the boundary rather than partially applied.
+        var items = body.Discoveries ?? [];
+        var payloads = new List<ContextDiscoveryPayload>(items.Count);
+        foreach (var item in items)
         {
-            await TryActivateSubAgentAsync(body, cancellationToken).ConfigureAwait(false);
+            var payload = new ContextDiscoveryPayload
+            {
+                SessionId = body.SessionId,
+                Kind = item.Kind,
+                Name = item.Name,
+                Description = item.Description,
+                Path = item.Path,
+                Content = item.Content,
+                Truncated = item.Truncated,
+            };
+
+            if (!IsValid(payload))
+            {
+                logger.LogWarning(
+                    "Rejected context-discovery webhook with malformed item (kind={Kind}, path={Path}).",
+                    item.Kind,
+                    item.Path);
+                return BadRequest();
+            }
+
+            payloads.Add(payload);
         }
-        else if (string.Equals(body.Kind, ContextDiscoveryKinds.ContextFile, StringComparison.Ordinal))
+
+        foreach (var payload in payloads)
         {
-            await contextInjector.InjectAsync(body, cancellationToken).ConfigureAwait(false);
+            logger.LogInformation(
+                "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId} truncated={Truncated}",
+                payload.Kind,
+                payload.Name,
+                payload.Path,
+                payload.Description,
+                payload.SessionId,
+                payload.Truncated);
+
+            // Record the arrival for the diagnostics endpoint BEFORE the kind-specific handling
+            // (which is best-effort and may no-op). This is what lets an operator confirm webhooks
+            // are reaching the app at all — the count staying at zero is the signature of an
+            // unreachable callback host OR a rejected (401) delivery.
+            diagnostics.RecordReceived(payload.SessionId, payload.Kind, payload.Path ?? payload.Name);
+
+            if (string.Equals(payload.Kind, ContextDiscoveryKinds.SubAgent, StringComparison.Ordinal))
+            {
+                await TryActivateSubAgentAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
+            else if (string.Equals(payload.Kind, ContextDiscoveryKinds.ContextFile, StringComparison.Ordinal))
+            {
+                await contextInjector.InjectAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         return Ok();
@@ -262,10 +298,63 @@ internal readonly record struct SubAgentSessionRegistryItem(string Kind, string 
 }
 
 /// <summary>
-/// Gateway → app payload for a single discovered context item. Field names are the gateway's
-/// wire contract (snake_case), pinned via <see cref="JsonPropertyNameAttribute"/> so they bind
-/// regardless of the app's JSON naming defaults. Unknown fields are tolerated by System.Text.Json
-/// by default so the gateway can add new fields without breaking older app builds.
+/// Gateway → app batch payload for a <c>context_discovery</c> webhook delivery. The gateway
+/// batches every newly-discovered item for a session into ONE POST: a top-level envelope carrying
+/// the session id plus a <c>discoveries</c> array of per-kind items (see SandboxedOstoolsMcpServer
+/// <c>Docs/context-discovery.md</c> §Webhook payload). Field names are the gateway's wire contract
+/// (snake_case), pinned via <see cref="JsonPropertyNameAttribute"/>. Unknown fields (e.g.
+/// <c>event</c>, <c>app_id</c>) are tolerated by System.Text.Json so the gateway can evolve its
+/// envelope without breaking older app builds.
+/// </summary>
+public sealed record ContextDiscoveryEnvelope
+{
+    [JsonPropertyName("event")]
+    public string? Event { get; init; }
+
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; init; }
+
+    [JsonPropertyName("app_id")]
+    public string? AppId { get; init; }
+
+    [JsonPropertyName("discoveries")]
+    public List<ContextDiscoveryItem>? Discoveries { get; init; }
+}
+
+/// <summary>
+/// One discovered item inside a <see cref="ContextDiscoveryEnvelope"/>, discriminated by
+/// <see cref="Kind"/>. Only the fields the app acts on are bound here; the gateway's richer
+/// per-kind fields (<c>frontmatter</c>/<c>prompt</c>/<c>directory</c>/<c>plugin</c>/…) are
+/// tolerated and ignored.
+/// </summary>
+public sealed record ContextDiscoveryItem
+{
+    [JsonPropertyName("kind")]
+    public string? Kind { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("description")]
+    public string? Description { get; init; }
+
+    [JsonPropertyName("path")]
+    public string? Path { get; init; }
+
+    /// <summary>Body of a discovered context file (CLAUDE.md / AGENTS.md). Present for
+    /// <c>kind == "context_file"</c> items; other kinds resolve their content elsewhere.</summary>
+    [JsonPropertyName("content")]
+    public string? Content { get; init; }
+
+    [JsonPropertyName("truncated")]
+    public bool? Truncated { get; init; }
+}
+
+/// <summary>
+/// Per-item carrier passed to the kind-specific handlers (<see cref="ContextDiscoveryInjector"/>,
+/// sub-agent activation) after the controller flattens a <see cref="ContextDiscoveryEnvelope"/> and
+/// stamps the envelope's session id onto each item. Retains <see cref="JsonPropertyNameAttribute"/>
+/// bindings so it still deserializes the historical single-item shape in unit tests.
 /// </summary>
 public sealed record ContextDiscoveryPayload
 {

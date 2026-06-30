@@ -592,6 +592,87 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
+    /// Reads the text content of a file inside the session's sandbox through the gateway's MCP
+    /// <c>Read</c> tool (<c>POST {gateway}/mcp</c>, <c>tools/call</c>, scoped by the
+    /// <c>X-Session-ID</c> header). This is the ONLY way the (local-host) backend can obtain a
+    /// workspace file's content in the Docker topology — it cannot read the container's
+    /// <c>/workspace</c> filesystem directly, and the discovery query API is metadata-only.
+    /// </summary>
+    /// <param name="sessionId">Gateway session id whose sandbox the file lives in.</param>
+    /// <param name="absolutePath">Absolute path INSIDE the sandbox (e.g. <c>/workspace/CLAUDE.md</c>).</param>
+    /// <param name="ct">Cancellation token observed by the HTTP call.</param>
+    /// <returns>
+    /// The file's text with the <c>Read</c> tool's <c>cat -n</c> line-number prefixes stripped, or
+    /// <c>null</c> when the file is missing, the tool reports an error, or the call fails. Best-effort
+    /// by contract: callers treat <c>null</c> as "no content" and degrade.
+    /// </returns>
+    public async Task<string?> ReadWorkspaceFileAsync(string sessionId, string absolutePath, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+
+        // JSON-RPC field names are the MCP wire contract (jsonrpc/method/params/name/arguments/
+        // file_path) — serialize them verbatim rather than through the snake_case JsonOptions.
+        var body = JsonSerializer.Serialize(new
+        {
+            jsonrpc = "2.0",
+            id = 1,
+            method = "tools/call",
+            @params = new { name = "Read", arguments = new { file_path = absolutePath } },
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_gateway.GatewayBaseUrl}/mcp")
+        {
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);
+
+        using var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            // Best-effort: a non-2xx transport result is "no content", never a thrown error — the
+            // caller (boot-time system-prompt seed) degrades to no workspace instructions.
+            return null;
+        }
+
+        McpReadResponse? payload;
+        try
+        {
+            payload = await response
+                .Content.ReadFromJsonAsync<McpReadResponse>(JsonOptions, ct)
+                .ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        // JSON-RPC error (e.g. evicted session) OR a tool-level error (isError, e.g. missing file)
+        // both mean "no usable content".
+        if (payload?.Error is not null || payload?.Result is null || payload.Result.IsError == true)
+        {
+            return null;
+        }
+
+        var text = payload.Result.Content?
+            .FirstOrDefault(c => string.Equals(c.Type, "text", StringComparison.Ordinal))?.Text;
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        return StripReadLineNumbers(text);
+    }
+
+    /// <summary>
+    /// Strips the <c>Read</c> tool's <c>cat -n</c> line-number prefixes (<c>"   123\t"</c>) so the
+    /// recovered text is the raw file content, suitable for injecting into the system prompt.
+    /// </summary>
+    private static string StripReadLineNumbers(string text) =>
+        System.Text.RegularExpressions.Regex.Replace(text, "(?m)^ *\\d+\\t", string.Empty);
+
+    /// <summary>
     /// Returns the <see cref="SubAgentSessionBinding"/> for the
     /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
     /// first access — seeded with <paramref name="seed"/> and remembering
@@ -1056,12 +1137,16 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         [property: JsonPropertyName("webhook")] DiscoveryWebhookDto Webhook
     );
 
-    /// <summary>Webhook descriptor inside the outbound <c>discovery</c> block. <c>auth</c>
-    /// matches the value the gateway later presents in the <c>Authorization</c> header on its
-    /// callbacks — same convention as the auth-provider <c>gateway_auth</c> field.</summary>
+    /// <summary>Webhook descriptor inside the outbound <c>discovery</c> block. The gateway reads
+    /// the secret from <c>auth_header</c> (its <c>WebhookConfig</c> field) and sends it back
+    /// <em>verbatim</em> as the <c>Authorization</c> header on every context-discovery callback —
+    /// which is what <see cref="LmStreaming.Sample.Controllers.ContextDiscoveryController"/> then
+    /// validates. The field name MUST be <c>auth_header</c>: under the legacy name <c>auth</c> the
+    /// gateway parses it as absent and sends no <c>Authorization</c> header, so every callback is
+    /// rejected 401 and no context file is ever delivered.</summary>
     internal sealed record DiscoveryWebhookDto(
         [property: JsonPropertyName("url")] string Url,
-        [property: JsonPropertyName("auth")] string Auth
+        [property: JsonPropertyName("auth_header")] string Auth
     );
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
@@ -1076,6 +1161,30 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
     private sealed record DiscoveredItemsResponse(
         [property: JsonPropertyName("items")] IReadOnlyList<DiscoveredItem> Items
+    );
+
+    // --- Gateway MCP /mcp JSON-RPC contract (for ReadWorkspaceFileAsync) ---
+    // Explicit names: the gateway emits camelCase `isError` (MCP convention), which the snake_case
+    // JsonOptions would otherwise look for as `is_error`.
+
+    private sealed record McpReadResponse(
+        [property: JsonPropertyName("result")] McpReadResult? Result,
+        [property: JsonPropertyName("error")] McpRpcError? Error
+    );
+
+    private sealed record McpReadResult(
+        [property: JsonPropertyName("content")] IReadOnlyList<McpContentItem>? Content,
+        [property: JsonPropertyName("isError")] bool? IsError
+    );
+
+    private sealed record McpContentItem(
+        [property: JsonPropertyName("type")] string? Type,
+        [property: JsonPropertyName("text")] string? Text
+    );
+
+    private sealed record McpRpcError(
+        [property: JsonPropertyName("code")] int Code,
+        [property: JsonPropertyName("message")] string? Message
     );
 
     private sealed record AppRef([property: JsonPropertyName("id")] string Id);

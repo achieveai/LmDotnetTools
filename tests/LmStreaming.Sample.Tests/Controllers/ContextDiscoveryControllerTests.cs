@@ -93,11 +93,17 @@ public class ContextDiscoveryControllerTests
             new AuthSharedSecret(new AuthOptions()));
     }
 
+    // The gateway delivers a BATCHED `context_discovery` envelope (a `discoveries` array with the
+    // session id at the envelope level). These helpers wrap a single item in that envelope so each
+    // test reads as "one discovered item for a session".
+    private static ContextDiscoveryEnvelope Envelope(string? sessionId, params ContextDiscoveryItem[] items)
+        => new() { SessionId = sessionId, Discoveries = [.. items] };
+
     [Fact]
     public async Task NotifyAsync_NoAuthorizationHeader_ReturnsUnauthorized()
     {
         var controller = CreateController(authorizationHeader: null);
-        var body = new ContextDiscoveryPayload { Kind = "subagent", Name = "echo" };
+        var body = Envelope(null, new ContextDiscoveryItem { Kind = "subagent", Name = "echo" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -108,7 +114,7 @@ public class ContextDiscoveryControllerTests
     public async Task NotifyAsync_WrongSecret_ReturnsUnauthorized()
     {
         var controller = CreateController(authorizationHeader: "wrong-secret");
-        var body = new ContextDiscoveryPayload { Kind = "subagent", Name = "echo" };
+        var body = Envelope(null, new ContextDiscoveryItem { Kind = "subagent", Name = "echo" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -129,7 +135,7 @@ public class ContextDiscoveryControllerTests
     public async Task NotifyAsync_CorrectSecret_MissingKind_ReturnsBadRequest()
     {
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload { Name = "echo" };
+        var body = Envelope(null, new ContextDiscoveryItem { Name = "echo" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -142,7 +148,7 @@ public class ContextDiscoveryControllerTests
         // Sub-agent activations are keyed by name (the value the model picks via the Agent tool's
         // subagent_type enum). Without it we can't register or look up the template, so reject.
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload { Kind = "subagent" };
+        var body = Envelope(null, new ContextDiscoveryItem { Kind = "subagent" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -155,7 +161,7 @@ public class ContextDiscoveryControllerTests
         // context_file deliveries are keyed by path (the dedup key + the pill label) — a missing
         // path can't be deduped against retries and can't be displayed to the user.
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload { Kind = "context_file", Content = "body" };
+        var body = Envelope(null, new ContextDiscoveryItem { Kind = "context_file", Content = "body" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -168,7 +174,7 @@ public class ContextDiscoveryControllerTests
         // Null content means the gateway has nothing for the model to read; the injector would
         // drop it anyway, but rejecting at the boundary keeps the contract crisp.
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload { Kind = "context_file", Path = "CLAUDE.md" };
+        var body = Envelope(null, new ContextDiscoveryItem { Kind = "context_file", Path = "CLAUDE.md" });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -182,13 +188,12 @@ public class ContextDiscoveryControllerTests
         // empty file. The injector treats it as a drop downstream so nothing reaches the model,
         // but the contract at the boundary is "non-null is acceptable".
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload
+        var body = Envelope("session-x", new ContextDiscoveryItem
         {
-            SessionId = "session-x",
             Kind = "context_file",
             Path = "CLAUDE.md",
             Content = string.Empty,
-        };
+        });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -204,13 +209,12 @@ public class ContextDiscoveryControllerTests
         var registry = CreateEmptyRegistry();
         var controller = CreateController(authorizationHeader: Secret, registry: registry);
 
-        var body = new ContextDiscoveryPayload
+        var body = Envelope("session-dispatch", new ContextDiscoveryItem
         {
-            SessionId = "session-dispatch",
             Kind = "context_file",
             Path = "CLAUDE.md",
             Content = "body",
-        };
+        });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -228,13 +232,12 @@ public class ContextDiscoveryControllerTests
         var controller = CreateController(authorizationHeader: Secret, diagnostics: diagnostics);
 
         var result = await controller.NotifyAsync(
-            new ContextDiscoveryPayload
+            Envelope("session-diag", new ContextDiscoveryItem
             {
-                SessionId = "session-diag",
                 Kind = "context_file",
                 Path = "CLAUDE.md",
                 Content = "body",
-            },
+            }),
             CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
@@ -253,13 +256,12 @@ public class ContextDiscoveryControllerTests
         var controller = CreateController(authorizationHeader: "wrong-secret", diagnostics: diagnostics);
 
         _ = await controller.NotifyAsync(
-            new ContextDiscoveryPayload
+            Envelope("session-diag", new ContextDiscoveryItem
             {
-                SessionId = "session-diag",
                 Kind = "context_file",
                 Path = "CLAUDE.md",
                 Content = "body",
-            },
+            }),
             CancellationToken.None);
 
         diagnostics.Snapshot().Should().BeEmpty();
@@ -269,13 +271,13 @@ public class ContextDiscoveryControllerTests
     public async Task NotifyAsync_CorrectSecret_WellFormedPayload_ReturnsOk()
     {
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload
+        var body = Envelope(null, new ContextDiscoveryItem
         {
             Kind = "subagent",
             Name = "echo",
             Description = "Echoes a marker.",
             Path = ".claude/agents/echo.md",
-        };
+        });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -289,12 +291,12 @@ public class ContextDiscoveryControllerTests
         // must NOT try to resolve a session for them. Verifies that path stays a no-op even when
         // session_id is absent from the payload.
         var controller = CreateController(authorizationHeader: Secret);
-        var body = new ContextDiscoveryPayload
+        var body = Envelope(null, new ContextDiscoveryItem
         {
             Kind = "skill",
             Name = "review-skill",
             Path = ".claude/skills/review.md",
-        };
+        });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -312,13 +314,12 @@ public class ContextDiscoveryControllerTests
             authorizationHeader: Secret,
             registry: registry);
 
-        var body = new ContextDiscoveryPayload
+        var body = Envelope("session-not-in-registry", new ContextDiscoveryItem
         {
-            SessionId = "session-not-in-registry",
             Kind = "subagent",
             Name = "ghost",
             Path = ".claude/agents/ghost.md",
-        };
+        });
 
         var result = await controller.NotifyAsync(body, CancellationToken.None);
 
@@ -388,13 +389,12 @@ public class ContextDiscoveryControllerTests
             var controller = CreateController(authorizationHeader: Secret, registry: registry, loader: loader);
 
             var result = await controller.NotifyAsync(
-                new ContextDiscoveryPayload
+                Envelope(gatewaySessionId, new ContextDiscoveryItem
                 {
-                    SessionId = gatewaySessionId,
                     Kind = "subagent",
                     Name = "echo",
                     Path = ".claude/agents/echo.md",
-                },
+                }),
                 CancellationToken.None);
 
             result.Should().BeOfType<OkResult>();
