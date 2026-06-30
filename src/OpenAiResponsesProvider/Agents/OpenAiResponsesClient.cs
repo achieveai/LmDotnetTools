@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,19 +33,22 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
     private readonly HttpClient _http;
     private readonly bool _disposeClient;
     private readonly string _responsesPath;
-    private readonly ILogger<OpenAiResponsesClient> _logger;
+    private readonly ILogger _logger;
+    private readonly RetryOptions _retryOptions;
 
     public OpenAiResponsesClient(
         HttpClient httpClient,
         bool disposeClient = false,
-        ILogger<OpenAiResponsesClient>? logger = null,
-        string? responsesPath = null
+        ILogger? logger = null,
+        string? responsesPath = null,
+        RetryOptions? retryOptions = null
     )
     {
         _http = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _disposeClient = disposeClient;
         _responsesPath = string.IsNullOrWhiteSpace(responsesPath) ? DefaultResponsesPath : responsesPath!;
-        _logger = logger ?? NullLogger<OpenAiResponsesClient>.Instance;
+        _logger = logger ?? NullLogger.Instance;
+        _retryOptions = retryOptions ?? RetryOptions.Default;
     }
 
     /// <summary>
@@ -55,8 +59,9 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
     public static OpenAiResponsesClient Create(
         Uri baseAddress,
         string? apiKey = null,
-        ILogger<OpenAiResponsesClient>? logger = null,
-        string? responsesPath = null
+        ILogger? logger = null,
+        string? responsesPath = null,
+        RetryOptions? retryOptions = null
     )
     {
         ArgumentNullException.ThrowIfNull(baseAddress);
@@ -66,7 +71,7 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
-        return new OpenAiResponsesClient(client, disposeClient: true, logger, responsesPath);
+        return new OpenAiResponsesClient(client, disposeClient: true, logger, responsesPath, retryOptions);
     }
 
     /// <inheritdoc />
@@ -82,57 +87,51 @@ public sealed class OpenAiResponsesClient : IOpenAiResponsesClient
         // diagnostic close to the call site.
         var streamingRequest = request.Stream is true ? request : request with { Stream = true };
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
-        {
-            Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
-        };
-        httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        // Send (and pre-stream retry transient 502/5xx/429 + connection faults) via the shared
+        // HttpRetryHelper. The HttpRequestMessage + JsonContent are rebuilt fresh on every attempt
+        // because a single request message cannot be re-sent (and a fresh attempt also re-stamps the
+        // Copilot auth token + x-interaction-id). The helper performs the status check internally, so
+        // the processor must NOT call EnsureSuccessStatusCode — it hands back the still-open response
+        // and its stream so enumeration happens OUTSIDE the retry scope.
+        var setup = await HttpRetryHelper.ExecuteHttpWithRetryAsync(
+            () =>
+            {
+                var httpRequest = new HttpRequestMessage(HttpMethod.Post, _responsesPath)
+                {
+                    Content = JsonContent.Create(streamingRequest, options: s_serializerOptions),
+                };
+                httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        _logger.LogDebug(
-            "POST {Path} model={Model} inputItemCount={InputCount} stream=true",
-            _responsesPath,
-            streamingRequest.Model,
-            streamingRequest.Input.Count
-        );
+                _logger.LogDebug(
+                    "POST {Path} model={Model} inputItemCount={InputCount} stream=true",
+                    _responsesPath,
+                    streamingRequest.Model,
+                    streamingRequest.Input.Count
+                );
 
-        using var response = await _http.SendAsync(
-            httpRequest,
-            HttpCompletionOption.ResponseHeadersRead,
+                return _http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            },
+            async response =>
+            {
+                var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                return (Response: response, Stream: stream);
+            },
+            _logger,
+            _retryOptions,
             cancellationToken
         ).ConfigureAwait(false);
 
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            string errorBody;
-            try
+            await foreach (var ev in ReadSseAsync(setup.Stream, cancellationToken).ConfigureAwait(false))
             {
-                errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                yield return ev;
             }
-            catch (Exception readEx) when (readEx is not OperationCanceledException)
-            {
-                errorBody = "<unable to read response body>";
-            }
-
-            _logger.LogError(
-                "OpenAI Responses API error: {StatusCode} {ReasonPhrase} Body={ErrorBody}",
-                (int)response.StatusCode,
-                response.ReasonPhrase,
-                errorBody
-            );
-
-            throw new HttpRequestException(
-                $"OpenAI Responses API returned {(int)response.StatusCode} {response.ReasonPhrase}: {errorBody}",
-                inner: null,
-                response.StatusCode
-            );
         }
-
-        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        await foreach (var ev in ReadSseAsync(responseStream, cancellationToken).ConfigureAwait(false))
+        finally
         {
-            yield return ev;
+            setup.Stream.Dispose();
+            setup.Response.Dispose();
         }
     }
 
