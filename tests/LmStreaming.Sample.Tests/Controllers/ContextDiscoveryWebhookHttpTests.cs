@@ -29,17 +29,23 @@ public sealed class ContextDiscoveryWebhookHttpTests
     private const string ThreadId = "thread-http";
 
     [Fact]
-    public async Task PostContextFileWebhook_WithValidSecret_BindsJsonAndReachesAgent()
+    public async Task PostBatchedContextFileWebhook_BindsAndReachesAgent()
     {
+        // The REAL gateway wire contract (SandboxedOstoolsMcpServer
+        // Docs/context-discovery.md §Webhook payload) is a BATCHED envelope with a
+        // `discoveries` array — NOT a single flat item. This drives that exact shape end to
+        // end and asserts the context_file reaches the live agent, plus that the diagnostics
+        // endpoint reports the arrival over HTTP.
         await using var app = await TestApp.BuildAsync();
 
         const string json = """
             {
+              "event": "context_discovery",
               "session_id": "sess-http",
-              "kind": "context_file",
-              "path": "CLAUDE.md",
-              "content": "# Project rules\nBe terse.",
-              "truncated": false
+              "app_id": "lmstreaming",
+              "discoveries": [
+                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules\nBe terse.", "truncated": false }
+              ]
             }
             """;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
@@ -52,14 +58,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // snake_case body bound correctly AND the injection reached the live agent.
         var message = app.Agent.SentMessages.Should().ContainSingle().Which
             .Should().BeOfType<TextMessage>().Subject;
         message.Role.Should().Be(Role.User);
         message.Text.Should().Contain("<context-discovery path=\"CLAUDE.md\">");
         message.Text.Should().Contain("Be terse.");
 
-        // And the diagnostics endpoint now reports the arrival over HTTP.
         var diagJson = await app.Client.GetStringAsync("/api/diagnostics/context-discovery");
         using var doc = JsonDocument.Parse(diagJson);
         var root = doc.RootElement;
@@ -76,10 +80,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
     {
         await using var app = await TestApp.BuildAsync();
 
+        // Batched envelope (the real contract) with a wrong secret → auth gate rejects it before
+        // the body is even processed, so nothing is injected.
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/discovery/context_discovery")
         {
             Content = new StringContent(
-                /*lang=json,strict*/ "{\"session_id\":\"sess-http\",\"kind\":\"context_file\",\"path\":\"CLAUDE.md\",\"content\":\"x\"}",
+                /*lang=json,strict*/ "{\"event\":\"context_discovery\",\"session_id\":\"sess-http\",\"discoveries\":[{\"kind\":\"context_file\",\"path\":\"CLAUDE.md\",\"content\":\"x\"}]}",
                 Encoding.UTF8,
                 "application/json"),
         };

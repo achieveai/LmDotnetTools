@@ -26,6 +26,7 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
 
     private readonly IInstructionChainParser _chainParser;
     private readonly ILogger<OpenAiResponsesTestSseMessageHandler> _logger;
+    private int _sendCount;
 
     public OpenAiResponsesTestSseMessageHandler()
         : this(NullLogger<OpenAiResponsesTestSseMessageHandler>.Instance) { }
@@ -43,6 +44,16 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
 
     public int ChunkDelayMs { get; set; } = DefaultChunkDelayMs;
 
+    /// <summary>
+    ///     Number of leading matching <c>/responses</c> POSTs to fail with <see cref="FailStatusCode"/>
+    ///     before serving the SSE stream. Lets a client's pre-stream retry be exercised. Instance-scoped
+    ///     (no cross-test leak); default 0 — no injected failures.
+    /// </summary>
+    public int FailFirstCount { get; set; }
+
+    /// <summary>Status returned for the injected failures (default 502 Bad Gateway).</summary>
+    public HttpStatusCode FailStatusCode { get; set; } = HttpStatusCode.BadGateway;
+
     /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -57,6 +68,16 @@ public sealed class OpenAiResponsesTestSseMessageHandler : HttpMessageHandler
         if (!request.RequestUri.AbsolutePath.EndsWith("/responses", StringComparison.OrdinalIgnoreCase))
         {
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        // Optional transient-fault injection: fail the first N matching POSTs so a client's pre-stream
+        // retry can be exercised. Counted per instance (default 0 => never fires, no cross-test leak).
+        if (Interlocked.Increment(ref _sendCount) <= FailFirstCount)
+        {
+            return new HttpResponseMessage(FailStatusCode)
+            {
+                Content = new StringContent($"Injected failure {(int)FailStatusCode}"),
+            };
         }
 
         var body =

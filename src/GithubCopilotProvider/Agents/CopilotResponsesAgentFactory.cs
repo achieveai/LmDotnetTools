@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using Microsoft.Extensions.Logging;
 
@@ -30,13 +31,18 @@ public static class CopilotResponsesAgentFactory
     /// <param name="session">Optional shared tracking ids; a new context is created when omitted.</param>
     /// <param name="options">Optional Copilot header options.</param>
     /// <param name="logger">Optional logger.</param>
+    /// <param name="retryOptions">
+    ///     Optional transient-fault retry configuration; applied to BOTH transports (SSE pre-stream
+    ///     retry and WebSocket connect-retry). Defaults to <see cref="RetryOptions.Default"/>.
+    /// </param>
     public static OpenAiResponsesAgent Create(
         string name,
         ICopilotTokenProvider tokenProvider,
         CopilotResponsesTransport transport = CopilotResponsesTransport.WebSocket,
         CopilotSessionContext? session = null,
         CopilotOptions? options = null,
-        ILogger<OpenAiResponsesAgent>? logger = null
+        ILogger<OpenAiResponsesAgent>? logger = null,
+        RetryOptions? retryOptions = null
     )
     {
         ArgumentNullException.ThrowIfNull(name);
@@ -54,21 +60,35 @@ public static class CopilotResponsesAgentFactory
 
         var client =
             transport == CopilotResponsesTransport.Sse
-                ? CreateSseClient(host, tokenProvider, context, copilotOptions)
-                : CreateWebSocketClient(host, tokenProvider, context, copilotOptions, logger);
+                ? CreateSseClient(host, tokenProvider, context, copilotOptions, logger, retryOptions)
+                : CreateWebSocketClient(host, tokenProvider, context, copilotOptions, logger, retryOptions);
 
         return new OpenAiResponsesAgent(name, client, logger);
     }
 
-    private static IOpenAiResponsesClient CreateSseClient(
+    // internal (not private) so a test can drive the REAL SSE construction path through an injected
+    // transport handler and prove that retryOptions + logger are forwarded into the client. The
+    // public Create overload never supplies innerHandler (production uses the default transport).
+    internal static IOpenAiResponsesClient CreateSseClient(
         string host,
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext context,
-        CopilotOptions options
+        CopilotOptions options,
+        ILogger? logger,
+        RetryOptions? retryOptions,
+        HttpMessageHandler? innerHandler = null
     )
     {
-        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, options);
-        return new OpenAiResponsesClient(httpClient, disposeClient: true, logger: null, responsesPath: ResponsesPath);
+        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, options, innerHandler: innerHandler);
+        // Forward the factory's logger (an ILogger<OpenAiResponsesAgent> IS an ILogger) so the SSE
+        // pre-stream retries are visible, and the shared retry configuration.
+        return new OpenAiResponsesClient(
+            httpClient,
+            disposeClient: true,
+            logger: logger,
+            responsesPath: ResponsesPath,
+            retryOptions: retryOptions
+        );
     }
 
     private static IOpenAiResponsesClient CreateWebSocketClient(
@@ -76,11 +96,19 @@ public static class CopilotResponsesAgentFactory
         ICopilotTokenProvider tokenProvider,
         CopilotSessionContext context,
         CopilotOptions options,
-        ILogger? logger
+        ILogger? logger,
+        RetryOptions? retryOptions
     )
     {
         var wsEndpoint = new Uri($"{ToWebSocketScheme(host)}{ResponsesPath}");
-        return new CopilotResponsesWebSocketClient(wsEndpoint, tokenProvider, context, options, logger);
+        return new CopilotResponsesWebSocketClient(
+            wsEndpoint,
+            tokenProvider,
+            context,
+            options,
+            logger,
+            retryOptions: retryOptions
+        );
     }
 
     private static string ToWebSocketScheme(string host)
