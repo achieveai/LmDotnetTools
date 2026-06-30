@@ -1662,12 +1662,15 @@ public partial class Program
             }
             catch (Exception ex)
             {
+                // A thrown read (timeout / transport) means the gateway is unreachable, not that the
+                // file is merely absent (a missing file returns null, handled below). Abandon the whole
+                // seed instead of spending another bounded wait on the next candidate.
                 logger.LogWarning(
                     ex,
-                    "Failed to read workspace root context file {Path} for session {SessionId}; skipping seed.",
+                    "Failed to read workspace root context file {Path} for session {SessionId}; gateway unreachable, skipping root context seed.",
                     path,
                     sandboxSession.SessionId);
-                continue;
+                return string.Empty;
             }
 
             if (string.IsNullOrWhiteSpace(content))

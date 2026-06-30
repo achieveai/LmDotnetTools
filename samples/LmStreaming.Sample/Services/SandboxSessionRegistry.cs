@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services.Auth;
@@ -63,7 +64,7 @@ public sealed record WorkspaceRef(
 /// call can retry.
 /// </para>
 /// </remarks>
-public sealed class SandboxSessionRegistry : IAsyncDisposable
+public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
@@ -667,10 +668,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>
     /// Strips the <c>Read</c> tool's <c>cat -n</c> line-number prefixes (<c>"   123\t"</c>) so the
-    /// recovered text is the raw file content, suitable for injecting into the system prompt.
+    /// recovered text is the raw file content, suitable for injecting into the system prompt. The
+    /// matcher is source-generated (compiled once at build) rather than constructed per call.
     /// </summary>
     private static string StripReadLineNumbers(string text) =>
-        System.Text.RegularExpressions.Regex.Replace(text, "(?m)^ *\\d+\\t", string.Empty);
+        ReadLineNumberPrefixRegex().Replace(text, string.Empty);
+
+    [GeneratedRegex(@"^ *\d+\t", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex ReadLineNumberPrefixRegex();
 
     /// <summary>
     /// Returns the <see cref="SubAgentSessionBinding"/> for the
