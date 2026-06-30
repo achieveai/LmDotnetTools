@@ -2,9 +2,10 @@ namespace CodeReviewDaemon.Sample.Persistence.Models;
 
 /// <summary>
 /// Crash-safe transition states for a <c>review_outbox</c> row (plan §11):
-/// <c>Pending → Sending|Leased → Sent|Posted|Collected</c>. Transitions are applied with an
-/// optimistic conditional UPDATE so a process that crashes mid-send leaves the row in its prior state
-/// for another worker to retry. Persisted as TEXT.
+/// <c>Pending → Sending|Leased → Sent|Posted|Collected</c>, plus the collect-only shortcut
+/// <c>Pending → Collected</c> (the daemon deliberately recorded the artifact without ever attempting a
+/// send). Transitions are applied with an optimistic conditional UPDATE so a process that crashes
+/// mid-send leaves the row in its prior state for another worker to retry. Persisted as TEXT.
 /// </summary>
 internal enum OutboxStatus
 {
