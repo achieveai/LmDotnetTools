@@ -158,6 +158,17 @@ host/cross-site guard described in the warning above.
 | `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive comment (`:` line) this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
 | `COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW` | `false` | When truthy, allow an interactive GitHub device-flow login at startup (composite provider). Off by default — the request path never blocks on device flow. |
 
+## Logs
+
+The proxy logs through Serilog to two sinks:
+
+- **Console** — a readable single-line view for watching the proxy live.
+- **File** — canonical structured JSONL (`@t` / `@mt` plus enriched properties, via Serilog's
+  `CompactJsonFormatter`) at `logs/copilot-anthropic-proxy-*.jsonl` next to the built binary
+  (e.g. `bin/Debug/net9.0/logs/`, git-ignored), rolled daily with 7 files retained. This is the
+  same format as `.logs/tests/tests.jsonl`, so the DuckDB queries in the repo root `CLAUDE.md`
+  work against it unchanged.
+
 ## `web_search` caveat (LmStreaming.Sample validation)
 
 `samples/LmStreaming.Sample` in `anthropic` mode can enable the Anthropic server-side

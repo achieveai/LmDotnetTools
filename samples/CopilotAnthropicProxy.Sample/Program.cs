@@ -10,6 +10,9 @@ using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
+using Serilog;
+using Serilog.Formatting.Compact;
+using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 // =============================================================================
 // CopilotAnthropicProxy.Sample
@@ -31,7 +34,34 @@ using Microsoft.Extensions.Primitives;
 var config = ProxyConfig.FromEnvironment();
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
+
+// --- Logging -----------------------------------------------------------------
+// Structured logging via Serilog: canonical JSONL (@t / @mt / @l / @x, plus enriched properties)
+// written by CompactJsonFormatter to a rolling file for DuckDB-queryable diagnostics, and a
+// readable single-line console for the live operator. Mirrors LmStreaming.Sample and the shared
+// test logging stack. The file sink lives under the app's bin/logs (git-ignored).
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("System", Serilog.Events.LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithMachineName()
+    .Enrich.WithThreadId()
+    .Enrich.WithProperty("application", "CopilotAnthropicProxy")
+    .WriteTo.File(
+        new CompactJsonFormatter(),
+        Path.Combine(AppContext.BaseDirectory, "logs", "copilot-anthropic-proxy-.log.jsonl"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        shared: true,
+        flushToDiskInterval: TimeSpan.FromSeconds(1)
+    )
+    .WriteTo.Console(
+        outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}    {Message:lj}{NewLine}{Exception}"
+    )
+    .CreateLogger();
+
+builder.Host.UseSerilog();
 
 // Bind BOTH loopback families on the configured port. Binding both (== ListenLocalhost,
 // still loopback-only) avoids the "::1 trap" when a client resolves localhost to IPv6.
@@ -99,6 +129,7 @@ catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledE
             + "to allow an interactive device-flow login at startup.) Reason: {Reason}",
         ex.Message
     );
+    Log.CloseAndFlush();
     return 1;
 }
 
@@ -123,6 +154,7 @@ catch (Exception ex) when (ex is InvalidOperationException or HttpRequestExcepti
         config.BaseUrl,
         ex.Message
     );
+    Log.CloseAndFlush();
     return 1;
 }
 
@@ -201,6 +233,7 @@ app.MapFallback(ctx =>
 );
 
 await app.RunAsync();
+Log.CloseAndFlush();
 return 0;
 
 // =============================================================================

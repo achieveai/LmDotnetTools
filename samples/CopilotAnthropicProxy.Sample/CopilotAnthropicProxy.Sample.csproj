@@ -15,4 +15,14 @@
          LmCore transitively. This is the only project reference the proxy needs. -->
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Structured JSONL logging (Serilog + CompactJsonFormatter), matching LmStreaming.Sample
+         and the shared test logging stack so proxy logs are DuckDB-queryable in the same format. -->
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+  </ItemGroup>
 </Project>
