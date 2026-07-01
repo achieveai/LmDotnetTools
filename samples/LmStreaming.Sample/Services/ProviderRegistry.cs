@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 namespace LmStreaming.Sample.Services;
 
@@ -15,8 +16,18 @@ namespace LmStreaming.Sample.Services;
 /// resolved through a delegate captured at construction time and re-evaluated on each
 /// <see cref="IsAvailable"/> / <see cref="ListAll"/> call.
 /// </remarks>
+/// <remarks>
+/// GitHub Copilot models are discovered dynamically at startup (see
+/// <see cref="AchieveAi.LmDotnetTools.GithubCopilotProvider.Models.CopilotModelsClient"/>) and injected
+/// as catalog entries keyed by their raw model id, partitioned into <c>Copilot · Anthropic</c> /
+/// <c>Copilot · OpenAI</c> groups. When no Copilot token resolves (or discovery fails) the injected
+/// list is empty and no Copilot models are exposed.
+/// </remarks>
 public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IProviderResolver
 {
+    private const string CopilotAnthropicGroup = "Copilot · Anthropic";
+    private const string CopilotOpenAiGroup = "Copilot · OpenAI";
+
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
         [
             new("openai", "OpenAI"),
@@ -26,10 +37,6 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             new("claude", "Claude (CLI)"),
             new("codex", "Codex"),
             new("copilot", "Copilot (CLI)"),
-            new("sonnet", "Sonnet (Copilot)"),
-            new("haiku", "Haiku (Copilot)"),
-            new("gpt-5.5", "GPT-5.5 (Copilot)"),
-            new("gpt-5.5-mini", "GPT-5.5 mini (Copilot)"),
             new("claude-mock", "Claude (CLI, Mock)"),
             new("codex-mock", "Codex (Mock)"),
             new("copilot-mock", "Copilot (CLI, Mock)"),
@@ -41,6 +48,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         string? KnownLimitation = null);
 
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
+    private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;
     private readonly ImmutableHashSet<string> _staticAvailability;
     private readonly Func<string, bool> _dynamicAvailability;
 
@@ -49,9 +57,24 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     {
     }
 
+    /// <summary>
+    ///     Production constructor that injects the Copilot models discovered at startup. When the list is
+    ///     empty (no token, or discovery failed) no Copilot models are exposed.
+    /// </summary>
+    public ProviderRegistry(
+        IReadOnlyList<CopilotModelInfo> copilotModels,
+        IFileSystemProbe? probe = null,
+        MockProviderHostLifetime? mockHost = null)
+        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning, copilotModels)
+    {
+    }
+
     // Test-only constructor: lets tests inject a stub IsRunning probe without standing up a
     // real Kestrel host. Marked internal so it stays out of the public surface.
-    internal ProviderRegistry(IFileSystemProbe? probe, Func<bool> mockHostIsRunning)
+    internal ProviderRegistry(
+        IFileSystemProbe? probe,
+        Func<bool> mockHostIsRunning,
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null)
     {
         ArgumentNullException.ThrowIfNull(mockHostIsRunning);
 
@@ -61,6 +84,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
         var builder = ImmutableDictionary.CreateBuilder<string, ProviderDescriptor>(StringComparer.OrdinalIgnoreCase);
         var staticBuilder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
+        var copilotBuilder = ImmutableDictionary.CreateBuilder<string, CopilotModelInfo>(StringComparer.OrdinalIgnoreCase);
 
         // Pre-compute the static availability of CLI gates and env-var gates once.
         // *-mock providers AND-on the runtime mock-host signal in the dynamic delegate below.
@@ -83,7 +107,6 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
                 "anthropic" => hasAnthropicKey,
                 "claude" => hasClaudeCli,
                 "copilot" => hasCopilotCli,
-                "sonnet" or "haiku" or "gpt-5.5" or "gpt-5.5-mini" => hasCopilotToken,
                 // *-mock providers need both their CLI prerequisite and the running mock host;
                 // codex-mock has no CLI prerequisite (codex availability is unconditional).
                 "claude-mock" => hasClaudeCli,
@@ -100,7 +123,29 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             builder[id] = new ProviderDescriptor(id, displayName, isStatic, entry.KnownLimitation);
         }
 
+        // Dynamically discovered GitHub Copilot models — one entry per routable Anthropic/OpenAI
+        // model, keyed by its raw model id and partitioned into the two Copilot groups. Availability
+        // mirrors the Copilot token gate the former curated entries used.
+        foreach (var model in copilotModels ?? [])
+        {
+            var id = NormalizeId(model.Id);
+            if (id is null || builder.ContainsKey(id))
+            {
+                continue;
+            }
+
+            copilotBuilder[id] = model;
+            if (hasCopilotToken)
+            {
+                _ = staticBuilder.Add(id);
+            }
+
+            var group = model.Vendor == CopilotModelVendor.Anthropic ? CopilotAnthropicGroup : CopilotOpenAiGroup;
+            builder[id] = new ProviderDescriptor(id, model.DisplayName, hasCopilotToken, Group: group);
+        }
+
         _byId = builder.ToImmutable();
+        _copilotModelsById = copilotBuilder.ToImmutable();
         _staticAvailability = staticBuilder.ToImmutable();
         _dynamicAvailability = id => _staticAvailability.Contains(id)
             && (!IsMockProvider(id) || mockHostIsRunning());
@@ -142,6 +187,25 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         // Re-evaluate availability so callers see the live mock-host status. The static
         // descriptor stored in the dictionary is only used as a name/display source.
         return descriptor with { Available = _dynamicAvailability(normalized) };
+    }
+
+    /// <summary>
+    ///     Resolves the discovered GitHub Copilot model backing a provider id, if any. Returns
+    ///     <c>false</c> for non-Copilot providers (openai/anthropic/CLI/test), letting callers keep
+    ///     their existing behavior and only branch into Copilot-specific wiring (transport, raw model
+    ///     id, reasoning options, web-tool fallback) when this returns <c>true</c>.
+    /// </summary>
+    public bool TryGetCopilotModel(string? providerId, out CopilotModelInfo model)
+    {
+        var normalized = NormalizeId(providerId);
+        if (normalized != null && _copilotModelsById.TryGetValue(normalized, out var found))
+        {
+            model = found;
+            return true;
+        }
+
+        model = null!;
+        return false;
     }
 
     /// <summary>

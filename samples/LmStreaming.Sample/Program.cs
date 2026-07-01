@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
@@ -135,7 +136,19 @@ try
     _ = builder.Services.AddSingleton<MockProviderHostLifetime>();
     _ = builder.Services.AddHostedService(sp => sp.GetRequiredService<MockProviderHostLifetime>());
 
-    _ = builder.Services.AddSingleton<ProviderRegistry>();
+    // Discover the GitHub Copilot model catalog once at startup and register the provider
+    // registry from it. Discovery reuses the developer's existing Copilot/gh login; when no token
+    // resolves or the /models call fails, DiscoverCopilotModels returns an empty list and the
+    // registry simply exposes no Copilot models (the app still boots with the direct/CLI/test
+    // providers). Resolved eagerly here (sync-over-async on the no-SynchronizationContext startup
+    // path) so the registry — used on the request hot path — stays synchronous.
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var probe = sp.GetRequiredService<IFileSystemProbe>();
+        var mockHost = sp.GetRequiredService<MockProviderHostLifetime>();
+        var copilotModels = DiscoverCopilotModels(sp.GetRequiredService<ILoggerFactory>());
+        return new ProviderRegistry(copilotModels, probe, mockHost);
+    });
 
     // Register the FunctionRegistry with sample tools
     _ = builder.Services.AddSingleton(sp =>
@@ -311,14 +324,18 @@ try
         providerId =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
+            // Discovered Copilot models route by their transport (Anthropic Messages vs OpenAI
+            // Responses); everything else is a fixed provider handled by the switch below.
+            if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
+            {
+                return CreateCopilotModelAgent(copilotModel, loggerFactory);
+            }
+
             return providerId.ToLowerInvariant() switch
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
                 "anthropic" => CreateAnthropicAgent(loggerFactory),
-                "sonnet" => CreateCopilotAnthropicAgent("Sonnet", loggerFactory),
-                "haiku" => CreateCopilotAnthropicAgent("Haiku", loggerFactory),
-                "gpt-5.5" => CreateCopilotResponsesAgent("GPT-5.5", loggerFactory),
-                "gpt-5.5-mini" => CreateCopilotResponsesAgent("GPT-5.5 mini", loggerFactory),
                 "test-anthropic" => CreateAnthropicTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
                 "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
                 _ => throw new ProviderUnavailableException(
@@ -735,13 +752,18 @@ try
                 // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
                 // list); the native built-in path (modeBuiltInAllowList, below) is governed separately
                 // and left untouched.
+                // Resolve the discovered Copilot model (if any) backing this provider once; its
+                // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
+                var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(normalizedProviderId, out var copilotModelInfo);
+
                 var webToolStatuses = WebToolRegistrationPolicy.Apply(
                     filteredRegistry,
                     normalizedProviderId,
                     mode.EnabledTools,
                     jinaWebProvider,
                     webToolsOptions,
-                    loggerFactory
+                    loggerFactory,
+                    isCopilotBackedModel
                 );
                 if (webToolStatuses.Count > 0)
                 {
@@ -754,7 +776,11 @@ try
 
                 try
                 {
-                    var modelId = GetModelIdForProvider(normalizedProviderId);
+                    // Discovered Copilot models use their raw model id verbatim; fixed providers keep
+                    // the curated per-provider id map.
+                    var modelId = isCopilotBackedModel
+                        ? copilotModelInfo.Id
+                        : GetModelIdForProvider(normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -770,8 +796,11 @@ try
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
                     // testable helper so the per-provider wiring is regression-guarded; see
-                    // ProgramReasoningExtraPropertiesTests.
-                    var extraProperties = BuildReasoningExtraProperties(normalizedProviderId);
+                    // ProgramReasoningExtraPropertiesTests. Discovered Copilot models map by transport.
+                    var extraProperties = BuildReasoningExtraProperties(
+                        normalizedProviderId,
+                        isCopilotBackedModel ? copilotModelInfo.Transport : null
+                    );
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
                     // path — the CLI providers (codex/claude/copilot and their *-mock variants)
@@ -1092,22 +1121,25 @@ finally
 public partial class Program
 {
     /// <summary>
-    ///     Maps a normalized provider id to the reasoning/thinking request options that surface a
-    ///     model's reasoning. Anthropic-format providers (incl. the Copilot-backed sonnet/haiku — the
-    ///     Copilot proxy accepts the thinking parameter, verified by
-    ///     CopilotAnthropicLiveTests.Thinking_param_is_accepted_by_copilot_backend) get an extended-
-    ///     thinking budget; the OpenAI Responses providers (gpt-5.5/gpt-5.5-mini) get a reasoning-
-    ///     summary request (CopilotResponsesLiveTests confirms gpt-5.5 returns reasoning). Other
-    ///     providers get none. Without this wiring, Copilot-backed models return no thinking blocks.
+    ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
+    ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format
+    ///     providers — the direct <c>anthropic</c>/<c>test-anthropic</c> providers and any Copilot model
+    ///     whose transport is <see cref="CopilotModelTransport.Anthropic"/> (the Copilot proxy accepts
+    ///     the thinking parameter, verified by
+    ///     CopilotAnthropicLiveTests.Thinking_param_is_accepted_by_copilot_backend) — get an extended-
+    ///     thinking budget; Copilot models on the OpenAI Responses transport get a reasoning-summary
+    ///     request (CopilotResponsesLiveTests confirms gpt-5.5 returns reasoning). Other providers get
+    ///     none. Without this wiring, Copilot-backed models return no thinking blocks.
     /// </summary>
-    internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(string normalizedProviderId)
+    internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
+        string normalizedProviderId,
+        CopilotModelTransport? copilotTransport = null)
     {
         var extraProperties = ImmutableDictionary<string, object?>.Empty;
         if (
             string.Equals(normalizedProviderId, "anthropic", StringComparison.Ordinal)
             || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal)
-            || string.Equals(normalizedProviderId, "sonnet", StringComparison.Ordinal)
-            || string.Equals(normalizedProviderId, "haiku", StringComparison.Ordinal)
+            || copilotTransport == CopilotModelTransport.Anthropic
         )
         {
             var budgetTokens = int.TryParse(
@@ -1118,10 +1150,7 @@ public partial class Program
                 : 2048;
             extraProperties = extraProperties.Add("Thinking", new AnthropicThinking(budgetTokens));
         }
-        else if (
-            string.Equals(normalizedProviderId, "gpt-5.5", StringComparison.Ordinal)
-            || string.Equals(normalizedProviderId, "gpt-5.5-mini", StringComparison.Ordinal)
-        )
+        else if (copilotTransport == CopilotModelTransport.Responses)
         {
             extraProperties = extraProperties.Add("Reasoning", new ResponseReasoningOptions { Summary = "auto" });
         }
@@ -1196,6 +1225,45 @@ public partial class Program
     );
 
     private static readonly Lazy<CopilotSessionContext> s_copilotSession = new(() => new CopilotSessionContext());
+
+    /// <summary>
+    ///     Discovers the routable Anthropic/OpenAI GitHub Copilot models. Returns an empty list when no
+    ///     Copilot token resolves or the <c>/models</c> call fails/times out, so the sample degrades to
+    ///     exposing no Copilot models rather than failing. Runs synchronously — it is called from the
+    ///     <see cref="ProviderRegistry"/> DI factory (which resolves lazily on the first
+    ///     <c>GET /api/providers</c>); ASP.NET Core has no <c>SynchronizationContext</c> so the blocking
+    ///     wait cannot deadlock. A short discovery timeout bounds first-request latency if the Copilot
+    ///     host hangs, instead of blocking the request thread for the HttpClient default timeout.
+    /// </summary>
+    private static IReadOnlyList<CopilotModelInfo> DiscoverCopilotModels(ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("LmStreaming.Sample.CopilotModelDiscovery");
+
+        // Gate on a resolvable Copilot token first (same sync check ProviderRegistry uses for its
+        // availability flag) so we don't fire an unauthenticated /models request when the developer
+        // isn't logged in.
+        if (new CliCredentialCopilotTokenProvider().ResolveToken() is null)
+        {
+            logger.LogInformation("No GitHub Copilot token resolved; skipping Copilot model discovery.");
+            return [];
+        }
+
+        var client = new CopilotModelsClient(s_copilotTokenProvider.Value, s_copilotSession.Value, logger: logger);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        return client.GetModelsAsync(cts.Token).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    ///     Maps a discovered Copilot model's transport to the matching agent factory. Anthropic-shaped
+    ///     models route through the Copilot Messages backend; OpenAI-shaped models through the Copilot
+    ///     Responses backend.
+    /// </summary>
+    private static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
+    {
+        return model.Transport == CopilotModelTransport.Anthropic
+            ? CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory)
+            : CreateCopilotResponsesAgent(model.DisplayName, loggerFactory);
+    }
 
     /// <summary>
     ///     Creates an Anthropic Messages agent (Sonnet/Haiku) routed through the GitHub Copilot
@@ -1503,10 +1571,6 @@ public partial class Program
             "claude" or "claude-mock" => Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-sonnet-4-6",
             "codex" or "codex-mock" => Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.3-codex",
             "copilot" or "copilot-mock" => Environment.GetEnvironmentVariable("COPILOT_MODEL") ?? "claude-sonnet-4.5",
-            "sonnet" => Environment.GetEnvironmentVariable("SONNET_MODEL") ?? "claude-sonnet-4.5",
-            "haiku" => Environment.GetEnvironmentVariable("HAIKU_MODEL") ?? "claude-haiku-4.5",
-            "gpt-5.5" => Environment.GetEnvironmentVariable("GPT55_MODEL") ?? "gpt-5.5",
-            "gpt-5.5-mini" => Environment.GetEnvironmentVariable("GPT55_MINI_MODEL") ?? "gpt-5-mini",
             _ => "test-model",
         };
     }

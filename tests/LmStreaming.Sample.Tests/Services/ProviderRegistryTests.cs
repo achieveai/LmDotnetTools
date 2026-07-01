@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 
@@ -183,10 +184,68 @@ public class ProviderRegistryTests
         catalog.Select(p => p.Id).Should().BeEquivalentTo(
             [
                 "anthropic", "claude", "claude-mock", "codex", "codex-mock",
-                "copilot", "copilot-mock", "gpt-5.5", "gpt-5.5-mini", "haiku",
-                "openai", "sonnet", "test", "test-anthropic",
+                "copilot", "copilot-mock", "openai", "test", "test-anthropic",
             ],
             options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ListAll_IncludesDiscoveredCopilotModels_PartitionedByVendor()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var copilotModels = new[]
+        {
+            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+            new CopilotModelInfo("gpt-5.5", "GPT-5.5", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses),
+        };
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, copilotModels);
+        var byId = registry.ListAll().ToDictionary(p => p.Id);
+
+        byId["claude-opus-4.8"].Group.Should().Be("Copilot · Anthropic");
+        byId["claude-opus-4.8"].DisplayName.Should().Be("Claude Opus 4.8");
+        byId["gpt-5.5"].Group.Should().Be("Copilot · OpenAI");
+    }
+
+    [Fact]
+    public void FixedProviders_HaveNoGroup()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe());
+        var byId = registry.ListAll().ToDictionary(p => p.Id);
+
+        byId["openai"].Group.Should().BeNull();
+        byId["anthropic"].Group.Should().BeNull();
+        byId["test"].Group.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetCopilotModel_ResolvesDiscoveredModel_AndRejectsFixedProviders()
+    {
+        using var env = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var copilotModels = new[]
+        {
+            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+        };
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, copilotModels);
+
+        registry.TryGetCopilotModel("claude-opus-4.8", out var model).Should().BeTrue();
+        model.Transport.Should().Be(CopilotModelTransport.Anthropic);
+        registry.TryGetCopilotModel("openai", out _).Should().BeFalse();
+        registry.TryGetCopilotModel("does-not-exist", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void DiscoveredCopilotModels_AreOmitted_WhenListEmpty()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, copilotModels: []);
+
+        // No entry carries a Copilot partition group when discovery yields nothing.
+        registry.ListAll().Should().OnlyContain(p => p.Group == null);
     }
 
     [Fact]

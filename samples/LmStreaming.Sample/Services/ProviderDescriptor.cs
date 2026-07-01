@@ -11,8 +11,14 @@ namespace LmStreaming.Sample.Services;
 /// available but has a documented limitation that prevents end-to-end use today (typically a
 /// link to a follow-up issue). <c>null</c> for providers without such a caveat.
 /// </param>
+/// <param name="Group">
+/// Optional partition label the client renders as a non-selectable section header (e.g.
+/// <c>Copilot · Anthropic</c>, <c>Copilot · OpenAI</c>). <c>null</c> for ungrouped providers, which
+/// the client renders as a flat list ahead of the grouped sections.
+/// </param>
 public sealed record ProviderDescriptor(
     string Id,
     string DisplayName,
     bool Available,
-    string? KnownLimitation = null);
+    string? KnownLimitation = null,
+    string? Group = null);

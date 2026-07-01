@@ -21,13 +21,30 @@ public class WebToolRegistrationPolicyTests
 
     // ---- Provider matrix: allow-listed providers (with key) receive both tools ----
 
+    [Fact]
+    public void Apply_RegistersBothTools_ForOpenAi_WhenKeyPresent()
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+
+        _ = WebToolRegistrationPolicy.Apply(
+            registry,
+            "openai",
+            enabledTools: null,
+            provider,
+            options,
+            NullLoggerFactory.Instance
+        );
+
+        RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
+    }
+
     [Theory]
-    [InlineData("openai")]
-    [InlineData("sonnet")]
-    [InlineData("haiku")]
+    [InlineData("claude-sonnet-5")]
+    [InlineData("claude-haiku-4.5")]
     [InlineData("gpt-5.5")]
-    [InlineData("gpt-5.5-mini")]
-    public void Apply_RegistersBothTools_ForAllowListedProvider_WhenKeyPresent(string providerId)
+    [InlineData("gpt-5.4-mini")]
+    public void Apply_RegistersBothTools_ForDiscoveredCopilotModel_WhenKeyPresent(string providerId)
     {
         var registry = new FunctionRegistry();
         var (provider, options) = Backend(ApiKey);
@@ -38,7 +55,8 @@ public class WebToolRegistrationPolicyTests
             enabledTools: null,
             provider,
             options,
-            NullLoggerFactory.Instance
+            NullLoggerFactory.Instance,
+            isCopilotBackedModel: true
         );
 
         RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");

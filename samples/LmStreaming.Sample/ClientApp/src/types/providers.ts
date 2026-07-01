@@ -11,6 +11,12 @@ export interface ProviderDescriptor {
    * issue). Rendered next to the entry in the dropdown.
    */
   knownLimitation?: string | null;
+  /**
+   * Optional partition label rendered as a non-selectable section header in the dropdown
+   * (e.g. "Copilot · Anthropic", "Copilot · OpenAI"). Entries without a group are rendered
+   * as a flat list ahead of the grouped sections.
+   */
+  group?: string | null;
 }
 
 /**

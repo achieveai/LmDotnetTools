@@ -13,9 +13,11 @@ dotnet run --project samples/LmStreaming.Sample        # serves API + /ws on :50
 npm --prefix samples/LmStreaming.Sample/ClientApp install
 npm --prefix samples/LmStreaming.Sample/ClientApp run dev   # http://localhost:5173
 ```
-Provider is chosen in the UI (header dropdown, `GET /api/providers`). Copilot-backed providers
-("GPT-5.5 (Copilot)", "Sonnet/Haiku (Copilot)") need a resolvable Copilot/`gh` token, no API key.
-Add `?record=1` to the URL to dump the WebSocket stream + LLM request/response to `recordings/`.
+Provider is chosen in the UI (header dropdown, `GET /api/providers`). GitHub Copilot models are
+**discovered dynamically** at startup from the Copilot `/models` API and listed by their raw model
+id (e.g. `claude-opus-4.8`, `gpt-5.5`), partitioned into "Copilot · Anthropic" / "Copilot · OpenAI"
+dropdown sections. They need a resolvable Copilot/`gh` token, no API key; with no token the sections
+are empty. Add `?record=1` to the URL to dump the WebSocket stream + LLM request/response to `recordings/`.
 
 ## UI / browser testing — READ THIS BEFORE WRITING BROWSER TESTS
 
