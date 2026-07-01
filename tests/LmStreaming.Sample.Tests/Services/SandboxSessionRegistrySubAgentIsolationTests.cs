@@ -1,8 +1,6 @@
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 
 namespace LmStreaming.Sample.Tests.Services;
 

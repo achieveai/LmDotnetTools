@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
-using LmStreaming.Sample.Services.Auth;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit.Abstractions;

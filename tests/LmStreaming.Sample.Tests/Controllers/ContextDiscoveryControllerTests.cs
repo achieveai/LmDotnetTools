@@ -2,8 +2,6 @@ using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;

@@ -15,7 +15,7 @@ namespace LmStreaming.Sample.Services;
 /// resolved through a delegate captured at construction time and re-evaluated on each
 /// <see cref="IsAvailable"/> / <see cref="ListAll"/> call.
 /// </remarks>
-public sealed class ProviderRegistry
+public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IProviderResolver
 {
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
         [

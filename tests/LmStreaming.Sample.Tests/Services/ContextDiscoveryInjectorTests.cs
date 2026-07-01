@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Services;

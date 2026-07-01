@@ -28,11 +28,14 @@ using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using LmStreaming.Sample.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
 using LmStreaming.Sample.WebSocket;
@@ -213,9 +216,11 @@ try
     _ = builder.Services.AddHostedService<OAuthTokenHydrator>();
 
     // Deferred auth: not-signed-in webhook calls are held while connected chat clients are
-    // prompted (auth_required WebSocket frame) to sign in interactively.
+    // prompted (auth_required WebSocket frame) to sign in interactively. The webhook resolves the
+    // hold through the deferred-interactive policy (the daemon swaps in a fail-fast policy instead).
     _ = builder.Services.AddSingleton<IAuthEventNotifier, WebSocketAuthEventNotifier>();
     _ = builder.Services.AddSingleton<PendingAuthCoordinator>();
+    _ = builder.Services.AddSingleton<IAuthResolutionPolicy, DeferredInteractiveAuthPolicy>();
 
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
@@ -1250,7 +1255,7 @@ public partial class Program
 
     private static CodexAgentLoop CreateCodexAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
@@ -1822,7 +1827,7 @@ public partial class Program
 
     private static ClaudeAgentLoop CreateClaudeAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,
         ILoggerFactory loggerFactory,
@@ -1877,7 +1882,7 @@ public partial class Program
 
     private static CopilotAgentLoop CreateCopilotAgentLoop(
         string threadId,
-        ChatMode mode,
+        AgentProfile mode,
         FunctionRegistry functionRegistry,
         string? requestResponseDumpFileName,
         IConversationStore conversationStore,

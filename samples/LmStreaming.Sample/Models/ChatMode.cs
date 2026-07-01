@@ -53,6 +53,25 @@ public record ChatMode
     /// Unix timestamp (milliseconds) when the mode was last updated.
     /// </summary>
     public long UpdatedAt { get; init; }
+
+    /// <summary>
+    /// Projects this mode onto the provider-neutral <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.AgentProfile"/>
+    /// the shared agent pool consumes. Only the five fields the pool needs travel across; the
+    /// sample-only metadata (description, system-defined flag, timestamps) stays behind.
+    /// </summary>
+    public AchieveAi.LmDotnetTools.LmAgentInfra.AgentProfile ToAgentProfile() =>
+        new(Id, Name, SystemPrompt, EnabledTools, EnabledBuiltInTools);
+
+    /// <summary>
+    /// Implicit projection so existing call sites that hand a <see cref="ChatMode"/> to the pool
+    /// (which now speaks <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.AgentProfile"/>) keep
+    /// compiling unchanged.
+    /// </summary>
+    public static implicit operator AchieveAi.LmDotnetTools.LmAgentInfra.AgentProfile(ChatMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(mode);
+        return mode.ToAgentProfile();
+    }
 }
 
 /// <summary>

@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
-using LmStreaming.Sample.Services.Auth;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.E2E.Tests.Scenarios;

@@ -1,7 +1,8 @@
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 using Microsoft.AspNetCore.Mvc;
 
@@ -27,7 +28,7 @@ internal static class ContextDiscoveryKinds
 /// Other kinds are still log-only.
 /// </summary>
 /// <remarks>
-/// SECURITY: mirrors <see cref="AuthWebhookController"/>'s pattern: the gateway authenticates
+/// SECURITY: mirrors <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.Controllers.AuthWebhookController"/>'s pattern: the gateway authenticates
 /// itself with a shared secret in the <c>Authorization</c> header, compared in constant time
 /// over fixed-width hashes. The controller NEVER logs the Authorization header value or the
 /// shared secret — only the discovery payload's kind/name/path and the activation decision.
@@ -380,46 +381,6 @@ public sealed record ContextDiscoveryItem
     [JsonPropertyName("content")]
     public string? Content { get; init; }
 
-    [JsonPropertyName("truncated")]
-    public bool? Truncated { get; init; }
-}
-
-/// <summary>
-/// Per-item carrier passed to the kind-specific handlers (<see cref="ContextDiscoveryInjector"/>,
-/// sub-agent activation) after the controller flattens a <see cref="ContextDiscoveryEnvelope"/> and
-/// stamps the envelope's session id onto each item. Retains <see cref="JsonPropertyNameAttribute"/>
-/// bindings so it still deserializes the historical single-item shape in unit tests.
-/// </summary>
-public sealed record ContextDiscoveryPayload
-{
-    [JsonPropertyName("session_id")]
-    public string? SessionId { get; init; }
-
-    [JsonPropertyName("kind")]
-    public string? Kind { get; init; }
-
-    [JsonPropertyName("name")]
-    public string? Name { get; init; }
-
-    [JsonPropertyName("description")]
-    public string? Description { get; init; }
-
-    [JsonPropertyName("path")]
-    public string? Path { get; init; }
-
-    /// <summary>
-    /// Body of a discovered context file (CLAUDE.md / AGENTS.md). Sent by the gateway only for
-    /// <c>kind == "context_file"</c> deliveries; the sub-agent path resolves the markdown by
-    /// reading it from the workspace host directory instead and ignores this field.
-    /// </summary>
-    [JsonPropertyName("content")]
-    public string? Content { get; init; }
-
-    /// <summary>
-    /// Set by the gateway when <see cref="Content"/> was truncated to fit a delivery size cap.
-    /// The injector surfaces a tag in the injected message so the model knows it isn't seeing
-    /// the full file. Optional + defaults to false when absent.
-    /// </summary>
     [JsonPropertyName("truncated")]
     public bool? Truncated { get; init; }
 }

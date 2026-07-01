@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Single-target net9.0: both consumers (LmStreaming.Sample, CodeReviewDaemon.Sample) are
+         net9.0 web apps, and this library carries an MVC controller + hosted services, so it needs
+         the ASP.NET Core shared framework. -->
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmAgentInfra</PackageId>
+    <Description>Reusable agent infrastructure (sandbox gateway client, OAuth providers, context discovery, multi-turn agent pool) shared by the LmStreaming and CodeReviewDaemon samples.</Description>
+    <PackageTags>$(PackageTags);agent;sandbox;oauth;mcp</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <!-- Owns an MVC controller (AuthWebhookController) + hosted services (SandboxGatewayLifetime,
+       OAuthTokenHydrator), so it references the ASP.NET Core shared framework rather than the Web SDK. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.84.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The host apps' controllers/Program drive internal OAuth callback-completion
+         (CompleteSignInAsync) and sandbox tool-health helpers that were same-assembly internals
+         before the extraction. Exposing them to the named host assemblies keeps that integration
+         surface internal to the library's public API while preserving the original access design. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample" />
+    <!-- Auth-provider helpers (authorize-URL / scope builders) consumed by the E2E auth tests. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.E2E.Tests" />
+    <!-- Agent-pool + loader internals consumed by the unit test project. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />
+    <!-- Marketplace/agent internals consumed by the browser E2E project. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.Browser.E2E.Tests" />
+  </ItemGroup>
+</Project>

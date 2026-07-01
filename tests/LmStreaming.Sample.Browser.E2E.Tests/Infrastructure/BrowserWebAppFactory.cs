@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;

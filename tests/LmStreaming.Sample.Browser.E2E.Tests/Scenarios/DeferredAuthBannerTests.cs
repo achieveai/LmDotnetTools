@@ -4,7 +4,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
-using LmStreaming.Sample.Services.Auth;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;

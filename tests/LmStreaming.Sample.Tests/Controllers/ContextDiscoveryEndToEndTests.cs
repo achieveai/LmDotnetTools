@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net;
-using LmStreaming.Sample.Services;
-using LmStreaming.Sample.Services.Auth;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;

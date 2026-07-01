@@ -4,7 +4,6 @@ using FluentAssertions;
 using FluentAssertions.Execution;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Persistence;
-using LmStreaming.Sample.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit.Abstractions;
 
