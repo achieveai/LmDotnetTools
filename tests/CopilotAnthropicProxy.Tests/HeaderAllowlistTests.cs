@@ -3,14 +3,14 @@ using FluentAssertions;
 
 namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 
-/// <summary>Verifies the positive request-header allowlist (anthropic-version + anthropic-beta only).</summary>
+/// <summary>Verifies the positive request-header allowlist (anthropic-version only; anthropic-beta is dropped).</summary>
 public sealed class HeaderAllowlistTests
 {
     private static StringContent Body() =>
         new("{\"model\":\"x\",\"max_tokens\":5}", Encoding.UTF8, "application/json");
 
     [Fact]
-    public async Task Forwards_anthropic_version_and_beta_but_not_other_inbound_headers()
+    public async Task Forwards_anthropic_version_but_not_beta_or_other_inbound_headers()
     {
         HttpRequestMessage? forwarded = null;
         await using var factory = new ProxyWebAppFactory((req, ct) =>
@@ -34,7 +34,9 @@ public sealed class HeaderAllowlistTests
         forwarded.Should().NotBeNull();
 
         forwarded!.Headers.GetValues("anthropic-version").Should().ContainSingle().Which.Should().Be("2099-01-01");
-        forwarded.Headers.GetValues("anthropic-beta").Should().BeEquivalentTo("feature-a", "feature-b");
+        forwarded.Headers.Contains("anthropic-beta")
+            .Should()
+            .BeFalse("Copilot rejects the whole request if any beta value is unrecognized");
 
         forwarded.Headers.Contains("x-api-key").Should().BeFalse("inbound x-api-key must not be forwarded");
         // Authorization is force-set by CopilotHeadersHandler to the Copilot bearer, never the inbound value.
