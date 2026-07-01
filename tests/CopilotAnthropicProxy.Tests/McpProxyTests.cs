@@ -6,9 +6,9 @@ namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 
 /// <summary>
 ///     Verifies the transparent MCP (Streamable HTTP) reverse proxy on <c>/mcp</c> and
-///     <c>/mcp/readonly</c>: raw body/method/path forwarding, that every inbound header passes
-///     through verbatim except <c>Authorization</c> (which the proxy overrides with its own
-///     Copilot credentials), and session-id passthrough.
+///     <c>/mcp/readonly</c>: raw body/method/path forwarding, that inbound headers pass through
+///     verbatim except credentials (<c>Authorization</c>, <c>x-api-key</c>) and the Copilot
+///     transport/tracking headers owned by <c>CopilotHeadersHandler</c>, and session-id passthrough.
 /// </summary>
 public sealed class McpProxyTests
 {
@@ -114,7 +114,7 @@ public sealed class McpProxyTests
     }
 
     [Fact]
-    public async Task Inbound_authorization_is_overridden_but_arbitrary_custom_headers_pass_through()
+    public async Task Credentials_and_copilot_owned_headers_are_stripped_but_arbitrary_custom_headers_pass_through()
     {
         HttpRequestMessage? forwarded = null;
         await using var factory = new ProxyWebAppFactory(
@@ -129,6 +129,9 @@ public sealed class McpProxyTests
         using var request = new HttpRequestMessage(HttpMethod.Post, "/mcp/readonly") { Content = JsonRpc("{}") };
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer inbound-token");
         request.Headers.TryAddWithoutValidation("x-api-key", "secret-key");
+        request.Headers.TryAddWithoutValidation("User-Agent", "inbound-agent/1.0");
+        request.Headers.TryAddWithoutValidation("copilot-integration-id", "spoofed-integration");
+        request.Headers.TryAddWithoutValidation("x-interaction-id", "spoofed-interaction");
         request.Headers.TryAddWithoutValidation("X-Some-Future-Mcp-Header", "anything");
         request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip");
 
@@ -137,8 +140,17 @@ public sealed class McpProxyTests
         response.IsSuccessStatusCode.Should().BeTrue();
         // Authorization is force-set by CopilotHeadersHandler to the Copilot bearer, never the inbound value.
         forwarded!.Headers.Authorization!.Parameter.Should().NotBe("inbound-token");
-        // Everything else passes through verbatim — no curated allowlist for MCP.
-        forwarded.Headers.GetValues("x-api-key").Should().ContainSingle().Which.Should().Be("secret-key");
+        // Credentials and Copilot-owned transport/tracking headers must never be caller-controlled.
+        forwarded.Headers.Contains("x-api-key").Should().BeFalse("inbound x-api-key must not be forwarded");
+        forwarded.Headers.UserAgent.ToString().Should().NotContain("inbound-agent");
+        // The header is still present (CopilotHeadersHandler sets its own real value when absent), but
+        // the spoofed inbound value must never survive.
+        forwarded
+            .Headers.GetValues("copilot-integration-id")
+            .Should()
+            .NotContain("spoofed-integration");
+        forwarded.Headers.GetValues("x-interaction-id").Should().NotContain("spoofed-interaction");
+        // Everything else still passes through verbatim — no curated allowlist beyond credentials/Copilot headers.
         forwarded.Headers.GetValues("X-Some-Future-Mcp-Header").Should().ContainSingle().Which.Should().Be("anything");
         forwarded
             .Headers.Contains("Accept-Encoding")
@@ -147,6 +159,25 @@ public sealed class McpProxyTests
                 "upstream never negotiates compression and Content-Encoding is stripped on the way back, "
                     + "so forwarding this would risk an undecodable body"
             );
+    }
+
+    [Fact]
+    public async Task Mid_stream_upstream_failure_before_any_byte_returns_a_json_rpc_shaped_error()
+    {
+        // The shared CopyBodyAsync helper must write a JSON-RPC-shaped error here, not the Anthropic
+        // "type":"error" envelope the /v1/messages path uses.
+        var upstreamStream = new ThrowingStream("");
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.SseStream(upstreamStream))
+        );
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/mcp/readonly", JsonRpc("{}"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("\"jsonrpc\":\"2.0\"");
+        body.Should().NotContain("\"type\":\"error\"", "this is the /v1/messages-shaped envelope, not JSON-RPC");
     }
 
     [Fact]

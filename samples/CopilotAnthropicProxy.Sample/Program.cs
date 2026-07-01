@@ -450,47 +450,61 @@ public static class ProxyModelResolver
     /// <summary>
     ///     Extracts ids for models whose <c>supported_endpoints</c> includes <c>/v1/messages</c> — the only
     ///     ones this Anthropic-Messages-shaped proxy can forward to. Copilot also serves GPT/Gemini models
-    ///     that only support <c>/responses</c> or <c>/chat/completions</c>; those are excluded.
+    ///     that only support <c>/responses</c> or <c>/chat/completions</c>; those are excluded. If no entry
+    ///     in the response carries <c>supported_endpoints</c> metadata at all (an older or alternative
+    ///     Copilot-compatible <c>/models</c> shape), falls back to <see cref="ParseModelIds"/> — id-only,
+    ///     no endpoint filtering — rather than treating every model as unsupported and failing startup.
     /// </summary>
     public static IReadOnlyList<string> ParseMessagesCapableModelIds(string json)
     {
-        var ids = new List<string>();
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
 
-        if (list.ValueKind == JsonValueKind.Array)
+        if (list.ValueKind != JsonValueKind.Array)
         {
-            foreach (var item in list.EnumerateArray())
+            return [];
+        }
+
+        var items = list.EnumerateArray().ToList();
+        var anyEndpointMetadata = items.Any(item =>
+            item.ValueKind == JsonValueKind.Object && item.TryGetProperty("supported_endpoints", out _)
+        );
+        if (!anyEndpointMetadata)
+        {
+            return ParseModelIds(json);
+        }
+
+        var ids = new List<string>();
+        foreach (var item in items)
+        {
+            if (
+                item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("id", out var idEl)
+                || idEl.ValueKind != JsonValueKind.String
+            )
             {
-                if (
-                    item.ValueKind != JsonValueKind.Object
-                    || !item.TryGetProperty("id", out var idEl)
-                    || idEl.ValueKind != JsonValueKind.String
-                )
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                var id = idEl.GetString();
-                if (string.IsNullOrWhiteSpace(id))
-                {
-                    continue;
-                }
+            var id = idEl.GetString();
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
 
-                if (
-                    item.TryGetProperty("supported_endpoints", out var endpoints)
-                    && endpoints.ValueKind == JsonValueKind.Array
-                    && endpoints
-                        .EnumerateArray()
-                        .Any(e =>
-                            e.ValueKind == JsonValueKind.String
-                            && string.Equals(e.GetString(), "/v1/messages", StringComparison.OrdinalIgnoreCase)
-                        )
-                )
-                {
-                    ids.Add(id);
-                }
+            if (
+                item.TryGetProperty("supported_endpoints", out var endpoints)
+                && endpoints.ValueKind == JsonValueKind.Array
+                && endpoints
+                    .EnumerateArray()
+                    .Any(e =>
+                        e.ValueKind == JsonValueKind.String
+                        && string.Equals(e.GetString(), "/v1/messages", StringComparison.OrdinalIgnoreCase)
+                    )
+            )
+            {
+                ids.Add(id);
             }
         }
 
@@ -768,7 +782,15 @@ internal static class ProxyHttp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            await CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger);
+            await CopyBodyAsync(
+                ctx,
+                upstream,
+                idleTimeout,
+                idleCts,
+                linked,
+                logger,
+                (c, status, message) => WriteAnthropicErrorAsync(c, status, "api_error", message)
+            );
 
             logger.LogInformation(
                 "{Method} {Path} model {IncomingModel} -> {ResolvedModel} stream={Stream} upstream={Status} {Elapsed}ms",
@@ -783,14 +805,20 @@ internal static class ProxyHttp
         }
     }
 
-    /// <summary>Streams the upstream body to the client with an explicit, incrementally-flushed loop.</summary>
+    /// <summary>
+    ///     Streams the upstream body to the client with an explicit, incrementally-flushed loop.
+    ///     <paramref name="writePreStartError" /> writes a protocol-shaped error envelope (Anthropic-JSON
+    ///     vs. JSON-RPC) if the upstream fails before any bytes reached the client — shared by both the
+    ///     <c>/v1/messages</c> and <c>/mcp</c> paths, which disagree on error shape.
+    /// </summary>
     internal static async Task CopyBodyAsync(
         HttpContext ctx,
         HttpResponseMessage upstream,
         TimeSpan idleTimeout,
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
-        ILogger logger
+        ILogger logger,
+        Func<HttpContext, int, string, Task> writePreStartError
     )
     {
         var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
@@ -829,10 +857,9 @@ internal static class ProxyHttp
                         logger.LogWarning("Mid-stream upstream failure: {Reason}", ex.Message);
                         if (!ctx.Response.HasStarted)
                         {
-                            await WriteAnthropicErrorAsync(
+                            await writePreStartError(
                                 ctx,
                                 StatusCodes.Status502BadGateway,
-                                "api_error",
                                 "The upstream Copilot stream failed before any data was received."
                             );
                         }
@@ -969,9 +996,11 @@ internal static class ProxyHttp
 /// </summary>
 internal static class ProxyMcp
 {
-    // Everything is forwarded verbatim EXCEPT: Authorization (Copilot auth is attached outbound by
-    // CopilotHeadersHandler instead — the caller's own auth, if any, is never forwarded) and a small
-    // set of hop-by-hop/framing headers that .NET's HttpClient must own (Host, Content-Length,
+    // Everything is forwarded verbatim EXCEPT: Authorization/credential headers (Copilot auth is
+    // attached outbound by CopilotHeadersHandler instead — the caller's own auth, if any, is never
+    // forwarded), the Copilot transport/tracking headers CopilotHeadersHandler owns (it only sets
+    // these when missing, so a caller-supplied value would otherwise silently override them), and a
+    // small set of hop-by-hop/framing headers that .NET's HttpClient must own (Host, Content-Length,
     // Content-Type are handled explicitly, Connection/Transfer-Encoding/etc. are per-hop). Accept-Encoding
     // is also excluded: the shared HttpClient never negotiates compression (SocketsHttpHandler.
     // AutomaticDecompression = None) and CopyResponseHeaders always strips Content-Encoding from the
@@ -979,6 +1008,9 @@ internal static class ProxyMcp
     private static readonly HashSet<string> ExcludedRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
+        "x-api-key",
+        "Cookie",
+        "Proxy-Authorization",
         "Host",
         "Content-Length",
         "Content-Type",
@@ -989,6 +1021,15 @@ internal static class ProxyMcp
         "TE",
         "Trailer",
         "Accept-Encoding",
+        "User-Agent",
+        "copilot-integration-id",
+        "editor-version",
+        "x-github-api-version",
+        "x-client-machine-id",
+        "x-client-session-id",
+        "x-interaction-id",
+        "x-interaction-type",
+        "x-initiator",
     };
 
     /// <summary>Forwards GET/POST/DELETE on the MCP endpoint to Copilot and streams the response back.</summary>
@@ -1095,7 +1136,7 @@ internal static class ProxyMcp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            await ProxyHttp.CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger);
+            await ProxyHttp.CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger, WriteMcpErrorAsync);
 
             logger.LogInformation(
                 "{Method} {Path} mcp-session={SessionId} upstream={Status} {Elapsed}ms",
@@ -1108,7 +1149,11 @@ internal static class ProxyMcp
         }
     }
 
-    /// <summary>Forwards every inbound header verbatim except <see cref="ExcludedRequestHeaders"/> (incl. auth).</summary>
+    /// <summary>
+    ///     Forwards every inbound header verbatim except <see cref="ExcludedRequestHeaders"/> — credentials
+    ///     (<c>Authorization</c>, <c>x-api-key</c>, <c>Cookie</c>, <c>Proxy-Authorization</c>), the Copilot
+    ///     transport/tracking headers <c>CopilotHeadersHandler</c> owns, and hop-by-hop/framing headers.
+    /// </summary>
     private static void ApplyRequestHeaderAllowlist(IHeaderDictionary inbound, HttpRequestMessage upstream)
     {
         foreach (var header in inbound)

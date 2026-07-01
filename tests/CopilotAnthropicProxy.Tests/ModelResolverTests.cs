@@ -65,6 +65,19 @@ public sealed class ModelResolverTests
     }
 
     [Fact]
+    public void ParseMessagesCapableModelIds_falls_back_to_id_only_when_no_entry_has_endpoint_metadata()
+    {
+        const string json = """
+            {"data":[
+                {"id":"claude-opus-4.8"},
+                {"id":"claude-sonnet-4.5"}
+            ]}
+            """;
+
+        ProxyModelResolver.ParseMessagesCapableModelIds(json).Should().Equal("claude-opus-4.8", "claude-sonnet-4.5");
+    }
+
+    [Fact]
     public async Task ResolveAsync_returns_override_without_calling_upstream()
     {
         var handler = new FakeHttpMessageHandler(
@@ -103,6 +116,26 @@ public sealed class ModelResolverTests
 
         catalog.Default.Should().Be("claude-opus-4.8");
         catalog.Available.Should().Equal("claude-sonnet-4.5", "claude-opus-4.8");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_picks_the_opus_claude_id_from_a_legacy_models_response_without_endpoint_metadata()
+    {
+        // Older/alternative Copilot-compatible /models shape: id-only entries, no supported_endpoints at
+        // all. Startup must not fail just because this metadata is absent.
+        using var client = UpstreamReturning(
+            "{\"data\":[{\"id\":\"gpt-4o\"},{\"id\":\"claude-sonnet-4.5\"},{\"id\":\"claude-opus-4.8\"}]}"
+        );
+
+        var catalog = await ProxyModelResolver.ResolveAsync(
+            client,
+            modelOverride: null,
+            NullLogger.Instance,
+            CancellationToken.None
+        );
+
+        catalog.Default.Should().Be("claude-opus-4.8");
+        catalog.Available.Should().Equal("gpt-4o", "claude-sonnet-4.5", "claude-opus-4.8");
     }
 
     [Fact]
