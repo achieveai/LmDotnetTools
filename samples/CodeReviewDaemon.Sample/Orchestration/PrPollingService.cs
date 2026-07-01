@@ -76,45 +76,85 @@ internal sealed class PrPollingService : BackgroundService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var provider = _providers.FirstOrDefault(p =>
-                string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase));
-            if (provider is null)
+            // Per-target isolation: a provider fetch (or any failure) on one target must not starve the
+            // rest of the cycle. Log and continue with the next target; the cursor is only advanced on a
+            // clean pass, so a failed fetch is retried next interval.
+            try
             {
-                _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
-                continue;
+                await PollTargetAsync(target, cancellationToken).ConfigureAwait(false);
             }
-
-            var cursorResult = _store.ReadCursor(target.Provider, target.Scope, CursorVersion);
-            var page = await provider.ListOpenPullRequestsAsync(
-                new PrPollRequest
-                {
-                    Repo = target.Repo,
-                    Scope = target.Scope,
-                    Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
-                },
-                cancellationToken);
-
-            var repoId = _store.EnsureRepo(target.Repo);
-            foreach (var pr in page.PullRequests)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                var seed = new ReviewRun
-                {
-                    RepoId = repoId,
-                    PrId = pr.PrId,
-                    HeadSha = pr.HeadSha,
-                    BaseSha = pr.BaseSha,
-                    TriggerWatermark = pr.TriggerWatermark,
-                    ReviewKind = target.ReviewKind,
-                    VariantId = target.VariantId,
-                    Mode = target.Mode,
-                    Stage = ReviewStage.Discovered,
-                    WorkflowStatus = WorkflowStatus.Pending,
-                    PrLifecycleState = pr.LifecycleState,
-                };
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Poll of target {Scope} failed; continuing with the next target.", target.Scope);
+            }
+        }
+    }
+
+    private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
+    {
+        var provider = _providers.FirstOrDefault(p =>
+            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase));
+        if (provider is null)
+        {
+            _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
+            return;
+        }
+
+        var cursorResult = _store.ReadCursor(target.Provider, target.Scope, CursorVersion);
+        var page = await provider.ListOpenPullRequestsAsync(
+            new PrPollRequest
+            {
+                Repo = target.Repo,
+                Scope = target.Scope,
+                Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
+            },
+            cancellationToken);
+
+        var repoId = _store.EnsureRepo(target.Repo);
+        foreach (var pr in page.PullRequests)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var seed = new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = pr.PrId,
+                HeadSha = pr.HeadSha,
+                BaseSha = pr.BaseSha,
+                TriggerWatermark = pr.TriggerWatermark,
+                ReviewKind = target.ReviewKind,
+                VariantId = target.VariantId,
+                Mode = target.Mode,
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Pending,
+                PrLifecycleState = pr.LifecycleState,
+            };
+
+            // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The
+            // orchestrator has already marked the failed run RetryPending before rethrowing, so it will
+            // resume from its first incomplete stage on a later poll; here we just log and move on.
+            try
+            {
                 _ = await _orchestrator.RunAsync(seed, cancellationToken);
             }
-
-            _store.SaveCursor(page.NextCursor);
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Orchestrating PR {PrId} on {Scope} failed; the run is left RetryPending and polling continues.",
+                    pr.PrId,
+                    target.Scope);
+            }
         }
+
+        _store.SaveCursor(page.NextCursor);
     }
 }

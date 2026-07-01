@@ -96,6 +96,61 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         provider.CallCount.Should().Be(0, "no provider matched the target");
     }
 
+    [Fact]
+    public async Task A_poison_pr_does_not_starve_the_rest_of_the_targets_prs()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118"), PrDescriptor("119")], NextCursor());
+        // PR 118's orchestration throws; 119 must still be processed to completion.
+        var orchestrator = new PrOrchestrator(
+            store, new RecordingStageExecutor(throwForPrId: "118"), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        var poller = new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        var act = async () => await poller.PollOnceAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync("one poison PR must not abort the poll cycle");
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, "119")).Stage.Should().Be(ReviewStage.Posted, "the healthy PR completed");
+        store.CreateOrGetReviewRun(SeedFor(repoId, "118")).WorkflowStatus.Should()
+            .Be(WorkflowStatus.RetryPending, "the failed PR is left for reconcile, not lost");
+    }
+
+    [Fact]
+    public async Task A_poison_target_does_not_starve_the_other_targets()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var poison = new ThrowingPrProvider("azure-devops");
+        var healthy = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var targets = new[]
+        {
+            new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = "ado:active" },
+            new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope },
+        };
+        var poller = new PrPollingService(
+            targets, [poison, healthy], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        var act = async () => await poller.PollOnceAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a failing target must not abort the whole cycle");
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, "118")).Stage.Should()
+            .Be(ReviewStage.Posted, "the healthy target's PR was still processed");
+    }
+
+    /// <summary>An <see cref="IPrProvider"/> that always throws — a poison target for isolation tests.</summary>
+    private sealed class ThrowingPrProvider(string provider) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("simulated provider failure");
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
     private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
