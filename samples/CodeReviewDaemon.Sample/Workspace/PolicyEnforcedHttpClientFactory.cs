@@ -16,17 +16,23 @@ internal sealed class PolicyEnforcedHttpClientFactory
 {
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILogger<OperationPolicyHandler> _logger;
+    private readonly ILogger<RetryHandler> _retryLogger;
 
     public PolicyEnforcedHttpClientFactory(
-        CodeReviewDaemonOptions options, ILogger<OperationPolicyHandler> logger)
+        CodeReviewDaemonOptions options,
+        ILogger<OperationPolicyHandler> logger,
+        ILogger<RetryHandler> retryLogger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _retryLogger = retryLogger ?? throw new ArgumentNullException(nameof(retryLogger));
     }
 
     /// <summary>
     /// Creates a policy-enforced client for <paramref name="provider"/> (<c>github</c> / <c>ado</c>),
-    /// scoped to that provider's allow-listed repos. The returned client owns its handler chain.
+    /// scoped to that provider's allow-listed repos. The returned client owns its handler chain:
+    /// <see cref="RetryHandler"/> (transient-failure resilience, PR #121 M7) → <see cref="OperationPolicyHandler"/>
+    /// (route-scoped egress + credential enforcement) → the socket handler.
     /// </summary>
     public HttpClient Create(string provider)
     {
@@ -36,10 +42,12 @@ internal sealed class PolicyEnforcedHttpClientFactory
             .Select(repo => DaemonOperationPolicy.BuildForRun(repo, _options.ReviewBotRepoUrl))
             .ToList();
 
-        return new HttpClient(new OperationPolicyHandler(policies, provider, _logger)
+        var policyHandler = new OperationPolicyHandler(policies, provider, _logger)
         {
             InnerHandler = new HttpClientHandler(),
-        });
+        };
+
+        return new HttpClient(new RetryHandler(_retryLogger) { InnerHandler = policyHandler });
     }
 
     /// <summary>

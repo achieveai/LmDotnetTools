@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -147,6 +148,50 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task ListOpenPullRequests_follows_link_header_pagination_across_pages()
+    {
+        // PR #121 M5 — the first page carries a Link rel="next" to page 2; the provider must follow it and
+        // accumulate PRs from every page. Page 2 has no Link header, so pagination stops there.
+        const string page1 = """
+            [ { "number": 7, "state": "open", "merged_at": null, "updated_at": "2026-06-01T10:00:00Z",
+                "head": { "sha": "head-7" }, "base": { "sha": "base-7" } } ]
+            """;
+        const string page2 = """
+            [ { "number": 9, "state": "open", "merged_at": null, "updated_at": "2026-06-02T12:30:00Z",
+                "head": { "sha": "head-9" }, "base": { "sha": "base-9" } } ]
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("page=2", StringComparison.Ordinal),
+                _ => JsonResponse(page2))
+            .On(
+                req => req.RequestUri!.ToString().Contains("per_page=100", StringComparison.Ordinal),
+                _ => JsonResponse(
+                    page1,
+                    ("Link", "<https://api.github.com/repos/acme/widgets/pulls?state=open&page=2>; rel=\"next\"")));
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Select(p => p.PrId).Should().BeEquivalentTo(["7", "9"], "both pages are accumulated");
+        handler.CountRequests("/pulls").Should().Be(2, "the provider followed exactly one 'next' link");
+        page.NextCursor.HighWaterMark.Should().Be("2026-06-02T12:30:00Z", "the newest updated_at across all pages");
+    }
+
+    private static HttpResponseMessage JsonResponse(string json, params (string Name, string Value)[] headers)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        foreach (var (name, value) in headers)
+        {
+            response.Headers.Add(name, value);
+        }
+
+        return response;
     }
 
     [Fact]

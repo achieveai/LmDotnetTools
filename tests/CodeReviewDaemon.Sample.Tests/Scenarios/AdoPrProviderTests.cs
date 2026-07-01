@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -144,6 +145,48 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task ListOpenPullRequests_follows_the_continuation_token_across_pages()
+    {
+        // PR #121 M5 — page 1 returns an x-ms-continuationtoken header; the provider must re-request with
+        // &continuationToken= and accumulate. Page 2 has no continuation header, so pagination stops.
+        const string page1 = """
+            { "value": [ { "pullRequestId": 42, "status": "active",
+                "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+            """;
+        const string page2 = """
+            { "value": [ { "pullRequestId": 50, "status": "active",
+                "lastMergeSourceCommit": { "commitId": "head-50" }, "lastMergeTargetCommit": { "commitId": "base-50" } } ] }
+            """;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("continuationToken=TOKEN2", StringComparison.Ordinal),
+                _ => JsonResponse(page2))
+            .On(
+                req => req.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal),
+                _ => JsonResponse(page1, ("x-ms-continuationtoken", "TOKEN2")));
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Select(p => p.PrId).Should().BeEquivalentTo(["42", "50"], "both pages are accumulated");
+        handler.CountRequests("/pullrequests").Should().Be(2, "the provider followed exactly one continuation token");
+        page.NextCursor.HighWaterMark.Should().Be("50", "the highest pullRequestId across all pages");
+    }
+
+    private static HttpResponseMessage JsonResponse(string json, params (string Name, string Value)[] headers)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        foreach (var (name, value) in headers)
+        {
+            response.Headers.Add(name, value);
+        }
+
+        return response;
     }
 
     [Fact]

@@ -34,6 +34,9 @@ internal sealed class AdoPrProvider : IPrProvider
 
     public string Provider => "ado";
 
+    /// <summary>Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo.</summary>
+    private const int MaxPages = 10;
+
     public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -41,46 +44,70 @@ internal sealed class AdoPrProvider : IPrProvider
         var org = request.Repo.OrgOrOwner;
         var project = request.Repo.Project;
         var repo = request.Repo.RepoName;
-        var url =
+        var baseUrl =
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
             + $"?searchCriteria.status=active&api-version={ApiVersion}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
-        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
-        var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
-        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
-        httpRequest.Headers.Accept.ParseAdd("application/json");
-
-        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
         var pullRequests = new List<PullRequestDescriptor>();
         var highWaterMark = 0L;
-        foreach (var pr in document.RootElement.GetProperty("value").EnumerateArray())
+
+        // Follow ADO's continuation-token pagination (M5): each response may carry an
+        // x-ms-continuationtoken header, which is passed back as &continuationToken= on the next page.
+        // Bounded by MaxPages per poll.
+        string? continuationToken = null;
+        var pages = 0;
+        do
         {
-            var prId = pr.GetProperty("pullRequestId").GetInt64();
-            pullRequests.Add(new PullRequestDescriptor
-            {
-                PrId = prId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                HeadSha = CommitId(pr, "lastMergeSourceCommit"),
-                BaseSha = CommitId(pr, "lastMergeTargetCommit"),
-                // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head SHA)
-                // is the re-review trigger; same-head comment threads do not re-trigger here.
-                TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
-                LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
-            });
+            cancellationToken.ThrowIfCancellationRequested();
+            pages++;
 
-            if (prId > highWaterMark)
+            var url = continuationToken is null
+                ? baseUrl
+                : $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}";
+
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+            var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+            httpRequest.Headers.Accept.ParseAdd("application/json");
+
+            using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
             {
-                highWaterMark = prId;
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                foreach (var pr in document.RootElement.GetProperty("value").EnumerateArray())
+                {
+                    var prId = pr.GetProperty("pullRequestId").GetInt64();
+                    pullRequests.Add(new PullRequestDescriptor
+                    {
+                        PrId = prId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        HeadSha = CommitId(pr, "lastMergeSourceCommit"),
+                        BaseSha = CommitId(pr, "lastMergeTargetCommit"),
+                        // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
+                        // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
+                        TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
+                        LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
+                    });
+
+                    if (prId > highWaterMark)
+                    {
+                        highWaterMark = prId;
+                    }
+                }
             }
-        }
 
-        _logger.LogDebug("ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s).", org, project, repo, pullRequests.Count);
+            continuationToken = response.Headers.TryGetValues("x-ms-continuationtoken", out var values)
+                ? values.FirstOrDefault()
+                : null;
+        }
+        while (!string.IsNullOrEmpty(continuationToken) && pages < MaxPages);
+
+        _logger.LogDebug(
+            "ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s) across {Pages} page(s).",
+            org, project, repo, pullRequests.Count, pages);
 
         var hwm = highWaterMark.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new PullRequestPage

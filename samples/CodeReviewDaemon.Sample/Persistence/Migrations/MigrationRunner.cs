@@ -20,12 +20,21 @@ internal static class MigrationRunner
     /// already current (idempotent re-open). Throws <see cref="InvalidOperationException"/> when the
     /// database is at a higher version than this binary knows about (unsupported downgrade).
     /// </summary>
-    public static void Migrate(SqliteConnection connection)
+    public static void Migrate(SqliteConnection connection) =>
+        Migrate(connection, SchemaMigrations.All);
+
+    /// <summary>
+    /// Core runner, parameterized on the migration set so tests can drive rollback/serialization behavior
+    /// with a crafted (e.g. deliberately failing) set. Production calls the single-argument overload with
+    /// <see cref="SchemaMigrations.All"/>. Latest is the max version in the set.
+    /// </summary>
+    internal static void Migrate(SqliteConnection connection, IReadOnlyList<Migration> migrations)
     {
         ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(migrations);
 
         var current = ReadUserVersion(connection);
-        var latest = LatestVersion;
+        var latest = migrations.Count == 0 ? 0 : migrations.Max(m => m.Version);
 
         if (current == latest)
         {
@@ -39,7 +48,7 @@ internal static class MigrationRunner
                 + $"(max {latest}). Downgrade is not supported; run a newer build of the daemon.");
         }
 
-        foreach (var migration in SchemaMigrations.All.Where(m => m.Version > current).OrderBy(m => m.Version))
+        foreach (var migration in migrations.Where(m => m.Version > current).OrderBy(m => m.Version))
         {
             ApplyOne(connection, migration);
         }

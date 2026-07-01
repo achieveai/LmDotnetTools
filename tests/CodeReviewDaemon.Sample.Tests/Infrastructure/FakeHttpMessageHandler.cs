@@ -38,6 +38,41 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
             });
     }
 
+    /// <summary>
+    /// Registers a SEQUENCE of responses for a method + URL-substring match: successive matching requests
+    /// get <paramref name="responses"/>[0], [1], … repeating the last once exhausted. Lets a test drive a
+    /// transient-then-success retry (e.g. <c>429</c> then <c>200</c>) against a single URL.
+    /// </summary>
+    public FakeHttpMessageHandler OnSequence(
+        HttpMethod method,
+        string urlContains,
+        params (HttpStatusCode Status, string Json)[] responses)
+    {
+        if (responses.Length == 0)
+        {
+            throw new ArgumentException("At least one response is required.", nameof(responses));
+        }
+
+        var index = 0;
+        return On(
+            req => req.Method == method
+                && req.RequestUri is not null
+                && req.RequestUri.ToString().Contains(urlContains, StringComparison.Ordinal),
+            _ =>
+            {
+                var (status, json) = responses[Math.Min(index, responses.Length - 1)];
+                index++;
+                return new HttpResponseMessage(status)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                };
+            });
+    }
+
+    /// <summary>Number of requests observed whose URL contains <paramref name="urlContains"/>.</summary>
+    public int CountRequests(string urlContains) =>
+        Requests.Count(r => r.Uri.ToString().Contains(urlContains, StringComparison.Ordinal));
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)

@@ -90,6 +90,49 @@ public sealed class MigrationTests
             .WithMessage("*newer than this build*");
     }
 
+    [Fact]
+    public void A_failing_migration_rolls_back_atomically_and_leaves_user_version_unchanged()
+    {
+        // PR #121 M8 — a migration whose SQL fails partway must roll the WHOLE step back (even the
+        // statements that ran before the failure) and must NOT advance user_version, so a retry re-applies
+        // it cleanly. Driven with a crafted set via the internal overload.
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+        var migrations = new List<Migration>
+        {
+            new(1, "CREATE TABLE good (id INTEGER); THIS_IS_NOT_VALID_SQL;"),
+        };
+
+        var act = () => MigrationRunner.Migrate(connection, migrations);
+
+        act.Should().Throw<SqliteException>();
+        ReadUserVersion(connection).Should().Be(0, "the failed migration's transaction rolled back");
+        TableExists(connection, "good").Should().BeFalse("the whole migration rolled back — even the valid CREATE");
+        // The connection is still usable after the rolled-back migration.
+        ReadScalar(connection, "SELECT 1;").Should().Be("1");
+    }
+
+    [Fact]
+    public async Task Concurrent_migrators_serialize_and_converge_to_the_latest_version()
+    {
+        // PR #121 M8 — two migrators racing the same fresh DB must serialize on BEGIN IMMEDIATE (+
+        // busy_timeout) and converge, without a double-apply or corruption. Each opens its own connection.
+        using var db = new TempSqliteDatabase();
+
+        var tasks = Enumerable.Range(0, 3).Select(_ => Task.Run(() =>
+        {
+            using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+            MigrationRunner.Migrate(connection);
+        }));
+
+        var act = async () => await Task.WhenAll(tasks);
+
+        await act.Should().NotThrowAsync("concurrent migrators serialize rather than collide");
+        using var verify = SqliteConnectionFactory.Open(db.ConnectionString);
+        ReadUserVersion(verify).Should().Be(MigrationRunner.LatestVersion);
+        TableExists(verify, "review_run").Should().BeTrue("the schema is intact after concurrent migration");
+    }
+
     private static void Execute(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
