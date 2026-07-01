@@ -796,10 +796,12 @@ try
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). Extracted to a
                     // testable helper so the per-provider wiring is regression-guarded; see
-                    // ProgramReasoningExtraPropertiesTests. Discovered Copilot models map by transport.
+                    // ProgramReasoningExtraPropertiesTests. Discovered Copilot models map by transport,
+                    // and adaptive-thinking models opt out of the classic thinking budget request.
                     var extraProperties = BuildReasoningExtraProperties(
                         normalizedProviderId,
-                        isCopilotBackedModel ? copilotModelInfo.Transport : null
+                        isCopilotBackedModel ? copilotModelInfo.Transport : null,
+                        isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking
                     );
 
                     // Sub-agent orchestration options. Only the middleware providers reach this
@@ -1130,10 +1132,18 @@ public partial class Program
     ///     thinking budget; Copilot models on the OpenAI Responses transport get a reasoning-summary
     ///     request (CopilotResponsesLiveTests confirms gpt-5.5 returns reasoning). Other providers get
     ///     none. Without this wiring, Copilot-backed models return no thinking blocks.
+    ///     <para>
+    ///     Copilot Claude models that advertise <c>adaptive_thinking</c> (opus 4.x, sonnet 4.6+, sonnet 5)
+    ///     REJECT the classic <c>thinking.type.enabled</c> budget request with HTTP 400 — they require
+    ///     the newer <c>thinking.type.adaptive</c> + <c>output_config.effort</c> API, which this provider
+    ///     does not model yet. For those we omit the classic thinking parameter rather than send an
+    ///     unsupported one; they still reason, just without an explicit budget request.
+    ///     </para>
     /// </summary>
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
         string normalizedProviderId,
-        CopilotModelTransport? copilotTransport = null)
+        CopilotModelTransport? copilotTransport = null,
+        bool copilotSupportsAdaptiveThinking = false)
     {
         var extraProperties = ImmutableDictionary<string, object?>.Empty;
         if (
@@ -1142,6 +1152,12 @@ public partial class Program
             || copilotTransport == CopilotModelTransport.Anthropic
         )
         {
+            // Adaptive-thinking Copilot models reject the classic budget request; skip it for them.
+            if (copilotSupportsAdaptiveThinking)
+            {
+                return extraProperties;
+            }
+
             var budgetTokens = int.TryParse(
                 Environment.GetEnvironmentVariable("ANTHROPIC_THINKING_BUDGET"),
                 out var parsed

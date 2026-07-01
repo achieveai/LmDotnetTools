@@ -26,11 +26,18 @@ public enum CopilotModelTransport
 /// <param name="DisplayName">Human-friendly label from the response <c>name</c> (falls back to <see cref="Id"/>).</param>
 /// <param name="Vendor">Normalized publisher — <c>Anthropic</c> or <c>OpenAI</c> (<c>Azure OpenAI</c> collapses to <c>OpenAI</c>).</param>
 /// <param name="Transport">The routable transport derived from <c>supported_endpoints</c>.</param>
+/// <param name="SupportsAdaptiveThinking">
+///     <c>true</c> when the model advertises <c>capabilities.supports.adaptive_thinking</c>. Such
+///     models reject the classic <c>thinking.type.enabled</c> budget request (they require
+///     <c>thinking.type.adaptive</c> + <c>output_config.effort</c>), so the sample must not send the
+///     classic thinking parameter to them.
+/// </param>
 public sealed record CopilotModelInfo(
     string Id,
     string DisplayName,
     CopilotModelVendor Vendor,
-    CopilotModelTransport Transport);
+    CopilotModelTransport Transport,
+    bool SupportsAdaptiveThinking = false);
 
 /// <summary>
 ///     The normalized publisher partition a Copilot model belongs to. The sample only surfaces these

@@ -245,12 +245,13 @@ watch(
   right: 0;
   margin-top: 4px;
   min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
   background: white;
   border: 1px solid #ddd;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 100;
-  overflow: hidden;
   padding: 4px 0;
 }
 
@@ -269,6 +270,9 @@ watch(
 }
 
 .menu-group-header {
+  position: sticky;
+  top: 0;
+  background: white;
   padding: 6px 12px 2px;
   font-size: 11px;
   font-weight: 600;

@@ -88,6 +88,19 @@ public sealed class CopilotModelCatalogParserTests
     }
 
     [Fact]
+    public void Parse_flags_adaptive_thinking_from_capabilities()
+    {
+        var models = CopilotModelCatalogParser.Parse(RealResponseJson);
+
+        // Newer Claude models advertise capabilities.supports.adaptive_thinking=true and reject the
+        // classic thinking.type.enabled budget API; the older ones don't advertise it.
+        models.Single(m => m.Id == "claude-sonnet-5").SupportsAdaptiveThinking.Should().BeTrue();
+        models.Single(m => m.Id == "claude-opus-4.8").SupportsAdaptiveThinking.Should().BeTrue();
+        models.Single(m => m.Id == "claude-sonnet-4.5").SupportsAdaptiveThinking.Should().BeFalse();
+        models.Single(m => m.Id == "claude-haiku-4.5").SupportsAdaptiveThinking.Should().BeFalse();
+    }
+
+    [Fact]
     public void Parse_accepts_bare_array_shape()
     {
         const string json = """

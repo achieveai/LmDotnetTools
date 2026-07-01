@@ -18,7 +18,8 @@ public sealed class ProgramReasoningExtraPropertiesTests
 {
     private static ImmutableDictionary<string, object?> Build(
         string normalizedProviderId,
-        CopilotModelTransport? copilotTransport = null)
+        CopilotModelTransport? copilotTransport = null,
+        bool copilotSupportsAdaptiveThinking = false)
     {
         var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController)
             .Assembly.GetType("Program");
@@ -28,7 +29,10 @@ public sealed class ProgramReasoningExtraPropertiesTests
             BindingFlags.NonPublic | BindingFlags.Static
         );
         method.Should().NotBeNull("Program must expose the provider→reasoning extra-properties helper");
-        return (ImmutableDictionary<string, object?>)method!.Invoke(null, [normalizedProviderId, copilotTransport])!;
+        return (ImmutableDictionary<string, object?>)method!.Invoke(
+            null,
+            [normalizedProviderId, copilotTransport, copilotSupportsAdaptiveThinking]
+        )!;
     }
 
     [Theory]
@@ -45,10 +49,21 @@ public sealed class ProgramReasoningExtraPropertiesTests
     [Fact]
     public void Copilot_anthropic_transport_models_get_thinking_budget()
     {
-        var props = Build("claude-sonnet-5", CopilotModelTransport.Anthropic);
+        var props = Build("claude-sonnet-4.5", CopilotModelTransport.Anthropic);
 
         props.Should().ContainKey("Thinking");
         props["Thinking"].Should().BeOfType<AnthropicThinking>();
+    }
+
+    [Fact]
+    public void Copilot_adaptive_thinking_models_omit_classic_thinking_budget()
+    {
+        // Models advertising adaptive_thinking (e.g. claude-sonnet-5) reject thinking.type.enabled with
+        // HTTP 400, so the classic budget request must NOT be sent for them.
+        var props = Build("claude-sonnet-5", CopilotModelTransport.Anthropic, copilotSupportsAdaptiveThinking: true);
+
+        props.Should().NotContainKey("Thinking");
+        props.Should().BeEmpty();
     }
 
     [Fact]

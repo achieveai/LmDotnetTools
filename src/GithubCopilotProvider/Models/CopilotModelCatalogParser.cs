@@ -75,8 +75,23 @@ public static class CopilotModelCatalogParser
         var displayName = GetString(item, "name");
         displayName = string.IsNullOrWhiteSpace(displayName) ? id! : displayName!;
 
-        model = new CopilotModelInfo(id!, displayName, vendor, transport);
+        model = new CopilotModelInfo(id!, displayName, vendor, transport, SupportsAdaptiveThinking(item));
         return true;
+    }
+
+    /// <summary>
+    ///     Reads <c>capabilities.supports.adaptive_thinking</c>. Models that advertise it reject the
+    ///     classic <c>thinking.type.enabled</c> budget request, so the sample gates the classic thinking
+    ///     parameter on this flag being <c>false</c>/absent.
+    /// </summary>
+    private static bool SupportsAdaptiveThinking(JsonElement item)
+    {
+        return item.TryGetProperty("capabilities", out var capabilities)
+            && capabilities.ValueKind == JsonValueKind.Object
+            && capabilities.TryGetProperty("supports", out var supports)
+            && supports.ValueKind == JsonValueKind.Object
+            && supports.TryGetProperty("adaptive_thinking", out var adaptive)
+            && adaptive.ValueKind == JsonValueKind.True;
     }
 
     /// <summary>
