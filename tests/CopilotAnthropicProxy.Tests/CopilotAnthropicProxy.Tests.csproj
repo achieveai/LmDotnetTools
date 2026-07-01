@@ -1,21 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!--
-    Manual / on-demand live test suite that calls the REAL GitHub Copilot API using whatever
-    credentials the developer is already logged in with (Copilot CLI / gh / env var).
-
-    This project is intentionally NOT part of LmDotnetTools.sln and NOT listed in
-    scripts/ci-test.ps1, so CI never builds or runs it. Run it explicitly:
-
-        dotnet test tests/CopilotLive.Tests
-
-    Tests skip themselves (rather than fail) when no Copilot credential is found.
-  -->
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>AchieveAi.LmDotnetTools.CopilotLive.Tests</RootNamespace>
-    <AssemblyName>AchieveAi.LmDotnetTools.CopilotLive.Tests</AssemblyName>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
@@ -29,13 +16,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
     <PackageReference Include="FluentAssertions" Version="7.1.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
-    <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
     <ProjectReference Include="..\..\samples\CopilotAnthropicProxy.Sample\CopilotAnthropicProxy.Sample.csproj" />
+    <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

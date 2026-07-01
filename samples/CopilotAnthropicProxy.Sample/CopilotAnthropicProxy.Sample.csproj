@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- public partial Program (required by WebApplicationFactory<Program>) emits CS1591 under
+         GenerateDocumentationFile + TreatWarningsAsErrors; suppress doc-comment warnings for the sample. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The Copilot transport (CopilotHttpClientFactory / CopilotHeadersHandler / token providers /
+         CopilotOptions / CopilotSessionContext) lives in GithubCopilotProvider, which references
+         LmCore transitively. This is the only project reference the proxy needs. -->
+    <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
+  </ItemGroup>
+</Project>
