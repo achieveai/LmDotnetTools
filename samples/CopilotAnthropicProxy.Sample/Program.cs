@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
@@ -44,16 +45,13 @@ builder.WebHost.ConfigureKestrel(options =>
 // Token provider: default to the non-interactive CLI credential provider (re-resolves per
 // request, auto-picks-up re-auth, no permanent cache). Device flow is an explicit opt-in only.
 builder.Services.AddSingleton<ICopilotTokenProvider>(_ =>
-    config.EnableDeviceFlow
-        ? CompositeCopilotTokenProvider.CreateDefault()
-        : new CliCredentialCopilotTokenProvider());
+    config.EnableDeviceFlow ? CompositeCopilotTokenProvider.CreateDefault() : new CliCredentialCopilotTokenProvider()
+);
 
 builder.Services.AddSingleton(new CopilotSessionContext());
-builder.Services.AddSingleton(new CopilotOptions
-{
-    BaseUrl = config.BaseUrl,
-    DefaultInteractionType = "conversation-user",
-});
+builder.Services.AddSingleton(
+    new CopilotOptions { BaseUrl = config.BaseUrl, DefaultInteractionType = "conversation-user" }
+);
 
 // Inner transport handler: a pooled SocketsHttpHandler. AutomaticDecompression is OFF so the proxy
 // relays upstream bytes verbatim (we never re-encode). Tests swap this for a fake handler.
@@ -67,13 +65,16 @@ builder.Services.AddSingleton<HttpMessageHandler>(_ => new SocketsHttpHandler
 // Timeout is INFINITE: HttpClient.Timeout is a total-exchange deadline even with
 // ResponseHeadersRead, so any finite value would silently cap long streams and break the
 // RequestAborted cancellation filter. Per-request deadlines are enforced by a linked CTS instead.
-builder.Services.AddSingleton(sp => CopilotHttpClientFactory.Create(
-    config.BaseUrl,
-    sp.GetRequiredService<ICopilotTokenProvider>(),
-    sp.GetRequiredService<CopilotSessionContext>(),
-    sp.GetRequiredService<CopilotOptions>(),
-    timeout: Timeout.InfiniteTimeSpan,
-    innerHandler: sp.GetService<HttpMessageHandler>()));
+builder.Services.AddSingleton(sp =>
+    CopilotHttpClientFactory.Create(
+        config.BaseUrl,
+        sp.GetRequiredService<ICopilotTokenProvider>(),
+        sp.GetRequiredService<CopilotSessionContext>(),
+        sp.GetRequiredService<CopilotOptions>(),
+        timeout: Timeout.InfiniteTimeSpan,
+        innerHandler: sp.GetService<HttpMessageHandler>()
+    )
+);
 
 var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotAnthropicProxy");
@@ -90,70 +91,99 @@ catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledE
 {
     logger.LogError(
         "No GitHub Copilot token could be resolved. Sign in with the GitHub Copilot CLI or `gh auth login`, "
-        + "or set GITHUB_COPILOT_TOKEN / GH_TOKEN, then restart. (set COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW=1 "
-        + "to allow an interactive device-flow login at startup.) Reason: {Reason}",
-        ex.Message);
+            + "or set GITHUB_COPILOT_TOKEN / GH_TOKEN, then restart. (set COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW=1 "
+            + "to allow an interactive device-flow login at startup.) Reason: {Reason}",
+        ex.Message
+    );
     return 1;
 }
 
-// 2) Resolve the outbound model id (env wins; else the Copilot `opus` Claude id; else fail fast).
-string resolvedModel;
+// 2) Resolve the outbound model catalog (env wins and pins a single model; else discover every
+//    /v1/messages-capable Copilot model and pick the `opus` Claude id as the default; else fail fast).
+ProxyModelCatalog catalog;
 try
 {
     using var modelCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-    resolvedModel = await ProxyModelResolver.ResolveAsync(
-        app.Services.GetRequiredService<HttpClient>(), config.ModelOverride, logger, modelCts.Token);
+    catalog = await ProxyModelResolver.ResolveAsync(
+        app.Services.GetRequiredService<HttpClient>(),
+        config.ModelOverride,
+        logger,
+        modelCts.Token
+    );
 }
 catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or OperationCanceledException)
 {
     logger.LogError(
         "Could not resolve a Copilot Opus Claude model. Set COPILOT_ANTHROPIC_MODEL to a model id exposed by "
-        + "GET {BaseUrl}/models. Reason: {Reason}",
-        config.BaseUrl, ex.Message);
+            + "GET {BaseUrl}/models. Reason: {Reason}",
+        config.BaseUrl,
+        ex.Message
+    );
     return 1;
 }
 
 logger.LogInformation(
-    "CopilotAnthropicProxy listening on http://127.0.0.1:{Port} -> {BaseUrl} (model: {Model})",
-    config.Port, config.BaseUrl, resolvedModel);
+    "CopilotAnthropicProxy listening on http://127.0.0.1:{Port} -> {BaseUrl} (default model: {Model}, "
+        + "{Count} available)",
+    config.Port,
+    config.BaseUrl,
+    catalog.Default,
+    catalog.Available.Count
+);
 
 // --- Pipeline ----------------------------------------------------------------
 // Host/loopback/cross-site guard runs FIRST.
-app.Use(async (ctx, next) =>
-{
-    if (!ProxyGuard.IsAllowed(
-        ctx.Connection.RemoteIpAddress,
-        ctx.Request.Headers.Host,
-        ctx.Request.Headers.Origin,
-        ctx.Request.Headers["Sec-Fetch-Site"],
-        config.Port))
+app.Use(
+    async (ctx, next) =>
     {
-        await ProxyHttp.WriteAnthropicErrorAsync(
-            ctx, StatusCodes.Status403Forbidden, "permission_error",
-            "This proxy only accepts loopback requests from a same-origin client.");
-        return;
+        if (
+            !ProxyGuard.IsAllowed(
+                ctx.Connection.RemoteIpAddress,
+                ctx.Request.Headers.Host,
+                ctx.Request.Headers.Origin,
+                ctx.Request.Headers["Sec-Fetch-Site"],
+                config.Port
+            )
+        )
+        {
+            await ProxyHttp.WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status403Forbidden,
+                "permission_error",
+                "This proxy only accepts loopback requests from a same-origin client."
+            );
+            return;
+        }
+
+        await next(ctx);
     }
+);
 
-    await next(ctx);
-});
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", model = catalog.Default }));
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", model = resolvedModel }));
-
-// GET /v1/models — Anthropic-shaped stub advertising the single resolved model.
-app.MapGet("/v1/models", () => Results.Content(
-    ProxyHttp.BuildModelsStub(resolvedModel), "application/json", Encoding.UTF8));
+// GET /v1/models — Anthropic-shaped list of every available (/v1/messages-capable) model.
+app.MapGet(
+    "/v1/models",
+    () => Results.Content(ProxyHttp.BuildModelsStub(catalog.Available), "application/json", Encoding.UTF8)
+);
 
 // POST /v1/messages and /v1/messages/count_tokens — the forward path.
-app.MapPost("/v1/messages", ctx =>
-    ProxyHttp.ForwardAsync(ctx, resolvedModel, config.IdleTimeout, isCountTokens: false));
+app.MapPost("/v1/messages", ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: false));
 
-app.MapPost("/v1/messages/count_tokens", ctx =>
-    ProxyHttp.ForwardAsync(ctx, resolvedModel, config.IdleTimeout, isCountTokens: true));
+app.MapPost(
+    "/v1/messages/count_tokens",
+    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: true)
+);
 
 // Unknown route -> Anthropic-shaped 404.
-app.MapFallback(ctx => ProxyHttp.WriteAnthropicErrorAsync(
-    ctx, StatusCodes.Status404NotFound, "not_found_error",
-    $"Unknown route: {ctx.Request.Method} {ctx.Request.Path}"));
+app.MapFallback(ctx =>
+    ProxyHttp.WriteAnthropicErrorAsync(
+        ctx,
+        StatusCodes.Status404NotFound,
+        "not_found_error",
+        $"Unknown route: {ctx.Request.Method} {ctx.Request.Path}"
+    )
+);
 
 await app.RunAsync();
 return 0;
@@ -176,10 +206,12 @@ internal sealed record ProxyConfig
         return new ProxyConfig
         {
             Port = ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_PORT"), 8787),
-            BaseUrl = NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_BASE_URL"))
+            BaseUrl =
+                NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_BASE_URL"))
                 ?? CopilotOptions.DefaultBaseUrl,
             IdleTimeout = TimeSpan.FromSeconds(
-                ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS"), 120)),
+                ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS"), 120)
+            ),
             EnableDeviceFlow = ParseBool(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW")),
             ModelOverride = NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL")),
         };
@@ -194,9 +226,11 @@ internal sealed record ProxyConfig
 
     private static bool ParseBool(string? value) =>
         value is not null
-        && (value.Equals("1", StringComparison.OrdinalIgnoreCase)
+        && (
+            value.Equals("1", StringComparison.OrdinalIgnoreCase)
             || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase));
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+        );
 }
 
 // =============================================================================
@@ -236,8 +270,9 @@ public static class ProxyGuard
             return false;
         }
 
-        if (!string.IsNullOrEmpty(secFetchSite)
-            && secFetchSite.Equals("cross-site", StringComparison.OrdinalIgnoreCase))
+        if (
+            !string.IsNullOrEmpty(secFetchSite) && secFetchSite.Equals("cross-site", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return false;
         }
@@ -256,8 +291,10 @@ public static class ProxyGuard
         var portSuffix = ":" + port.ToString(CultureInfo.InvariantCulture);
         foreach (var allowed in LoopbackHostNames)
         {
-            if (host.Equals(allowed, StringComparison.OrdinalIgnoreCase)
-                || host.Equals(allowed + portSuffix, StringComparison.OrdinalIgnoreCase))
+            if (
+                host.Equals(allowed, StringComparison.OrdinalIgnoreCase)
+                || host.Equals(allowed + portSuffix, StringComparison.OrdinalIgnoreCase)
+            )
             {
                 return true;
             }
@@ -293,39 +330,83 @@ public static class ProxyGuard
 // Model resolution + request rewrite (pure where possible)
 // =============================================================================
 
-/// <summary>Resolves the outbound Copilot model id and rewrites the inbound request's model field.</summary>
+/// <summary>
+///     The resolved outbound model set: <see cref="Default"/> is used when a request's model is missing or
+///     unrecognized; <see cref="Available"/> lists every model the proxy will pass through unchanged.
+/// </summary>
+public sealed record ProxyModelCatalog(string Default, IReadOnlyList<string> Available);
+
+/// <summary>Resolves the outbound Copilot model catalog and rewrites the inbound request's model field.</summary>
 public static class ProxyModelResolver
 {
     /// <summary>
-    ///     Resolves the model id: <c>COPILOT_ANTHROPIC_MODEL</c> override wins; otherwise queries
-    ///     <c>GET /models</c> and picks the <c>opus</c> Claude id; otherwise throws (caller fails fast).
+    ///     Resolves the model catalog: <c>COPILOT_ANTHROPIC_MODEL</c> override wins and pins a single model
+    ///     (no discovery, no passthrough); otherwise queries <c>GET /models</c>, filters to the ids that
+    ///     support <c>/v1/messages</c>, and picks the <c>opus</c> Claude id as the default. Throws when no
+    ///     override is set and no opus Claude id is available (caller fails fast).
     /// </summary>
-    public static async Task<string> ResolveAsync(
-        HttpClient client, string? modelOverride, ILogger logger, CancellationToken cancellationToken)
+    public static async Task<ProxyModelCatalog> ResolveAsync(
+        HttpClient client,
+        string? modelOverride,
+        ILogger logger,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(client);
 
         if (!string.IsNullOrWhiteSpace(modelOverride))
         {
-            return modelOverride.Trim();
+            var pinned = modelOverride.Trim();
+            return new ProxyModelCatalog(pinned, [pinned]);
         }
 
         using var response = await client.GetAsync("/models", cancellationToken);
         _ = response.EnsureSuccessStatusCode();
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var ids = ParseModelIds(json);
+        var availableIds = ParseMessagesCapableModelIds(json);
 
-        var claudeIds = ids.Where(id => id.Contains("claude", StringComparison.OrdinalIgnoreCase)).ToList();
-        var opus = claudeIds.FirstOrDefault(id => id.Contains("opus", StringComparison.OrdinalIgnoreCase));
+        var claudeIds = availableIds.Where(id => id.Contains("claude", StringComparison.OrdinalIgnoreCase)).ToList();
+        var opus = PickHighestVersionOpusId(claudeIds);
         if (opus is not null)
         {
-            return opus;
+            return new ProxyModelCatalog(opus, availableIds);
         }
 
         throw new InvalidOperationException(
             "No Copilot 'opus' Claude model was found. Available Claude models: "
-            + (claudeIds.Count > 0 ? string.Join(", ", claudeIds) : "(none)")
-            + ". Set COPILOT_ANTHROPIC_MODEL to the exact id you want.");
+                + (claudeIds.Count > 0 ? string.Join(", ", claudeIds) : "(none)")
+                + ". Set COPILOT_ANTHROPIC_MODEL to the exact id you want."
+        );
+    }
+
+    /// <summary>
+    ///     Picks the <c>opus</c> Claude id with the numerically highest version suffix (e.g.
+    ///     <c>claude-opus-4.8</c> over <c>claude-opus-4.6</c>), rather than relying on upstream list
+    ///     order — Copilot has shipped multiple concurrent opus versions, and list order is not
+    ///     guaranteed to be oldest/newest-first.
+    /// </summary>
+    public static string? PickHighestVersionOpusId(IReadOnlyList<string> claudeIds)
+    {
+        return claudeIds
+            .Where(id => id.Contains("opus", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(ExtractOpusVersion)
+            .FirstOrDefault();
+    }
+
+    private static readonly Regex OpusVersionSuffixPattern = new(@"^\d+(?:\.\d+)*", RegexOptions.Compiled);
+
+    private static Version ExtractOpusVersion(string id)
+    {
+        var opusIndex = id.IndexOf("opus", StringComparison.OrdinalIgnoreCase);
+        var rest = id[(opusIndex + "opus".Length)..].TrimStart('-', '_', '.');
+        var match = OpusVersionSuffixPattern.Match(rest);
+        if (!match.Success)
+        {
+            return new Version(0, 0);
+        }
+
+        var versionText = match.Value.Contains('.') ? match.Value : match.Value + ".0";
+        return Version.Parse(versionText);
     }
 
     /// <summary>Extracts model ids from an OpenAI-shaped (<c>{"data":[{"id":...}]}</c>) or bare-array list.</summary>
@@ -340,9 +421,11 @@ public static class ProxyModelResolver
         {
             foreach (var item in list.EnumerateArray())
             {
-                if (item.ValueKind == JsonValueKind.Object
+                if (
+                    item.ValueKind == JsonValueKind.Object
                     && item.TryGetProperty("id", out var idEl)
-                    && idEl.ValueKind == JsonValueKind.String)
+                    && idEl.ValueKind == JsonValueKind.String
+                )
                 {
                     var id = idEl.GetString();
                     if (!string.IsNullOrWhiteSpace(id))
@@ -354,6 +437,109 @@ public static class ProxyModelResolver
         }
 
         return ids;
+    }
+
+    /// <summary>
+    ///     Extracts ids for models whose <c>supported_endpoints</c> includes <c>/v1/messages</c> — the only
+    ///     ones this Anthropic-Messages-shaped proxy can forward to. Copilot also serves GPT/Gemini models
+    ///     that only support <c>/responses</c> or <c>/chat/completions</c>; those are excluded.
+    /// </summary>
+    public static IReadOnlyList<string> ParseMessagesCapableModelIds(string json)
+    {
+        var ids = new List<string>();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
+
+        if (list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in list.EnumerateArray())
+            {
+                if (
+                    item.ValueKind != JsonValueKind.Object
+                    || !item.TryGetProperty("id", out var idEl)
+                    || idEl.ValueKind != JsonValueKind.String
+                )
+                {
+                    continue;
+                }
+
+                var id = idEl.GetString();
+                if (string.IsNullOrWhiteSpace(id))
+                {
+                    continue;
+                }
+
+                if (
+                    item.TryGetProperty("supported_endpoints", out var endpoints)
+                    && endpoints.ValueKind == JsonValueKind.Array
+                    && endpoints
+                        .EnumerateArray()
+                        .Any(e =>
+                            e.ValueKind == JsonValueKind.String
+                            && string.Equals(e.GetString(), "/v1/messages", StringComparison.OrdinalIgnoreCase)
+                        )
+                )
+                {
+                    ids.Add(id);
+                }
+            }
+        }
+
+        return ids;
+    }
+
+    /// <summary>
+    ///     Picks the outbound model for a single request: <paramref name="incomingModel"/> passes through
+    ///     unchanged (normalized to the catalog's exact casing) when it matches one of
+    ///     <paramref name="catalog"/>'s available ids; otherwise falls back to the catalog's default.
+    /// </summary>
+    public static string SelectOutboundModel(string? incomingModel, ProxyModelCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+
+        if (!string.IsNullOrWhiteSpace(incomingModel))
+        {
+            var match = catalog.Available.FirstOrDefault(id =>
+                string.Equals(id, incomingModel, StringComparison.OrdinalIgnoreCase)
+            );
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return catalog.Default;
+    }
+
+    /// <summary>Peeks at the JSON body's <c>model</c> field without mutating it. Null on any parse failure.</summary>
+    public static string? PeekModel(byte[] body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        if (body.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (
+                JsonNode.Parse(body) is JsonObject obj
+                && obj.TryGetPropertyValue("model", out var existing)
+                && existing is JsonValue value
+                && value.TryGetValue<string>(out var modelString)
+            )
+            {
+                return modelString;
+            }
+        }
+        catch (JsonException)
+        {
+            // Malformed body — ForwardAsync's TryRewriteModel call will surface the 400.
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -390,9 +576,11 @@ public static class ProxyModelResolver
             return false;
         }
 
-        if (obj.TryGetPropertyValue("model", out var existing)
+        if (
+            obj.TryGetPropertyValue("model", out var existing)
             && existing is JsonValue value
-            && value.TryGetValue<string>(out var modelString))
+            && value.TryGetValue<string>(out var modelString)
+        )
         {
             incomingModel = modelString;
         }
@@ -416,12 +604,26 @@ internal static class ProxyHttp
     // Content-Type is copied separately from the content headers.
     private static readonly HashSet<string> ExcludedResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Content-Length", "Transfer-Encoding", "Connection", "Keep-Alive", "Upgrade", "TE",
-        "Trailer", "Proxy-Authenticate", "Proxy-Authorization", "Content-Encoding", "Content-Type",
+        "Content-Length",
+        "Transfer-Encoding",
+        "Connection",
+        "Keep-Alive",
+        "Upgrade",
+        "TE",
+        "Trailer",
+        "Proxy-Authenticate",
+        "Proxy-Authorization",
+        "Content-Encoding",
+        "Content-Type",
     };
 
     /// <summary>Forwards POST /v1/messages (and count_tokens) to Copilot and streams the response back.</summary>
-    public static async Task ForwardAsync(HttpContext ctx, string model, TimeSpan idleTimeout, bool isCountTokens)
+    public static async Task ForwardAsync(
+        HttpContext ctx,
+        ProxyModelCatalog catalog,
+        TimeSpan idleTimeout,
+        bool isCountTokens
+    )
     {
         var services = ctx.RequestServices;
         var httpClient = services.GetRequiredService<HttpClient>();
@@ -436,12 +638,20 @@ internal static class ProxyHttp
             inboundBody = memory.ToArray();
         }
 
-        // 2) Rewrite the model field (raw JSON). Parse failure -> 400 (do NOT call upstream).
-        if (!ProxyModelResolver.TryRewriteModel(inboundBody, model, out var outboundBody, out var incomingModel))
+        // 2) Pass the requested model through unchanged when it's one of the available ids; otherwise fall
+        //    back to the catalog's default. Then rewrite the body (raw JSON). Parse failure -> 400 (do NOT
+        //    call upstream).
+        var outboundModel = ProxyModelResolver.SelectOutboundModel(ProxyModelResolver.PeekModel(inboundBody), catalog);
+        if (
+            !ProxyModelResolver.TryRewriteModel(inboundBody, outboundModel, out var outboundBody, out var incomingModel)
+        )
         {
             await WriteAnthropicErrorAsync(
-                ctx, StatusCodes.Status400BadRequest, "invalid_request_error",
-                "Request body must be a non-empty JSON object.");
+                ctx,
+                StatusCodes.Status400BadRequest,
+                "invalid_request_error",
+                "Request body must be a non-empty JSON object."
+            );
             return;
         }
 
@@ -464,7 +674,10 @@ internal static class ProxyHttp
         try
         {
             upstream = await httpClient.SendAsync(
-                upstreamRequest, HttpCompletionOption.ResponseHeadersRead, linked.Token);
+                upstreamRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                linked.Token
+            );
         }
         catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
         {
@@ -473,8 +686,11 @@ internal static class ProxyHttp
         catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
         {
             await WriteAnthropicErrorAsync(
-                ctx, StatusCodes.Status504GatewayTimeout, "api_error",
-                "Timed out waiting for the upstream Copilot API to respond.");
+                ctx,
+                StatusCodes.Status504GatewayTimeout,
+                "api_error",
+                "Timed out waiting for the upstream Copilot API to respond."
+            );
             return;
         }
         catch (InvalidOperationException ex)
@@ -482,30 +698,43 @@ internal static class ProxyHttp
             // Token acquisition failure surfaces from CopilotHeadersHandler before the first byte.
             logger.LogError("Copilot token acquisition failed: {Reason}", ex.Message);
             await WriteAnthropicErrorAsync(
-                ctx, StatusCodes.Status401Unauthorized, "authentication_error",
+                ctx,
+                StatusCodes.Status401Unauthorized,
+                "authentication_error",
                 "Failed to acquire a GitHub Copilot token. Re-authenticate with the GitHub Copilot CLI or "
-                + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN.");
+                    + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN."
+            );
             return;
         }
         catch (HttpRequestException ex)
         {
             logger.LogError("Upstream connection failed: {Reason}", ex.Message);
             await WriteAnthropicErrorAsync(
-                ctx, StatusCodes.Status502BadGateway, "api_error",
-                "Failed to reach the upstream Copilot API.");
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "api_error",
+                "Failed to reach the upstream Copilot API."
+            );
             return;
         }
 
         using (upstream)
         {
             // count_tokens: normalize an unsupported endpoint (404/405) to an Anthropic not_found_error.
-            if (isCountTokens
-                && (upstream.StatusCode == HttpStatusCode.NotFound
-                    || upstream.StatusCode == HttpStatusCode.MethodNotAllowed))
+            if (
+                isCountTokens
+                && (
+                    upstream.StatusCode == HttpStatusCode.NotFound
+                    || upstream.StatusCode == HttpStatusCode.MethodNotAllowed
+                )
+            )
             {
                 await WriteAnthropicErrorAsync(
-                    ctx, StatusCodes.Status404NotFound, "not_found_error",
-                    "The upstream Copilot API does not support /v1/messages/count_tokens.");
+                    ctx,
+                    StatusCodes.Status404NotFound,
+                    "not_found_error",
+                    "The upstream Copilot API does not support /v1/messages/count_tokens."
+                );
                 return;
             }
 
@@ -532,8 +761,14 @@ internal static class ProxyHttp
 
             logger.LogInformation(
                 "{Method} {Path} model {IncomingModel} -> {ResolvedModel} stream={Stream} upstream={Status} {Elapsed}ms",
-                ctx.Request.Method, upstreamPath, incomingModel ?? "(none)", model, isSse,
-                (int)upstream.StatusCode, stopwatch.ElapsedMilliseconds);
+                ctx.Request.Method,
+                upstreamPath,
+                incomingModel ?? "(none)",
+                outboundModel,
+                isSse,
+                (int)upstream.StatusCode,
+                stopwatch.ElapsedMilliseconds
+            );
         }
     }
 
@@ -544,7 +779,8 @@ internal static class ProxyHttp
         TimeSpan idleTimeout,
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
-        ILogger logger)
+        ILogger logger
+    )
     {
         var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
         try
@@ -583,8 +819,11 @@ internal static class ProxyHttp
                         if (!ctx.Response.HasStarted)
                         {
                             await WriteAnthropicErrorAsync(
-                                ctx, StatusCodes.Status502BadGateway, "api_error",
-                                "The upstream Copilot stream failed before any data was received.");
+                                ctx,
+                                StatusCodes.Status502BadGateway,
+                                "api_error",
+                                "The upstream Copilot stream failed before any data was received."
+                            );
                         }
 
                         return;
@@ -674,35 +913,36 @@ internal static class ProxyHttp
 
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
-        var payload = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            type = "error",
-            error = new { type, message },
-        });
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new { type = "error", error = new { type, message } });
         await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted);
     }
 
-    /// <summary>Builds the Anthropic-shaped GET /v1/models stub advertising the single resolved model.</summary>
-    public static string BuildModelsStub(string model)
+    /// <summary>
+    ///     Builds the Anthropic-shaped GET /v1/models response listing every available model.
+    ///     <paramref name="models"/> must be non-empty (the catalog always resolves at least one).
+    /// </summary>
+    public static string BuildModelsStub(IReadOnlyList<string> models)
     {
-        return JsonSerializer.Serialize(new
-        {
-            data = new[]
+        var data = models
+            .Select(model => new
             {
-                new
-                {
-                    type = "model",
-                    id = model,
-                    display_name = model,
-                    created_at = "2025-01-01T00:00:00Z",
-                },
-            },
-            has_more = false,
-            first_id = model,
-            last_id = model,
-        });
-    }
+                type = "model",
+                id = model,
+                display_name = model,
+                created_at = "2025-01-01T00:00:00Z",
+            })
+            .ToArray();
 
+        return JsonSerializer.Serialize(
+            new
+            {
+                data,
+                has_more = false,
+                first_id = models[0],
+                last_id = models[^1],
+            }
+        );
+    }
 }
 
 /// <summary>Exposed so <c>WebApplicationFactory&lt;Program&gt;</c> can boot this host in tests.</summary>

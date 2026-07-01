@@ -9,9 +9,11 @@ What it does, end to end:
 
 1. Accepts `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, and
    `GET /v1/models`.
-2. Rewrites **only** the JSON `model` field of the request body to a configured Copilot Claude (Opus)
-   id. Everything else — `system` blocks, `cache_control`, `thinking`, `tools`, betas, and unknown
-   fields — is preserved verbatim (raw `JsonNode` swap, never a typed DTO).
+2. Rewrites **only** the JSON `model` field of the request body: if it names a model the proxy knows
+   about (see "Choosing the model" below), it passes through unchanged; otherwise it's rewritten to
+   the resolved default Copilot Claude (Opus) id. Everything else — `system` blocks, `cache_control`,
+   `thinking`, `tools`, betas, and unknown fields — is preserved verbatim (raw `JsonNode` swap, never
+   a typed DTO).
 3. Attaches Copilot auth + tracking headers using the proven `GithubCopilotProvider` transport
    (`CopilotHttpClientFactory` / `CopilotHeadersHandler` / the CLI credential token provider).
 4. Streams the upstream Server-Sent-Events response straight back to the client as **raw bytes**
@@ -42,22 +44,36 @@ What it does, end to end:
 dotnet run --project samples/CopilotAnthropicProxy.Sample
 ```
 
-On startup the proxy logs the resolved model and the listen address, e.g.:
+On startup the proxy logs the resolved default model, how many models are available, and the listen
+address, e.g.:
 
 ```
-CopilotAnthropicProxy listening on http://127.0.0.1:8787 -> https://api.enterprise.githubcopilot.com (model: <resolved-opus-id>)
+CopilotAnthropicProxy listening on http://127.0.0.1:8787 -> https://api.enterprise.githubcopilot.com (default model: <resolved-opus-id>, 7 available)
 ```
 
 ### Choosing the model
 
-The outbound model id is resolved at startup in this order:
+The proxy resolves an outbound **model catalog** (a default id plus the full set of available ids)
+at startup in one of two modes:
 
-1. `COPILOT_ANTHROPIC_MODEL` if set (wins outright).
-2. Otherwise the proxy queries Copilot `GET /models` and picks the Claude id containing `opus`.
-3. Otherwise it **fails fast** and logs the available Claude model ids so you can pick one and set
-   `COPILOT_ANTHROPIC_MODEL` explicitly.
+1. **Pinned** — `COPILOT_ANTHROPIC_MODEL` is set. The catalog is just that one id (both default and
+   only available entry); Copilot's `/models` endpoint is never queried, and **every** request is
+   rewritten to it regardless of what `model` the client sent — this matches the proxy's original
+   single-model behavior.
+2. **Discovered** — `COPILOT_ANTHROPIC_MODEL` is unset. The proxy queries Copilot `GET /models` and
+   keeps every model whose `supported_endpoints` includes `/v1/messages` (the only ones this
+   Anthropic-Messages-shaped proxy can forward to — Copilot's GPT/Gemini models are excluded). The
+   default is the Claude id containing `opus`; if none is found, the proxy **fails fast** and logs
+   the available Claude ids so you can set `COPILOT_ANTHROPIC_MODEL` explicitly. Copilot can expose
+   multiple concurrent `opus` ids at once (e.g. `claude-opus-4.6`, `claude-opus-4.7`,
+   `claude-opus-4.8`); the proxy picks the one with the numerically highest version suffix — not
+   just the first one Copilot happens to list — so the default always tracks the newest opus model.
+   In this mode, a request whose `model` field exactly matches (case-insensitively) one of the
+   discovered ids is forwarded **unchanged** (normalized to the catalog's casing); anything else
+   falls back to the default.
 
-`GET /v1/models` on the proxy returns an Anthropic-shaped stub advertising the single resolved id.
+`GET /v1/models` on the proxy returns an Anthropic-shaped list of every id in the catalog (one entry
+in pinned mode, every discovered `/v1/messages`-capable id in discovered mode).
 
 ## Point a client at the proxy
 
@@ -87,7 +103,8 @@ dotnet run --project samples/LmStreaming.Sample
 
 `ANTHROPIC_API_KEY` is required by clients but ignored by the proxy (the inbound `x-api-key` /
 `Authorization` are **not** forwarded; Copilot auth is attached outbound). The `ANTHROPIC_MODEL`
-value is also ignored — the proxy always rewrites it to the configured Copilot model.
+value is honored when `COPILOT_ANTHROPIC_MODEL` is unset and it matches one of the models the proxy
+discovered from Copilot (see "Choosing the model"); otherwise it's rewritten to the resolved default.
 
 ### Troubleshooting the base URL
 
@@ -102,7 +119,7 @@ value is also ignored — the proxy always rewrites it to the configured Copilot
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `COPILOT_ANTHROPIC_MODEL` | (resolved from `/models`) | Outbound Copilot model id. Wins over `/models` resolution. |
+| `COPILOT_ANTHROPIC_MODEL` | (discovered from `/models`) | Pins every request to this single Copilot model id and skips discovery entirely. Unset to discover the full `/v1/messages`-capable catalog instead (see "Choosing the model"). |
 | `COPILOT_ANTHROPIC_PORT` | `8787` | Loopback listen port. |
 | `COPILOT_ANTHROPIC_BASE_URL` | `https://api.enterprise.githubcopilot.com` | Copilot host root (for non-enterprise hosts). |
 | `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `120` | Per-request idle timeout, reset after each streamed read. The total exchange has no deadline, so long generations are not cut off. |
@@ -122,8 +139,10 @@ list**: `ModeToolFilter.FilterBuiltInTools` returns `null` for an empty tool set
 
 ## Non-goals (intentionally not implemented)
 
-- **No response-body rewriting.** The response body and the SSE `message_start` event carry the
-  rewritten (Opus) model id, not the requested id. This is accepted for raw-passthrough fidelity.
+- **No response-body rewriting.** The response body and the SSE `message_start` event carry whatever
+  model id was actually sent upstream (the passed-through id, or the resolved default when the
+  request's model wasn't recognized) — never rewritten back to the client's requested id. This is
+  accepted for raw-passthrough fidelity.
 - **No `anthropic-beta` allowlist filter.** Beta values are forwarded as-is; an unknown beta that
   Copilot rejects surfaces as an upstream 400 passthrough.
 - **No 200K → 1M context fallback / model routing.** Context-length errors pass through unchanged.

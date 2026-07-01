@@ -31,7 +31,12 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     /// <summary>Creates a factory whose upstream is driven by <paramref name="upstream"/>.</summary>
     /// <param name="upstream">Fake upstream handler invoked for every forwarded request.</param>
     /// <param name="tokenProvider">Token provider to inject; defaults to a fixed fake token.</param>
-    /// <param name="model">The model id the proxy is configured to rewrite every request to.</param>
+    /// <param name="model">
+    ///     The model id the proxy is configured to pin every request to. Pass <c>null</c> to leave
+    ///     <c>COPILOT_ANTHROPIC_MODEL</c> unset, exercising the discovery path instead (the proxy then
+    ///     calls <c>GET /models</c> on <paramref name="upstream"/> at startup) — the caller's
+    ///     <paramref name="upstream"/> must handle that request too in that mode.
+    /// </param>
     /// <param name="idleTimeoutSeconds">
     ///     Optional per-request idle timeout for the proxy (sets <c>COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS</c>);
     ///     used by the 504 test to make a stalled upstream time out quickly.
@@ -39,8 +44,9 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     public ProxyWebAppFactory(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> upstream,
         ICopilotTokenProvider? tokenProvider = null,
-        string model = ConfiguredModel,
-        int? idleTimeoutSeconds = null)
+        string? model = ConfiguredModel,
+        int? idleTimeoutSeconds = null
+    )
     {
         ArgumentNullException.ThrowIfNull(upstream);
 
@@ -51,7 +57,8 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
         {
             Environment.SetEnvironmentVariable(
                 "COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS",
-                idleTimeoutSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                idleTimeoutSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            );
         }
     }
 
