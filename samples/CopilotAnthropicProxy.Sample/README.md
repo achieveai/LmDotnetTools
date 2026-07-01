@@ -22,6 +22,8 @@ What it does, end to end:
    terminal frames: it returns a `502` when nothing has been sent yet, otherwise it stops and closes
    the (now incomplete) stream — the client detects the truncation from the missing `message_stop`,
    exactly as it would if the upstream connection had dropped directly.
+5. Also transparently exposes Copilot's **MCP server** on `/mcp` and `/mcp/readonly` — see
+   "Exposing Copilot's MCP server" below.
 
 > [!WARNING]
 > **Local development only.** This proxy has **no inbound authentication** but attaches **your**
@@ -106,6 +108,33 @@ dotnet run --project samples/LmStreaming.Sample
 value is honored when `COPILOT_ANTHROPIC_MODEL` is unset and it matches one of the models the proxy
 discovered from Copilot (see "Choosing the model"); otherwise it's rewritten to the resolved default.
 
+## Exposing Copilot's MCP server
+
+The same proxy also transparently exposes GitHub Copilot's **MCP server** (Streamable HTTP
+transport) on:
+
+- `GET` / `POST` / `DELETE` `/mcp` — the full read/write toolset
+- `GET` / `POST` / `DELETE` `/mcp/readonly` — the read-only toolset
+
+This is a **byte-level reverse proxy**, not an MCP-aware reimplementation: there's no JSON-RPC
+parsing and no proxy-side session bookkeeping. Point any MCP Streamable-HTTP client at
+`http://127.0.0.1:8787/mcp` (or `/mcp/readonly`) exactly as you would point it at
+`https://api.enterprise.githubcopilot.com/mcp` (or `/mcp/readonly`) directly — request/response
+bodies, status codes, and headers are relayed verbatim, including SSE responses (same raw-byte
+streaming as `/v1/messages`).
+
+**Header policy**: every inbound header is forwarded verbatim **except** `Authorization` (the
+proxy attaches its own Copilot bearer token instead, via the same `CopilotHeadersHandler` used for
+`/v1/messages`) and a handful of hop-by-hop/framing headers .NET's `HttpClient` must own
+(`Host`, `Content-Length`, `Content-Type`, `Connection`, `Transfer-Encoding`, `Keep-Alive`,
+`Upgrade`, `TE`, `Trailer`, `Accept-Encoding`). This means `Mcp-Session-Id`,
+`Mcp-Protocol-Version`, `Last-Event-ID`, and Copilot's `X-MCP-*` tool-filtering headers
+(`X-MCP-Readonly`, `X-MCP-Toolsets`, `X-MCP-Tools`, `X-MCP-Exclude-Tools`, `X-MCP-Features`,
+`X-MCP-Lockdown`, `X-MCP-Insiders`, `X-MCP-Host`, and any future ones) all pass through untouched
+— the proxy never needs to know Copilot's MCP header vocabulary in advance. Like the rest of the
+proxy, no inbound auth is required to reach `/mcp*`; it's covered by the same loopback +
+host/cross-site guard described in the warning above.
+
 ### Troubleshooting the base URL
 
 | Symptom (request that reaches the proxy) | Cause | Fix |
@@ -151,3 +180,6 @@ list**: `ModeToolFilter.FilterBuiltInTools` returns `null` for an empty tool set
 - **No synthetic `count_tokens` estimator.** `count_tokens` is best-effort pass-through; an
   unsupported upstream (404/405) is normalized to an Anthropic `not_found_error`.
 - **No inbound auth, TLS, or CORS** beyond the loopback + host/cross-site guard.
+- **No MCP session bookkeeping or resumability logic.** The proxy relays `Mcp-Session-Id` and
+  `Last-Event-ID` verbatim but never inspects, persists, or validates them — session lifecycle is
+  entirely between the client and Copilot.

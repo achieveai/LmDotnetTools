@@ -18,6 +18,8 @@ using Microsoft.Extensions.Primitives;
 // and forwards it to GitHub Copilot. It rewrites ONLY the JSON `model` field to a
 // configured Copilot Claude (Opus) id, attaches Copilot auth/headers via the proven
 // GithubCopilotProvider transport, and streams the SSE response back as raw bytes.
+// It also exposes Copilot's MCP server (Streamable HTTP transport) as a transparent
+// byte-level proxy on /mcp and /mcp/readonly, with Copilot auth attached the same way.
 //
 // Point Claude Code (or any Anthropic-Messages client) at it via ANTHROPIC_BASE_URL.
 // SECURITY: binds to loopback only and attaches the developer's Copilot credentials
@@ -174,6 +176,10 @@ app.MapPost(
     "/v1/messages/count_tokens",
     ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: true)
 );
+
+// GET/POST/DELETE /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy.
+app.MapMethods("/mcp", ["GET", "POST", "DELETE"], ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
+app.MapMethods("/mcp/readonly", ["GET", "POST", "DELETE"], ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
 
 // Unknown route -> Anthropic-shaped 404.
 app.MapFallback(ctx =>
@@ -773,7 +779,7 @@ internal static class ProxyHttp
     }
 
     /// <summary>Streams the upstream body to the client with an explicit, incrementally-flushed loop.</summary>
-    private static async Task CopyBodyAsync(
+    internal static async Task CopyBodyAsync(
         HttpContext ctx,
         HttpResponseMessage upstream,
         TimeSpan idleTimeout,
@@ -942,6 +948,200 @@ internal static class ProxyHttp
                 last_id = models[^1],
             }
         );
+    }
+}
+
+// =============================================================================
+// MCP (Model Context Protocol) reverse proxy — Streamable HTTP transport
+// =============================================================================
+
+/// <summary>
+///     Transparent reverse proxy for GitHub Copilot's MCP server (Streamable HTTP transport). Forwards
+///     GET/POST/DELETE on <c>/mcp</c> and <c>/mcp/readonly</c> verbatim: no JSON-RPC parsing and no
+///     proxy-side session bookkeeping — the <c>Mcp-Session-Id</c> the upstream server assigns on
+///     <c>initialize</c> is just another response header this proxy copies through, and the caller is
+///     responsible for echoing it back on subsequent requests exactly as it would talk to Copilot
+///     directly.
+/// </summary>
+internal static class ProxyMcp
+{
+    // Everything is forwarded verbatim EXCEPT: Authorization (Copilot auth is attached outbound by
+    // CopilotHeadersHandler instead — the caller's own auth, if any, is never forwarded) and a small
+    // set of hop-by-hop/framing headers that .NET's HttpClient must own (Host, Content-Length,
+    // Content-Type are handled explicitly, Connection/Transfer-Encoding/etc. are per-hop). Accept-Encoding
+    // is also excluded: the shared HttpClient never negotiates compression (SocketsHttpHandler.
+    // AutomaticDecompression = None) and CopyResponseHeaders always strips Content-Encoding from the
+    // response, so forwarding a client's Accept-Encoding would risk an undecodable compressed body.
+    private static readonly HashSet<string> ExcludedRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization",
+        "Host",
+        "Content-Length",
+        "Content-Type",
+        "Transfer-Encoding",
+        "Connection",
+        "Keep-Alive",
+        "Upgrade",
+        "TE",
+        "Trailer",
+        "Accept-Encoding",
+    };
+
+    /// <summary>Forwards GET/POST/DELETE on the MCP endpoint to Copilot and streams the response back.</summary>
+    public static async Task ForwardAsync(HttpContext ctx, TimeSpan idleTimeout)
+    {
+        var services = ctx.RequestServices;
+        var httpClient = services.GetRequiredService<HttpClient>();
+        var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotAnthropicProxy");
+        var stopwatch = Stopwatch.StartNew();
+
+        var upstreamPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
+        using var upstreamRequest = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), upstreamPath);
+
+        if (string.Equals(ctx.Request.Method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            byte[] inboundBody;
+            using (var memory = new MemoryStream())
+            {
+                await ctx.Request.Body.CopyToAsync(memory, ctx.RequestAborted);
+                inboundBody = memory.ToArray();
+            }
+
+            upstreamRequest.Content = new ByteArrayContent(inboundBody);
+            upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.TryParse(
+                ctx.Request.ContentType,
+                out var parsedContentType
+            )
+                ? parsedContentType
+                : new MediaTypeHeaderValue("application/json");
+        }
+
+        ApplyRequestHeaderAllowlist(ctx.Request.Headers, upstreamRequest);
+
+        // Per-request deadlines: link client-abort + a reset-per-read idle timeout, same as /v1/messages.
+        // A standalone GET SSE stream lives as long as the server keeps sending events on it.
+        using var idleCts = new CancellationTokenSource();
+        idleCts.CancelAfter(idleTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, idleCts.Token);
+
+        HttpResponseMessage upstream;
+        try
+        {
+            upstream = await httpClient.SendAsync(
+                upstreamRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                linked.Token
+            );
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            return; // Client disconnected before we connected; nothing to write.
+        }
+        catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+        {
+            await WriteMcpErrorAsync(
+                ctx,
+                StatusCodes.Status504GatewayTimeout,
+                "Timed out waiting for the upstream Copilot MCP server to respond."
+            );
+            return;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Token acquisition failure surfaces from CopilotHeadersHandler before the first byte.
+            logger.LogError("Copilot token acquisition failed: {Reason}", ex.Message);
+            await WriteMcpErrorAsync(
+                ctx,
+                StatusCodes.Status401Unauthorized,
+                "Failed to acquire a GitHub Copilot token. Re-authenticate with the GitHub Copilot CLI or "
+                    + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN."
+            );
+            return;
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogError("Upstream MCP connection failed: {Reason}", ex.Message);
+            await WriteMcpErrorAsync(
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "Failed to reach the upstream Copilot MCP server."
+            );
+            return;
+        }
+
+        using (upstream)
+        {
+            // Lock status + headers verbatim (minus hop-by-hop/framing) — this is what carries
+            // Mcp-Session-Id back to the client on the initialize response.
+            ctx.Response.StatusCode = (int)upstream.StatusCode;
+            ProxyHttp.CopyResponseHeaders(upstream, ctx.Response);
+
+            var contentType = upstream.Content.Headers.ContentType;
+            if (contentType is not null)
+            {
+                ctx.Response.ContentType = contentType.ToString();
+            }
+
+            var isSse = string.Equals(contentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase);
+            if (isSse)
+            {
+                ctx.Response.Headers["X-Accel-Buffering"] = "no";
+                ctx.Response.Headers.CacheControl = "no-cache";
+            }
+
+            ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+            await ProxyHttp.CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger);
+
+            logger.LogInformation(
+                "{Method} {Path} mcp-session={SessionId} upstream={Status} {Elapsed}ms",
+                ctx.Request.Method,
+                ctx.Request.Path,
+                ctx.Request.Headers["Mcp-Session-Id"].FirstOrDefault() ?? "(none)",
+                (int)upstream.StatusCode,
+                stopwatch.ElapsedMilliseconds
+            );
+        }
+    }
+
+    /// <summary>Forwards every inbound header verbatim except <see cref="ExcludedRequestHeaders"/> (incl. auth).</summary>
+    private static void ApplyRequestHeaderAllowlist(IHeaderDictionary inbound, HttpRequestMessage upstream)
+    {
+        foreach (var header in inbound)
+        {
+            if (ExcludedRequestHeaders.Contains(header.Key))
+            {
+                continue;
+            }
+
+            foreach (var value in header.Value)
+            {
+                if (!string.IsNullOrEmpty(value))
+                {
+                    _ = upstream.Headers.TryAddWithoutValidation(header.Key, value);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Writes a JSON-RPC-shaped error for proxy-origin failures (never for upstream responses, which
+    ///     are always passed through verbatim). Per the MCP spec, an error response for input the server
+    ///     could not accept has no <c>id</c>.
+    /// </summary>
+    private static async Task WriteMcpErrorAsync(HttpContext ctx, int status, string message)
+    {
+        if (ctx.Response.HasStarted)
+        {
+            return;
+        }
+
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = "application/json";
+        var payload = JsonSerializer.SerializeToUtf8Bytes(
+            new { jsonrpc = "2.0", error = new { code = -32000, message } }
+        );
+        await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted);
     }
 }
 
