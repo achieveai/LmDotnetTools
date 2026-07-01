@@ -74,6 +74,15 @@ public sealed class HostGuardTests
     }
 
     [Fact]
+    public void Loopback_origin_on_a_different_port_is_rejected()
+    {
+        // A page on another local port (another dev server, or something malicious) is still "loopback"
+        // but must not be treated as same-origin with this proxy.
+        ProxyGuard.IsAllowed(
+            IPAddress.Loopback, "127.0.0.1:8787", "http://127.0.0.1:3000", null, Port).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Foreign_host_header_is_rejected_with_403_permission_error()
     {
         await using var factory = new ProxyWebAppFactory((req, ct) => Task.FromResult(TestUpstream.Json("{}")));

@@ -240,7 +240,8 @@ public sealed class McpProxyTests
         using var request = new HttpRequestMessage(HttpMethod.Put, "/mcp/readonly") { Content = JsonRpc("{}") };
         using var response = await client.SendAsync(request);
 
-        // Falls through to the shared Anthropic-shaped fallback 404, same as any other unmatched route/method.
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.StatusCode.Should().Be(HttpStatusCode.MethodNotAllowed);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("\"jsonrpc\":\"2.0\"", "MCP-origin errors should be JSON-RPC-shaped, not the Anthropic fallback");
     }
 }

@@ -103,6 +103,56 @@ public sealed class ModelRewriteTests
         JsonNode.Parse(rewritten)!.AsObject().ContainsKey("context_management").Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("/v1/messages")]
+    [InlineData("/v1/messages/count_tokens")]
+    public async Task Forwarded_request_strips_beta_header_and_context_management_but_preserves_other_fields(
+        string path)
+    {
+        HttpRequestMessage? forwarded = null;
+        string? forwardedBody = null;
+        await using var factory = new ProxyWebAppFactory(async (req, ct) =>
+        {
+            forwarded = req;
+            forwardedBody = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
+            return TestUpstream.Json(path.EndsWith("count_tokens") ? "{\"input_tokens\":7}" : "{\"type\":\"message\"}");
+        });
+        using var client = factory.CreateClient();
+
+        const string json = """
+        {
+          "model": "claude-3-5-haiku-20241022",
+          "max_tokens": 100,
+          "thinking": { "type": "enabled", "budget_tokens": 1024 },
+          "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] },
+          "system": [ { "type": "text", "text": "sys", "cache_control": { "type": "ephemeral" } } ],
+          "tools": [ { "name": "get_weather", "input_schema": { "type": "object" } } ],
+          "messages": [ { "role": "user", "content": "hi" } ],
+          "anthropic_unknown": { "nested": [1, 2, 3] }
+        }
+        """;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("anthropic-beta", "context-management-2025-06-27");
+
+        using var response = await client.SendAsync(request);
+
+        response.IsSuccessStatusCode.Should().BeTrue();
+        forwarded!.Headers.Contains("anthropic-beta")
+            .Should()
+            .BeFalse("Copilot rejects the whole request if any beta value is unrecognized");
+
+        var node = JsonNode.Parse(forwardedBody!)!.AsObject();
+        node.ContainsKey("context_management").Should().BeFalse();
+        node["thinking"]!["budget_tokens"]!.GetValue<int>().Should().Be(1024);
+        node["system"]![0]!["cache_control"]!["type"]!.GetValue<string>().Should().Be("ephemeral");
+        node["tools"]![0]!["name"]!.GetValue<string>().Should().Be("get_weather");
+        node["anthropic_unknown"]!["nested"]!.AsArray().Should().HaveCount(3);
+    }
+
     [Fact]
     public async Task Forwarded_request_body_has_the_configured_model()
     {

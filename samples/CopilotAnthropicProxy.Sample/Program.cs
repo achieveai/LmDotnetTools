@@ -179,9 +179,11 @@ app.MapPost(
     ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: true)
 );
 
-// GET/POST/DELETE /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy.
-app.MapMethods("/mcp", ["GET", "POST", "DELETE"], ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
-app.MapMethods("/mcp/readonly", ["GET", "POST", "DELETE"], ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
+// /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy. Every HTTP method is routed
+// here (not just GET/POST/DELETE) so an unsupported method gets ProxyMcp's own MCP/JSON-RPC-shaped
+// 405, not the shared Anthropic-shaped fallback 404.
+app.Map("/mcp", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
+app.Map("/mcp/readonly", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
 
 // Unknown route -> Anthropic-shaped 404.
 app.MapFallback(ctx =>
@@ -285,7 +287,7 @@ public static class ProxyGuard
             return false;
         }
 
-        return IsAllowedOrigin(origin);
+        return IsAllowedOrigin(origin, port);
     }
 
     /// <summary>Exact loopback Host-header allowlist: bare host or host with the configured port.</summary>
@@ -311,15 +313,20 @@ public static class ProxyGuard
         return false;
     }
 
-    /// <summary>An absent Origin is fine; a present one must resolve to a loopback host.</summary>
-    private static bool IsAllowedOrigin(string? origin)
+    /// <summary>
+    ///     An absent Origin is fine; a present one must be a loopback host on the exact configured port —
+    ///     matching <see cref="IsAllowedHost"/>'s exact-port match, not just any loopback port. Otherwise a
+    ///     page on a different local port (e.g. another dev server, or something malicious) could still
+    ///     satisfy "loopback" and reach this proxy cross-origin.
+    /// </summary>
+    private static bool IsAllowedOrigin(string? origin, int port)
     {
         if (string.IsNullOrEmpty(origin))
         {
             return true;
         }
 
-        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Port != port)
         {
             return false;
         }
@@ -1032,9 +1039,21 @@ internal static class ProxyMcp
         "x-initiator",
     };
 
+    private static readonly string[] AllowedMethods = ["GET", "POST", "DELETE"];
+
     /// <summary>Forwards GET/POST/DELETE on the MCP endpoint to Copilot and streams the response back.</summary>
     public static async Task ForwardAsync(HttpContext ctx, TimeSpan idleTimeout)
     {
+        if (!AllowedMethods.Contains(ctx.Request.Method, StringComparer.OrdinalIgnoreCase))
+        {
+            await WriteMcpErrorAsync(
+                ctx,
+                StatusCodes.Status405MethodNotAllowed,
+                $"Unsupported method {ctx.Request.Method}. Use GET, POST, or DELETE."
+            );
+            return;
+        }
+
         var services = ctx.RequestServices;
         var httpClient = services.GetRequiredService<HttpClient>();
         var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotAnthropicProxy");
