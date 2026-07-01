@@ -72,6 +72,38 @@ public sealed class ModelRewriteTests
     }
 
     [Fact]
+    public void TryRewriteModel_strips_context_management_field()
+    {
+        const string json = """
+        {
+          "model": "claude-3-5-haiku",
+          "max_tokens": 5,
+          "context_management": { "edits": [ { "type": "clear_tool_uses_20250919" } ] }
+        }
+        """;
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            Encoding.UTF8.GetBytes(json), "opus-x", out var rewritten, out _);
+
+        ok.Should().BeTrue();
+        var node = JsonNode.Parse(rewritten)!.AsObject();
+        node.ContainsKey("context_management").Should().BeFalse();
+        node["model"]!.GetValue<string>().Should().Be("opus-x");
+        node["max_tokens"]!.GetValue<int>().Should().Be(5);
+    }
+
+    [Fact]
+    public void TryRewriteModel_is_a_no_op_when_context_management_is_absent()
+    {
+        var body = Encoding.UTF8.GetBytes("{\"model\":\"x\",\"max_tokens\":5}");
+
+        var ok = ProxyModelResolver.TryRewriteModel(body, "opus-x", out var rewritten, out _);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(rewritten)!.AsObject().ContainsKey("context_management").Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Forwarded_request_body_has_the_configured_model()
     {
         string? forwardedBody = null;

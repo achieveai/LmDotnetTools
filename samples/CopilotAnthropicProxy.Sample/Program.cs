@@ -15,9 +15,11 @@ using Microsoft.Extensions.Primitives;
 // CopilotAnthropicProxy.Sample
 //
 // A thin, loopback-only reverse proxy that accepts the Anthropic Messages API
-// and forwards it to GitHub Copilot. It rewrites ONLY the JSON `model` field to a
-// configured Copilot Claude (Opus) id, attaches Copilot auth/headers via the proven
-// GithubCopilotProvider transport, and streams the SSE response back as raw bytes.
+// and forwards it to GitHub Copilot. It rewrites the JSON `model` field to a
+// configured Copilot Claude (Opus) id, strips the `context_management` field and the
+// `anthropic-beta` header (both unsupported by Copilot's backend), attaches Copilot
+// auth/headers via the proven GithubCopilotProvider transport, and streams the SSE
+// response back as raw bytes.
 // It also exposes Copilot's MCP server (Streamable HTTP transport) as a transparent
 // byte-level proxy on /mcp and /mcp/readonly, with Copilot auth attached the same way.
 //
@@ -549,9 +551,11 @@ public static class ProxyModelResolver
     }
 
     /// <summary>
-    ///     Raw <see cref="JsonNode"/> rewrite of the <c>model</c> field (overwrite or inject). Never
-    ///     deserializes to a typed DTO, so <c>cache_control</c>, <c>thinking</c>, <c>system</c> blocks,
-    ///     betas, and unknown fields are preserved verbatim.
+    ///     Raw <see cref="JsonNode"/> rewrite of the request body: sets/injects <c>model</c> and strips
+    ///     the top-level <c>context_management</c> field (Copilot's backend rejects it outright with
+    ///     <c>"context_management: Extra inputs are not permitted"</c>, so it can never be forwarded).
+    ///     Never deserializes to a typed DTO, so <c>cache_control</c>, <c>thinking</c>, <c>system</c>
+    ///     blocks, and every other unknown field are preserved verbatim.
     /// </summary>
     /// <returns>True on success; false when the body is missing, not JSON, or not a JSON object.</returns>
     public static bool TryRewriteModel(byte[] body, string model, out byte[] rewritten, out string? incomingModel)
@@ -592,6 +596,7 @@ public static class ProxyModelResolver
         }
 
         obj["model"] = model;
+        _ = obj.Remove("context_management");
         rewritten = JsonSerializer.SerializeToUtf8Bytes(obj);
         return true;
     }
@@ -861,7 +866,14 @@ internal static class ProxyHttp
         }
     }
 
-    /// <summary>Copies the positive request-header allowlist (anthropic-version + anthropic-beta) only.</summary>
+    /// <summary>
+    ///     Copies the positive request-header allowlist: only <c>anthropic-version</c> is forwarded (a
+    ///     default is injected when absent). <c>anthropic-beta</c> is intentionally dropped, never
+    ///     forwarded — Copilot's backend rejects the whole request with a 400 if it doesn't recognize
+    ///     every single value in the header (e.g. Claude Code's evolving beta set routinely includes
+    ///     values Copilot hasn't caught up to), so passing it through breaks requests Copilot would
+    ///     otherwise serve fine.
+    /// </summary>
     public static void ApplyRequestHeaderAllowlist(IHeaderDictionary inbound, HttpRequestMessage upstream)
     {
         var version = inbound["anthropic-version"];
@@ -877,14 +889,6 @@ internal static class ProxyHttp
                 {
                     _ = upstream.Headers.TryAddWithoutValidation("anthropic-version", value);
                 }
-            }
-        }
-
-        foreach (var value in inbound["anthropic-beta"])
-        {
-            if (!string.IsNullOrEmpty(value))
-            {
-                _ = upstream.Headers.TryAddWithoutValidation("anthropic-beta", value);
             }
         }
     }

@@ -9,20 +9,23 @@ What it does, end to end:
 
 1. Accepts `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, and
    `GET /v1/models`.
-2. Rewrites **only** the JSON `model` field of the request body: if it names a model the proxy knows
-   about (see "Choosing the model" below), it passes through unchanged; otherwise it's rewritten to
-   the resolved default Copilot Claude (Opus) id. Everything else — `system` blocks, `cache_control`,
-   `thinking`, `tools`, betas, and unknown fields — is preserved verbatim (raw `JsonNode` swap, never
-   a typed DTO).
-3. Attaches Copilot auth + tracking headers using the proven `GithubCopilotProvider` transport
+2. Rewrites the JSON `model` field of the request body: if it names a model the proxy knows about
+   (see "Choosing the model" below), it passes through unchanged; otherwise it's rewritten to the
+   resolved default Copilot Claude (Opus) id. The top-level `context_management` field is stripped
+   (Copilot's backend rejects it outright — see "Known request incompatibilities" below). Everything
+   else — `system` blocks, `cache_control`, `thinking`, `tools`, and unknown fields — is preserved
+   verbatim (raw `JsonNode` swap, never a typed DTO).
+3. Drops the inbound `anthropic-beta` header entirely — it is never forwarded (see "Known request
+   incompatibilities" below).
+4. Attaches Copilot auth + tracking headers using the proven `GithubCopilotProvider` transport
    (`CopilotHttpClientFactory` / `CopilotHeadersHandler` / the CLI credential token provider).
-4. Streams the upstream Server-Sent-Events response straight back to the client as **raw bytes**
+5. Streams the upstream Server-Sent-Events response straight back to the client as **raw bytes**
    (no parsing, no buffering, incremental flush) and passes status codes and rate-limit headers
    through unchanged. If the upstream stream fails mid-flight the proxy does **not** fabricate any
    terminal frames: it returns a `502` when nothing has been sent yet, otherwise it stops and closes
    the (now incomplete) stream — the client detects the truncation from the missing `message_stop`,
    exactly as it would if the upstream connection had dropped directly.
-5. Also transparently exposes Copilot's **MCP server** on `/mcp` and `/mcp/readonly` — see
+6. Also transparently exposes Copilot's **MCP server** on `/mcp` and `/mcp/readonly` — see
    "Exposing Copilot's MCP server" below.
 
 > [!WARNING]
@@ -166,14 +169,25 @@ that in `LmStreaming.Sample` is to select (or define) a chat **mode with an empt
 list**: `ModeToolFilter.FilterBuiltInTools` returns `null` for an empty tool set
 (`Services/ModeToolFilter.cs`), which strips `AnthropicWebSearchTool` before the request is built.
 
+## Known request incompatibilities (stripped before forwarding)
+
+Copilot's backend rejects two things Claude Code routinely sends. Both are stripped unconditionally
+— the client never sees a 400 for either:
+
+- **`anthropic-beta` header.** Copilot's backend rejects the *entire* request if even one value in a
+  comma-separated `anthropic-beta` header is one it doesn't recognize (`"unsupported beta header(s):
+  <name>"`). Claude Code's beta list changes frequently and routinely includes values ahead of what
+  Copilot supports, so the header is dropped entirely rather than allowlisted value-by-value.
+- **`context_management` body field.** Copilot's backend rejects the request outright
+  (`"context_management: Extra inputs are not permitted"`) if this top-level field is present. It is
+  removed from the JSON body (alongside the `model` rewrite) before forwarding.
+
 ## Non-goals (intentionally not implemented)
 
 - **No response-body rewriting.** The response body and the SSE `message_start` event carry whatever
   model id was actually sent upstream (the passed-through id, or the resolved default when the
   request's model wasn't recognized) — never rewritten back to the client's requested id. This is
   accepted for raw-passthrough fidelity.
-- **No `anthropic-beta` allowlist filter.** Beta values are forwarded as-is; an unknown beta that
-  Copilot rejects surfaces as an upstream 400 passthrough.
 - **No 200K → 1M context fallback / model routing.** Context-length errors pass through unchanged.
 - **No refresh-on-401 / token invalidation.** A request-path token failure maps to a local
   `authentication_error`; re-authenticate out of band.
