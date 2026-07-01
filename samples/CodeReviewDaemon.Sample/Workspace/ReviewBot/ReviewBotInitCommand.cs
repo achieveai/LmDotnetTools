@@ -57,7 +57,8 @@ internal static class ReviewBotInitCommand
         var git = new GitRunner(sandbox);
         var fileSystem = new SandboxFileSystem(sandbox);
 
-        var cloneFailure = await EnsureCheckoutAsync(git, url, workdir, logger, cancellationToken)
+        var cloneFailure = await ReviewBotCheckout
+            .EnsureCheckoutAsync(git, url, workdir, logger, cancellationToken)
             .ConfigureAwait(false);
         if (cloneFailure is not null)
         {
@@ -89,41 +90,6 @@ internal static class ReviewBotInitCommand
             "ReviewBot repository is malformed. Missing: {Missing}",
             string.Join(", ", result.MissingPaths));
         return 65; // EX_DATAERR
-    }
-
-    /// <summary>
-    /// Clones the pre-created <paramref name="url"/> into <paramref name="workdir"/>, or reuses an
-    /// existing checkout. Returns <c>null</c> on success, or a classified
-    /// <see cref="CloneFailureDiagnosis"/> describing exactly why the clone failed.
-    /// </summary>
-    private static async Task<CloneFailureDiagnosis?> EnsureCheckoutAsync(
-        GitRunner git,
-        string url,
-        string workdir,
-        ILogger logger,
-        CancellationToken cancellationToken
-    )
-    {
-        var probe = await git
-            .RunAsync(["rev-parse", "--is-inside-work-tree"], workdir, cancellationToken)
-            .ConfigureAwait(false);
-        if (probe.Succeeded)
-        {
-            logger.LogInformation("Reusing existing ReviewBot checkout at {Workdir}.", workdir);
-            return null;
-        }
-
-        var clone = await git
-            .RunAsync(["clone", url, workdir], workingDirectory: null, cancellationToken)
-            .ConfigureAwait(false);
-        if (clone.Succeeded)
-        {
-            return null;
-        }
-
-        // The clone of a pre-created remote failed — classify the cause so the operator gets an
-        // actionable reason and a distinct exit code rather than a generic failure.
-        return CloneFailureClassifier.Classify(clone.ExitCode, clone.Stderr);
     }
 
     private static string? GetOption(string[] args, string name)

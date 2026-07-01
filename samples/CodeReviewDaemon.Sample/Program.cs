@@ -118,7 +118,8 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrator(
     Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
-    sp.GetRequiredService<ILogger<SandboxOrchestrator>>()));
+    sp.GetRequiredService<ILogger<SandboxOrchestrator>>(),
+    daemonOptions.Limits));
 builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
     new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
 
@@ -127,26 +128,29 @@ builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactor
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
-// Their HttpClient flows through the OperationPolicyHandler (plan §4): every outbound provider-API call
-// is classified into a SandboxOperation and a denied op is both egress-blocked AND credential-withheld,
-// so reviewing untrusted PR code can never coax the daemon into an off-scope or wrong-method request.
+// Their HttpClient flows through the OperationPolicyHandler (plan §4 / PR #121 H2): every outbound
+// provider-API call is classified into a SandboxOperation and validated against the per-run policy of
+// each ALLOW-LISTED repo (host + method + repo route), and a denied op is both egress-blocked AND
+// credential-withheld — so reviewing untrusted PR code can never coax the daemon into an off-repo,
+// off-scope, or wrong-method request.
+builder.Services.AddSingleton<PolicyEnforcedHttpClientFactory>();
 builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
-    PolicyEnforcedHttpClient(sp, "github", DaemonOperationPolicy.ForGitHub()),
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
 builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
-    PolicyEnforcedHttpClient(sp, "github", DaemonOperationPolicy.ForGitHub()),
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
 
 if (daemonOptions.EnableAdoProvider)
 {
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
-        PolicyEnforcedHttpClient(sp, "ado", DaemonOperationPolicy.ForAdo()),
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
     builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
-        PolicyEnforcedHttpClient(sp, "ado", DaemonOperationPolicy.ForAdo()),
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
@@ -195,18 +199,6 @@ app.MapControllers();
 app.Run();
 
 return 0;
-
-// Builds an HttpClient whose pipeline is OperationPolicyHandler → HttpClientHandler, so every request
-// the wrapped provider/publisher issues is classified + enforced by the daemon's OperationPolicy before
-// it can reach the network (Thread #1 / plan §4). The client is owned by the singleton that gets it.
-static HttpClient PolicyEnforcedHttpClient(IServiceProvider sp, string provider, OperationPolicy policy) =>
-    new(new OperationPolicyHandler(
-        policy,
-        provider,
-        sp.GetRequiredService<ILogger<OperationPolicyHandler>>())
-    {
-        InnerHandler = new HttpClientHandler(),
-    });
 
 /// <summary>Exposed for the route-exposure test host (WebApplicationFactory&lt;Program&gt;).</summary>
 public partial class Program;

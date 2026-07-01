@@ -47,6 +47,70 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_fetches_the_target_repo_and_diffs_the_target_checkout_not_reviewbot()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+
+        // The target repo is cloned/fetched (PR #121 H1) — the diff must come from the TARGET checkout,
+        // not the ReviewBot retention checkout that has none of the PR's commits.
+        commands.Should().Contain(
+            a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools"),
+            "the target PR repo is cloned into its own checkout");
+        commands.Should().Contain(
+            a => a.Contains("/work/target") && a.Contains("diff"),
+            "the diff is taken from the target checkout, not /work/reviewbot");
+        commands.Should().NotContain(
+            a => a.Contains("/work/reviewbot") && a.Contains("diff"),
+            "diffing the ReviewBot checkout would produce an empty/incorrect diff (the H1 bug)");
+    }
+
+    [Fact]
+    public async Task ContextReady_walks_target_submodules_under_the_per_run_policy_and_refuses_off_allowlist()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        // The target checkout declares a submodule that is NOT on the per-run allow-list (the executor
+        // passes an empty submodule allow-list by default). The walk must REFUSE it — never blanket-init
+        // untrusted submodule code — and continue to the diff (H1 selective submodule init, plan §3).
+        fixture.FileSystem.Seed(
+            "/work/target/.gitmodules",
+            "[submodule \"libs/shared\"]\n\tpath = libs/shared\n\turl = https://evil.example.com/x/shared.git\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(
+            a => a.Contains("submodule update --init"),
+            "an off-allow-list submodule must be refused, not initialized");
+        // The diff still ran (the walk continued past the denied submodule) and a context artifact landed.
+        fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind);
+    }
+
+    [Fact]
+    public async Task ContextReady_caps_an_oversized_diff_in_the_persisted_artifact()
+    {
+        var hugeDiff = new string('x', 10_000);
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { Limits = new Configuration.SandboxLimits { MaxArtifactPayloadChars = 256 } },
+            diffResult: new SandboxCommandResult(0, hugeDiff, string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var diff = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("Diff").GetString()!;
+        diff.Length.Should().BeLessThan(hugeDiff.Length, "an oversized diff must be capped before persisting (H4)");
+        diff.Should().Contain("truncated");
+    }
+
+    [Fact]
     public async Task Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
@@ -196,6 +260,50 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Posted_clones_and_validates_the_reviewbot_checkout_before_pushing()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // The ReviewBot checkout does not exist yet (rev-parse probe fails everywhere via Default scripting
+        // for /work/reviewbot), so the executor must clone it from ReviewBotRepoUrl before publishing (H3).
+        fixture.Runner.On(
+            c => string.Join(' ', c.Argv).Contains("rev-parse --is-inside-work-tree")
+                && c.WorkingDirectory == "/work/reviewbot",
+            new SandboxCommandResult(1, string.Empty, "not a git repo"));
+        // A well-formed (already-seeded) ReviewBot checkout: all required skeleton files are present.
+        SeedReviewBotSkeleton(fixture);
+        fixture.Runner.OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("clone") && a.Contains("CodeReviewBot-Workspace"),
+            "the ReviewBot remote is cloned into its checkout before pushing (H3)");
+    }
+
+    [Fact]
+    public async Task Posted_fails_fast_when_the_reviewbot_checkout_is_malformed()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // The checkout exists but the skeleton is malformed: only README.md present (PRs/, KnowledgeBase/
+        // missing). The executor must surface this rather than pushing into a corrupt repo (H3).
+        fixture.FileSystem.Seed("/work/reviewbot/README.md", "# ReviewBot");
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*malformed*");
+    }
+
+    [Fact]
     public async Task Posted_skips_reviewbot_retention_when_no_repo_is_configured()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
@@ -274,6 +382,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .Which.Should().Be("_No review content was produced._");
     }
 
+    /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
+    private static void SeedReviewBotSkeleton(Fixture fixture)
+    {
+        fixture.FileSystem.Seed("/work/reviewbot/README.md", "# ReviewBot");
+        fixture.FileSystem.Seed("/work/reviewbot/PRs/.gitkeep", string.Empty);
+        fixture.FileSystem.Seed("/work/reviewbot/KnowledgeBase/.gitkeep", string.Empty);
+        fixture.FileSystem.Seed("/work/reviewbot/KnowledgeBase/_toc.md", "# Knowledge Base");
+    }
+
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -298,6 +415,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             _repoProvider = repoProvider;
             Store = new ReviewStore(_db.ConnectionString);
             Runner = new FakeSandboxCommandRunner()
+                // A fresh sandbox: the target checkout does not exist yet, so the rev-parse probe fails
+                // and the executor clones the target repo (PR #121 H1).
+                .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
                 .OnArgvContains("diff", diffResult ?? new SandboxCommandResult(0, DiffText, string.Empty));
             FileSystem = new FakeSandboxFileSystem();
             GitHubPublisher = new FakeReviewCommentPublisher("github");

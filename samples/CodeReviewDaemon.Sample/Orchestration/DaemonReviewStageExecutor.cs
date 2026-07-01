@@ -3,7 +3,9 @@ using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -49,8 +51,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     public const string PushReviewBotOperation = "push-reviewbot";
 
-    /// <summary>The ReviewBot checkout the sandbox operates in (plan §1).</summary>
+    /// <summary>The ReviewBot retention checkout the sandbox pushes review artifacts to (plan §1).</summary>
     private const string RepoRoot = "/work/reviewbot";
+
+    /// <summary>
+    /// The TARGET PR checkout the sandbox diffs (PR #121 H1). The diff must come from the repo actually
+    /// under review — cloned/fetched here — not the ReviewBot retention checkout, which has none of the
+    /// PR's commits.
+    /// </summary>
+    private const string TargetRoot = "/work/target";
 
     /// <summary>The ReviewBot default branch artifacts are durably landed on (plan §2).</summary>
     private const string ReviewBotDefaultBranch = "main";
@@ -115,16 +124,44 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     private async Task FetchContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
-        var (_, provider) = ResolveRepo(run);
+        var (repo, provider) = ResolveRepo(run);
+        var git = new GitRunner(_commandRunner);
 
-        var command = new SandboxCommand(
-            ["git", "-C", RepoRoot, "diff", $"{run.BaseSha}...{run.HeadSha}"]);
-        var result = await _commandRunner.RunAsync(command, cancellationToken).ConfigureAwait(false);
-        if (!result.Succeeded)
+        // 1. Clone (or reuse) the TARGET repo into its own checkout (PR #121 H1). The per-run
+        // OperationPolicy scopes the fetch to exactly this repo + the ReviewBot remote; submodule init
+        // runs under it too, so an off-allow-list submodule is refused rather than fetched.
+        var policy = DaemonOperationPolicy.BuildForRun(repo, _options.ReviewBotRepoUrl);
+        var targetRemote = TargetRemoteUrl(repo, provider);
+        await EnsureTargetCheckoutAsync(git, targetRemote, run, cancellationToken).ConfigureAwait(false);
+
+        // 2. Selectively (and recursively) initialize allow-listed submodules in the target checkout.
+        var submoduleInitializer = new SubmoduleInitializer(
+            git,
+            _fileSystem,
+            policy,
+            provider,
+            _loggerFactory.CreateLogger<SubmoduleInitializer>());
+        var submoduleOutcome = await submoduleInitializer
+            .InitializeAsync(TargetRoot, GitRemoteUrl.Parse(targetRemote), cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var denied in submoduleOutcome.Denied)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
+                run.Id, denied.Path, denied.Url, denied.Reason);
+        }
+
+        // 3. Diff the TARGET checkout — base...head — and persist the bounded context artifact.
+        var diff = await git
+            .RunAsync(["-C", TargetRoot, "diff", $"{run.BaseSha}...{run.HeadSha}"], TargetRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!diff.Succeeded)
         {
             throw new InvalidOperationException(
-                $"Fetching the diff for run {run.Id} failed (exit {result.ExitCode}): {result.Stderr}");
+                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
         }
+
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -133,12 +170,53 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(
-                new ContextArtifactPayload(run.PrId, run.BaseSha, run.HeadSha, result.Stdout)),
+                new ContextArtifactPayload(run.PrId, run.BaseSha, run.HeadSha, boundedDiff)),
         });
 
         _logger.LogInformation("Run {RunId}: persisted {Kind} ({Length} char diff).",
-            run.Id, ContextArtifactKind, result.Stdout.Length);
+            run.Id, ContextArtifactKind, boundedDiff.Length);
     }
+
+    /// <summary>
+    /// Clones the target repo into <see cref="TargetRoot"/> (or reuses an existing checkout), then
+    /// fetches the PR's base + head commits so the <c>base...head</c> diff is resolvable. A failed clone
+    /// or fetch surfaces (throws) so the stage retries.
+    /// </summary>
+    private async Task EnsureTargetCheckoutAsync(
+        GitRunner git, string targetRemote, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var probe = await git
+            .RunAsync(["rev-parse", "--is-inside-work-tree"], TargetRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!probe.Succeeded)
+        {
+            var clone = await git
+                .RunAsync(["clone", targetRemote, TargetRoot], workingDirectory: null, cancellationToken)
+                .ConfigureAwait(false);
+            if (!clone.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Cloning the target repo for run {run.Id} failed (exit {clone.ExitCode}): {clone.Stderr}");
+            }
+        }
+
+        // Fetch the exact base + head commits the PR identity references (a fork/branch commit may not be
+        // reachable from the default fetch); the diff below relies on both being present.
+        var fetch = await git
+            .RunAsync(["-C", TargetRoot, "fetch", "origin", run.BaseSha, run.HeadSha], TargetRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!fetch.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the PR commits for run {run.Id} failed (exit {fetch.ExitCode}): {fetch.Stderr}");
+        }
+    }
+
+    /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider.</summary>
+    private static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
+        string.Equals(provider, "ado", StringComparison.Ordinal)
+            ? $"https://dev.azure.com/{repo.OrgOrOwner}/{repo.Project}/_git/{repo.RepoName}"
+            : $"https://github.com/{repo.OrgOrOwner}/{repo.RepoName}.git";
 
     private async Task ReviewAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -280,8 +358,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return;
         }
 
+        var git = new GitRunner(_commandRunner);
+
+        // PR #121 H3: clone (or reuse) the configured ReviewBot remote and validate its skeleton before
+        // pushing. The daemon must not assume the checkout exists/is well-formed — a missing remote gives
+        // a classified clone diagnosis, a malformed skeleton fails fast rather than pushing into a corrupt
+        // repo.
+        await EnsureReviewBotCheckoutAsync(git, run, cancellationToken).ConfigureAwait(false);
+
         var manager = new ReviewBotRepoManager(
-            new GitRunner(_commandRunner),
+            git,
             _fileSystem,
             provider,
             _loggerFactory.CreateLogger<ReviewBotRepoManager>());
@@ -323,6 +409,37 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             _logger.LogWarning(
                 "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
                 run.Id, result.ReviewBranch);
+        }
+    }
+
+    /// <summary>
+    /// Clones (or reuses) the configured ReviewBot remote into <see cref="RepoRoot"/> and validates its
+    /// skeleton before any push (PR #121 H3). A failed clone surfaces a classified diagnosis; a malformed
+    /// skeleton fails fast rather than pushing into a corrupt repo. A freshly-cloned empty repo is seeded.
+    /// </summary>
+    private async Task EnsureReviewBotCheckoutAsync(GitRunner git, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var cloneFailure = await ReviewBotCheckout
+            .EnsureCheckoutAsync(
+                git, _options.ReviewBotRepoUrl!, RepoRoot,
+                _loggerFactory.CreateLogger("reviewbot-checkout"), cancellationToken)
+            .ConfigureAwait(false);
+        if (cloneFailure is not null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: ReviewBot checkout failed ({cloneFailure.Kind}): {cloneFailure.Message}");
+        }
+
+        var initializer = new ReviewBotInitializer(
+            git, _fileSystem, _loggerFactory.CreateLogger<ReviewBotInitializer>());
+        var init = await initializer
+            .InitializeAsync(RepoRoot, ReviewBotDefaultBranch, cancellationToken)
+            .ConfigureAwait(false);
+        if (init.Outcome == ReviewBotInitOutcome.Malformed)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: ReviewBot checkout is malformed; missing required path(s): "
+                + string.Join(", ", init.MissingPaths));
         }
     }
 

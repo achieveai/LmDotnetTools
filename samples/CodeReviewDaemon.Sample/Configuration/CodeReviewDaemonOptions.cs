@@ -61,4 +61,18 @@ internal sealed class CodeReviewDaemonOptions
     /// daemon at an initialized ReviewBot repo.
     /// </summary>
     public string? ReviewBotRepoUrl { get; init; }
+
+    /// <summary>
+    /// Bounds on sandbox command output, persisted artifacts, and per-command timeout (PR #121 H4). The
+    /// defaults are conservative; an operator may tighten/loosen them via the
+    /// <c>CodeReviewDaemon:Limits</c> sub-section.
+    /// </summary>
+    public SandboxLimits Limits { get; init; } = new();
+
+    /// <summary>
+    /// Maximum number of provider pages a single poll fetches before stopping (PR #121 M5). Bounds the
+    /// work one poll cycle does when a repo has many open PRs; the next poll resumes from the advanced
+    /// cursor. Default 10.
+    /// </summary>
+    public int MaxPagesPerPoll { get; init; } = 10;
 }

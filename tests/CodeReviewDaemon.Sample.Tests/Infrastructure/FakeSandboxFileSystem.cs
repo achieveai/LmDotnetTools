@@ -15,6 +15,13 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
     /// <summary>Paths written, in write order (duplicates kept).</summary>
     public List<string> Writes { get; } = [];
 
+    /// <summary>Seeds a file's contents without recording a write (test setup convenience).</summary>
+    public FakeSandboxFileSystem Seed(string path, string content)
+    {
+        Files[path] = content;
+        return this;
+    }
+
     public Task<string?> ReadFileAsync(string path, CancellationToken cancellationToken) =>
         Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
 

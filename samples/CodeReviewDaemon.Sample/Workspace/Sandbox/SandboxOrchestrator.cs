@@ -1,4 +1,5 @@
 using System.Globalization;
+using CodeReviewDaemon.Sample.Configuration;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -32,6 +33,7 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
 
     private readonly Uri _endpoint;
     private readonly string _sessionId;
+    private readonly SandboxLimits _limits;
     private readonly ILogger<SandboxOrchestrator> _logger;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private McpClient? _client;
@@ -40,13 +42,15 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
     public SandboxOrchestrator(
         string gatewayBaseUrl,
         string sessionId,
-        ILogger<SandboxOrchestrator> logger
+        ILogger<SandboxOrchestrator> logger,
+        SandboxLimits? limits = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayBaseUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         _endpoint = new Uri($"{gatewayBaseUrl.TrimEnd('/')}/mcp");
         _sessionId = sessionId;
+        _limits = limits ?? new SandboxLimits();
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -64,15 +68,33 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
         // Group the command so the exit code is the command's own, then stamp $? via the sentinel.
         var wrapped = $"{{ {inner} ; }} ; printf '\\n{ExitMarker}%d:' \"$?\"";
 
-        var response = await client
-            .CallToolAsync(
-                ShellToolName,
-                new Dictionary<string, object?> { ["command"] = wrapped },
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        // Bound every command with a per-command timeout (PR #121 H4): a command that runs longer than
+        // the configured limit is cancelled, so untrusted PR code cannot hang the poller indefinitely.
+        // The linked source cancels on either the caller's token or the timeout.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_limits.CommandTimeout);
+
+        CallToolResult response;
+        try
+        {
+            response = await client
+                .CallToolAsync(
+                    ShellToolName,
+                    new Dictionary<string, object?> { ["command"] = wrapped },
+                    cancellationToken: timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Sandbox command exceeded the {Timeout} per-command timeout and was cancelled.",
+                _limits.CommandTimeout);
+            throw new TimeoutException(
+                $"Sandbox command exceeded the configured {_limits.CommandTimeout} timeout.");
+        }
 
         var text = ExtractText(response);
-        return ParseResult(text, response.IsError ?? false);
+        return ParseResult(text, response.IsError ?? false, _limits);
     }
 
     private async Task<McpClient> EnsureConnectedAsync(CancellationToken cancellationToken)
@@ -123,13 +145,14 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
                     .Content.OfType<TextContentBlock>()
                     .Select(block => block.Text));
 
-    private static SandboxCommandResult ParseResult(string text, bool toolFlaggedError)
+    private static SandboxCommandResult ParseResult(string text, bool toolFlaggedError, SandboxLimits limits)
     {
         var markerIndex = text.LastIndexOf(ExitMarker, StringComparison.Ordinal);
         if (markerIndex < 0)
         {
-            // No sentinel: the shell never reached the trailer (e.g. the gateway itself errored).
-            return new SandboxCommandResult(toolFlaggedError ? 1 : 0, text, string.Empty);
+            // No sentinel: the shell never reached the trailer (e.g. the gateway itself errored). Cap the
+            // captured text so an unbounded gateway error response cannot flood logs/persistence (H4).
+            return new SandboxCommandResult(toolFlaggedError ? 1 : 0, limits.CapOutput(text), string.Empty);
         }
 
         var output = text[..markerIndex].TrimEnd('\n', '\r');
@@ -142,7 +165,9 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
             exitCode = parsed;
         }
 
-        return new SandboxCommandResult(exitCode, output, string.Empty);
+        // Cap stdout before it is materialized into the result, so a command that emits megabytes of
+        // output cannot be persisted to SQLite or fed wholesale to the agent (PR #121 H4).
+        return new SandboxCommandResult(exitCode, limits.CapOutput(output), string.Empty);
     }
 
     public async ValueTask DisposeAsync()

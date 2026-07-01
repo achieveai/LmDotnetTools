@@ -78,7 +78,18 @@ internal sealed record ReviewScope(
     string ReviewBotHost,
     string ReviewBotRepoPath,
     string ApiHost,
-    IReadOnlyList<SubmoduleAllowRule> AllowedSubmodules);
+    IReadOnlyList<SubmoduleAllowRule> AllowedSubmodules)
+{
+    /// <summary>
+    /// The path prefix every provider-API request for this run must fall under (e.g.
+    /// <c>/repos/acme/widgets/</c> for GitHub, <c>/contoso/Platform/_apis/git/repositories/core/</c> for
+    /// ADO). When non-<c>null</c>, <see cref="OperationPolicy.Decide"/> validates the request's path is
+    /// under it, so a review can never coax the daemon into an <i>off-repo</i> API route with the bot
+    /// credential (PR #121 H2). When <c>null</c> only host + method are checked (the host-only seam used
+    /// where the concrete repo route is not yet known).
+    /// </summary>
+    public string? ApiRepoPathPrefix { get; init; }
+}
 
 /// <summary>
 /// Fail-closed authorization for every network operation the daemon performs while reviewing
@@ -240,7 +251,44 @@ internal sealed class OperationPolicy
                 $"{label} requires {expectedMethod}; got {request.Method}");
         }
 
+        // When the concrete repo route is known (per-run policy, PR #121 H2), the request path must fall
+        // under it — host + method alone are not enough, or a review could hit a sibling repo's API.
+        if (_scope.ApiRepoPathPrefix is { } prefix && !PathUnderApiPrefix(request.Path, prefix))
+        {
+            return PolicyDecision.Deny(
+                $"{label} path '{StripQuery(request.Path)}' is outside the run's API route '{prefix}'");
+        }
+
         return PolicyDecision.Allow($"{label} on '{_scope.ApiHost}'");
+    }
+
+    /// <summary>
+    /// True when <paramref name="requestPath"/> targets the run's own provider-API route (begins with
+    /// <paramref name="apiPrefix"/> after normalization). Rejects path traversal and a sibling whose
+    /// name merely shares the prefix.
+    /// </summary>
+    private static bool PathUnderApiPrefix(string requestPath, string apiPrefix)
+    {
+        var path = StripQuery(requestPath);
+        if (path.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var normalizedPath = PathCanonicalizer.NormalizeForComparison(path);
+        var normalizedPrefix = PathCanonicalizer.NormalizeForComparison(apiPrefix);
+        if (!normalizedPrefix.StartsWith('/'))
+        {
+            normalizedPrefix = "/" + normalizedPrefix;
+        }
+
+        // A trailing slash makes the prefix a directory boundary: '/repos/acme/widgets/' matches
+        // '/repos/acme/widgets/pulls' but not '/repos/acme/widgets-2/pulls'. The bare route itself
+        // (prefix without the trailing slash) is also a legal target.
+        var withSlash = normalizedPrefix.EndsWith('/') ? normalizedPrefix : normalizedPrefix + "/";
+        var bare = withSlash[..^1];
+        return normalizedPath.StartsWith(withSlash, StringComparison.Ordinal)
+            || string.Equals(normalizedPath, bare, StringComparison.Ordinal);
     }
 
     private static bool HostMatches(string actual, string expected) =>

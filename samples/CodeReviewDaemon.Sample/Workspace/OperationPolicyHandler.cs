@@ -58,13 +58,25 @@ internal static class OperationRequestTagging
 /// </summary>
 internal sealed class OperationPolicyHandler : DelegatingHandler
 {
-    private readonly OperationPolicy _policy;
+    private readonly IReadOnlyList<OperationPolicy> _policies;
     private readonly string _provider;
     private readonly ILogger<OperationPolicyHandler> _logger;
 
     public OperationPolicyHandler(OperationPolicy policy, string provider, ILogger<OperationPolicyHandler> logger)
+        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger)
     {
-        _policy = policy ?? throw new ArgumentNullException(nameof(policy));
+    }
+
+    /// <summary>
+    /// Enforces a set of per-repo policies (PR #121 H2): a request is allowed when <b>any</b> policy
+    /// permits it (the request matches one allow-listed repo's route), and denied only when every policy
+    /// denies it. An empty set denies everything (a daemon with no allow-listed repos issues no calls).
+    /// </summary>
+    public OperationPolicyHandler(
+        IReadOnlyList<OperationPolicy> policies, string provider, ILogger<OperationPolicyHandler> logger)
+    {
+        ArgumentNullException.ThrowIfNull(policies);
+        _policies = [.. policies];
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
         _provider = provider;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -97,20 +109,31 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             request.Method.Method,
             request.RequestUri is null ? string.Empty : request.RequestUri.PathAndQuery);
 
-        var decision = _policy.Decide(operationRequest);
-        if (!decision.IsAllowed || !_policy.ShouldInjectCredential(operationRequest))
+        // Allow when ANY allow-listed repo's policy both permits AND would inject the credential; deny
+        // only when every policy denies. Both halves of the fail-closed-both-ways guarantee are required.
+        PolicyDecision? lastDeny = null;
+        foreach (var policy in _policies)
         {
-            // Withhold the credential the moment the policy denies, then block egress.
-            request.Headers.Authorization = null;
-            _logger.LogWarning(
-                "Denied {Operation} {Method} {Uri}: {Reason}",
-                operation,
-                request.Method,
-                request.RequestUri,
-                decision.Reason);
-            throw new OperationDeniedException(operation.Value, decision.Reason);
+            var decision = policy.Decide(operationRequest);
+            if (decision.IsAllowed && policy.ShouldInjectCredential(operationRequest))
+            {
+                return base.SendAsync(request, cancellationToken);
+            }
+
+            lastDeny = decision;
         }
 
-        return base.SendAsync(request, cancellationToken);
+        // No policy permitted the request. Withhold the credential the moment it is denied, then block egress.
+        request.Headers.Authorization = null;
+        var reason = _policies.Count == 0
+            ? "no repository is allow-listed for this provider"
+            : lastDeny?.Reason ?? "denied by every per-repo policy";
+        _logger.LogWarning(
+            "Denied {Operation} {Method} {Uri}: {Reason}",
+            operation,
+            request.Method,
+            request.RequestUri,
+            reason);
+        throw new OperationDeniedException(operation.Value, reason);
     }
 }
