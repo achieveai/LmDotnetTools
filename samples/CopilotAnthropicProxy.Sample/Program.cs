@@ -128,11 +128,13 @@ catch (Exception ex) when (ex is InvalidOperationException or HttpRequestExcepti
 
 logger.LogInformation(
     "CopilotAnthropicProxy listening on http://127.0.0.1:{Port} -> {BaseUrl} (default model: {Model}, "
-        + "{Count} available)",
+        + "{Count} available; idle {IdleSeconds:0}s, keep-alive {KeepAliveSeconds:0}s)",
     config.Port,
     config.BaseUrl,
     catalog.Default,
-    catalog.Available.Count
+    catalog.Available.Count,
+    config.IdleTimeout.TotalSeconds,
+    config.KeepAliveInterval.TotalSeconds
 );
 
 // --- Pipeline ----------------------------------------------------------------
@@ -172,18 +174,21 @@ app.MapGet(
 );
 
 // POST /v1/messages and /v1/messages/count_tokens — the forward path.
-app.MapPost("/v1/messages", ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: false));
+app.MapPost(
+    "/v1/messages",
+    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, isCountTokens: false)
+);
 
 app.MapPost(
     "/v1/messages/count_tokens",
-    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, isCountTokens: true)
+    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, isCountTokens: true)
 );
 
 // /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy. Every HTTP method is routed
 // here (not just GET/POST/DELETE) so an unsupported method gets ProxyMcp's own MCP/JSON-RPC-shaped
 // 405, not the shared Anthropic-shaped fallback 404.
-app.Map("/mcp", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
-app.Map("/mcp/readonly", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout));
+app.Map("/mcp", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval));
+app.Map("/mcp/readonly", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval));
 
 // Unknown route -> Anthropic-shaped 404.
 app.MapFallback(ctx =>
@@ -208,6 +213,7 @@ internal sealed record ProxyConfig
     public required int Port { get; init; }
     public required string BaseUrl { get; init; }
     public required TimeSpan IdleTimeout { get; init; }
+    public required TimeSpan KeepAliveInterval { get; init; }
     public required bool EnableDeviceFlow { get; init; }
     public required string? ModelOverride { get; init; }
 
@@ -220,7 +226,10 @@ internal sealed record ProxyConfig
                 NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_BASE_URL"))
                 ?? CopilotOptions.DefaultBaseUrl,
             IdleTimeout = TimeSpan.FromSeconds(
-                ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS"), 120)
+                ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS"), 180)
+            ),
+            KeepAliveInterval = TimeSpan.FromSeconds(
+                ParseNonNegativeInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_KEEPALIVE_SECONDS"), 15)
             ),
             EnableDeviceFlow = ParseBool(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW")),
             ModelOverride = NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL")),
@@ -231,6 +240,12 @@ internal sealed record ProxyConfig
 
     private static int ParseInt(string? value, int fallback) =>
         int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+            ? parsed
+            : fallback;
+
+    // Keep-alive accepts 0 as an explicit "disabled" (ParseInt rejects it, treating 0 as unset).
+    private static int ParseNonNegativeInt(string? value, int fallback) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0
             ? parsed
             : fallback;
 
@@ -654,6 +669,7 @@ internal static class ProxyHttp
         HttpContext ctx,
         ProxyModelCatalog catalog,
         TimeSpan idleTimeout,
+        TimeSpan keepAliveInterval,
         bool isCountTokens
     )
     {
@@ -796,7 +812,9 @@ internal static class ProxyHttp
                 idleCts,
                 linked,
                 logger,
-                (c, status, message) => WriteAnthropicErrorAsync(c, status, "api_error", message)
+                (c, status, message) => WriteAnthropicErrorAsync(c, status, "api_error", message),
+                isSse,
+                keepAliveInterval
             );
 
             logger.LogInformation(
@@ -814,6 +832,11 @@ internal static class ProxyHttp
 
     /// <summary>
     ///     Streams the upstream body to the client with an explicit, incrementally-flushed loop.
+    ///     While an SSE upstream stays silent, a keep-alive comment is emitted downstream every
+    ///     <paramref name="keepAliveInterval" /> so the client's own read timeout does not fire mid-
+    ///     generation (Copilot can go many seconds between chunks). Keep-alives are SSE-only and never
+    ///     reset the upstream idle deadline, so a genuinely dead upstream still fails at
+    ///     <paramref name="idleTimeout" />.
     ///     <paramref name="writePreStartError" /> writes a protocol-shaped error envelope (Anthropic-JSON
     ///     vs. JSON-RPC) if the upstream fails before any bytes reached the client — shared by both the
     ///     <c>/v1/messages</c> and <c>/mcp</c> paths, which disagree on error shape.
@@ -825,7 +848,9 @@ internal static class ProxyHttp
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
         ILogger logger,
-        Func<HttpContext, int, string, Task> writePreStartError
+        Func<HttpContext, int, string, Task> writePreStartError,
+        bool isSse,
+        TimeSpan keepAliveInterval
     )
     {
         var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
@@ -848,19 +873,47 @@ internal static class ProxyHttp
                     int read;
                     try
                     {
-                        read = await upstreamStream.ReadAsync(buffer.AsMemory(0, BufferSize), linked.Token);
+                        read = await ReadWithKeepAliveAsync(
+                            ctx,
+                            upstreamStream,
+                            buffer,
+                            isSse,
+                            keepAliveInterval,
+                            linked.Token
+                        );
                     }
                     catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
                     {
+                        logger.LogDebug("Client disconnected mid-stream; ending relay.");
                         return; // Client gone — normal termination.
+                    }
+                    catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+                    {
+                        // Upstream produced nothing for the whole idle window — distinct from a client
+                        // disconnect (above) and from an upstream transport error (below). Keep-alives never
+                        // reset this deadline, so reaching it means the upstream really is stalled.
+                        logger.LogWarning(
+                            "Upstream idle timeout after {IdleSeconds:0}s with no data; ending relay.",
+                            idleTimeout.TotalSeconds
+                        );
+                        if (!ctx.Response.HasStarted)
+                        {
+                            await writePreStartError(
+                                ctx,
+                                StatusCodes.Status504GatewayTimeout,
+                                "The upstream Copilot stream produced no data before the idle timeout."
+                            );
+                        }
+
+                        return;
                     }
                     catch (Exception ex)
                     {
-                        // Mid-stream upstream failure (drop, idle timeout, decode error). Raw passthrough: never
-                        // fabricate SSE frames. If nothing has reached the client we can still return a clean
-                        // gateway error; once bytes are on the wire the status is locked, so we just stop —
-                        // closing the response without a message_stop signals an incomplete stream (exactly as a
-                        // raw upstream drop would), which the client detects without us inventing a terminal event.
+                        // Mid-stream upstream failure (drop, decode error). Raw passthrough: never fabricate
+                        // SSE frames. If nothing has reached the client we can still return a clean gateway
+                        // error; once bytes are on the wire the status is locked, so we just stop — closing
+                        // the response without a message_stop signals an incomplete stream (exactly as a raw
+                        // upstream drop would), which the client detects without us inventing a terminal event.
                         logger.LogWarning("Mid-stream upstream failure: {Reason}", ex.Message);
                         if (!ctx.Response.HasStarted)
                         {
@@ -889,6 +942,10 @@ internal static class ProxyHttp
                     catch (OperationCanceledException)
                         when (ctx.RequestAborted.IsCancellationRequested || idleCts.IsCancellationRequested)
                     {
+                        logger.LogDebug(
+                            "Downstream write cancelled ({Reason}); ending relay.",
+                            ctx.RequestAborted.IsCancellationRequested ? "client disconnect" : "idle timeout"
+                        );
                         return; // Client gone, or the idle deadline fired on a stalled client.
                     }
                 }
@@ -897,6 +954,54 @@ internal static class ProxyHttp
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// <summary>
+    ///     An SSE comment line (a line beginning with <c>:</c>). Every compliant SSE client ignores it,
+    ///     so it keeps the connection warm without surfacing as an event or corrupting raw passthrough.
+    /// </summary>
+    private static readonly byte[] SseKeepAlive = ": copilot-anthropic-proxy keep-alive\n\n"u8.ToArray();
+
+    /// <summary>
+    ///     Awaits the next upstream chunk, emitting a downstream SSE keep-alive comment every
+    ///     <paramref name="keepAliveInterval" /> while the upstream stays silent. Active only for SSE
+    ///     responses with a positive interval; otherwise it is a plain read. The keep-alive timer never
+    ///     restarts the read and never resets the upstream idle deadline — it only nudges the client so
+    ///     its read timeout does not fire during a long, quiet generation.
+    /// </summary>
+    private static async Task<int> ReadWithKeepAliveAsync(
+        HttpContext ctx,
+        Stream upstreamStream,
+        byte[] buffer,
+        bool isSse,
+        TimeSpan keepAliveInterval,
+        CancellationToken linkedToken
+    )
+    {
+        if (!isSse || keepAliveInterval <= TimeSpan.Zero)
+        {
+            return await upstreamStream.ReadAsync(buffer.AsMemory(0, BufferSize), linkedToken);
+        }
+
+        var readTask = upstreamStream.ReadAsync(buffer.AsMemory(0, BufferSize), linkedToken).AsTask();
+        while (true)
+        {
+            using var keepAliveCts = new CancellationTokenSource();
+            var completed = await Task.WhenAny(readTask, Task.Delay(keepAliveInterval, keepAliveCts.Token))
+                .ConfigureAwait(false);
+            keepAliveCts.Cancel(); // Stop the loser's timer (a no-op if it already finished).
+
+            if (completed == readTask)
+            {
+                return await readTask; // Observe the bytes read / propagate any read exception.
+            }
+
+            // Upstream still silent past the interval: emit an SSE comment so the client keeps receiving
+            // bytes and resets its read timeout. A comment carries no event/data, so it is invisible to the
+            // client's event stream and preserves the raw passthrough.
+            await ctx.Response.Body.WriteAsync(SseKeepAlive, linkedToken).ConfigureAwait(false);
+            await ctx.Response.Body.FlushAsync(linkedToken).ConfigureAwait(false);
         }
     }
 
@@ -1042,7 +1147,7 @@ internal static class ProxyMcp
     private static readonly string[] AllowedMethods = ["GET", "POST", "DELETE"];
 
     /// <summary>Forwards GET/POST/DELETE on the MCP endpoint to Copilot and streams the response back.</summary>
-    public static async Task ForwardAsync(HttpContext ctx, TimeSpan idleTimeout)
+    public static async Task ForwardAsync(HttpContext ctx, TimeSpan idleTimeout, TimeSpan keepAliveInterval)
     {
         if (!AllowedMethods.Contains(ctx.Request.Method, StringComparer.OrdinalIgnoreCase))
         {
@@ -1155,7 +1260,17 @@ internal static class ProxyMcp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            await ProxyHttp.CopyBodyAsync(ctx, upstream, idleTimeout, idleCts, linked, logger, WriteMcpErrorAsync);
+            await ProxyHttp.CopyBodyAsync(
+                ctx,
+                upstream,
+                idleTimeout,
+                idleCts,
+                linked,
+                logger,
+                WriteMcpErrorAsync,
+                isSse,
+                keepAliveInterval
+            );
 
             logger.LogInformation(
                 "{Method} {Path} mcp-session={SessionId} upstream={Status} {Elapsed}ms",

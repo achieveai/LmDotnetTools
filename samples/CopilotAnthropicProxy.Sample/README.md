@@ -154,7 +154,8 @@ host/cross-site guard described in the warning above.
 | `COPILOT_ANTHROPIC_MODEL` | (discovered from `/models`) | Pins every request to this single Copilot model id and skips discovery entirely. Unset to discover the full `/v1/messages`-capable catalog instead (see "Choosing the model"). |
 | `COPILOT_ANTHROPIC_PORT` | `8787` | Loopback listen port. |
 | `COPILOT_ANTHROPIC_BASE_URL` | `https://api.enterprise.githubcopilot.com` | Copilot host root (for non-enterprise hosts). |
-| `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `120` | Per-request idle timeout, reset after each streamed read. The total exchange has no deadline, so long generations are not cut off. |
+| `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `180` | Per-request idle timeout, reset after each streamed upstream read. The total exchange has no deadline, so long generations are not cut off; this only fires when the upstream produces *nothing* for the whole window. |
+| `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive comment (`:` line) this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
 | `COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW` | `false` | When truthy, allow an interactive GitHub device-flow login at startup (composite provider). Off by default — the request path never blocks on device flow. |
 
 ## `web_search` caveat (LmStreaming.Sample validation)

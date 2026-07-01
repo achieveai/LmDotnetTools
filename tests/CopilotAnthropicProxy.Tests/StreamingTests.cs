@@ -97,4 +97,64 @@ public sealed class StreamingTests
         text.Should().NotContain("event: error", "raw passthrough must not fabricate an SSE error frame");
         text.Should().NotContain("message_stop", "a truncated/failed stream must not claim normal completion");
     }
+
+    [Fact]
+    public async Task Sse_keepalive_comments_are_emitted_while_the_upstream_is_silent()
+    {
+        // Upstream sends frame "a", then goes silent (blocks) until released. With a 1s keep-alive
+        // interval the proxy must inject SSE comment pings during the silence so the client keeps
+        // receiving bytes and its own read timeout never fires. The comment is not an event/data frame.
+        var gated = new GatedStream(
+            "event: a\ndata: {\"type\":\"content_block_delta\",\"i\":0}\n\n",
+            "event: b\ndata: {\"type\":\"content_block_delta\",\"i\":1}\n\n");
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.SseStream(gated)),
+            keepAliveSeconds: 1);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages") { Content = RequestBody() };
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        await using var body = await response.Content.ReadAsStreamAsync();
+
+        // Frame "a" arrives immediately; the keep-alive comment(s) follow while the gate is held closed.
+        var seen = await ReadUntilAsync(body, s => s.Contains(": copilot-anthropic-proxy keep-alive"),
+            TimeSpan.FromSeconds(15));
+        seen.Should().Contain("event: a");
+        seen.Should().Contain(": copilot-anthropic-proxy keep-alive",
+            "a silent upstream must be covered by downstream SSE keep-alive comments");
+
+        gated.Release();
+        var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        rest.Should().Contain("event: b", "real frames still flow after the keep-alives");
+    }
+
+    /// <summary>Reads the response stream, accumulating text, until <paramref name="predicate"/> holds or the
+    /// timeout elapses. Keep-alive/frame content here is ASCII, so chunk boundaries don't corrupt matching.</summary>
+    private static async Task<string> ReadUntilAsync(Stream body, Func<string, bool> predicate, TimeSpan timeout)
+    {
+        var accumulated = new StringBuilder();
+        var buffer = new byte[256];
+        using var cts = new CancellationTokenSource(timeout);
+        while (!predicate(accumulated.ToString()))
+        {
+            int read;
+            try
+            {
+                read = await body.ReadAsync(buffer, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            accumulated.Append(Encoding.UTF8.GetString(buffer, 0, read));
+        }
+
+        return accumulated.ToString();
+    }
 }

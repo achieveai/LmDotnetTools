@@ -41,11 +41,16 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     ///     Optional per-request idle timeout for the proxy (sets <c>COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS</c>);
     ///     used by the 504 test to make a stalled upstream time out quickly.
     /// </param>
+    /// <param name="keepAliveSeconds">
+    ///     Optional downstream SSE keep-alive interval (sets <c>COPILOT_ANTHROPIC_KEEPALIVE_SECONDS</c>);
+    ///     used by the keep-alive test to make pings fire quickly against a silent upstream.
+    /// </param>
     public ProxyWebAppFactory(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> upstream,
         ICopilotTokenProvider? tokenProvider = null,
         string? model = ConfiguredModel,
-        int? idleTimeoutSeconds = null
+        int? idleTimeoutSeconds = null,
+        int? keepAliveSeconds = null
     )
     {
         ArgumentNullException.ThrowIfNull(upstream);
@@ -58,6 +63,14 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             Environment.SetEnvironmentVariable(
                 "COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS",
                 idleTimeoutSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            );
+        }
+
+        if (keepAliveSeconds is not null)
+        {
+            Environment.SetEnvironmentVariable(
+                "COPILOT_ANTHROPIC_KEEPALIVE_SECONDS",
+                keepAliveSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
             );
         }
     }
@@ -90,6 +103,7 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             {
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", null);
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS", null);
+                Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_KEEPALIVE_SECONDS", null);
             }
         }
     }
