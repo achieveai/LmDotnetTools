@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import ProviderSelector from '@/components/ProviderSelector.vue';
+// Raw component source, used to assert the scoped stylesheet rules (scoped <style> is not
+// injected into the jsdom DOM by @vue/test-utils, so we verify the CSS at the source level).
+import providerSelectorSource from '@/components/ProviderSelector.vue?raw';
 import type { ProviderDescriptor } from '@/types/providers';
 
 const providers: ProviderDescriptor[] = [
@@ -67,5 +70,24 @@ describe('ProviderSelector grouping', () => {
 
     expect(wrapper.findAll('.menu-group-header')).toHaveLength(0);
     expect(wrapper.findAll('.menu-item')).toHaveLength(2);
+  });
+});
+
+describe('ProviderSelector dropdown scroll', () => {
+  // Extract the `.dropdown-menu { ... }` rule body from the scoped stylesheet source.
+  const menuRule = (() => {
+    const start = providerSelectorSource.indexOf('.dropdown-menu {');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = providerSelectorSource.indexOf('}', start);
+    return providerSelectorSource.slice(start, end);
+  })();
+
+  it('caps the dropdown height so a long list does not run off-screen', () => {
+    // max-height keeps the menu bounded; a bare `max-height` without a value would not.
+    expect(menuRule).toMatch(/max-height:\s*[^;]+;/);
+  });
+
+  it('enables vertical scrolling for overflowing content', () => {
+    expect(menuRule).toMatch(/overflow-y:\s*auto\s*;/);
   });
 });

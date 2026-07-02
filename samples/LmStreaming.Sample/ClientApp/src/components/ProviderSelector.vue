@@ -245,8 +245,12 @@ watch(
   right: 0;
   margin-top: 4px;
   min-width: 200px;
-  max-height: 320px;
+  /* Cap the height so a long (dynamically discovered) model list scrolls instead of
+     running off-screen. Viewport-relative with a fixed upper bound so it adapts to
+     short viewports too. */
+  max-height: min(60vh, 320px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: white;
   border: 1px solid #ddd;
   border-radius: 8px;

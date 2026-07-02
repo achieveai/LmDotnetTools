@@ -141,7 +141,10 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             }
 
             var group = model.Vendor == CopilotModelVendor.Anthropic ? CopilotAnthropicGroup : CopilotOpenAiGroup;
-            builder[id] = new ProviderDescriptor(id, model.DisplayName, hasCopilotToken, Group: group);
+            // Suffix "(Copilot)" so the model is identifiable as Copilot-backed even in a client that
+            // renders a flat list without the group headers.
+            var displayName = $"{model.DisplayName} (Copilot)";
+            builder[id] = new ProviderDescriptor(id, displayName, hasCopilotToken, Group: group);
         }
 
         _byId = builder.ToImmutable();

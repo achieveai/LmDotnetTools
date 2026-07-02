@@ -203,8 +203,9 @@ public class ProviderRegistryTests
         var byId = registry.ListAll().ToDictionary(p => p.Id);
 
         byId["claude-opus-4.8"].Group.Should().Be("Copilot · Anthropic");
-        byId["claude-opus-4.8"].DisplayName.Should().Be("Claude Opus 4.8");
+        byId["claude-opus-4.8"].DisplayName.Should().Be("Claude Opus 4.8 (Copilot)");
         byId["gpt-5.5"].Group.Should().Be("Copilot · OpenAI");
+        byId["gpt-5.5"].DisplayName.Should().Be("GPT-5.5 (Copilot)");
     }
 
     [Fact]
