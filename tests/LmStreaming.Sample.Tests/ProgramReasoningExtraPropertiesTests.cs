@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 
 namespace LmStreaming.Sample.Tests;
@@ -8,13 +9,17 @@ namespace LmStreaming.Sample.Tests;
 /// <summary>
 ///     Regression coverage for the provider → reasoning/thinking extra-properties wiring in Program.
 ///     This is what makes thinking blocks appear for Copilot-backed models: the Anthropic-format
-///     providers (incl. sonnet/haiku via Copilot) must get a "Thinking" budget, and the OpenAI
-///     Responses providers (gpt-5.5/gpt-5.5-mini) must get a "Reasoning" summary request. Without
-///     this test, deleting either provider-id branch would silently turn thinking back off.
+///     providers (the direct anthropic/test-anthropic providers and any discovered Copilot model on
+///     the Anthropic transport) must get a "Thinking" budget, and Copilot models on the OpenAI
+///     Responses transport must get a "Reasoning" summary request. Without this test, deleting either
+///     branch would silently turn thinking back off.
 /// </summary>
 public sealed class ProgramReasoningExtraPropertiesTests
 {
-    private static ImmutableDictionary<string, object?> Build(string normalizedProviderId)
+    private static ImmutableDictionary<string, object?> Build(
+        string normalizedProviderId,
+        CopilotModelTransport? copilotTransport = null,
+        bool copilotSupportsAdaptiveThinking = false)
     {
         var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController)
             .Assembly.GetType("Program");
@@ -24,14 +29,15 @@ public sealed class ProgramReasoningExtraPropertiesTests
             BindingFlags.NonPublic | BindingFlags.Static
         );
         method.Should().NotBeNull("Program must expose the provider→reasoning extra-properties helper");
-        return (ImmutableDictionary<string, object?>)method!.Invoke(null, [normalizedProviderId])!;
+        return (ImmutableDictionary<string, object?>)method!.Invoke(
+            null,
+            [normalizedProviderId, copilotTransport, copilotSupportsAdaptiveThinking]
+        )!;
     }
 
     [Theory]
     [InlineData("anthropic")]
     [InlineData("test-anthropic")]
-    [InlineData("sonnet")]
-    [InlineData("haiku")]
     public void Anthropic_format_providers_get_thinking_budget(string providerId)
     {
         var props = Build(providerId);
@@ -40,12 +46,30 @@ public sealed class ProgramReasoningExtraPropertiesTests
         props["Thinking"].Should().BeOfType<AnthropicThinking>();
     }
 
-    [Theory]
-    [InlineData("gpt-5.5")]
-    [InlineData("gpt-5.5-mini")]
-    public void OpenAi_responses_providers_get_reasoning_summary(string providerId)
+    [Fact]
+    public void Copilot_anthropic_transport_models_get_thinking_budget()
     {
-        var props = Build(providerId);
+        var props = Build("claude-sonnet-4.5", CopilotModelTransport.Anthropic);
+
+        props.Should().ContainKey("Thinking");
+        props["Thinking"].Should().BeOfType<AnthropicThinking>();
+    }
+
+    [Fact]
+    public void Copilot_adaptive_thinking_models_omit_classic_thinking_budget()
+    {
+        // Models advertising adaptive_thinking (e.g. claude-sonnet-5) reject thinking.type.enabled with
+        // HTTP 400, so the classic budget request must NOT be sent for them.
+        var props = Build("claude-sonnet-5", CopilotModelTransport.Anthropic, copilotSupportsAdaptiveThinking: true);
+
+        props.Should().NotContainKey("Thinking");
+        props.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Copilot_responses_transport_models_get_reasoning_summary()
+    {
+        var props = Build("gpt-5.5", CopilotModelTransport.Responses);
 
         props.Should().ContainKey("Reasoning");
         props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which.Summary.Should().Be("auto");

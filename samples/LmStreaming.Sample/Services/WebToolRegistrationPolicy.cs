@@ -17,16 +17,13 @@ internal static class WebToolRegistrationPolicy
     /// <see cref="ProviderRegistry" /> ids that have NO native web capability and therefore receive
     /// the Jina fallback tools. Plain <c>copilot</c> is intentionally excluded: it returns early on
     /// the <c>CopilotAgentLoop</c> (CLI) path before the per-conversation registry is built, so it
-    /// never reaches this seam. <c>sonnet</c>/<c>haiku</c>/<c>gpt-5.5</c>/<c>gpt-5.5-mini</c> route
-    /// through the normal middleware agent loop and so are included.
+    /// never reaches this seam. Dynamically discovered Copilot models (Anthropic/OpenAI) route through
+    /// the normal middleware agent loop and are included via the <c>isCopilotBackedModel</c> flag the
+    /// caller passes, not by literal id.
     /// </summary>
     private static readonly HashSet<string> FallbackProviderIds = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
-        "sonnet",
-        "haiku",
-        "gpt-5.5",
-        "gpt-5.5-mini",
     };
 
     /// <summary>
@@ -44,6 +41,10 @@ internal static class WebToolRegistrationPolicy
     /// (invalid configuration). When <c>null</c>, nothing is registered.</param>
     /// <param name="options">Web tools configuration (used for the API-key gate and tool construction).</param>
     /// <param name="loggerFactory">Factory used to create tool/diagnostic loggers.</param>
+    /// <param name="isCopilotBackedModel">
+    /// <c>true</c> when the provider id resolves to a dynamically discovered Copilot model (Anthropic or
+    /// OpenAI). Those models lack a native web capability and so receive the Jina fallback tools,
+    /// alongside the statically allow-listed ids in <see cref="FallbackProviderIds" />.</param>
     /// <returns>A small list of human-readable status strings describing what was registered, skipped,
     /// or disabled (for diagnostics/logging). Never contains secret values.</returns>
     public static IReadOnlyList<string> Apply(
@@ -52,7 +53,8 @@ internal static class WebToolRegistrationPolicy
         IReadOnlyList<string>? enabledTools,
         JinaWebProvider? provider,
         WebToolsOptions options,
-        ILoggerFactory loggerFactory
+        ILoggerFactory loggerFactory,
+        bool isCopilotBackedModel = false
     )
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -71,7 +73,7 @@ internal static class WebToolRegistrationPolicy
         var normalized = string.IsNullOrWhiteSpace(providerId)
             ? string.Empty
             : providerId.Trim().ToLowerInvariant();
-        if (!FallbackProviderIds.Contains(normalized))
+        if (!isCopilotBackedModel && !FallbackProviderIds.Contains(normalized))
         {
             return statuses;
         }

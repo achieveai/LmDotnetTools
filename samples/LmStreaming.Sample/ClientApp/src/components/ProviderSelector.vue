@@ -38,6 +38,44 @@ const selectedProvider = computed<ProviderDescriptor | null>(() =>
   props.providers.find((p) => p.id === props.selectedProviderId) ?? null
 );
 
+/**
+ * Renders the dropdown as ungrouped entries first (in server order) followed by one section per
+ * partition group (e.g. "Copilot · Anthropic", "Copilot · OpenAI"). Group order follows first
+ * appearance in the provider list, so the server controls partition ordering.
+ */
+interface ProviderGroup {
+  label: string | null;
+  providers: ProviderDescriptor[];
+}
+
+const groupedProviders = computed<ProviderGroup[]>(() => {
+  const ungrouped: ProviderDescriptor[] = [];
+  const groups = new Map<string, ProviderDescriptor[]>();
+
+  for (const provider of props.providers) {
+    const group = provider.group;
+    if (!group) {
+      ungrouped.push(provider);
+      continue;
+    }
+    const bucket = groups.get(group);
+    if (bucket) {
+      bucket.push(provider);
+    } else {
+      groups.set(group, [provider]);
+    }
+  }
+
+  const result: ProviderGroup[] = [];
+  if (ungrouped.length > 0) {
+    result.push({ label: null, providers: ungrouped });
+  }
+  for (const [label, providers] of groups) {
+    result.push({ label, providers });
+  }
+  return result;
+});
+
 function toggleDropdown(): void {
   if (props.disabled || props.isLoading || isLocked.value) {
     return;
@@ -115,26 +153,36 @@ watch(
       </button>
 
       <div v-if="dropdownOpen" class="dropdown-menu">
-        <button
-          v-for="provider in providers"
-          :key="provider.id"
-          class="menu-item"
-          :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
-          :data-testid="`provider-option-${provider.id}`"
-          :disabled="disabled || !provider.available"
-          :title="provider.knownLimitation ?? undefined"
-          @click="handleSelect(provider.id)"
-        >
-          <span class="item-name">{{ provider.displayName }}</span>
-          <span
-            v-if="provider.available && provider.knownLimitation"
-            class="item-warning"
-            :data-testid="`provider-warning-${provider.id}`"
-            aria-label="known limitation"
-          >⚠</span>
-          <span v-if="!provider.available" class="item-status">unavailable</span>
-          <span v-else-if="provider.id === selectedProviderId" class="check-mark">✓</span>
-        </button>
+        <template v-for="group in groupedProviders" :key="group.label ?? '__ungrouped__'">
+          <div
+            v-if="group.label"
+            class="menu-group-header"
+            :data-testid="`provider-group-${group.label}`"
+            role="presentation"
+          >
+            {{ group.label }}
+          </div>
+          <button
+            v-for="provider in group.providers"
+            :key="provider.id"
+            class="menu-item"
+            :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
+            :data-testid="`provider-option-${provider.id}`"
+            :disabled="disabled || !provider.available"
+            :title="provider.knownLimitation ?? undefined"
+            @click="handleSelect(provider.id)"
+          >
+            <span class="item-name">{{ provider.displayName }}</span>
+            <span
+              v-if="provider.available && provider.knownLimitation"
+              class="item-warning"
+              :data-testid="`provider-warning-${provider.id}`"
+              aria-label="known limitation"
+            >⚠</span>
+            <span v-if="!provider.available" class="item-status">unavailable</span>
+            <span v-else-if="provider.id === selectedProviderId" class="check-mark">✓</span>
+          </button>
+        </template>
       </div>
     </template>
   </div>
@@ -197,12 +245,17 @@ watch(
   right: 0;
   margin-top: 4px;
   min-width: 200px;
+  /* Cap the height so a long (dynamically discovered) model list scrolls instead of
+     running off-screen. Viewport-relative with a fixed upper bound so it adapts to
+     short viewports too. */
+  max-height: min(60vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: white;
   border: 1px solid #ddd;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 100;
-  overflow: hidden;
   padding: 4px 0;
 }
 
@@ -218,6 +271,25 @@ watch(
   text-align: left;
   cursor: pointer;
   transition: background 0.15s;
+}
+
+.menu-group-header {
+  position: sticky;
+  top: 0;
+  background: white;
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6c757d;
+  user-select: none;
+}
+
+.menu-group-header:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid #eee;
+  padding-top: 8px;
 }
 
 .menu-item:hover:not(:disabled) {
