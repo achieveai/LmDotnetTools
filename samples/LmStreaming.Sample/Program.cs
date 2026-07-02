@@ -694,8 +694,23 @@ try
                     // same conversation loop (no separate WorkflowSession-owned loop) — the runtime
                     // observes the loop's own message stream (see ownedResources wiring below) to
                     // correlate Agent tool-call spawns back into workflow state.
-                    workflowRuntime = new WorkflowRuntime(logger: loggerFactory.CreateLogger<WorkflowRuntime>());
-                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
+                    //
+                    // On by default, but disable-able per deployment WITHOUT a redeploy via
+                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false. This one flag gates all three behaviors as a
+                    // unit — the workflow tool surface (here), the appended controller prompt (below), and the
+                    // correlation observer (further below, which is already gated on `workflowRuntime`).
+                    var workflowEnabled = !string.Equals(
+                        Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
+                        "false",
+                        StringComparison.OrdinalIgnoreCase
+                    );
+                    if (workflowEnabled)
+                    {
+                        workflowRuntime = new WorkflowRuntime(
+                            logger: loggerFactory.CreateLogger<WorkflowRuntime>()
+                        );
+                        _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
+                    }
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header.
@@ -741,11 +756,17 @@ try
                     }
 
                     // Append last, off whatever effectiveMode currently is (default or the
-                    // degraded-sandbox notice above) so the controller prompt survives either path.
-                    effectiveMode = effectiveMode with
+                    // degraded-sandbox notice above) so the controller prompt survives either path. Gated on
+                    // the workflow runtime (i.e. WORKSPACE_AGENT_LMWORKFLOW_ENABLED) so disabling the feature
+                    // also drops the extra controller instructions from the prompt.
+                    if (workflowRuntime is not null)
                     {
-                        SystemPrompt = effectiveMode.SystemPrompt + "\n\n" + ControllerSystemPrompt.Default,
-                    };
+                        effectiveMode = effectiveMode with
+                        {
+                            SystemPrompt =
+                                effectiveMode.SystemPrompt + "\n\n" + ControllerSystemPrompt.Default,
+                        };
+                    }
                 }
 
                 // WebFetch/WebSearch fallback tools for providers without a native web capability.
@@ -903,8 +924,23 @@ try
                                     }
                                 }
                             }
-                            catch (OperationCanceledException)
+                            catch (OperationCanceledException) when (observerCts.IsCancellationRequested)
                             { /* expected on shutdown */
+                            }
+                            catch (Exception ex)
+                            {
+                                // This background task is the critical path that correlates Agent
+                                // tool-call spawns/results back into the workflow runtime. If it faults, the
+                                // agent keeps serving workflow tools but joins never settle — so surface the
+                                // first failure loudly (disposal below would otherwise swallow it).
+                                loggerFactory
+                                    .CreateLogger<WorkflowRuntime>()
+                                    .LogError(
+                                        ex,
+                                        "Workflow observer for thread {ThreadId} failed; Agent-result "
+                                            + "correlation is now disabled for this conversation",
+                                        threadId
+                                    );
                             }
                             finally
                             {
@@ -1288,9 +1324,9 @@ public partial class Program
         return CopilotAnthropicAgentFactory.Create(
             name,
             s_copilotTokenProvider.Value,
-            s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<AnthropicAgent>(),
-            timeout: CopilotResponseTimeout
+            timeout: CopilotResponseTimeout,
+            session: s_copilotSession.Value,
+            logger: loggerFactory.CreateLogger<AnthropicAgent>()
         );
     }
 

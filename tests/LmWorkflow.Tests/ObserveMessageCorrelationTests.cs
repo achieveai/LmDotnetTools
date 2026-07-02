@@ -145,4 +145,37 @@ public class ObserveMessageCorrelationTests
 
         StatusOf(runtime).Should().Be("validated", because: "correlation must not depend on the controller polling GetWorkflow first");
     }
+
+    /// <summary>
+    ///     A non-workflow Agent call (a name that matches no authored unit — the common case in a
+    ///     Workspace Agent conversation) must be handled gracefully: its streamed fragments and its result
+    ///     do not correlate, do not throw, and — critically — do not contaminate a subsequent REAL workflow
+    ///     spawn. This exercises the hardened buffer lifecycle (drop-on-parse / clear-on-any-result).
+    /// </summary>
+    [Fact]
+    public void ObserveMessage_NonWorkflowAgentCall_IsHarmless_AndDoesNotBreakLaterCorrelation()
+    {
+        var runtime = RuntimeAtAnalyze();
+
+        // An Agent spawn whose name is NOT an authored unit of the active node.
+        foreach (var fragment in AgentCallStream("tc_other", "some:other:spawn"))
+        {
+            runtime.ObserveMessage(fragment);
+        }
+
+        runtime.ObserveMessage(AgentResult("tc_other", "arbitrary non-workflow output"));
+
+        // The real workflow unit is untouched by the unrelated spawn.
+        StatusOf(runtime).Should().Be("pending");
+
+        // A genuine spawn for the authored unit still correlates and validates afterward.
+        foreach (var fragment in AgentCallStream("tc_agent", Unit))
+        {
+            runtime.ObserveMessage(fragment);
+        }
+
+        runtime.ObserveMessage(AgentResult("tc_agent", """{ "summary": "done" }"""));
+
+        StatusOf(runtime).Should().Be("validated");
+    }
 }
