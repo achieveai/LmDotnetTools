@@ -63,7 +63,14 @@ public sealed class CopilotModelsClient
             _logger?.LogInformation("Discovered {Count} routable Copilot models.", models.Count);
             return models;
         }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.Text.Json.JsonException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller-requested cancellation is cooperative — let it propagate rather than masking it
+            // as an empty catalog. A bounded startup timeout is the caller's concern (see the sample's
+            // DiscoverCopilotModels).
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException)
         {
             _logger?.LogWarning(ex, "Copilot model discovery failed; treating catalog as empty.");
             return [];

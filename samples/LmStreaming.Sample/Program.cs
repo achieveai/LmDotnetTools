@@ -1271,7 +1271,18 @@ public partial class Program
 
         var client = new CopilotModelsClient(s_copilotTokenProvider.Value, s_copilotSession.Value, logger: logger);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        return client.GetModelsAsync(cts.Token).GetAwaiter().GetResult();
+        try
+        {
+            return client.GetModelsAsync(cts.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // The bounded discovery timeout elapsed — degrade to no Copilot models rather than
+            // blocking startup. (The client propagates genuine cancellation; the sample owns the
+            // timeout-to-empty fallback.)
+            logger.LogWarning("Copilot model discovery timed out; exposing no Copilot models.");
+            return [];
+        }
     }
 
     /// <summary>
@@ -1281,9 +1292,15 @@ public partial class Program
     /// </summary>
     private static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
     {
-        return model.Transport == CopilotModelTransport.Anthropic
-            ? CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory)
-            : CreateCopilotResponsesAgent(model.DisplayName, loggerFactory);
+        return model.Transport switch
+        {
+            CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
+            CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
+            _ => throw new ProviderUnavailableException(
+                model.Id,
+                $"unsupported Copilot transport {model.Transport}"
+            ),
+        };
     }
 
     /// <summary>

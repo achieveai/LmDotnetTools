@@ -35,7 +35,7 @@ LmStreaming.Sample model list, clearly partitioned into **Anthropic** and **Open
 ### Component 2 — Sample wiring
 - `ProviderDescriptor` gains `string? Group` (null → flat render). Add `Vendor`/`RawModelId` only if needed for dispatch; prefer a separate lookup map `id → CopilotModelInfo`.
 - `ProviderRegistry` accepts injected `IReadOnlyList<CopilotModelInfo>`; builds one descriptor per model, **id = raw model id**, `Group = "Copilot · Anthropic" | "Copilot · OpenAI"`, `Available = hasCopilotToken`. Removes the 4 curated entries. Non-Copilot entries unchanged (`Group = null`).
-- Startup resolve in `Program.cs` (sync-over-async at registration, same pattern as `:796`). Token absent → empty list → no Copilot models. Token present + discovery fails → small built-in Anthropic+OpenAI fallback set so the app still runs.
+- Startup resolve in `Program.cs` (sync-over-async at registration, same pattern as `:796`). Token absent → empty list → no Copilot models. Token present + discovery fails (or the bounded startup timeout elapses) → empty list → no Copilot models; the app still boots with the direct/CLI/test providers. (No built-in fallback set is used — the accepted behavior is to leave the Copilot sections empty.)
 - Dispatch generalization: factory switch + model-id resolution look up the discovered `CopilotModelInfo` by id → `Transport` picks the factory; raw id → `GenerateReplyOptions.ModelId`. Direct (`openai`/`anthropic`) and CLI (`claude`/`codex`/`copilot`) branches unchanged.
 
 ### Component 3 — UI
@@ -55,4 +55,4 @@ LmStreaming.Sample model list, clearly partitioned into **Anthropic** and **Open
 ## Risks
 - Overlap of discovered `gpt-5.5` with a former curated id — resolved by "replace" decision (single source).
 - `Azure OpenAI` vendor drift — handled by normalization.
-- Startup network dependency — handled by graceful fallback.
+- Startup network dependency — handled by degrading to an empty Copilot catalog (bounded timeout).

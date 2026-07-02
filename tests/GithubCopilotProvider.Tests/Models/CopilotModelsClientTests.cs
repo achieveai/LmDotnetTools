@@ -80,15 +80,15 @@ public sealed class CopilotModelsClientTests
     }
 
     [Fact]
-    public async Task GetModelsAsync_returns_empty_when_cancelled()
+    public async Task GetModelsAsync_propagates_caller_requested_cancellation()
     {
+        // Caller cancellation is cooperative and must NOT be masked as an empty catalog — the
+        // caller (e.g. a bounded startup timeout) decides how to degrade.
         var handler = new FakeHttpMessageHandler((_, ct) => throw new OperationCanceledException(ct));
         var client = new CopilotModelsClient(ClientOver(handler));
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var models = await client.GetModelsAsync(cts.Token);
-
-        models.Should().BeEmpty();
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetModelsAsync(cts.Token));
     }
 }
