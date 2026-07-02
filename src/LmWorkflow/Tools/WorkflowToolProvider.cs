@@ -45,7 +45,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         yield return Descriptor(
             "SetWorkflow",
             "Author (or replace) the workflow definition and position the controller at the start node.",
-            [Param("definition", "The full workflow definition object.", ObjectSchema(), required: true)],
+            [Param("definition", "The full workflow definition object.", DefinitionSchema(), required: true)],
             HandleSetWorkflowAsync
         );
 
@@ -129,7 +129,11 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             WorkflowDefinition definition;
             try
             {
-                definition = WorkflowJson.Deserialize(definitionElement.GetRawText());
+                // Strict deserialize so a misspelled or invented field (e.g. 'tasks' for 'taskList',
+                // 'agentType' for 'subagent_type') is rejected by name instead of silently dropped —
+                // a silently-dropped task field used to yield a workflow that validated clean yet ran
+                // nothing, giving the authoring LLM no signal to correct.
+                definition = WorkflowJson.DeserializeStrict(definitionElement.GetRawText());
             }
             catch (JsonException ex)
             {
@@ -327,6 +331,116 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         };
 
     private static JsonSchemaObject ObjectSchema() => new() { Type = new("object") };
+
+    /// <summary>
+    ///     A machine-readable schema for the <c>SetWorkflow</c> <c>definition</c> parameter. It advertises
+    ///     the fields an authoring LLM most needs — <c>objective</c>, <c>nodes[]</c>, and within a
+    ///     procedural node the <c>taskList[]</c> with <c>subagent_type</c> / <c>promptTemplate</c> — so the
+    ///     model reads the field names off the tool schema instead of guessing them. The node/task shapes
+    ///     vary by <c>type</c>, so their objects keep <c>additionalProperties</c> open; the strict authoring
+    ///     deserializer (<see cref="WorkflowJson.DeserializeStrict"/>) is what actually rejects misspelled
+    ///     fields, and this schema is the reference the model uses to get them right in the first place.
+    /// </summary>
+    private static JsonSchemaObject DefinitionSchema()
+    {
+        var task = JsonSchemaObject
+            .Create("object")
+            .WithDescription("An authored sub-agent task within a procedural node.")
+            .WithProperty("id", JsonSchemaObject.String("Task id, unique within the node."), required: true)
+            .WithProperty(
+                "subagent_type",
+                JsonSchemaObject.String(
+                    "The sub-agent template to spawn (snake_case field name). "
+                        + "Passed as the Agent tool's subagent_type. Required."
+                ),
+                required: true
+            )
+            .WithProperty(
+                "promptTemplate",
+                JsonSchemaObject.String("The prompt handed to the spawned agent. Required."),
+                required: true
+            )
+            .WithProperty("label", JsonSchemaObject.String("Optional human-readable label."))
+            .WithProperty(
+                "writes",
+                JsonSchemaObject
+                    .Create("object")
+                    .WithDescription("Optional: where to write the validated task output.")
+                    .WithProperty(
+                        "to",
+                        JsonSchemaObject.String("Destination state path; must start with 'state.'."),
+                        required: true
+                    )
+                    .WithProperty(
+                        "mode",
+                        new JsonSchemaObject
+                        {
+                            Type = new("string"),
+                            Description = "Merge mode.",
+                            Enum = ["set", "append", "merge"],
+                        }
+                    )
+                    .AllowAdditionalProperties(true)
+                    .Build()
+            )
+            .AllowAdditionalProperties(true)
+            .Build();
+
+        var node = JsonSchemaObject
+            .Create("object")
+            .WithDescription("A workflow node. The fields used depend on 'type'.")
+            .WithProperty("id", JsonSchemaObject.String("Globally-unique node id."), required: true)
+            .WithProperty(
+                "type",
+                new JsonSchemaObject
+                {
+                    Type = new("string"),
+                    Description = "The node kind.",
+                    Enum = ["start", "procedural", "conditional", "terminal"],
+                },
+                required: true
+            )
+            .WithProperty("title", JsonSchemaObject.String("Human-readable node title."), required: true)
+            .WithProperty(
+                "next",
+                JsonSchemaObject.StringArray(
+                    "Target node id(s). start: exactly one; procedural: at least one."
+                )
+            )
+            .WithProperty(
+                "taskList",
+                JsonSchemaObject.Array(
+                    task,
+                    "procedural only: the authored sub-agent tasks this node runs. "
+                        + "This is the field name — NOT 'tasks'."
+                )
+            )
+            .AllowAdditionalProperties(true)
+            .Build();
+
+        return JsonSchemaObject
+            .Create("object")
+            .WithDescription(
+                "A workflow definition: an objective plus a graph of nodes. See the worked example in the "
+                    + "system prompt for the exact shape."
+            )
+            .WithProperty(
+                "objective",
+                JsonSchemaObject.String("The high-level objective the workflow pursues."),
+                required: true
+            )
+            .WithProperty(
+                "nodes",
+                JsonSchemaObject.Array(node, "The workflow nodes: one start, >=1 terminal, and the rest."),
+                required: true
+            )
+            .WithProperty(
+                "schemaVersion",
+                JsonSchemaObject.Integer("The workflow schema version (use 1).")
+            )
+            .AllowAdditionalProperties(true)
+            .Build();
+    }
 
     /// <summary>
     ///     Parses a handler's raw JSON arguments, returning a structured <c>invalid_args</c> error result

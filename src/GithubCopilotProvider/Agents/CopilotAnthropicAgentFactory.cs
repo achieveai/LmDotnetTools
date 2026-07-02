@@ -31,6 +31,13 @@ public static class CopilotAnthropicAgentFactory
     /// <param name="performanceTracker">Optional performance tracker.</param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="retryOptions">Optional retry configuration.</param>
+    /// <param name="timeout">
+    ///     Optional HTTP timeout. Because the streaming client reads with
+    ///     <see cref="System.Net.Http.HttpCompletionOption.ResponseHeadersRead"/>, this bounds the
+    ///     time-to-first-response (a dead/stuck connection), NOT the length of a healthy stream — so a
+    ///     shorter value makes an unresponsive backend surface promptly instead of hanging for the full
+    ///     default. Defaults to the shared 5-minute HTTP default.
+    /// </param>
     public static AnthropicAgent Create(
         string name,
         ICopilotTokenProvider tokenProvider,
@@ -38,7 +45,8 @@ public static class CopilotAnthropicAgentFactory
         CopilotOptions? options = null,
         IPerformanceTracker? performanceTracker = null,
         ILogger<AnthropicAgent>? logger = null,
-        RetryOptions? retryOptions = null
+        RetryOptions? retryOptions = null,
+        TimeSpan? timeout = null
     )
     {
         ArgumentNullException.ThrowIfNull(name);
@@ -54,7 +62,7 @@ public static class CopilotAnthropicAgentFactory
         var context = session ?? new CopilotSessionContext();
         var host = copilotOptions.BaseUrl.TrimEnd('/');
 
-        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, copilotOptions);
+        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, copilotOptions, timeout);
 
         // The client appends "/messages", so the base URL must carry the "/v1" prefix to hit
         // {host}/v1/messages.

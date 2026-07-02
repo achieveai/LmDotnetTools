@@ -21,6 +21,9 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
@@ -663,6 +666,7 @@ try
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
                 List<IAsyncDisposable>? ownedResources = null;
+                WorkflowRuntime? workflowRuntime = null;
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -685,6 +689,13 @@ try
                     // is independent of the sandbox, so add it here unconditionally; it stays usable
                     // even when the sandbox MCP endpoint is offline (degraded mode below).
                     _ = filteredRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
+
+                    // Let the controller LLM author and drive an LmWorkflow workflow inside this
+                    // same conversation loop (no separate WorkflowSession-owned loop) — the runtime
+                    // observes the loop's own message stream (see ownedResources wiring below) to
+                    // correlate Agent tool-call spawns back into workflow state.
+                    workflowRuntime = new WorkflowRuntime(logger: loggerFactory.CreateLogger<WorkflowRuntime>());
+                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header.
@@ -728,6 +739,13 @@ try
                                 threadId
                             );
                     }
+
+                    // Append last, off whatever effectiveMode currently is (default or the
+                    // degraded-sandbox notice above) so the controller prompt survives either path.
+                    effectiveMode = effectiveMode with
+                    {
+                        SystemPrompt = effectiveMode.SystemPrompt + "\n\n" + ControllerSystemPrompt.Default,
+                    };
                 }
 
                 // WebFetch/WebSearch fallback tools for providers without a native web capability.
@@ -858,6 +876,47 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory
                     );
+
+                    if (workflowRuntime is not null)
+                    {
+                        // Correlate sub-agent spawn results back into the workflow runtime via a
+                        // second, independent subscriber to this loop's own message stream (tool
+                        // handlers above cover the synchronous SetWorkflow/SetCurrentNode/etc. path;
+                        // this covers the async Agent-tool-call/result correlation). The first
+                        // MoveNextAsync() is primed synchronously here — before this factory returns
+                        // "agent" to the caller — so the per-subscriber channel is registered before
+                        // any SendAsync can occur on this conversation.
+                        var observerCts = new CancellationTokenSource();
+                        var enumerator = agent.SubscribeAsync(observerCts.Token)
+                            .GetAsyncEnumerator(observerCts.Token);
+                        var pendingFirstMoveNext = enumerator.MoveNextAsync();
+                        var observerTask = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                if (await pendingFirstMoveNext)
+                                {
+                                    workflowRuntime.ObserveMessage(enumerator.Current);
+                                    while (await enumerator.MoveNextAsync())
+                                    {
+                                        workflowRuntime.ObserveMessage(enumerator.Current);
+                                    }
+                                }
+                            }
+                            catch (OperationCanceledException)
+                            { /* expected on shutdown */
+                            }
+                            finally
+                            {
+                                await enumerator.DisposeAsync();
+                            }
+                        });
+                        ownedResources =
+                        [
+                            .. ownedResources ?? [],
+                            new WorkflowObserverDisposable(observerCts, observerTask),
+                        ];
+                    }
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
                 }
@@ -1130,6 +1189,28 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Cancels and awaits the background workflow-observer task on disposal, mirroring the same
+    ///     cancel→await/swallow→dispose idiom <c>MultiTurnAgentPool.AgentEntry.DisposeAsync</c>
+    ///     already uses for the agent's own run loop.
+    /// </summary>
+    private sealed class WorkflowObserverDisposable(CancellationTokenSource cts, Task observerTask)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await cts.CancelAsync();
+            try
+            {
+                await observerTask;
+            }
+            catch
+            { /* best-effort shutdown */
+            }
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>
     ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     /// </summary>
     private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
@@ -1208,9 +1289,27 @@ public partial class Program
             name,
             s_copilotTokenProvider.Value,
             s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<AnthropicAgent>()
+            logger: loggerFactory.CreateLogger<AnthropicAgent>(),
+            timeout: CopilotResponseTimeout
         );
     }
+
+    /// <summary>
+    ///     Time-to-first-response ceiling for Copilot-backed streaming agents. Because the streaming
+    ///     clients read with <c>ResponseHeadersRead</c>, this bounds how long a stuck/dead upstream
+    ///     connection blocks before it surfaces as a timeout — it does NOT cap a healthy stream's length.
+    ///     A tight-but-generous default (120s) keeps a hung backend from freezing a whole run (including a
+    ///     blocking sub-agent spawn) for the full 5-minute HTTP default. Override with
+    ///     <c>COPILOT_RESPONSE_TIMEOUT_SECONDS</c>.
+    /// </summary>
+    private static TimeSpan CopilotResponseTimeout =>
+        int.TryParse(
+            Environment.GetEnvironmentVariable("COPILOT_RESPONSE_TIMEOUT_SECONDS"),
+            out var seconds
+        )
+        && seconds > 0
+            ? TimeSpan.FromSeconds(seconds)
+            : TimeSpan.FromSeconds(120);
 
     /// <summary>
     ///     Creates an OpenAI Responses agent (GPT-5.5 / GPT-5.5 mini) routed through the GitHub Copilot

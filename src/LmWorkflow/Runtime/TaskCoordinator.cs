@@ -175,14 +175,25 @@ internal sealed class TaskCoordinator
 
     /// <summary>
     ///     Correlates an observed <c>Agent</c> tool call (by its <paramref name="toolCallId"/>) to the expected
-    ///     unit named <paramref name="name"/> and marks the task in-flight. No-ops when the name is not an
-    ///     expected unit (so the caller can pass through every <c>Agent</c> call unconditionally).
+    ///     unit named <paramref name="name"/> and marks the task in-flight. If the name is not yet a known unit
+    ///     — because the controller spawned the task WITHOUT first polling <c>GetWorkflow</c> to compose the
+    ///     active node's units — the active node's authored units are composed on demand (idempotent) and the
+    ///     lookup retried, so correlation never depends on the controller's call order. Genuinely no-ops only
+    ///     when the name still does not match an authored unit of the active node.
     /// </summary>
     public void RegisterSpawn(string toolCallId, string name)
     {
         if (!_tasksByName.TryGetValue(name, out var taskRef))
         {
-            return;
+            // The controller can issue the Agent call before any GetWorkflow/projection has composed the
+            // active node's units (observed live: SetCurrentNode -> Agent -> GetWorkflow). Compose now so a
+            // legitimate authored-task spawn still correlates; Compose is idempotent, so this cannot double
+            // up already-registered units.
+            _ = Compose();
+            if (!_tasksByName.TryGetValue(name, out taskRef))
+            {
+                return;
+            }
         }
 
         // A unit that has already validated or terminally failed is SETTLED. A controller re-issuing an Agent
