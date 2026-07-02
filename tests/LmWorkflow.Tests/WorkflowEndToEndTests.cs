@@ -109,6 +109,170 @@ public class WorkflowEndToEndTests
     }
 
     /// <summary>
+    ///     The "runs to completion even when a sub-agent fails" property that the live hang exposed as
+    ///     untested at the session level: a blocking sub-agent returns schema-INVALID output, so the runtime
+    ///     terminally fails the task (maxValidationRetries=0) and surfaces the node's onFailure route; the
+    ///     controller follows it into the failure terminal and the workflow still reaches completion. A
+    ///     workflow must not deadlock just because a delegated agent failed.
+    /// </summary>
+    [Fact]
+    public async Task BlockingAgentFailsSchemaValidation_RoutesOnFailure_AndStillCompletes()
+    {
+        // The sub-agent returns a well-formed JSON object that does NOT match the {summary} schema, so
+        // validation fails and — with maxValidationRetries=0 — the task is terminally failed.
+        var subAgentMock = new Mock<IStreamingAgent>();
+        subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                Task.FromResult(
+                    ToAsyncEnumerable(
+                        [
+                            new TextMessage
+                            {
+                                Text = """{ "not_summary": "schema-miss" }""",
+                                Role = Role.Assistant,
+                            },
+                        ]
+                    )
+                )
+            );
+
+        var controllerMock = new Mock<IStreamingAgent>();
+        var turn = 0;
+        controllerMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([NextFailureDriveMessage(ref turn)])));
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["general-purpose"] = new SubAgentTemplate
+                {
+                    Name = "general-purpose",
+                    SystemPrompt = "You are a general-purpose analysis agent.",
+                    AgentFactory = () => subAgentMock.Object,
+                },
+            },
+        };
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "Analyze the topic and finish.",
+            inputs: null,
+            definition: null,
+            subAgentOptions: subAgentOptions,
+            controllerAgent: controllerMock.Object,
+            threadId: "wf-e2e-fail-thread"
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var runtime = handle.Runtime;
+
+        // The workflow reached its FAILURE terminal — it did not deadlock on the failed task.
+        runtime.IsComplete.Should().BeTrue();
+        runtime.CurrentNodeId.Should().Be("fail");
+
+        // The task is recorded as failed (not validated, not stuck pending).
+        runtime.GetProjection(null)["tasks"]!["analyze:1:task"]!.GetValue<string>()
+            .Should()
+            .Be("failed");
+    }
+
+    /// <summary>
+    ///     Produces the controller's turn-by-turn drive for the failure path: author → route to analyze →
+    ///     read → spawn (which fails validation) → route the surfaced onFailure into the failure terminal.
+    /// </summary>
+    private static IMessage NextFailureDriveMessage(ref int turn)
+    {
+        turn++;
+        return turn switch
+        {
+            1 => ToolCall(
+                "SetWorkflow",
+                new JsonObject { ["definition"] = JsonNode.Parse(OnFailureWorkflow) },
+                "tc_setwf"
+            ),
+            2 => ToolCall(
+                "SetCurrentNode",
+                new JsonObject { ["completedNodeId"] = "start", ["nextNodeId"] = "analyze" },
+                "tc_route_analyze"
+            ),
+            3 => ToolCall("GetWorkflow", [], "tc_get"),
+            4 => ToolCall(
+                "Agent",
+                new JsonObject
+                {
+                    ["subagent_type"] = "general-purpose",
+                    ["prompt"] = "Spawn the analysis task.",
+                    ["name"] = "analyze:1:task",
+                },
+                "tc_agent"
+            ),
+            5 => ToolCall(
+                "SetCurrentNode",
+                new JsonObject { ["completedNodeId"] = "analyze", ["nextNodeId"] = "fail" },
+                "tc_route_fail"
+            ),
+            _ => new TextMessage { Text = "Workflow failed and finished.", Role = Role.Assistant },
+        };
+    }
+
+    /// <summary>
+    ///     A single-task workflow whose procedural node declares an onFailure terminal: the task validates
+    ///     against a {summary} schema with maxValidationRetries=0, so a schema-miss fails it immediately.
+    /// </summary>
+    private const string OnFailureWorkflow = """
+        {
+          "schemaVersion": 1,
+          "objective": "Analyze the topic and finish.",
+          "state": {},
+          "maxStepBudget": 50,
+          "nodes": [
+            { "id": "start", "type": "start", "title": "Start", "next": ["analyze"] },
+            {
+              "id": "analyze",
+              "type": "procedural",
+              "title": "Analyze",
+              "tasksMode": "authored",
+              "joinPolicy": { "mode": "all" },
+              "onFailure": "fail",
+              "taskList": [
+                {
+                  "id": "task",
+                  "delegate": "agent",
+                  "subagent_type": "general-purpose",
+                  "promptTemplate": "Analyze the topic.",
+                  "outputSchema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": { "summary": { "type": "string" } }
+                  },
+                  "onFailure": "fail",
+                  "maxValidationRetries": 0
+                }
+              ],
+              "next": ["done"]
+            },
+            { "id": "done", "type": "terminal", "title": "Done" },
+            { "id": "fail", "type": "terminal", "title": "Failed" }
+          ]
+        }
+        """;
+
+    /// <summary>
     ///     Produces the controller's tool call for the current turn (incremented per provider call). Each
     ///     turn issues exactly one tool call until the final plain-text turn ends the run.
     /// </summary>

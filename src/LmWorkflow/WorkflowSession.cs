@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -249,69 +248,8 @@ public static class WorkflowSession
         }
     }
 
-    /// <summary>
-    ///     Correlates the stream events that matter: an <c>Agent</c> tool call (registers the spawn by the
-    ///     runtime-surfaced unit name); its tool result (a blocking answer is validated/recorded, a background
-    ///     spawn receipt is failed fast — unsupported in V1); and an injected <c>&lt;sub-agent&gt;</c> user
-    ///     message (dormant / forward-built — see the case comment). Every other message is ignored.
-    /// </summary>
-    private static void Observe(WorkflowRuntime runtime, IMessage message)
-    {
-        switch (message)
-        {
-            case ToolCallMessage { FunctionName: "Agent", ToolCallId: { } toolCallId } call:
-                var name = TryReadSpawnName(call.FunctionArgs);
-                if (name is not null)
-                {
-                    runtime.RegisterSpawn(toolCallId, name);
-                }
-
-                break;
-
-            case ToolCallResultMessage { ToolCallId: { } resultId } result
-                when runtime.IsRegisteredSpawn(resultId):
-                runtime.ObserveSpawnResult(resultId, result.Result, result.IsError);
-                break;
-
-            // Injected <sub-agent> completion (DORMANT / forward-built in V1): MultiTurnAgentLoop does not
-            // publish injected sub-agent completions to its subscribers, so this case does not fire in V1.
-            // Even if it did, the background receipt path now fails fast (ObserveSpawnResult) and never records
-            // an agent_id correlation, so ObserveInjectedResult would find no mapping and surface the result as
-            // harmless "unmatched". Re-enabled in the follow-up that makes injected completions observable.
-            case TextMessage { Role: Role.User, Text: { } text }
-                when text.TrimStart().StartsWith("<sub-agent", StringComparison.Ordinal):
-                if (SubAgentResultParser.TryParse(text, out var agentId, out var payload, out var isError))
-                {
-                    runtime.ObserveInjectedResult(agentId, payload, isError);
-                }
-
-                break;
-
-            default:
-                break;
-        }
-    }
-
-    private static string? TryReadSpawnName(string? functionArgs)
-    {
-        if (string.IsNullOrEmpty(functionArgs))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(functionArgs);
-            return doc.RootElement.TryGetProperty("name", out var name)
-                && name.ValueKind == JsonValueKind.String
-                ? name.GetString()
-                : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
+    /// <summary>Delegates stream-event correlation to the runtime's own observer entry point.</summary>
+    private static void Observe(WorkflowRuntime runtime, IMessage message) => runtime.ObserveMessage(message);
 }
 
 /// <summary>

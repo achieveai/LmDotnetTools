@@ -24,6 +24,11 @@ public static class CopilotAnthropicAgentFactory
     /// <summary>
     ///     Creates an <see cref="AnthropicAgent"/> routed through GitHub Copilot.
     /// </summary>
+    /// <remarks>
+    ///     This is the original signature, preserved verbatim for binary compatibility: already-compiled
+    ///     SDK consumers bound to this 7-parameter method keep resolving to it. It delegates to the
+    ///     timeout-aware overload with the default (5-minute) HTTP timeout.
+    /// </remarks>
     /// <param name="name">Agent name.</param>
     /// <param name="tokenProvider">Source of the GitHub OAuth bearer token.</param>
     /// <param name="session">Optional shared tracking ids; a new context is created when omitted.</param>
@@ -34,6 +39,47 @@ public static class CopilotAnthropicAgentFactory
     public static AnthropicAgent Create(
         string name,
         ICopilotTokenProvider tokenProvider,
+        CopilotSessionContext? session = null,
+        CopilotOptions? options = null,
+        IPerformanceTracker? performanceTracker = null,
+        ILogger<AnthropicAgent>? logger = null,
+        RetryOptions? retryOptions = null
+    ) =>
+        Create(
+            name,
+            tokenProvider,
+            timeout: null,
+            session: session,
+            options: options,
+            performanceTracker: performanceTracker,
+            logger: logger,
+            retryOptions: retryOptions
+        );
+
+    /// <summary>
+    ///     Creates an <see cref="AnthropicAgent"/> routed through GitHub Copilot, with an explicit HTTP
+    ///     timeout. <paramref name="timeout"/> is required (with no default) purely so this overload can
+    ///     never be ambiguous with the binary-compatible timeout-less overload above — pass <c>null</c> for
+    ///     the default. The remaining parameters keep their defaults for caller ergonomics.
+    /// </summary>
+    /// <param name="name">Agent name.</param>
+    /// <param name="tokenProvider">Source of the GitHub OAuth bearer token.</param>
+    /// <param name="timeout">
+    ///     HTTP timeout (<c>null</c> = the shared 5-minute default). Because the streaming client reads with
+    ///     <see cref="System.Net.Http.HttpCompletionOption.ResponseHeadersRead"/>, this bounds the
+    ///     time-to-first-response (a dead/stuck connection), NOT the length of a healthy stream — so a
+    ///     shorter value makes an unresponsive backend surface promptly instead of hanging for the full
+    ///     default.
+    /// </param>
+    /// <param name="session">Optional shared tracking ids; a new context is created when omitted.</param>
+    /// <param name="options">Optional Copilot header options; defaults target the enterprise host.</param>
+    /// <param name="performanceTracker">Optional performance tracker.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="retryOptions">Optional retry configuration.</param>
+    public static AnthropicAgent Create(
+        string name,
+        ICopilotTokenProvider tokenProvider,
+        TimeSpan? timeout,
         CopilotSessionContext? session = null,
         CopilotOptions? options = null,
         IPerformanceTracker? performanceTracker = null,
@@ -54,7 +100,7 @@ public static class CopilotAnthropicAgentFactory
         var context = session ?? new CopilotSessionContext();
         var host = copilotOptions.BaseUrl.TrimEnd('/');
 
-        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, copilotOptions);
+        var httpClient = CopilotHttpClientFactory.Create(host, tokenProvider, context, copilotOptions, timeout);
 
         // The client appends "/messages", so the base URL must carry the "/v1" prefix to hit
         // {host}/v1/messages.

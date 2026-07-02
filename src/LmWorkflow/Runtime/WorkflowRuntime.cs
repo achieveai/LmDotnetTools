@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
@@ -44,6 +46,15 @@ public sealed class WorkflowRuntime
     // status/attempt/error bookkeeping are owned by the coordinator. It holds no lock of its own: the runtime
     // invokes every coordinator method while holding _lock, so all its state is mutated under the one lock.
     private readonly TaskCoordinator _coordinator;
+
+    // Per-tool-call reassembly buffer for STREAMING Agent-call args. ObserveMessage runs on the host's
+    // out-of-band observer thread (not under _lock), and a real provider delivers the Agent call's args as
+    // incremental fragments across many ToolCallUpdateMessages; this concurrent map reassembles them by
+    // tool-call id until the spawn name is parseable. Dropped as soon as the args parse, capped for a stream
+    // that never parses, and cleared on the tool result — so it cannot leak in a long-lived conversation.
+    private const int MaxSpawnArgBufferChars = 256 * 1024;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _spawnArgBuffers =
+        new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
 
@@ -411,6 +422,142 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     Correlates the stream events that matter to a run observer: an <c>Agent</c> tool call (registers
+    ///     the spawn by the runtime-surfaced unit name); its tool result (a blocking answer is
+    ///     validated/recorded, a background spawn receipt is failed fast — unsupported in V1); and an injected
+    ///     <c>&lt;sub-agent&gt;</c> user message (dormant / forward-built). Every other message is ignored.
+    ///     This is the single entry point a host wires a <c>MultiTurnAgentLoop</c>'s message stream
+    ///     into to drive workflow correlation from outside a dedicated <c>WorkflowSession</c>.
+    /// </summary>
+    public void ObserveMessage(IMessage message)
+    {
+        switch (message)
+        {
+            // A finalized Agent tool call (what ExecuteRunAsync / a mocked agent yields as one message).
+            case ToolCallMessage { FunctionName: "Agent", ToolCallId: { } toolCallId } call:
+                RegisterSpawnByName(toolCallId, call.FunctionArgs);
+                break;
+
+            // A streaming Agent tool-call update. A REAL provider publishes the Agent call to subscribers
+            // ONLY as these updates (the finalized ToolCallMessage is added to loop history but NOT published
+            // to the subscriber stream, so the sample's out-of-band observer never sees it). Critically, each
+            // update carries an INCREMENTAL args FRAGMENT, not the full accumulated args — verified live: the
+            // fragments arrive as {"subagent_t / ype": "gen / eral-pu / ... / "name": "work:1:task1"}. So the
+            // spawn name only becomes readable after the fragments are reassembled; accumulate per toolCallId
+            // and retry the parse on each fragment.
+            case ToolCallUpdateMessage { FunctionName: "Agent", ToolCallId: { } updateId } update:
+                AccumulateAndRegisterSpawn(updateId, update.FunctionArgs);
+                break;
+
+            case ToolCallResultMessage { ToolCallId: { } resultId } result:
+                // Any tool result SETTLES its call: drop the streamed-args buffer unconditionally, whether or
+                // not the spawn correlated. Non-workflow Agent calls, malformed streams, and names that never
+                // matched a workflow unit must not retain fragments for the life of a long conversation.
+                _ = _spawnArgBuffers.TryRemove(resultId, out _);
+                if (IsRegisteredSpawn(resultId))
+                {
+                    ObserveSpawnResult(resultId, result.Result, result.IsError);
+                }
+
+                break;
+
+            // Injected <sub-agent> completion (DORMANT / forward-built in V1): MultiTurnAgentLoop does not
+            // publish injected sub-agent completions to its subscribers, so this case does not fire in V1.
+            // Even if it did, the background receipt path now fails fast (ObserveSpawnResult) and never records
+            // an agent_id correlation, so ObserveInjectedResult would find no mapping and surface the result as
+            // harmless "unmatched". Re-enabled in the follow-up that makes injected completions observable.
+            case TextMessage { Role: Role.User, Text: { } text }
+                when text.TrimStart().StartsWith("<sub-agent", StringComparison.Ordinal):
+                if (SubAgentResultParser.TryParse(text, out var agentId, out var payload, out var isError))
+                {
+                    ObserveInjectedResult(agentId, payload, isError);
+                }
+
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    ///     Reads the spawn <c>name</c> from a FINALIZED Agent tool call's complete args and registers the
+    ///     correlation. No-ops when the args do not name a known unit.
+    /// </summary>
+    private void RegisterSpawnByName(string toolCallId, string? functionArgs)
+    {
+        var name = TryReadSpawnName(functionArgs);
+        if (name is not null)
+        {
+            RegisterSpawn(toolCallId, name);
+        }
+    }
+
+    /// <summary>
+    ///     Appends a streaming Agent-call args fragment to this tool call's buffer and, once the accumulated
+    ///     buffer parses as JSON carrying a <c>name</c>, registers the spawn. Fragments arrive as raw byte
+    ///     slices of the args JSON (e.g. <c>{"subagent_t</c> then <c>ype": "gen</c> …), so no single fragment
+    ///     is parseable — only the reassembled buffer is. Idempotent: <see cref="RegisterSpawn"/> keys on
+    ///     tool-call id, so repeated parses after the name first appears are harmless.
+    /// </summary>
+    /// <remarks>
+    ///     Buffer lifecycle is bounded so a long-lived Workspace Agent conversation cannot leak: the buffer is
+    ///     dropped the moment the args become parseable (the name is then known — later fragments are noise),
+    ///     is capped at <see cref="MaxSpawnArgBufferChars"/> for a stream that never parses, and is cleared on
+    ///     the tool result (see <see cref="ObserveMessage"/>).
+    /// </remarks>
+    private void AccumulateAndRegisterSpawn(string toolCallId, string? fragment)
+    {
+        if (string.IsNullOrEmpty(fragment))
+        {
+            return;
+        }
+
+        var buffer = _spawnArgBuffers.AddOrUpdate(
+            toolCallId,
+            fragment,
+            (_, existing) => existing + fragment
+        );
+
+        if (TryReadSpawnName(buffer) is { } name)
+        {
+            RegisterSpawn(toolCallId, name);
+            // The args are complete enough to parse — the name is known and further fragments are noise.
+            // Drop the buffer now (before the sub-agent even finishes) rather than waiting for the result.
+            _ = _spawnArgBuffers.TryRemove(toolCallId, out _);
+            return;
+        }
+
+        // A well-formed Agent call yields a parseable name well within the cap; a stream that blows past it
+        // without ever parsing is malformed or not a workflow spawn — drop it so it cannot grow unbounded.
+        if (buffer.Length > MaxSpawnArgBufferChars)
+        {
+            _ = _spawnArgBuffers.TryRemove(toolCallId, out _);
+        }
+    }
+
+    private static string? TryReadSpawnName(string? functionArgs)
+    {
+        if (string.IsNullOrEmpty(functionArgs))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(functionArgs);
+            return doc.RootElement.TryGetProperty("name", out var name)
+                && name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

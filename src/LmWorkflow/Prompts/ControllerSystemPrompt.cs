@@ -9,8 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
 /// </summary>
 public static class ControllerSystemPrompt
 {
-    /// <summary>The default controller system prompt. See the type remarks for what it covers.</summary>
-    public const string Default = """
+    private const string Body = """
         You are the CONTROLLER of a workflow. You first (optionally) AUTHOR a workflow and then DRIVE it
         to completion. Understand the division of labour clearly:
 
@@ -79,4 +78,32 @@ public static class ControllerSystemPrompt
 
         Keep going — spawn, observe, route — until you reach a terminal node and the workflow completes.
         """;
+
+    // The authoring guide is appended to the body. It names the exact, easily-mistyped field names and
+    // embeds a verbatim worked example (the same string the tests prove authors cleanly), so the model
+    // reads the shape rather than guessing it. SetWorkflow rejects unknown/misspelled fields by name.
+    private static readonly string AuthoringGuide =
+        """
+        AUTHORING A WORKFLOW (the SetWorkflow definition shape)
+        A definition is an object with an "objective" (string) and a "nodes" array. Each node has an
+        "id", a "type" (start | procedural | conditional | terminal), and a "title". Use these EXACT
+        field names — SetWorkflow rejects unknown or misspelled fields by name, so do not invent
+        synonyms:
+        - A node's onward edges go in "next" (an array of node ids). start has exactly one; procedural
+          has at least one.
+        - A procedural node's tasks go in "taskList" (NOT "tasks", "task", or "units").
+        - Each task needs "id", "subagent_type" (snake_case — NOT "agentType"/"agent_type"), and
+          "promptTemplate". Optionally "writes": { "to": "state.<path>", "mode": "set|append|merge" }.
+        - A conditional node needs "branches" (each { "when": <cond>, "to": <nodeId> }) and a non-empty
+          "else". A terminal node may carry a "resultTemplate".
+
+        Worked example — a start → procedural (one agent task) → terminal workflow. Copy this shape:
+
+        """
+        + WorkflowExamples.MinimalProcedural;
+
+    /// <summary>The default controller system prompt. See the type remarks for what it covers.</summary>
+    // Declared last: static field initializers run in textual order, so both Body and AuthoringGuide
+    // must be initialized before this composes them (otherwise AuthoringGuide would still be null here).
+    public static readonly string Default = Body + "\n\n" + AuthoringGuide;
 }
