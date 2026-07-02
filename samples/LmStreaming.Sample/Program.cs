@@ -113,13 +113,18 @@ try
     _ = builder.Services.AddControllers();
     _ = builder.Services.AddEndpointsApiExplorer();
 
-    // Add Vite services for frontend integration
+    // Add Vite services for frontend integration. The dev-server port is configurable via
+    // VITE_DEV_PORT so an isolated instance can run alongside another without colliding on 5173
+    // (the paired vite.config.ts reads the same env var). Defaults to 5173.
+    var viteDevPort = ushort.TryParse(Environment.GetEnvironmentVariable("VITE_DEV_PORT"), out var parsedVitePort)
+        ? parsedVitePort
+        : (ushort)5173;
     _ = builder.Services.AddViteServices(options =>
     {
         options.Base = "/dist/";
         options.Server.AutoRun = true;
         options.Server.PackageDirectory = "ClientApp";
-        options.Server.Port = 5173;
+        options.Server.Port = viteDevPort;
     });
 
     var providerMode = Environment.GetEnvironmentVariable("LM_PROVIDER_MODE") ?? "test";

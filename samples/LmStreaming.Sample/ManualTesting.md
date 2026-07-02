@@ -16,6 +16,22 @@ LM_PROVIDER_MODE=test-anthropic dotnet run --project samples/LmStreaming.Sample
 LM_PROVIDER_MODE=codex dotnet run --project samples/LmStreaming.Sample
 ```
 
+### Running a second, isolated instance
+
+The default instance binds the app to `:5000` and its Vite dev server to `:5173`. To run another
+instance alongside it without port collisions, override the app URL plus the Vite dev-server port
+(`VITE_DEV_PORT`) and backend origin (`VITE_BACKEND_ORIGIN`):
+
+```bash
+ASPNETCORE_ENVIRONMENT=Development LM_PROVIDER_MODE=test \
+  VITE_DEV_PORT=5273 VITE_BACKEND_ORIGIN=http://localhost:5098 \
+  dotnet run --project samples/LmStreaming.Sample --urls http://localhost:5098
+```
+
+`VITE_DEV_PORT` is read by both the ASP.NET Vite middleware and `vite.config.ts`, so the two agree
+on the dev-server port; `VITE_BACKEND_ORIGIN` points the Vite `/api` + `/ws` proxies at the paired
+backend. Both default to the standard single-instance values when unset.
+
 Provider modes:
 | Mode | Description | Server Tools |
 |------|-------------|--------------|
