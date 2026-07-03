@@ -157,6 +157,35 @@ public sealed class FileConversationStore : IConversationStore
     }
 
     /// <inheritdoc />
+    public async Task UpdateMetadataAsync(
+        string threadId,
+        Func<ThreadMetadata?, ThreadMetadata> update,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(update);
+
+        // Hold the lock across the read AND the write so a concurrent read-modify-write for the same
+        // thread cannot interleave and clobber the other's properties (the provider-vs-workspace and
+        // bindings-vs-title/preview lost-update race that dropped the persisted provider).
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var threadDir = GetThreadDirectory(threadId);
+            _ = Directory.CreateDirectory(threadDir);
+
+            var metadataFile = Path.Combine(threadDir, MetadataFileName);
+            var existing = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+            var updated = update(existing);
+            await WriteJsonFileAsync(metadataFile, updated, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
     public async Task DeleteThreadAsync(
         string threadId,
         CancellationToken ct = default)

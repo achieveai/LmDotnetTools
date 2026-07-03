@@ -9,6 +9,7 @@ interface ConversationSummary {
   lastUpdated?: number;
   provider?: string | null;
   workspace?: string | null;
+  mode?: string | null;
 }
 
 const sharedMocks = vi.hoisted(() => ({
@@ -23,6 +24,9 @@ const sharedMocks = vi.hoisted(() => ({
   selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
+  selectProvider: vi.fn(),
+  selectWorkspace: vi.fn(),
+  resumeStreamIfActive: vi.fn(async () => {}),
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -121,7 +125,36 @@ vi.mock('@/composables/useChat', async () => {
       disconnectWebSocket: sharedMocks.disconnectWebSocket,
       setThreadId: vi.fn(),
       loadMessagesFromBackend: vi.fn(async () => {}),
+      resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
       getResultForToolCall: vi.fn(() => null),
+    }),
+  };
+});
+
+vi.mock('@/composables/useProviders', async () => {
+  const { ref } = await import('vue');
+  return {
+    useProviders: () => ({
+      providers: ref([]),
+      selectedProviderId: ref<string | null>(null),
+      isLoading: ref(false),
+      loadProviders: vi.fn(async () => {}),
+      selectProvider: sharedMocks.selectProvider,
+    }),
+  };
+});
+
+vi.mock('@/composables/useWorkspaces', async () => {
+  const { ref } = await import('vue');
+  return {
+    useWorkspaces: () => ({
+      workspaces: ref([]),
+      selectedWorkspaceId: ref<string | null>('default'),
+      isLoading: ref(false),
+      loadWorkspaces: vi.fn(async () => {}),
+      selectWorkspace: sharedMocks.selectWorkspace,
+      createWorkspace: vi.fn(async () => {}),
+      updateWorkspace: vi.fn(async () => {}),
     }),
   };
 });
@@ -266,6 +299,73 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
     await flushPromises();
 
     expect(sharedMocks.switchMode).toHaveBeenCalledWith('thread-1', 'math-helper');
+    expect(sharedMocks.selectMode).not.toHaveBeenCalled();
+  });
+});
+
+// BUG 3: opening (or refreshing into) a conversation must restore its bound provider/mode/workspace
+// into the header selectors, instead of leaving the process defaults (Anthropic / General Assistant).
+// The selectors are process-local, so on a refresh they reset to defaults; handleSelectConversation
+// must reflect the conversation's persisted bindings back onto them.
+describe('ChatLayout restores bound provider/mode/workspace on conversation select (BUG 3)', () => {
+  const mountWithSidebar = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: {
+            template:
+              '<button data-test="select-conv" @click="$emit(\'select-conversation\', \'thread-2\')">select</button>',
+          },
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+          WorkspaceSelector: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    // Current thread differs from the one we select, so handleSelectConversation does not early-return.
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [
+      { threadId: 'thread-1' },
+      { threadId: 'thread-2', provider: 'openai', workspace: 'ws-1', mode: 'math-helper' },
+    ];
+    sharedMocks.selectMode.mockReset();
+    sharedMocks.selectProvider.mockReset();
+    sharedMocks.selectWorkspace.mockReset();
+    sharedMocks.resumeStreamIfActive.mockReset();
+    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+  });
+
+  it('applies the selected conversation provider/mode/workspace to the header selectors', async () => {
+    const wrapper = mountWithSidebar();
+    await flushPromises();
+
+    await wrapper.get('[data-test="select-conv"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectProvider).toHaveBeenCalledWith('openai');
+    expect(sharedMocks.selectWorkspace).toHaveBeenCalledWith('ws-1');
+    expect(sharedMocks.selectMode).toHaveBeenCalledWith('math-helper');
+  });
+
+  it('does not touch the selectors for a legacy conversation with no bindings', async () => {
+    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+
+    const wrapper = mountWithSidebar();
+    await flushPromises();
+
+    await wrapper.get('[data-test="select-conv"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectProvider).not.toHaveBeenCalled();
+    expect(sharedMocks.selectWorkspace).not.toHaveBeenCalled();
     expect(sharedMocks.selectMode).not.toHaveBeenCalled();
   });
 });

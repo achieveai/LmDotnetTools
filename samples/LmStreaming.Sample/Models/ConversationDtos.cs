@@ -23,6 +23,14 @@ public record ConversationSummary
     /// the per-conversation workspace feature.
     /// </summary>
     public string? Workspace { get; init; }
+
+    /// <summary>
+    /// Chat mode id this thread is bound to. Seeded on first agent creation and updated on a
+    /// deliberate mode switch, persisted in <c>ThreadMetadata.Properties["mode"]</c>. Lets the client
+    /// restore the conversation's bound mode after a refresh instead of falling back to the default.
+    /// Null for legacy threads predating per-conversation mode persistence.
+    /// </summary>
+    public string? Mode { get; init; }
 }
 
 /// <summary>

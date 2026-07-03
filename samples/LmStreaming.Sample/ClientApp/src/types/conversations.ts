@@ -16,6 +16,12 @@ export interface ConversationSummary {
    * legacy threads predating the per-conversation workspace feature.
    */
   workspace?: string | null;
+  /**
+   * Chat mode id this thread is bound to. Seeded on first agent creation and updated on a
+   * deliberate mode switch. Lets the client restore the conversation's bound mode after a refresh
+   * instead of falling back to the default. Null for legacy threads predating mode persistence.
+   */
+  mode?: string | null;
 }
 
 /**

@@ -13,6 +13,7 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
+    private readonly SemaphoreSlim _metadataWriteLock = new(1, 1);
     private bool _schemaInitialized;
     private bool _disposed;
 
@@ -249,6 +250,30 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
     }
 
     /// <inheritdoc />
+    public async Task UpdateMetadataAsync(
+        string threadId,
+        Func<ThreadMetadata?, ThreadMetadata> update,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(update);
+
+        // Serialize the read-modify-write so concurrent property-bag updates for the same thread cannot
+        // clobber each other (matches the other stores' atomic UpdateMetadataAsync).
+        await _metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var existing = await LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
+            var updated = update(existing);
+            await SaveMetadataAsync(threadId, updated, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = _metadataWriteLock.Release();
+        }
+    }
+
+    /// <inheritdoc />
     public async Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
@@ -325,6 +350,7 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
 
         _disposed = true;
         _schemaLock.Dispose();
+        _metadataWriteLock.Dispose();
 
         if (_ownsFactory)
         {

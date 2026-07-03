@@ -420,3 +420,169 @@ describe('useChat — resume resolves an in-flight tool call after switch-back',
     }
   });
 });
+
+// BUG 1: switching FROM an in-flight conversation TO an idle one must return the Send/Stop control to
+// idle. The switch tears down the socket and reloads the target's history, but the streaming flag
+// (isLoading) was only ever raised (to true, by resume) and never lowered on switch — so an idle target
+// kept showing the red Stop button forever. handleSelectConversation calls, in order:
+// disconnectWebSocket → clearMessages → loadMessagesFromBackend → resumeStreamIfActive; this exercises
+// that same sequence at the composable level.
+describe('useChat — streaming flag resets when switching to an idle conversation (BUG 1)', () => {
+  let captured: any[];
+
+  beforeEach(() => {
+    captured = [];
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    convMocks.loadConversationMessages.mockReset();
+    convMocks.getRunState.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => {
+      captured.push(options);
+      return {
+        socket: { readyState: WebSocket.OPEN },
+        connectionId: `ws-${captured.length}`,
+        threadId: options.threadId,
+        isConnected: true,
+      };
+    });
+    convMocks.loadConversationMessages.mockResolvedValue([]);
+  });
+
+  it('clears isLoading after switching from a streaming conversation to an idle one', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-A');
+
+    // Conversation A is actively streaming.
+    await chat.sendMessage('hi');
+    captured[0].onMessage({
+      $type: 'text_update', text: 'partial', role: 'assistant',
+      runId: 'run-A', generationId: 'gen-A', messageOrderIdx: 0,
+    });
+    expect(chat.isLoading.value, 'A is streaming').toBe(true);
+
+    // Switch to idle conversation B — mirror ChatLayout.handleSelectConversation exactly.
+    await chat.disconnectWebSocket();
+    await chat.clearMessages();
+    await chat.loadMessagesFromBackend('thread-B'); // history empty (idle)
+    convMocks.getRunState.mockResolvedValue({ threadId: 'thread-B', isInProgress: false, currentRunId: null });
+    await chat.resumeStreamIfActive('thread-B');
+
+    // B has no in-flight run ⇒ the UI must be idle (Send, not Stop).
+    expect(chat.isLoading.value, 'switching to an idle conversation must clear the streaming flag').toBe(false);
+    expect(chat.isSending.value, 'and the sending flag too').toBe(false);
+  });
+});
+
+// BUG 2: a multi-turn run mixing reasoning + tool calls + text, switched away MID-run and returned to,
+// scrambles/duplicates the thinking & text. The content turn epoch (which disambiguates turns that share
+// generationId+messageOrderIdx) is stateful and is reset at the start of loadMessagesFromBackend but NOT
+// again before resumeStreamIfActive replays the SAME already-emitted messages — so replayed reasoning/text
+// re-key with a higher turn epoch than their rehydrated twins, fail to merge, and pile up at the bottom.
+// Tool calls are immune (their key carries tool_call_id), matching the "tools fine, thinking/text messed
+// up" symptom. Proven against backend [Client] merge-key logs (run 592af00a: t1/t2/t3 → replayed t3/t4/t5).
+describe('useChat — multi-turn mixed order/dedup on resume after switch-back (BUG 2)', () => {
+  let captured: any[];
+  const RUN = 'run-1';
+  const GEN = { t1: 'gen-1', t2: 'gen-2', t3: 'gen-3' };
+
+  // Live wire shapes — NO runId (only run_assignment carries it; handleMessage stamps currentRunId).
+  const reasoningMsg = (gen: string, moi: number, r: string) =>
+    ({ $type: MessageType.Reasoning, role: 'assistant', reasoning: r, visibility: 1, generationId: gen, messageOrderIdx: moi });
+  const textMsg = (gen: string, moi: number, t: string) =>
+    ({ $type: MessageType.Text, role: 'assistant', text: t, generationId: gen, messageOrderIdx: moi });
+  const toolCallMsg = (gen: string, moi: number, id: string) =>
+    ({ $type: MessageType.ToolCall, role: 'assistant', tool_call_id: id, function_name: 'get_weather', function_args: '{}', generationId: gen, messageOrderIdx: moi });
+  const runAssignment = () => ({ $type: MessageType.RunAssignment, Assignment: { runId: RUN, generationId: GEN.t1, inputIds: [] } });
+  const runCompleted = () => ({ $type: MessageType.RunCompleted, completedRunId: RUN, hasPendingMessages: false });
+
+  // Persisted rows carry runId + identity (loadMessagesFromBackend stamps parsedMessage.runId ??= pm.runId).
+  const persist = (id: string, ts: number, msg: Record<string, unknown>, gen: string, moi: number) => ({
+    id, threadId: 'thread-1', runId: RUN, generationId: gen, messageOrderIdx: moi,
+    timestamp: ts, messageType: String(msg.$type), role: String(msg.role), messageJson: JSON.stringify(msg),
+  });
+
+  // History persisted before the switch: turn1 (R1 + 2 parallel tools) + turn2 (R2 + tool + text A2).
+  const history = () => [
+    persist('p1', 1000, reasoningMsg(GEN.t1, 0, 'R1'), GEN.t1, 0),
+    persist('p2', 1001, toolCallMsg(GEN.t1, 1, 'call_1'), GEN.t1, 1),
+    persist('p3', 1002, toolCallMsg(GEN.t1, 1, 'call_2'), GEN.t1, 1),
+    persist('p4', 1003, reasoningMsg(GEN.t2, 0, 'R2'), GEN.t2, 0),
+    persist('p5', 1004, toolCallMsg(GEN.t2, 1, 'call_3'), GEN.t2, 1),
+    persist('p6', 1005, textMsg(GEN.t2, 2, 'A2'), GEN.t2, 2),
+  ];
+
+  const reasoningsOf = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+  const textsOf = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+  const pillsForId = (chat: ReturnType<typeof useChat>, id: string) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ tool_calls?: Array<{ tool_call_id?: string }> }> }).items)
+      .filter((m) => m.tool_calls?.some((tc) => tc.tool_call_id === id));
+
+  beforeEach(() => {
+    captured = [];
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    convMocks.loadConversationMessages.mockReset();
+    convMocks.getRunState.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => {
+      captured.push(options);
+      return {
+        socket: { readyState: WebSocket.OPEN },
+        connectionId: `ws-${captured.length}`,
+        threadId: options.threadId,
+        isConnected: true,
+      };
+    });
+  });
+
+  it('does not duplicate or reorder multi-turn reasoning/text when resuming after switch-back', async () => {
+    convMocks.loadConversationMessages.mockResolvedValue(history());
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+
+    // Switch-back: rehydrate persisted history (turns 1-2).
+    await chat.loadMessagesFromBackend('thread-1');
+    expect(reasoningsOf(chat), 'reload: two distinct turn reasonings').toEqual(['R1', 'R2']);
+    expect(textsOf(chat), 'reload: one turn-2 text').toEqual(['A2']);
+
+    // Resume the in-flight run.
+    convMocks.getRunState.mockResolvedValue({ threadId: 'thread-1', isInProgress: true, currentRunId: RUN });
+    await chat.resumeStreamIfActive('thread-1');
+    const opts = captured[captured.length - 1];
+
+    // Backend replays the run from the start (assignment + turns 1-2), then streams live turn 3, completes.
+    opts.onMessage(runAssignment());
+    opts.onMessage(reasoningMsg(GEN.t1, 0, 'R1'));
+    opts.onMessage(toolCallMsg(GEN.t1, 1, 'call_1'));
+    opts.onMessage(toolCallMsg(GEN.t1, 1, 'call_2'));
+    opts.onMessage(reasoningMsg(GEN.t2, 0, 'R2'));
+    opts.onMessage(toolCallMsg(GEN.t2, 1, 'call_3'));
+    opts.onMessage(textMsg(GEN.t2, 2, 'A2'));
+    // Live turn 3 (fresh per-turn generationId).
+    opts.onMessage(reasoningMsg(GEN.t3, 0, 'R3'));
+    opts.onMessage(textMsg(GEN.t3, 1, 'A3'));
+    opts.onMessage(runCompleted());
+    opts.onDone();
+
+    // Replayed turns 1-2 must MERGE with their rehydrated twins (no duplicates), and turn 3 appends —
+    // yielding the correct chronological set, not a scrambled/duplicated pile.
+    expect(reasoningsOf(chat), 'no duplicate reasoning after resume; three turns in order').toEqual(['R1', 'R2', 'R3']);
+    expect(textsOf(chat), 'no duplicate text after resume; two texts in order').toEqual(['A2', 'A3']);
+    for (const id of ['call_1', 'call_2', 'call_3']) {
+      expect(pillsForId(chat, id), `exactly one pill for ${id}`).toHaveLength(1);
+    }
+  });
+});

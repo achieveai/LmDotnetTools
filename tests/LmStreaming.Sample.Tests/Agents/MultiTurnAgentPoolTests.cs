@@ -83,6 +83,59 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task GetOrCreateAgent_PersistsMode_OnFirstCreation()
+    {
+        // BUG 3: the conversation's chat mode was never persisted, so after a refresh the client had no
+        // bound mode to restore and fell back to the default (General Assistant). The mode must be
+        // persisted alongside provider/workspace at first creation.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        var store = new InMemoryConversationStore();
+
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-mode", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+
+        var persistedMode = await WaitForPersistedPropertyAsync(store, "thread-mode", "mode");
+        persistedMode.Should().Be(mode.Id);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAgent_PersistsProviderWorkspaceAndMode_Together_OnFirstCreation()
+    {
+        // The three bindings must ALL survive first creation. Previously provider and workspace were
+        // persisted by two concurrent read-modify-write tasks that clobbered each other (measured: the
+        // provider was frequently lost), and mode was not persisted at all.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-bindings",
+            mode,
+            requestedProviderId: "openai",
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "ws-1"
+        );
+
+        (await WaitForPersistedPropertyAsync(store, "thread-bindings", "provider")).Should().Be("openai");
+        (await WaitForPersistedPropertyAsync(store, "thread-bindings", "workspace")).Should().Be("ws-1");
+        (await WaitForPersistedPropertyAsync(store, "thread-bindings", "mode")).Should().Be(mode.Id);
+    }
+
+    [Fact]
     public async Task GetOrCreateAgent_PersistedProviderWins_OverRequested()
     {
         var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai", "anthropic"]);
@@ -602,13 +655,23 @@ public class MultiTurnAgentPoolTests
         int timeoutMs = 1000
     )
     {
+        return await WaitForPersistedPropertyAsync(store, threadId, MultiTurnAgentPool.WorkspacePropertyKey, timeoutMs);
+    }
+
+    private static async Task<string?> WaitForPersistedPropertyAsync(
+        IConversationStore store,
+        string threadId,
+        string propertyKey,
+        int timeoutMs = 1000
+    )
+    {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
             var metadata = await store.LoadMetadataAsync(threadId);
             if (
                 metadata?.Properties != null
-                && metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var raw)
+                && metadata.Properties.TryGetValue(propertyKey, out var raw)
                 && raw is string s
                 && !string.IsNullOrWhiteSpace(s)
             )

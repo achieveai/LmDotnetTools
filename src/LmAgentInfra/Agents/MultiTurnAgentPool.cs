@@ -28,6 +28,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     public const string WorkspacePropertyKey = "workspace";
 
+    /// <summary>
+    /// Property key in <see cref="ThreadMetadata.Properties"/> that stores the chat mode id chosen
+    /// for a thread. Seeded on first creation and updated on a deliberate mode switch
+    /// (<see cref="RecreateAgentWithModeAsync"/>) — unlike provider/workspace, the mode is MUTABLE.
+    /// Persisting it lets the client restore the conversation's bound mode after a refresh instead of
+    /// falling back to the default.
+    /// </summary>
+    public const string ModePropertyKey = "mode";
+
     private const string DefaultWorkspaceId = "default";
 
     private readonly ConcurrentDictionary<string, AgentEntry> _agents = new();
@@ -298,12 +307,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         if (created)
         {
-            // Persist the provider and workspace on first creation. Fire-and-forget — the WS
-            // connect path runs in a request scope, and a transient failure here only means the
-            // next reconnect will re-resolve from the registry default. We log warnings so silent
-            // persistence drift is visible.
-            _ = PersistProviderIfNeededAsync(threadId, resolvedProviderId);
-            _ = PersistWorkspaceIfNeededAsync(threadId, resolvedWorkspaceId);
+            // Persist the provider, workspace, and mode on first creation in ONE atomic metadata
+            // update. Fire-and-forget — the WS connect path runs in a request scope, and a transient
+            // failure here only means the next reconnect will re-resolve from the registry default. We
+            // log warnings so silent persistence drift is visible. A single atomic write (not two
+            // concurrent read-modify-writes) is what keeps the provider from being clobbered by the
+            // workspace write — the lost-update race that dropped the persisted provider.
+            _ = PersistThreadBindingsIfNeededAsync(threadId, resolvedProviderId, resolvedWorkspaceId, mode.Id);
         }
 
         if (
@@ -439,7 +449,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         return null;
     }
 
-    private async Task PersistWorkspaceIfNeededAsync(string threadId, string workspaceId)
+    /// <summary>
+    /// Persists a thread's provider, workspace, and mode bindings in ONE atomic metadata update on
+    /// first creation. Provider and workspace are immutable (seeded only when absent); mode is seeded
+    /// here too but stays mutable (a later <see cref="RecreateAgentWithModeAsync"/> overwrites it via
+    /// <see cref="PersistModeAsync"/>). A single read-modify-write — rather than the two concurrent
+    /// ones this replaced — is what stops the provider from being clobbered by the workspace write.
+    /// </summary>
+    private async Task PersistThreadBindingsIfNeededAsync(
+        string threadId,
+        string providerId,
+        string workspaceId,
+        string? modeId
+    )
     {
         if (_conversationStore == null)
         {
@@ -448,41 +470,105 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         try
         {
-            var existing = await _conversationStore.LoadMetadataAsync(threadId).ConfigureAwait(false);
-            var hasWorkspace = existing?.Properties?.ContainsKey(WorkspacePropertyKey) == true;
-            if (hasWorkspace)
-            {
-                return;
-            }
-
-            var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
-            properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
-
-            var updated = (
-                existing
-                ?? new ThreadMetadata
+            await _conversationStore.UpdateMetadataAsync(
+                threadId,
+                existing =>
                 {
-                    ThreadId = threadId,
-                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
+
+                    if (!properties.ContainsKey(ProviderPropertyKey))
+                    {
+                        properties = properties.SetItem(ProviderPropertyKey, providerId);
+                    }
+
+                    if (!properties.ContainsKey(WorkspacePropertyKey))
+                    {
+                        properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
+                    }
+
+                    // Seed the mode only when absent — a plain reconnect that recreates the agent must
+                    // not overwrite a mode the user deliberately switched to.
+                    if (!string.IsNullOrWhiteSpace(modeId) && !properties.ContainsKey(ModePropertyKey))
+                    {
+                        properties = properties.SetItem(ModePropertyKey, modeId);
+                    }
+
+                    return (
+                        existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        }
+                    ) with
+                    {
+                        Properties = properties,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    };
                 }
-            ) with
-            {
-                Properties = properties,
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
+            ).ConfigureAwait(false);
 
-            await _conversationStore.SaveMetadataAsync(threadId, updated).ConfigureAwait(false);
-
-            _logger.LogInformation("Persisted workspace {WorkspaceId} for thread {ThreadId}", workspaceId, threadId);
+            _logger.LogInformation(
+                "Persisted bindings for thread {ThreadId} (provider={ProviderId}, workspace={WorkspaceId}, mode={ModeId})",
+                threadId,
+                providerId,
+                workspaceId,
+                modeId
+            );
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex,
-                "Failed to persist workspace {WorkspaceId} for thread {ThreadId}",
+                "Failed to persist bindings for thread {ThreadId} (provider={ProviderId}, workspace={WorkspaceId}, mode={ModeId})",
+                threadId,
+                providerId,
                 workspaceId,
-                threadId
+                modeId
             );
+        }
+    }
+
+    /// <summary>
+    /// Overwrites the persisted mode for a thread (a deliberate, mutable mode switch). Provider and
+    /// workspace are left untouched.
+    /// </summary>
+    private async Task PersistModeAsync(string threadId, string? modeId)
+    {
+        if (_conversationStore == null || string.IsNullOrWhiteSpace(modeId))
+        {
+            return;
+        }
+
+        try
+        {
+            await _conversationStore.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
+                        .SetItem(ModePropertyKey, modeId);
+
+                    return (
+                        existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        }
+                    ) with
+                    {
+                        Properties = properties,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    };
+                }
+            ).ConfigureAwait(false);
+
+            _logger.LogInformation("Persisted mode {ModeId} for thread {ThreadId}", modeId, threadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist mode {ModeId} for thread {ThreadId}", modeId, threadId);
         }
     }
 
@@ -561,53 +647,6 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         value = extracted.Trim();
         return true;
-    }
-
-    private async Task PersistProviderIfNeededAsync(string threadId, string providerId)
-    {
-        if (_conversationStore == null)
-        {
-            return;
-        }
-
-        try
-        {
-            var existing = await _conversationStore.LoadMetadataAsync(threadId).ConfigureAwait(false);
-            var hasProvider = existing?.Properties?.ContainsKey(ProviderPropertyKey) == true;
-            if (hasProvider)
-            {
-                return;
-            }
-
-            var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
-            properties = properties.SetItem(ProviderPropertyKey, providerId);
-
-            var updated = (
-                existing
-                ?? new ThreadMetadata
-                {
-                    ThreadId = threadId,
-                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                }
-            ) with
-            {
-                Properties = properties,
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
-
-            await _conversationStore.SaveMetadataAsync(threadId, updated).ConfigureAwait(false);
-
-            _logger.LogInformation("Persisted provider {ProviderId} for thread {ThreadId}", providerId, threadId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Failed to persist provider {ProviderId} for thread {ThreadId}",
-                providerId,
-                threadId
-            );
-        }
     }
 
     /// <summary>
@@ -773,6 +812,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
             await oldEntry.DisposeAsync();
         }
+
+        // A mode switch is deliberate and mutable: overwrite the persisted mode so a later refresh
+        // restores the switched-to mode (provider/workspace stay untouched — they are immutable).
+        await PersistModeAsync(threadId, mode.Id);
 
         return entry.Agent;
     }

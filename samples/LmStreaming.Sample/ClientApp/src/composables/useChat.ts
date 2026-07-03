@@ -1092,6 +1092,19 @@ export function useChat(options: UseChatOptions = {}) {
       runId: runState.currentRunId,
     });
 
+    // Re-align the content turn epoch with the just-rehydrated history BEFORE the replay. The backend
+    // replays the in-flight run's already-emitted messages from the start, and those are the SAME
+    // messages loadMessagesFromBackend just keyed. contentTurnSeqFor is stateful and was left advanced
+    // by that reload; without resetting it here the replayed reasoning/text would re-key with a HIGHER
+    // turn epoch than their rehydrated twins (…-t1 → …-t3, …-t2 → …-t4), fail to merge, and pile up as
+    // duplicates at the bottom — scrambling multi-turn order (BUG 2). Resetting lets the replay
+    // re-derive the SAME epoch sequence as the reload (both walk the run in production order), so each
+    // replayed message merges in place with its twin. Tool calls are unaffected (their key carries
+    // tool_call_id) — which is why only thinking/text scrambled. reset() clears the (already-empty)
+    // merger accumulators so the update path re-aligns identically.
+    resetContentTurnEpoch();
+    reset();
+
     // Reflect the live run in the UI (spinner / stop button) while the replayed + live deltas arrive.
     isLoading.value = true;
     try {
@@ -1126,6 +1139,14 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
+    // Reset the streaming flags too. clearMessages is the reset point on every conversation switch
+    // (handleSelectConversation) and new-chat, and it tears down the socket below — so the previous
+    // conversation's in-flight state must not leak onto the next one. Without this, switching FROM a
+    // streaming conversation TO an idle one left isLoading=true (resume only ever RAISES it, never
+    // lowers it), so the idle conversation kept showing the red Stop button forever (BUG 1). A
+    // genuinely in-flight target re-raises isLoading via resumeStreamIfActive right after.
+    isLoading.value = false;
+    isSending.value = false;
     resetContentTurnEpoch();
     reset();
 

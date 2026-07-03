@@ -211,6 +211,12 @@ async function handleSelectConversation(threadId: string): Promise<void> {
   selectConversation(threadId);
   setThreadId(threadId);
 
+  // Restore the conversation's bound provider/mode/workspace so opening (or refreshing into) a
+  // conversation shows its actual bindings instead of the process defaults. Without this, a refresh
+  // reset the selectors to Anthropic / General Assistant even for a still-streaming conversation.
+  // Done BEFORE resumeStreamIfActive so the resumed WebSocket carries the correct mode/provider.
+  restoreBindingsFromConversation(threadId);
+
   // Load existing messages
   try {
     await loadMessagesFromBackend(threadId);
@@ -220,6 +226,26 @@ async function handleSelectConversation(threadId: string): Promise<void> {
     await resumeStreamIfActive(threadId);
   } catch (e) {
     console.error('Failed to load messages:', e);
+  }
+}
+
+/**
+ * Reflects a conversation's persisted provider/mode/workspace into the header selectors. Uses the
+ * local selectors (not the backend switch endpoints) — this only restores what the conversation is
+ * already bound to; it does not change the conversation. Unknown ids are ignored (selectProvider /
+ * selectWorkspace no-op them; an unknown mode simply leaves the current one).
+ */
+function restoreBindingsFromConversation(threadId: string): void {
+  const conversation = conversations.value.find((c) => c.threadId === threadId);
+  if (!conversation) return;
+  if (conversation.provider) {
+    selectProvider(conversation.provider);
+  }
+  if (conversation.workspace) {
+    selectWorkspace(conversation.workspace);
+  }
+  if (conversation.mode) {
+    selectMode(conversation.mode);
   }
 }
 
@@ -332,6 +358,7 @@ async function handleSend(text: string): Promise<void> {
       lastUpdated: Date.now(),
       provider: selectedProviderId.value,
       workspace: selectedWorkspaceId.value,
+      mode: currentModeId.value,
     });
 
     // Update backend metadata asynchronously
