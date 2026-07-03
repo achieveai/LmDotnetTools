@@ -19,10 +19,16 @@ public static class UiHelpers
         return page.GetByTestId("send-button");
     }
 
-    /// <summary>Stop button — only rendered while the stream is active.</summary>
+    /// <summary>Stop button — only rendered while the stream is active AND the input box is empty.</summary>
     public static ILocator StopButton(this IPage page)
     {
         return page.GetByTestId("stop-button");
+    }
+
+    /// <summary>Queue button — rendered while the stream is active AND the input box has text; queues the typed message.</summary>
+    public static ILocator QueueButton(this IPage page)
+    {
+        return page.GetByTestId("queue-button");
     }
 
     /// <summary>Clear-conversation button in the header.</summary>

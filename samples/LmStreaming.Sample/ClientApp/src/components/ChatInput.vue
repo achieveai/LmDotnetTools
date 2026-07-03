@@ -44,7 +44,15 @@ function handleKeydown(event: KeyboardEvent) {
       @keydown="handleKeydown"
     />
     <button
-      v-if="streaming"
+      v-if="streaming && inputText.trim()"
+      class="queue-button"
+      data-testid="queue-button"
+      @click="handleSubmit"
+    >
+      Queue
+    </button>
+    <button
+      v-else-if="streaming"
       class="stop-button"
       data-testid="stop-button"
       @click="handleCancel"
@@ -117,5 +125,13 @@ button:disabled {
 
 .stop-button:hover:not(:disabled) {
   background: #b02a37;
+}
+
+.queue-button {
+  background: #0d6efd;
+}
+
+.queue-button:hover:not(:disabled) {
+  background: #0b5ed7;
 }
 </style>
