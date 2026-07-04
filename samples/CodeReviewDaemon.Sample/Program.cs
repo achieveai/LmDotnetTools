@@ -79,26 +79,16 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
 
-// Webhook security layer (plan §9). Enforced by a daemon-only middleware in front of the shared
-// AuthWebhookController: HMAC over the raw body, ±5min timestamp, single-use delivery id, JSON-only and
-// max-body checks, provider allow-list. The signing secret is shared with the gateway (config or a
-// random fallback so an unconfigured daemon fails closed). The allow-list mirrors the registered
-// providers (GitHub always; ADO when enabled).
-builder.Services.AddSingleton(new WebhookVerificationLimits());
-builder.Services.AddSingleton(new WebhookSigningSecret(
-    builder.Configuration["Auth:Webhook:SigningSecret"]));
-builder.Services.AddSingleton(sp =>
-{
-    var limits = sp.GetRequiredService<WebhookVerificationLimits>();
-    var allowed = daemonOptions.EnableAdoProvider ? new[] { "github", "ado" } : ["github"];
-    return new WebhookRequestVerifier(
-        sp.GetRequiredService<WebhookSigningSecret>(),
-        allowed,
-        limits.TimestampTolerance,
-        limits.MaxBodyBytes);
-});
-builder.Services.AddSingleton(sp =>
-    new DeliveryReplayCache(sp.GetRequiredService<WebhookVerificationLimits>().ReplayWindow));
+// Gateway callback authentication. The real sandbox gateway authenticates its auth-webhook calls with a
+// single shared secret in the `Authorization` header (crates/mcp-gateway/.../proxy_policy/auth_webhook.rs
+// sends ONLY `Authorization: {gateway_auth}` — no body signature, timestamp, or delivery id). The shared
+// AuthWebhookController already verifies that secret (AuthSharedSecret, constant-time) and injects tokens
+// only toward each provider's own hosts. The plan §9 HMAC/timestamp/replay middleware was built for a
+// Stripe-style signing gateway this one is NOT: it hard-required X-Sandbox-Signature/Timestamp/Delivery-Id
+// and so rejected EVERY real callback as MissingHeaders (proven live — clone 403, "Rejected ... MissingHeaders"),
+// breaking all authenticated git (private clone, ReviewBot push). It is therefore not wired; the shared
+// secret carried in Authorization is the gateway↔webhook boundary. (WebhookVerification* + DeliveryReplayCache
+// are retained unwired for a future signing gateway.)
 
 // ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
 // The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
@@ -187,13 +177,9 @@ builder.Services
 
 var app = builder.Build();
 
-// Verify the gateway's signature/timestamp/delivery + body before MVC binds it (plan §9). Scoped to the
-// EXACT webhook route (POST + single provider segment) so it adds NO route — the daemon's single-endpoint
-// surface (AC#4) is intact and a suffix path is never HMAC-verified or allowed to consume a delivery id.
-app.UseWhen(
-    context => WebhookVerificationMiddleware.IsWebhookRoute(context.Request),
-    branch => branch.UseMiddleware<WebhookVerificationMiddleware>());
-
+// The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the
+// gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway
+// does not sign its callbacks, so requiring a signature rejected every real callback.
 app.MapControllers();
 
 app.Run();
