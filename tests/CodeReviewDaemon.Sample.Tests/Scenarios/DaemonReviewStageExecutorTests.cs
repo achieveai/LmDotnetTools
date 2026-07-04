@@ -62,10 +62,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools"),
             "the target PR repo is cloned into its own checkout");
         commands.Should().Contain(
-            a => a.Contains("/work/target") && a.Contains("diff"),
-            "the diff is taken from the target checkout, not /work/reviewbot");
+            a => a.Contains("/workspace/target") && a.Contains("diff"),
+            "the diff is taken from the target checkout, not /workspace/reviewbot");
         commands.Should().NotContain(
-            a => a.Contains("/work/reviewbot") && a.Contains("diff"),
+            a => a.Contains("/workspace/reviewbot") && a.Contains("diff"),
             "diffing the ReviewBot checkout would produce an empty/incorrect diff (the H1 bug)");
     }
 
@@ -77,7 +77,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // passes an empty submodule allow-list by default). The walk must REFUSE it — never blanket-init
         // untrusted submodule code — and continue to the diff (H1 selective submodule init, plan §3).
         fixture.FileSystem.Seed(
-            "/work/target/.gitmodules",
+            "/workspace/target/.gitmodules",
             "[submodule \"libs/shared\"]\n\tpath = libs/shared\n\turl = https://evil.example.com/x/shared.git\n");
         var run = fixture.SeedRun();
 
@@ -266,10 +266,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The ReviewBot checkout does not exist yet (rev-parse probe fails everywhere via Default scripting
-        // for /work/reviewbot), so the executor must clone it from ReviewBotRepoUrl before publishing (H3).
+        // for /workspace/reviewbot), so the executor must clone it from ReviewBotRepoUrl before publishing (H3).
         fixture.Runner.On(
             c => string.Join(' ', c.Argv).Contains("rev-parse --is-inside-work-tree")
-                && c.WorkingDirectory == "/work/reviewbot",
+                && c.WorkingDirectory == "/workspace/reviewbot",
             new SandboxCommandResult(1, string.Empty, "not a git repo"));
         // A well-formed (already-seeded) ReviewBot checkout: all required skeleton files are present.
         SeedReviewBotSkeleton(fixture);
@@ -292,7 +292,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The checkout exists but the skeleton is malformed: only README.md present (PRs/, KnowledgeBase/
         // missing). The executor must surface this rather than pushing into a corrupt repo (H3).
-        fixture.FileSystem.Seed("/work/reviewbot/README.md", "# ReviewBot");
+        fixture.FileSystem.Seed("/workspace/reviewbot/README.md", "# ReviewBot");
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -385,10 +385,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
     private static void SeedReviewBotSkeleton(Fixture fixture)
     {
-        fixture.FileSystem.Seed("/work/reviewbot/README.md", "# ReviewBot");
-        fixture.FileSystem.Seed("/work/reviewbot/PRs/.gitkeep", string.Empty);
-        fixture.FileSystem.Seed("/work/reviewbot/KnowledgeBase/.gitkeep", string.Empty);
-        fixture.FileSystem.Seed("/work/reviewbot/KnowledgeBase/_toc.md", "# Knowledge Base");
+        fixture.FileSystem.Seed("/workspace/reviewbot/README.md", "# ReviewBot");
+        fixture.FileSystem.Seed("/workspace/reviewbot/PRs/.gitkeep", string.Empty);
+        fixture.FileSystem.Seed("/workspace/reviewbot/KnowledgeBase/.gitkeep", string.Empty);
+        fixture.FileSystem.Seed("/workspace/reviewbot/KnowledgeBase/_toc.md", "# Knowledge Base");
     }
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)

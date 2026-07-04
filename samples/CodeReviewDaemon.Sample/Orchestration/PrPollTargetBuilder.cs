@@ -29,8 +29,8 @@ internal static class PrPollTargetBuilder
 
             var target = segments.Length switch
             {
-                2 => GitHubTarget(segments, mode),
-                3 => AdoTarget(segments, mode, options.EnableAdoProvider, logger),
+                2 => GitHubTarget(segments, mode, options.ReviewModelId),
+                3 => AdoTarget(segments, mode, options.ReviewModelId, options.EnableAdoProvider, logger),
                 _ => null,
             };
 
@@ -49,7 +49,7 @@ internal static class PrPollTargetBuilder
         return targets;
     }
 
-    private static PrPollTarget GitHubTarget(string[] segments, string mode) =>
+    private static PrPollTarget GitHubTarget(string[] segments, string mode, string? modelId) =>
         new()
         {
             Provider = "github",
@@ -61,9 +61,10 @@ internal static class PrPollTargetBuilder
             },
             Scope = $"{segments[0]}/{segments[1]}:open-prs",
             Mode = mode,
+            ModelId = modelId,
         };
 
-    private static PrPollTarget? AdoTarget(string[] segments, string mode, bool enableAdoProvider, ILogger logger)
+    private static PrPollTarget? AdoTarget(string[] segments, string mode, string? modelId, bool enableAdoProvider, ILogger logger)
     {
         if (!enableAdoProvider)
         {
@@ -85,6 +86,7 @@ internal static class PrPollTargetBuilder
             },
             Scope = $"{segments[0]}/{segments[1]}/{segments[2]}:active-prs",
             Mode = mode,
+            ModelId = modelId,
         };
     }
 }

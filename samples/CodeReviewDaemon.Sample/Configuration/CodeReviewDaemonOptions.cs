@@ -53,6 +53,31 @@ internal sealed class CodeReviewDaemonOptions
     public string? DatabasePath { get; init; }
 
     /// <summary>
+    /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
+    /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
+    /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
+    /// (B) variant keeps its own bounded model id and is unaffected by this knob.
+    /// </summary>
+    public string ReviewModelId { get; init; } = "claude-sonnet-5";
+
+    /// <summary>
+    /// Max output tokens for a review turn. Copilot's adaptive Claude models emit reasoning before the
+    /// answer, and that reasoning counts against the token budget — the provider default (4096) is easily
+    /// exhausted by reasoning over a large diff, leaving no room for the review text (an empty review).
+    /// The generous default gives both the reasoning and the answer room. It is a cap, not a target, so a
+    /// single value suits the review, judge, and knowledge agents alike.
+    /// </summary>
+    public int ReviewMaxTokens { get; init; } = 16000;
+
+    /// <summary>
+    /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
+    /// <c>low</c> / <c>medium</c> / <c>high</c>). GitHub Copilot's adaptive Claude models reason before
+    /// answering and, left uncapped, spend the whole token budget reasoning over a large diff and emit no
+    /// review text. A low effort keeps reasoning short so the answer lands. Default <c>low</c>.
+    /// </summary>
+    public string ReviewReasoningEffort { get; init; } = "low";
+
+    /// <summary>
     /// Remote URL of the ReviewBot workspace repository (seeded once via <c>reviewbot init</c>). When set,
     /// a completed primary review's artifacts (<c>PRs/...</c> + the regenerated <c>KnowledgeBase/...</c>)
     /// are durably persisted onto its default branch via the one-commit retention sequence (AC#6). When

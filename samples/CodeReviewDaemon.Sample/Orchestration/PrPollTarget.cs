@@ -21,4 +21,7 @@ internal sealed record PrPollTarget
     public string ReviewKind { get; init; } = "full";
 
     public string VariantId { get; init; } = "primary";
+
+    /// <summary>Model id stamped onto runs discovered for this target (the primary review's model).</summary>
+    public string? ModelId { get; init; }
 }

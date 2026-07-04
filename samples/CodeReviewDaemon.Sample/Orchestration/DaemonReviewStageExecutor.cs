@@ -52,14 +52,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     public const string PushReviewBotOperation = "push-reviewbot";
 
     /// <summary>The ReviewBot retention checkout the sandbox pushes review artifacts to (plan §1).</summary>
-    private const string RepoRoot = "/work/reviewbot";
+    private const string RepoRoot = "/workspace/reviewbot";
 
     /// <summary>
     /// The TARGET PR checkout the sandbox diffs (PR #121 H1). The diff must come from the repo actually
     /// under review — cloned/fetched here — not the ReviewBot retention checkout, which has none of the
-    /// PR's commits.
+    /// PR's commits. Rooted under <c>/workspace</c> (the mounted, sandbox-writable workspace) rather than
+    /// <c>/work</c> — the gateway sandbox runs as a non-root user with write access only to the mounted
+    /// workspace and <c>/tmp</c>, so a <c>/work</c> checkout would fail with a permission error.
     /// </summary>
-    private const string TargetRoot = "/work/target";
+    private const string TargetRoot = "/workspace/target";
 
     /// <summary>The ReviewBot default branch artifacts are durably landed on (plan §2).</summary>
     private const string ReviewBotDefaultBranch = "main";
