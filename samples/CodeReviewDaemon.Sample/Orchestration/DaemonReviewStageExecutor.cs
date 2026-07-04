@@ -326,9 +326,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Operation: ReviewPoster.PostReviewCommentOperation,
             ArtifactKind: ReviewArtifactKind,
             ArtifactSubject: "summary",
-            // The trigger watermark is an ISO timestamp (GitHub updated_at) carrying ':' — sanitize it,
-            // since ':' is the idempotency-key segment separator.
-            TriggerWatermark: SanitizeKeyComponent(run.TriggerWatermark),
+            // Scope the key to the reviewed COMMIT. head_sha is stable across re-polls and — unlike the PR
+            // updated_at — is not mutated by posting the comment, so a re-poll of the same commit resolves
+            // to the same key and the backstop scan recognizes the already-posted comment (no duplicate).
+            HeadSha: run.HeadSha,
             VariantId: run.VariantId);
 
         var request = new PostReviewRequest(
@@ -456,7 +457,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Operation: PushReviewBotOperation,
             ArtifactKind: ReviewArtifactKind,
             ArtifactSubject: "retention",
-            TriggerWatermark: SanitizeKeyComponent(run.TriggerWatermark),
+            HeadSha: run.HeadSha,
             VariantId: run.VariantId));
 
     /// <summary>Slugs the target identity into a single ReviewBot path segment (mirrors the branch slug).</summary>
@@ -511,9 +512,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         $"Review pull request {repo.DisplayName}#{run.PrId} (head {run.HeadSha}).\n\nDiff:\n{diff}";
 
     private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
-
-    /// <summary>Replaces the idempotency-key separator <c>':'</c> so a value can be a key component.</summary>
-    private static string SanitizeKeyComponent(string value) => value.Replace(':', '-');
 }
 
 /// <summary>The persisted PR diff/context (kind <c>review-context</c>).</summary>

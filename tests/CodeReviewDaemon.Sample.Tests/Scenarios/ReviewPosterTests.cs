@@ -155,7 +155,7 @@ public sealed class ReviewPosterTests : LoggingTestBase
                 Operation: ReviewPoster.PostReviewCommentOperation,
                 ArtifactKind: "review",
                 ArtifactSubject: "summary",
-                TriggerWatermark: "wm-1",
+                HeadSha: "wm-1",
                 VariantId: "primary"),
             Target: new ReviewCommentTarget(Repo, "7"),
             Body: "## Review\nLooks good.",

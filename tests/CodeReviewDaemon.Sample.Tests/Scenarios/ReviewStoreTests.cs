@@ -73,7 +73,7 @@ public sealed class ReviewStoreTests
     }
 
     [Fact]
-    public void A_new_trigger_watermark_produces_a_distinct_review_run()
+    public void A_new_trigger_watermark_reuses_the_same_review_run()
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
@@ -82,7 +82,22 @@ public sealed class ReviewStoreTests
         var first = store.CreateOrGetReviewRun(SampleRun(repoId) with { TriggerWatermark = "wm-1" });
         var second = store.CreateOrGetReviewRun(SampleRun(repoId) with { TriggerWatermark = "wm-2" });
 
-        second.Id.Should().NotBe(first.Id, "same SHA but a new trigger re-reviews — hence the watermark");
+        second.Id.Should().Be(first.Id,
+            "trigger_watermark (the PR updated_at) is NOT part of the identity — posting a review comment "
+                + "mutates updated_at, so keying on it would spawn a duplicate run + review on the next poll");
+    }
+
+    [Fact]
+    public void A_new_head_sha_produces_a_distinct_review_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var first = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-1" });
+        var second = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-2" });
+
+        second.Id.Should().NotBe(first.Id, "a new commit (head_sha) is what legitimately re-reviews");
     }
 
     [Fact]
