@@ -13,6 +13,10 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
     public bool IsRunning { get; set; } = true;
 
+    /// <summary>When true, <see cref="DisposeAsync"/> throws — used to prove a switch tolerates a
+    /// failure tearing down the PREVIOUS agent (the new one is already swapped in).</summary>
+    public bool ThrowOnDispose { get; set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -58,6 +62,11 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
     public ValueTask DisposeAsync()
     {
+        if (ThrowOnDispose)
+        {
+            throw new InvalidOperationException("Simulated dispose failure for the previous agent.");
+        }
+
         return ValueTask.CompletedTask;
     }
 }

@@ -5,12 +5,12 @@ import type { ProviderDescriptor } from '@/types/providers';
 const props = defineProps<{
   providers: ProviderDescriptor[];
   selectedProviderId: string | null;
-  /**
-   * Provider id locked to the current thread (set after the first message). When
-   * provided, the selector renders as a read-only badge instead of a dropdown.
-   */
-  lockedProviderId?: string | null;
   isLoading?: boolean;
+  /**
+   * Disables the selector. The parent sets this while a run is streaming (provider is mutable only
+   * when the conversation is idle); when idle the dropdown is editable and a pick switches the
+   * conversation's provider on the backend.
+   */
   disabled?: boolean;
 }>();
 
@@ -20,19 +20,6 @@ const emit = defineEmits<{
 
 const dropdownOpen = ref(false);
 const dropdownRef = ref<HTMLElement | null>(null);
-
-const isLocked = computed(() => !!props.lockedProviderId);
-
-const lockedProvider = computed<ProviderDescriptor | null>(() => {
-  if (!props.lockedProviderId) return null;
-  return (
-    props.providers.find((p) => p.id === props.lockedProviderId) ?? {
-      id: props.lockedProviderId,
-      displayName: props.lockedProviderId,
-      available: false,
-    }
-  );
-});
 
 const selectedProvider = computed<ProviderDescriptor | null>(() =>
   props.providers.find((p) => p.id === props.selectedProviderId) ?? null
@@ -77,7 +64,7 @@ const groupedProviders = computed<ProviderGroup[]>(() => {
 });
 
 function toggleDropdown(): void {
-  if (props.disabled || props.isLoading || isLocked.value) {
+  if (props.disabled || props.isLoading) {
     return;
   }
   dropdownOpen.value = !dropdownOpen.value;
@@ -88,7 +75,7 @@ function closeDropdown(): void {
 }
 
 function handleSelect(providerId: string): void {
-  if (props.disabled || isLocked.value) {
+  if (props.disabled) {
     return;
   }
   emit('select-provider', providerId);
@@ -118,9 +105,9 @@ onUnmounted(() => {
 });
 
 watch(
-  () => [props.disabled, props.lockedProviderId] as const,
-  ([isDisabled, locked]) => {
-    if (isDisabled || locked) {
+  () => props.disabled,
+  (isDisabled) => {
+    if (isDisabled) {
       closeDropdown();
     }
   }
@@ -129,62 +116,50 @@ watch(
 
 <template>
   <div class="provider-selector" ref="dropdownRef" data-testid="provider-selector">
-    <span
-      v-if="isLocked"
-      class="provider-badge"
-      data-testid="provider-locked-badge"
-      :title="`This conversation is locked to ${lockedProvider?.displayName ?? lockedProviderId}`"
+    <button
+      class="selector-btn"
+      :class="{ open: dropdownOpen }"
+      data-testid="provider-selector-button"
+      @click="toggleDropdown"
+      :disabled="isLoading || disabled"
     >
-      <span class="badge-label">Provider:</span>
-      <span class="badge-name">{{ lockedProvider?.displayName ?? lockedProviderId }}</span>
-      <span class="badge-lock" aria-hidden="true">🔒</span>
-    </span>
-    <template v-else>
-      <button
-        class="selector-btn"
-        :class="{ open: dropdownOpen }"
-        data-testid="provider-selector-button"
-        @click="toggleDropdown"
-        :disabled="isLoading || disabled"
-      >
-        <span class="provider-label">Provider:</span>
-        <span class="provider-name">{{ selectedProvider?.displayName ?? 'Loading...' }}</span>
-        <span class="dropdown-arrow">{{ dropdownOpen ? '\u25B2' : '\u25BC' }}</span>
-      </button>
+      <span class="provider-label">Provider:</span>
+      <span class="provider-name">{{ selectedProvider?.displayName ?? 'Loading...' }}</span>
+      <span class="dropdown-arrow">{{ dropdownOpen ? '▲' : '▼' }}</span>
+    </button>
 
-      <div v-if="dropdownOpen" class="dropdown-menu">
-        <template v-for="group in groupedProviders" :key="group.label ?? '__ungrouped__'">
-          <div
-            v-if="group.label"
-            class="menu-group-header"
-            :data-testid="`provider-group-${group.label}`"
-            role="presentation"
-          >
-            {{ group.label }}
-          </div>
-          <button
-            v-for="provider in group.providers"
-            :key="provider.id"
-            class="menu-item"
-            :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
-            :data-testid="`provider-option-${provider.id}`"
-            :disabled="disabled || !provider.available"
-            :title="provider.knownLimitation ?? undefined"
-            @click="handleSelect(provider.id)"
-          >
-            <span class="item-name">{{ provider.displayName }}</span>
-            <span
-              v-if="provider.available && provider.knownLimitation"
-              class="item-warning"
-              :data-testid="`provider-warning-${provider.id}`"
-              aria-label="known limitation"
-            >⚠</span>
-            <span v-if="!provider.available" class="item-status">unavailable</span>
-            <span v-else-if="provider.id === selectedProviderId" class="check-mark">✓</span>
-          </button>
-        </template>
-      </div>
-    </template>
+    <div v-if="dropdownOpen" class="dropdown-menu">
+      <template v-for="group in groupedProviders" :key="group.label ?? '__ungrouped__'">
+        <div
+          v-if="group.label"
+          class="menu-group-header"
+          :data-testid="`provider-group-${group.label}`"
+          role="presentation"
+        >
+          {{ group.label }}
+        </div>
+        <button
+          v-for="provider in group.providers"
+          :key="provider.id"
+          class="menu-item"
+          :class="{ active: provider.id === selectedProviderId, unavailable: !provider.available }"
+          :data-testid="`provider-option-${provider.id}`"
+          :disabled="disabled || !provider.available"
+          :title="provider.knownLimitation ?? undefined"
+          @click="handleSelect(provider.id)"
+        >
+          <span class="item-name">{{ provider.displayName }}</span>
+          <span
+            v-if="provider.available && provider.knownLimitation"
+            class="item-warning"
+            :data-testid="`provider-warning-${provider.id}`"
+            aria-label="known limitation"
+          >⚠</span>
+          <span v-if="!provider.available" class="item-status">unavailable</span>
+          <span v-else-if="provider.id === selectedProviderId" class="check-mark">✓</span>
+        </button>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -336,31 +311,5 @@ watch(
   font-weight: bold;
   flex-shrink: 0;
   margin-left: 8px;
-}
-
-.provider-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: #eef1f5;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #444;
-}
-
-.badge-label {
-  color: #666;
-}
-
-.badge-name {
-  color: #333;
-  font-weight: 500;
-}
-
-.badge-lock {
-  font-size: 12px;
-  opacity: 0.8;
 }
 </style>

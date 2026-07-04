@@ -62,3 +62,12 @@ public record SwitchModeRequest
 {
     public required string ModeId { get; init; }
 }
+
+/// <summary>
+/// DTO for switching a conversation's provider. Unlike workspace (bound for life), a conversation's
+/// provider is mutable once its run is idle — this carries the target provider id.
+/// </summary>
+public record SwitchProviderRequest
+{
+    public required string ProviderId { get; init; }
+}

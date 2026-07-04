@@ -136,6 +136,18 @@ public static class UiHelpers
         return page.GetByTestId($"mode-option-{modeId}");
     }
 
+    /// <summary>Provider selector button in the header (a dropdown when idle; disabled while streaming).</summary>
+    public static ILocator ProviderSelectorButton(this IPage page)
+    {
+        return page.GetByTestId("provider-selector-button");
+    }
+
+    /// <summary>Provider option menu item. Pass the provider id (e.g., <c>test</c>, <c>test-anthropic</c>).</summary>
+    public static ILocator ProviderOption(this IPage page, string providerId)
+    {
+        return page.GetByTestId($"provider-option-{providerId}");
+    }
+
     /// <summary>
     /// Type a message into the chat input and click the send button. Returns after the
     /// click — does not wait for the response.

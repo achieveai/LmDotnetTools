@@ -33,17 +33,38 @@ There are **two** Playwright surfaces. Keep them aligned; do not invent a third.
    - `Scenarios/*.cs` — `MultiTurnConversationTests`, `ModeSwitchingTests`, `ClaudeMockProviderTests`,
      `CancellationTests`, `ErrorHandlingTests`, … `dotnet test` runs them all (no exclusions).
 
-2. **Manual / exploratory (Claude MCP Playwright) — `PlaywrightTestingGuide.md`.**
-   Ready-to-run MCP scripts for ad-hoc checks. See its "Rationalization & fastest browser control"
-   section for the canonical fast patterns and the selector cross-reference.
+2. **Manual / exploratory (Claude MCP Playwright).**
+   **MANDATORY: drive the UI with a single self-contained Playwright script, NOT snapshot→act→screenshot
+   loops.** Ad-hoc snapshot/click/screenshot round-trips are slow and burn tokens (an ad-hoc agent run
+   cost ~140k tokens / 68 tool calls for what one script does in one call). Instead:
+   - **Reuse / add a script in [`playwright-scripts/`](playwright-scripts/).** Each is a self-contained
+     `async (page) => { … return { pass, failures, steps } }` that drives the WHOLE flow and returns
+     structured JSON. Run it in ONE call:
+     `browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/<name>.mjs" })`.
+     Existing: `provider-switch.mjs` (switch provider when idle / locked while streaming),
+     `queue-button.mjs` (blue Queue button while streaming). Add a new `.mjs` per recurring manual case
+     — do not re-drive it by hand next time. (No trailing `;` after the arrow function — the runner
+     wraps the file as an expression.)
+   - **Assert only DETERMINISTIC, browser-observable state** in scripts (DOM/testids, `/api/*` reads).
+     Exact HTTP codes / timing-sensitive races (e.g. 409-while-streaming) belong in the deterministic
+     C# suite (`ConversationsControllerTests`), not a browser race against the fast mock.
+   - **Prompts come from [`PromptExamples.md`](PromptExamples.md)** (mock instruction-chain format). If a
+     new scenario needs a new prompt, ADD it there (see "Manual UI test prompts (conversation UX)") and
+     reference it from the script — don't invent throwaway prompts inline.
+   - [`PlaywrightTestingGuide.md`](PlaywrightTestingGuide.md) holds the selector cross-reference and the
+     older prose recipes; prefer promoting any keeper prose recipe into a runnable `.mjs`.
 
 ### Control the browser the FASTEST way possible
+- **Prefer a whole-flow script over individual round-trips.** One `browser_run_code_unsafe({filename})`
+  that drives the flow and returns `{ pass, failures, steps }` beats a dozen snapshot/click/evaluate
+  calls (see point 2 above). Iterate by editing the `.mjs` file and re-running the one call.
 - **Select by `data-testid`, never by brittle CSS classes.** The stable contract (see `UiHelpers.cs`):
-  `chat-input-textarea`, `send-button`, `stop-button`, `clear-button`, `error-banner`,
+  `chat-input-textarea`, `send-button`, `stop-button`, `queue-button`, `clear-button`, `error-banner`,
   `message-list`, `user-message-group`, `assistant-message-group`, `assistant-text` (the answer
   bubble — equals the `.text-bubble` element), `metadata-pill`, `thinking-pill`, `tool-call-pill`
   (carries `data-tool-name`), `mode-selector-button` / `mode-option-{id}`,
-  `provider-selector-button` / `provider-option-{id}`.
+  `provider-selector-button` / `provider-option-{id}`. (`conversation-item` carries `data-thread-id`;
+  the pending "Waiting to send…" list is `.pending-queue`.)
 - **Bulk-extract DOM state in ONE `browser_evaluate` call** instead of many snapshot/locator
   round-trips. e.g. count answer bubbles (the duplicate-bubble check):
   ```js

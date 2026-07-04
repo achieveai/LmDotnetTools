@@ -26,3 +26,10 @@ export interface ProvidersResponse {
   providers: ProviderDescriptor[];
   default: string;
 }
+
+/**
+ * Response body for POST /api/conversations/{threadId}/provider.
+ */
+export interface SwitchProviderResponse {
+  providerId: string;
+}

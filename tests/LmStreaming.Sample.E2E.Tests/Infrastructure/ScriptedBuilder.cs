@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
@@ -12,7 +13,8 @@ namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 /// </summary>
 public sealed class ScriptedBuilder : ITestAgentBuilder
 {
-    private readonly HttpMessageHandler _handler;
+    private readonly HttpMessageHandler? _handler;
+    private readonly ScriptedSseResponder? _responder;
     private readonly Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? _subAgentFactory;
 
     public ScriptedBuilder(
@@ -23,9 +25,32 @@ public sealed class ScriptedBuilder : ITestAgentBuilder
         _subAgentFactory = subAgentFactory;
     }
 
+    /// <summary>
+    /// Provider-aware overload: derives the per-wire handler from the requested provider mode, so a
+    /// conversation can SWITCH between the scripted <c>test</c> (OpenAI wire) and <c>test-anthropic</c>
+    /// (Anthropic wire) providers at runtime. Both handlers come from the SAME responder and share its
+    /// plan queue, so a single scripted plan serves whichever wire the current provider uses. The
+    /// single-handler ctor above pins one wire and cannot switch.
+    /// </summary>
+    public ScriptedBuilder(
+        ScriptedSseResponder responder,
+        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null)
+    {
+        _responder = responder ?? throw new ArgumentNullException(nameof(responder));
+        _subAgentFactory = subAgentFactory;
+    }
+
     public HttpMessageHandler CreateHandler(string providerMode, ILoggerFactory loggerFactory)
     {
-        return _handler;
+        if (_responder != null)
+        {
+            // Mirror DefaultTestAgentBuilder: honor the requested provider mode's wire format.
+            return string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase)
+                ? _responder.AsAnthropicHandler()
+                : _responder.AsOpenAiHandler();
+        }
+
+        return _handler!;
     }
 
     public SubAgentOptions? CreateSubAgentOptions(

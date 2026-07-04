@@ -25,7 +25,9 @@ const sharedMocks = vi.hoisted(() => ({
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
   selectProvider: vi.fn(),
+  switchProvider: vi.fn(async () => {}),
   selectWorkspace: vi.fn(),
+  addOrUpdateConversation: vi.fn(),
   resumeStreamIfActive: vi.fn(async () => {}),
 }));
 
@@ -40,7 +42,7 @@ vi.mock('@/composables/useConversations', async () => {
       createNewConversation: vi.fn(() => 'thread-new'),
       selectConversation: vi.fn(),
       removeConversation: vi.fn(async () => {}),
-      addOrUpdateConversation: vi.fn(),
+      addOrUpdateConversation: sharedMocks.addOrUpdateConversation,
     }),
   };
 });
@@ -140,6 +142,7 @@ vi.mock('@/composables/useProviders', async () => {
       isLoading: ref(false),
       loadProviders: vi.fn(async () => {}),
       selectProvider: sharedMocks.selectProvider,
+      switchProvider: sharedMocks.switchProvider,
     }),
   };
 });
@@ -300,6 +303,84 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
 
     expect(sharedMocks.switchMode).toHaveBeenCalledWith('thread-1', 'math-helper');
     expect(sharedMocks.selectMode).not.toHaveBeenCalled();
+  });
+});
+
+// Provider is mutable while the conversation is idle and locked only while streaming (mirrors mode).
+// A messageless thread applies the pick locally; a started conversation switches the backend provider
+// and reflects it in the sidebar summary; while streaming the selector is disabled and does neither.
+describe('ChatLayout handleSelectProvider start-gating', () => {
+  const mountWithProviderSelector = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ProviderSelector: {
+            props: ['disabled'],
+            template:
+              '<button data-test="provider-select" :disabled="disabled" @click="$emit(\'select-provider\', \'openai\')">Provider</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.selectProvider.mockReset();
+    sharedMocks.switchProvider.mockReset();
+    sharedMocks.disconnectWebSocket.mockReset();
+    sharedMocks.addOrUpdateConversation.mockReset();
+  });
+
+  it('applies the provider locally (no backend switch) on a messageless thread', async () => {
+    sharedMocks.currentThreadId = 'thread-new';
+    sharedMocks.conversations = [];
+
+    const wrapper = mountWithProviderSelector();
+    await flushPromises();
+    await wrapper.get('[data-test="provider-select"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.selectProvider).toHaveBeenCalledWith('openai');
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+  });
+
+  it('switches the provider on the backend once the thread has started, and updates the summary', async () => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1', provider: 'test' } as ConversationSummary];
+
+    const wrapper = mountWithProviderSelector();
+    await flushPromises();
+    await wrapper.get('[data-test="provider-select"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.disconnectWebSocket).toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', 'openai');
+    expect(sharedMocks.selectProvider).not.toHaveBeenCalled();
+    // The sidebar summary is updated to the new provider so restore-on-refresh reflects it.
+    expect(sharedMocks.addOrUpdateConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-1', provider: 'openai' })
+    );
+  });
+
+  it('does nothing while a run is streaming (selector disabled)', async () => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1', provider: 'test' } as ConversationSummary];
+    sharedMocks.chatLoading = true; // streaming
+
+    const wrapper = mountWithProviderSelector();
+    await flushPromises();
+    // The stubbed selector button is disabled; invoking the handler directly must also no-op.
+    await wrapper.get('[data-test="provider-select"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+    expect(sharedMocks.selectProvider).not.toHaveBeenCalled();
   });
 });
 

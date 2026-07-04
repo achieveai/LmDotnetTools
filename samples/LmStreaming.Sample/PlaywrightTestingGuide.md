@@ -3,6 +3,14 @@
 This guide provides ready-to-use Playwright scripts for **manual exploratory testing** of the
 LmStreaming Chat Client via the MCP Playwright tools in Claude Code.
 
+> **⚡ Prefer single-call runnable scripts.** For recurring manual checks, use / add a self-contained
+> script in [`playwright-scripts/`](playwright-scripts/) and run the WHOLE flow in ONE call:
+> `browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/<name>.mjs" })`.
+> It returns `{ pass, failures, steps }`. Do **not** drive the UI with snapshot→act→screenshot loops —
+> that is slow and token-heavy. The prose recipes below remain a **selector/pattern reference**; when a
+> recipe is worth keeping, promote it into a runnable `.mjs`. Prompts live in
+> [`PromptExamples.md`](PromptExamples.md). Full policy: `CLAUDE.md` → "UI / browser testing".
+
 > **Automated browser E2E tests** live in
 > [`tests/LmStreaming.Sample.Browser.E2E.Tests/`](../../tests/LmStreaming.Sample.Browser.E2E.Tests/)
 > and run the same chat client under headless Chromium + a scripted SSE backend (no real

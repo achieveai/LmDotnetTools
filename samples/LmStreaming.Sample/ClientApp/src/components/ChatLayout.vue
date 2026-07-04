@@ -52,6 +52,7 @@ const {
   isLoading: providersLoading,
   loadProviders,
   selectProvider,
+  switchProvider,
 } = useProviders();
 
 // Workspace catalog + per-process selection for new conversations.
@@ -102,33 +103,53 @@ provide('getResultForToolCall', getResultForToolCall);
 
 const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
+const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
 const modeSwitchDisabled = computed(
   () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
 );
 
 /**
- * Provider id locked to the current thread, derived from the conversation summary
- * (populated from <c>ThreadMetadata.Properties["provider"]</c>). A thread becomes
- * "locked" the moment it appears in the sidebar — i.e. after its first message —
- * and stays locked for the rest of its life. New conversations have no sidebar
- * entry yet, so this resolves to <c>null</c> and the dropdown stays editable.
+ * The provider selector is editable while the conversation is idle and locked ONLY while a run is
+ * streaming (mirrors mode). A brand-new, messageless thread applies the pick locally; a started
+ * conversation switches the backend provider (which recreates the agent). There is no permanent
+ * per-thread lock — provider is mutable once the run completes.
  */
-const lockedProviderId = computed<string | null>(() => {
-  if (!currentThreadId.value) return null;
-  const conversation = conversations.value.find((c) => c.threadId === currentThreadId.value);
-  return conversation?.provider ?? null;
-});
-
 const providerSelectorDisabled = computed(
-  () => providersLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+  () => providersLoading.value || chatLoading.value || isSending.value || isSwitchingProvider.value
 );
 
-function handleSelectProvider(providerId: string): void {
-  if (providerSelectorDisabled.value || lockedProviderId.value) {
+async function handleSelectProvider(providerId: string): Promise<void> {
+  if (providerSelectorDisabled.value) {
     return;
   }
-  selectProvider(providerId);
+
+  // Mirror handleSelectMode: only switch on the backend once the conversation has actually started
+  // (has a sidebar entry). A messageless thread just records the pick locally for the first send.
+  const started =
+    !!currentThreadId.value &&
+    conversations.value.some((c) => c.threadId === currentThreadId.value);
+
+  if (started) {
+    isSwitchingProvider.value = true;
+    try {
+      await disconnectWebSocket();
+      await switchProvider(currentThreadId.value!, providerId);
+      // Reflect the switched-to provider in the sidebar summary so the Bug-3 restore path
+      // (restoreBindingsFromConversation on select / refresh) shows the new provider.
+      const existing = conversations.value.find((c) => c.threadId === currentThreadId.value);
+      if (existing) {
+        addOrUpdateConversation({ ...existing, provider: providerId });
+      }
+    } catch (e) {
+      console.error('Failed to switch provider:', e);
+    } finally {
+      isSwitchingProvider.value = false;
+    }
+  } else {
+    // Messageless thread: defer agent creation to the first send.
+    selectProvider(providerId);
+  }
 }
 
 /**
@@ -447,7 +468,6 @@ onBeforeUnmount(() => {
             <ProviderSelector
               :providers="providers"
               :selected-provider-id="selectedProviderId"
-              :locked-provider-id="lockedProviderId"
               :is-loading="providersLoading"
               :disabled="providerSelectorDisabled"
               @select-provider="handleSelectProvider"

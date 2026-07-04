@@ -334,6 +334,47 @@ src/LmTestUtils/TestMode/InstructionChainParser.cs
 
 ---
 
+## Manual UI test prompts (conversation UX)
+
+Prompts for the **manual/exploratory Playwright smoke checks** in
+[`playwright-scripts/`](playwright-scripts/) (run one-shot via
+`browser_run_code_unsafe({ filename: … })` — see CLAUDE.md "UI / browser testing"). These target the
+conversation-UX features (provider switch, Queue button, conversation switching, streaming resume)
+rather than a specific tool. Use two MOCK providers so there are no real LLM calls:
+`test-anthropic` (streams text — the client keeps rendering, giving a **wide, reliable streaming
+window**) and `claude-mock` (completes silently — proves a recreated agent runs a new turn).
+
+### Long streamed reply (wide streaming window)
+
+A ~300-word text reply keeps the composer in the streaming state for a few seconds — long enough to
+observe "disabled while streaming", type a Queue follow-up, or attempt a mid-stream action. **Do not
+use much larger lengths** (e.g. 2000): the client renders every word and the run can take >60s to go
+idle, tripping wait timeouts.
+<|instruction_start|>{"instruction_chain":[{"id":"long-text","id_message":"Long response","messages":[{"text_message":{"length":300}}]}]}<|instruction_end|>
+
+### Short reply (fast completion)
+
+For a quick turn (e.g. proving a switched-to provider runs a new turn):
+<|instruction_start|>{"instruction_chain":[{"id":"short","id_message":"Short","messages":[{"text_message":{"length":20}}]}]}<|instruction_end|>
+
+### Queue follow-up (plain text)
+
+Any plain (non-instruction) text typed mid-stream is what the blue **Queue** button queues. The scripts
+use a literal string, e.g. `a queued follow-up typed mid-stream`.
+
+### What the scripts assert (deterministic, browser-observable)
+- **provider-switch.mjs** — streaming ⇒ provider selector DISABLED + no `provider-locked-badge`; idle ⇒
+  editable dropdown; switch when idle ⇒ `/api/conversations` shows the new `provider` + the label
+  updates; a new turn runs on the recreated agent. (The 409-while-streaming / 503-unavailable HTTP
+  codes are covered deterministically by `ConversationsControllerTests`, not the browser.)
+- **queue-button.mjs** — streaming + empty box ⇒ red `stop-button`; streaming + typed text ⇒ blue
+  `queue-button` replaces Stop; click Queue ⇒ box clears + message enters the `.pending-queue`
+  "Waiting to send…" list + reverts to Stop.
+
+> If a new manual scenario needs a new prompt, add it in this section and reference it from the script.
+
+---
+
 ## Codex Mode Prompt Examples
 
 These prompts are for `LM_PROVIDER_MODE=codex`.
