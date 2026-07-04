@@ -1048,9 +1048,39 @@ export function useChat(options: UseChatOptions = {}) {
    * kind-runId-generationId-messageOrderIdx dedups replay vs history). Without this, returning to
    * a streaming conversation showed the partial frozen at the last persisted point.
    */
+  /**
+   * Lower the streaming flags to their idle state. Called when a conversation switch (or new chat)
+   * lands on a target with no resumable in-flight run, so the Send/Stop control returns to "Send"
+   * (BUG 1). It is deliberately NOT done inside clearMessages: clearMessages runs at the START of
+   * every switch, BEFORE the awaited loadMessagesFromBackend + resumeStreamIfActive, so lowering the
+   * flag there produced a transient "idle" window mid switch-back — which a resumed run would flash
+   * through (and which raced the E2E's stream-idle wait into reading the transcript before the
+   * resumed final text arrived). Deciding idle-vs-streaming only once the run state is known keeps a
+   * genuine resume continuously "streaming" with no flicker.
+   */
+  function markStreamIdle(): void {
+    isLoading.value = false;
+    isSending.value = false;
+  }
+
+  /**
+   * Raise the streaming flag while a conversation switch loads and probes the target's run state.
+   * Selecting a conversation runs clearMessages → loadMessagesFromBackend → resumeStreamIfActive; the
+   * caller sets this right before the load so the Send/Stop control stays "Stop" continuously when the
+   * target turns out to still be streaming (resumeStreamIfActive keeps it raised), instead of flashing
+   * to "Send" during the awaited load and only snapping back to "Stop" on resume. A target that is
+   * actually idle resolves to Send via markStreamIdle() in resumeStreamIfActive's no-run branches.
+   */
+  function markStreamLoading(): void {
+    isLoading.value = true;
+  }
+
   async function resumeStreamIfActive(existingThreadId: string): Promise<void> {
     // Only the WebSocket transport maintains a resumable live backend run.
-    if (transport.value !== 'websocket') return;
+    if (transport.value !== 'websocket') {
+      markStreamIdle();
+      return;
+    }
 
     // Already streaming this thread on an open socket — nothing to resume.
     if (
@@ -1068,12 +1098,14 @@ export function useChat(options: UseChatOptions = {}) {
       runState = await getRunState(existingThreadId);
     } catch (err) {
       log.warn('Failed to query run state for resume', { threadId: existingThreadId, error: err });
+      markStreamIdle();
       return;
     }
 
     // The active conversation may have changed while getRunState was in flight (rapid switching).
     // Binding this thread's stream to whatever conversation is now current would contaminate it,
-    // so abort if we've moved on.
+    // so abort if we've moved on. Do NOT touch the streaming flags here — a newer switch already
+    // owns them; clearing them would stomp the conversation we just moved to.
     if (threadId.value !== existingThreadId) {
       log.debug('Thread changed during resume check; aborting', {
         requested: existingThreadId,
@@ -1084,6 +1116,7 @@ export function useChat(options: UseChatOptions = {}) {
 
     if (!runState?.isInProgress) {
       log.debug('No in-flight run to resume', { threadId: existingThreadId });
+      markStreamIdle();
       return;
     }
 
@@ -1091,6 +1124,19 @@ export function useChat(options: UseChatOptions = {}) {
       threadId: existingThreadId,
       runId: runState.currentRunId,
     });
+
+    // Re-align the content turn epoch with the just-rehydrated history BEFORE the replay. The backend
+    // replays the in-flight run's already-emitted messages from the start, and those are the SAME
+    // messages loadMessagesFromBackend just keyed. contentTurnSeqFor is stateful and was left advanced
+    // by that reload; without resetting it here the replayed reasoning/text would re-key with a HIGHER
+    // turn epoch than their rehydrated twins (…-t1 → …-t3, …-t2 → …-t4), fail to merge, and pile up as
+    // duplicates at the bottom — scrambling multi-turn order (BUG 2). Resetting lets the replay
+    // re-derive the SAME epoch sequence as the reload (both walk the run in production order), so each
+    // replayed message merges in place with its twin. Tool calls are unaffected (their key carries
+    // tool_call_id) — which is why only thinking/text scrambled. reset() clears the (already-empty)
+    // merger accumulators so the update path re-aligns identically.
+    resetContentTurnEpoch();
+    reset();
 
     // Reflect the live run in the UI (spinner / stop button) while the replayed + live deltas arrive.
     isLoading.value = true;
@@ -1126,6 +1172,12 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
+    // NB: the streaming flags (isLoading/isSending) are deliberately NOT reset here. clearMessages
+    // runs at the START of every switch — BEFORE the awaited loadMessagesFromBackend +
+    // resumeStreamIfActive — so lowering them here flashed a transient "idle" through a switch-back
+    // that then resumes (BUG 1's regression on the tool-pill resume path). Idle is decided once the
+    // run state is known: markStreamIdle() in resumeStreamIfActive's no-run branches (switch to an
+    // idle existing conversation) and in handleNewChat (a fresh chat is always idle).
     resetContentTurnEpoch();
     reset();
 
@@ -1334,6 +1386,8 @@ export function useChat(options: UseChatOptions = {}) {
     setThreadId,
     loadMessagesFromBackend,
     resumeStreamIfActive,
+    markStreamIdle,
+    markStreamLoading,
   };
 }
 

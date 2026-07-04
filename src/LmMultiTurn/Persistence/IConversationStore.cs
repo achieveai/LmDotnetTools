@@ -72,6 +72,25 @@ public interface IConversationStore
         string threadId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Atomically reads the current metadata, applies <paramref name="update"/> to it, and saves the
+    /// result — the whole read-modify-write runs under the store's write serialization so concurrent
+    /// callers cannot clobber each other's properties (a lost update). Use this whenever you mutate a
+    /// SUBSET of the property bag (e.g. the provider/workspace/mode bindings, or a title/preview edit)
+    /// rather than replacing the whole record; a plain <see cref="LoadMetadataAsync"/> +
+    /// <see cref="SaveMetadataAsync"/> pair leaves a gap in which another writer's save is lost.
+    /// </summary>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="update">
+    /// Receives the current metadata (<c>null</c> if none exists yet) and returns the metadata to save.
+    /// Invoked while the write lock is held, so keep it fast and side-effect free.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    Task UpdateMetadataAsync(
+        string threadId,
+        Func<ThreadMetadata?, ThreadMetadata> update,
+        CancellationToken ct = default);
+
     // === Lifecycle ===
 
     /// <summary>

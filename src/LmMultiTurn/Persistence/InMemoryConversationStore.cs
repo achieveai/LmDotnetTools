@@ -11,6 +11,7 @@ public sealed class InMemoryConversationStore : IConversationStore
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
     private readonly object _messagesLock = new();
+    private readonly object _metadataLock = new();
 
     /// <inheritdoc />
     public Task AppendMessagesAsync(
@@ -104,6 +105,26 @@ public sealed class InMemoryConversationStore : IConversationStore
     {
         _ = _metadata.TryGetValue(threadId, out var metadata);
         return Task.FromResult(metadata);
+    }
+
+    /// <inheritdoc />
+    public Task UpdateMetadataAsync(
+        string threadId,
+        Func<ThreadMetadata?, ThreadMetadata> update,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(update);
+
+        // Serialize the read-modify-write so two concurrent property-bag updates for the same thread
+        // cannot clobber each other (matches FileConversationStore's atomic UpdateMetadataAsync).
+        lock (_metadataLock)
+        {
+            _ = _metadata.TryGetValue(threadId, out var existing);
+            _metadata[threadId] = update(existing);
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />

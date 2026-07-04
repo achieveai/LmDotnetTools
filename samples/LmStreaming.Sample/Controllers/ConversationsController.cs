@@ -43,6 +43,9 @@ public class ConversationsController(
             Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
                 ? workspaceObj?.ToString()
                 : null,
+            Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                ? modeObj?.ToString()
+                : null,
         });
         return Ok(result);
     }
@@ -116,31 +119,41 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(update);
-        var existing = await store.LoadMetadataAsync(threadId, ct);
-        var propertiesBuilder = existing?.Properties?.ToBuilder()
-            ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-        if (update.Title != null)
-        {
-            propertiesBuilder["title"] = update.Title;
-        }
+        // Atomic read-modify-write: a title/preview edit races with the pool's binding persistence
+        // (provider/workspace/mode written when the agent is created for the first message). Doing a
+        // separate LoadMetadata + SaveMetadata here would drop whichever write lost the interleave —
+        // exactly the lost-update that stripped the persisted provider. UpdateMetadataAsync serializes
+        // the whole cycle so both survive.
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                var propertiesBuilder = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-        if (update.Preview != null)
-        {
-            propertiesBuilder["preview"] = update.Preview;
-        }
+                if (update.Title != null)
+                {
+                    propertiesBuilder["title"] = update.Title;
+                }
 
-        var metadata = new ThreadMetadata
-        {
-            ThreadId = threadId,
-            CurrentRunId = existing?.CurrentRunId,
-            LatestRunId = existing?.LatestRunId,
-            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            SessionMappings = existing?.SessionMappings,
-            Properties = propertiesBuilder.ToImmutable(),
-        };
+                if (update.Preview != null)
+                {
+                    propertiesBuilder["preview"] = update.Preview;
+                }
 
-        await store.SaveMetadataAsync(threadId, metadata, ct);
+                return new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    CurrentRunId = existing?.CurrentRunId,
+                    LatestRunId = existing?.LatestRunId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    SessionMappings = existing?.SessionMappings,
+                    Properties = propertiesBuilder.ToImmutable(),
+                };
+            },
+            ct);
+
         return Ok();
     }
 

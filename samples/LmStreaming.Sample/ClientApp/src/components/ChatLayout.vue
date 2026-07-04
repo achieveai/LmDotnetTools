@@ -84,6 +84,8 @@ const {
   setThreadId,
   loadMessagesFromBackend,
   resumeStreamIfActive,
+  markStreamIdle,
+  markStreamLoading,
   getResultForToolCall,
 } = useChat({
   getModeId: () => currentModeId.value,
@@ -193,6 +195,10 @@ async function handleNewChat(): Promise<void> {
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  // A fresh chat is always idle — return the Send/Stop control to "Send" if we came from a
+  // streaming conversation (clearMessages no longer lowers the flags to avoid a switch-back
+  // flicker; see useChat.markStreamIdle).
+  markStreamIdle();
 
   // Create new thread (without adding to sidebar yet)
   const newThreadId = createNewConversation();
@@ -211,8 +217,19 @@ async function handleSelectConversation(threadId: string): Promise<void> {
   selectConversation(threadId);
   setThreadId(threadId);
 
+  // Restore the conversation's bound provider/mode/workspace so opening (or refreshing into) a
+  // conversation shows its actual bindings instead of the process defaults. Without this, a refresh
+  // reset the selectors to Anthropic / General Assistant even for a still-streaming conversation.
+  // Done BEFORE resumeStreamIfActive so the resumed WebSocket carries the correct mode/provider.
+  restoreBindingsFromConversation(threadId);
+
   // Load existing messages
   try {
+    // Keep the Send/Stop control on "Stop" while we load + probe run state, so switching back into a
+    // still-streaming conversation stays continuously "streaming" (no flash to "Send" during the
+    // awaited load). resumeStreamIfActive resolves it: it keeps this raised for an in-flight run, or
+    // lowers it via markStreamIdle for an idle target.
+    markStreamLoading();
     await loadMessagesFromBackend(threadId);
     // If a run is still streaming on the backend (the pooled agent keeps running after we
     // disconnected on switch/refresh), re-open the WebSocket to resume the live stream instead
@@ -220,6 +237,28 @@ async function handleSelectConversation(threadId: string): Promise<void> {
     await resumeStreamIfActive(threadId);
   } catch (e) {
     console.error('Failed to load messages:', e);
+    // A load/resume failure must not strand the UI on "Stop" forever.
+    markStreamIdle();
+  }
+}
+
+/**
+ * Reflects a conversation's persisted provider/mode/workspace into the header selectors. Uses the
+ * local selectors (not the backend switch endpoints) — this only restores what the conversation is
+ * already bound to; it does not change the conversation. Unknown ids are ignored (selectProvider /
+ * selectWorkspace no-op them; an unknown mode simply leaves the current one).
+ */
+function restoreBindingsFromConversation(threadId: string): void {
+  const conversation = conversations.value.find((c) => c.threadId === threadId);
+  if (!conversation) return;
+  if (conversation.provider) {
+    selectProvider(conversation.provider);
+  }
+  if (conversation.workspace) {
+    selectWorkspace(conversation.workspace);
+  }
+  if (conversation.mode) {
+    selectMode(conversation.mode);
   }
 }
 
@@ -332,6 +371,7 @@ async function handleSend(text: string): Promise<void> {
       lastUpdated: Date.now(),
       provider: selectedProviderId.value,
       workspace: selectedWorkspaceId.value,
+      mode: currentModeId.value,
     });
 
     // Update backend metadata asynchronously
