@@ -29,6 +29,10 @@ public sealed class GitRunnerTests
                 "protocol.ext.allow=never",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=AchieveAi Review Bot",
+                "-c",
+                "user.email=review-bot@achieveai.local",
                 "status");
     }
 
