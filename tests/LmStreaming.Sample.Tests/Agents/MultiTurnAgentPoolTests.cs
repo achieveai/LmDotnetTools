@@ -497,6 +497,119 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task RecreateAgentWithProviderAsync_OverwritesPersistedProvider_AndPreservesModeAndWorkspace()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai", "anthropic"]);
+        var store = new InMemoryConversationStore();
+        var created = new List<(string Provider, string? Workspace, string Mode)>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                created.Add((context.ProviderId, context.WorkspaceId, context.Mode.Id));
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-prov-swap",
+            mode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "ws-1"
+        );
+        (await WaitForPersistedProviderAsync(store, "thread-prov-swap")).Should().Be("test");
+
+        _ = await pool.RecreateAgentWithProviderAsync("thread-prov-swap", "openai", mode);
+
+        // The recreated agent used the NEW provider and preserved the thread's mode + workspace.
+        created.Should().HaveCount(2);
+        created[1].Provider.Should().Be("openai");
+        created[1].Workspace.Should().Be("ws-1");
+        created[1].Mode.Should().Be(mode.Id);
+
+        // The switch is persisted (overwrite) so a later refresh restores it.
+        (await WaitForPersistedProviderAsync(store, "thread-prov-swap")).Should().Be("openai");
+        pool.GetEffectiveProviderId("thread-prov-swap", null).Should().Be("openai");
+    }
+
+    [Fact]
+    public async Task RecreateAgentWithProviderAsync_Throws_AndLeavesThreadUntouched_WhenProviderUnavailable()
+    {
+        // "openai" is NOT available — the validation must happen BEFORE teardown so the working agent
+        // and its persisted provider are left intact (the controller maps this to a clean 503).
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]);
+        var store = new InMemoryConversationStore();
+
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var original = pool.GetOrCreateAgent("thread-prov-bad", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        (await WaitForPersistedProviderAsync(store, "thread-prov-bad")).Should().Be("test");
+
+        var act = async () => await pool.RecreateAgentWithProviderAsync("thread-prov-bad", "openai", mode);
+        await act.Should().ThrowAsync<ProviderUnavailableException>();
+
+        // Untouched: same agent instance still pooled, persisted provider still "test".
+        ReferenceEquals(pool.GetOrCreateAgent("thread-prov-bad", mode), original).Should().BeTrue();
+        pool.GetEffectiveProviderId("thread-prov-bad", null).Should().Be("test");
+    }
+
+    [Fact]
+    public async Task ThreadRemoved_DoesNotFire_OnRecreateAgentWithProviderAsync()
+    {
+        // Provider-switch preserves threadId (same as mode-switch), so the session→thread map must
+        // stay intact — ThreadRemoved must not fire.
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-prov-noremove", mode);
+
+        var notifications = new List<string>();
+        pool.ThreadRemoved += id => notifications.Add(id);
+
+        _ = await pool.RecreateAgentWithProviderAsync("thread-prov-noremove", "test", mode);
+
+        notifications.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RecreateAgentWithProviderAsync_SucceedsAndPersists_WhenOldAgentDisposeThrows()
+    {
+        // Tearing down the PREVIOUS agent can fail (e.g. its provider's CLI is missing / StopAsync
+        // throws). The new agent is already swapped in, so the switch must still succeed and persist —
+        // not leak the dispose exception as a 500.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var old = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
+            "thread-dispose-throw", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        old.ThrowOnDispose = true; // tearing down the old agent will throw
+
+        var newAgent = await pool.RecreateAgentWithProviderAsync("thread-dispose-throw", "openai", mode);
+
+        newAgent.Should().NotBeSameAs(old);
+        (await WaitForPersistedProviderAsync(store, "thread-dispose-throw")).Should().Be("openai");
+        pool.GetEffectiveProviderId("thread-dispose-throw", null).Should().Be("openai");
+    }
+
+    [Fact]
     public async Task ThreadRemoved_SubscriberException_DoesNotPoisonOtherSubscribers()
     {
         // Defensive: a buggy subscriber must not strand subsequent listeners. The pool wraps

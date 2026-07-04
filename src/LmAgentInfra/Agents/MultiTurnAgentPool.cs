@@ -572,6 +572,51 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Overwrites the persisted provider for a thread (a deliberate provider switch on an idle
+    /// conversation). Mode and workspace are left untouched. Unlike
+    /// <see cref="PersistThreadBindingsIfNeededAsync"/> (seed-only), this unconditionally sets the
+    /// value so a later refresh restores the switched-to provider.
+    /// </summary>
+    private async Task PersistProviderAsync(string threadId, string? providerId)
+    {
+        if (_conversationStore == null || string.IsNullOrWhiteSpace(providerId))
+        {
+            return;
+        }
+
+        try
+        {
+            await _conversationStore.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
+                        .SetItem(ProviderPropertyKey, providerId);
+
+                    return (
+                        existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        }
+                    ) with
+                    {
+                        Properties = properties,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    };
+                }
+            ).ConfigureAwait(false);
+
+            _logger.LogInformation("Persisted provider {ProviderId} for thread {ThreadId}", providerId, threadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist provider {ProviderId} for thread {ThreadId}", providerId, threadId);
+        }
+    }
+
     private string? LoadPersistedProviderId(string threadId)
     {
         if (_conversationStore == null)
@@ -806,16 +851,111 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             _agents[threadId] = entry;
         }
 
-        // Dispose old entry outside the lock to avoid blocking concurrent operations
+        // Dispose old entry outside the lock to avoid blocking concurrent operations. The new agent is
+        // already swapped in, so a failure tearing down the OLD one must NOT fail the mode switch.
         if (oldEntry != null)
         {
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
-            await oldEntry.DisposeAsync();
+            try
+            {
+                await oldEntry.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose the previous agent for thread {ThreadId} after a mode switch; the new agent is already active",
+                    threadId
+                );
+            }
         }
 
         // A mode switch is deliberate and mutable: overwrite the persisted mode so a later refresh
         // restores the switched-to mode (provider/workspace stay untouched — they are immutable).
         await PersistModeAsync(threadId, mode.Id);
+
+        return entry.Agent;
+    }
+
+    /// <summary>
+    /// Tears down a thread's agent and recreates it against a DIFFERENT provider, preserving the
+    /// thread's current mode and persisted workspace. Used when the user switches a conversation's
+    /// provider after its run has completed (provider is mutable when idle; workspace stays bound for
+    /// life). The new provider is validated up-front (an unavailable/unknown id throws
+    /// <see cref="ProviderUnavailableException"/>), used directly for the new agent, then persisted
+    /// (overwrite) so a later refresh restores it — deliberately bypassing the "persisted wins"
+    /// immutability that <see cref="ResolveProviderId"/> enforces for plain reconnects.
+    /// </summary>
+    /// <param name="threadId">The thread identifier</param>
+    /// <param name="newProviderId">The provider to switch to</param>
+    /// <param name="currentMode">The thread's current mode, preserved across the switch</param>
+    /// <returns>The new agent for this thread</returns>
+    public async Task<IMultiTurnAgent> RecreateAgentWithProviderAsync(
+        string threadId,
+        string newProviderId,
+        AgentProfile currentMode
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentException.ThrowIfNullOrEmpty(newProviderId);
+        ArgumentNullException.ThrowIfNull(currentMode);
+
+        // Validate the target BEFORE tearing down the existing agent — a bad id must leave the thread
+        // untouched (and surface as a clean 503 at the controller), not evict a working agent.
+        EnsureAvailableOrThrow(newProviderId, source: "requested");
+
+        _logger.LogInformation(
+            "Recreating agent for thread {ThreadId} with provider {ProviderId} (mode {ModeId} preserved)",
+            threadId,
+            newProviderId,
+            currentMode.Id
+        );
+
+        // Provider is the switch; workspace stays bound (resolve the persisted one). Resolved before
+        // the lock to avoid blocking other threadIds on file I/O.
+        var resolvedWorkspaceId = ResolveWorkspaceId(threadId, requestedWorkspaceId: null);
+
+        var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
+        AgentEntry? oldEntry = null;
+        AgentEntry entry;
+        lock (lockObj)
+        {
+            _ = _agents.TryRemove(threadId, out oldEntry);
+            entry = CreateAgentEntry(
+                threadId,
+                currentMode,
+                newProviderId,
+                requestResponseDumpFileName: null,
+                resolvedWorkspaceId
+            );
+            _agents[threadId] = entry;
+        }
+
+        // Dispose old entry outside the lock to avoid blocking concurrent operations. The new agent is
+        // already swapped in, so a failure tearing down the OLD one (e.g. its provider's CLI is missing,
+        // or its StopAsync throws) must NOT fail the switch — log and move on, otherwise the endpoint
+        // leaks a 500 for a swap that actually succeeded.
+        if (oldEntry != null)
+        {
+            _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
+            try
+            {
+                await oldEntry.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose the previous agent for thread {ThreadId} after a provider switch; the new agent is already active",
+                    threadId
+                );
+            }
+        }
+
+        // A provider switch is deliberate and mutable: overwrite the persisted provider so a later
+        // refresh restores it (mode/workspace untouched).
+        await PersistProviderAsync(threadId, newProviderId);
 
         return entry.Agent;
     }

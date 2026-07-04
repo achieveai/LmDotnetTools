@@ -73,6 +73,43 @@ describe('ProviderSelector grouping', () => {
   });
 });
 
+describe('ProviderSelector disabled state', () => {
+  // While a run streams the parent passes disabled=true; provider is editable only when idle.
+  it('disables the selector button when disabled is true', () => {
+    const wrapper = mount(ProviderSelector, {
+      props: { providers, selectedProviderId: 'openai', disabled: true },
+    });
+    expect(wrapper.get('.selector-btn').attributes('disabled')).toBeDefined();
+  });
+
+  it('does not open the dropdown when disabled is true', async () => {
+    const wrapper = mount(ProviderSelector, {
+      props: { providers, selectedProviderId: 'openai', disabled: true },
+    });
+    await wrapper.get('.selector-btn').trigger('click');
+    expect(wrapper.find('.dropdown-menu').exists()).toBe(false);
+  });
+
+  it('does not emit select-provider when disabled', async () => {
+    const wrapper = mount(ProviderSelector, {
+      props: { providers, selectedProviderId: 'openai', disabled: true },
+    });
+    await wrapper.get('.selector-btn').trigger('click');
+    expect(wrapper.emitted('select-provider')).toBeUndefined();
+  });
+
+  it('renders an editable dropdown (no permanent lock badge) when idle', async () => {
+    const wrapper = mount(ProviderSelector, {
+      props: { providers, selectedProviderId: 'openai' },
+    });
+    // The old immutable-provider badge is gone; the selector is always a dropdown button.
+    expect(wrapper.find('[data-testid="provider-locked-badge"]').exists()).toBe(false);
+    expect(wrapper.get('.selector-btn').attributes('disabled')).toBeUndefined();
+    await wrapper.get('.selector-btn').trigger('click');
+    expect(wrapper.find('.dropdown-menu').exists()).toBe(true);
+  });
+});
+
 describe('ProviderSelector dropdown scroll', () => {
   // Extract the `.dropdown-menu { ... }` rule body from the scoped stylesheet source.
   const menuRule = (() => {

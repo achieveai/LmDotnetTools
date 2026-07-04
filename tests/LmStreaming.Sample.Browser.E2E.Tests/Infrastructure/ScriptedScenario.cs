@@ -32,7 +32,7 @@ public static class ScriptedScenario
     /// A <see cref="ScenarioSession"/> that owns the factory, context, and page. Callers
     /// dispose it with <c>await using</c>.
     /// </returns>
-    public static async Task<ScenarioSession> OpenAsync(
+    public static Task<ScenarioSession> OpenAsync(
         this PlaywrightFixture fixture,
         string providerMode,
         HttpMessageHandler handler,
@@ -43,7 +43,51 @@ public static class ScriptedScenario
         SandboxGatewayOptions? sandboxOptions = null
     )
     {
-        var builder = new ScriptedBuilder(handler, subAgentFactory);
+        return fixture.OpenWithBuilderAsync(
+            providerMode,
+            new ScriptedBuilder(handler, subAgentFactory),
+            fixedPort,
+            catalogClient,
+            sandboxGatewayHandler,
+            sandboxOptions);
+    }
+
+    /// <summary>
+    /// Provider-switch overload: takes the <see cref="ScriptedSseResponder"/> itself (not a single
+    /// wire-committed handler) so the agent can be recreated on EITHER scripted wire mid-session —
+    /// required to exercise a runtime provider switch between <c>test</c> (OpenAI) and
+    /// <c>test-anthropic</c> (Anthropic). <paramref name="providerMode"/> is the initial selection.
+    /// </summary>
+    public static Task<ScenarioSession> OpenAsync(
+        this PlaywrightFixture fixture,
+        string providerMode,
+        ScriptedSseResponder responder,
+        Func<ILoggerFactory, Func<IStreamingAgent>, SubAgentOptions?>? subAgentFactory = null,
+        int? fixedPort = null,
+        IMarketplaceCatalogClient? catalogClient = null,
+        HttpMessageHandler? sandboxGatewayHandler = null,
+        SandboxGatewayOptions? sandboxOptions = null
+    )
+    {
+        return fixture.OpenWithBuilderAsync(
+            providerMode,
+            new ScriptedBuilder(responder, subAgentFactory),
+            fixedPort,
+            catalogClient,
+            sandboxGatewayHandler,
+            sandboxOptions);
+    }
+
+    private static async Task<ScenarioSession> OpenWithBuilderAsync(
+        this PlaywrightFixture fixture,
+        string providerMode,
+        ITestAgentBuilder builder,
+        int? fixedPort,
+        IMarketplaceCatalogClient? catalogClient,
+        HttpMessageHandler? sandboxGatewayHandler,
+        SandboxGatewayOptions? sandboxOptions
+    )
+    {
         var factory = new BrowserWebAppFactory(
             providerMode,
             builder,

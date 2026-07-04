@@ -236,6 +236,99 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// Switches a conversation's provider. Mirrors <see cref="SwitchMode"/>: the provider is mutable
+    /// while the conversation is idle (its run has completed) and locked only while a run streams.
+    /// The thread's current mode and persisted workspace are preserved. An unavailable/unknown target
+    /// provider answers a clean 503 rather than evicting the working agent.
+    /// </summary>
+    [HttpPost("{threadId}/provider")]
+    public async Task<IActionResult> SwitchProvider(
+        string threadId,
+        [FromBody] SwitchProviderRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var runState = agentPool.GetRunStateInfo(threadId);
+        if (runState.IsInProgress)
+        {
+            logger.LogWarning(
+                "Blocked provider switch for thread {ThreadId} to provider {ProviderId} because a run is in progress. CurrentRunId={CurrentRunId}, AgentIsRunning={AgentIsRunning}, RunTaskCompleted={RunTaskCompleted}, IsStale={IsStale}",
+                threadId,
+                request.ProviderId,
+                runState.CurrentRunId,
+                runState.AgentIsRunning,
+                runState.RunTaskCompleted,
+                runState.IsStale);
+            return Conflict(
+                new
+                {
+                    error = "Cannot switch provider while response is streaming.",
+                    code = "provider_switch_while_streaming",
+                    threadId,
+                });
+        }
+
+        // Preserve the thread's current mode across the provider swap. Prefer the live agent's mode;
+        // fall back to the persisted mode id (then the system default) if the agent was evicted.
+        var currentMode = agentPool.GetAgentMode(threadId);
+        if (currentMode == null)
+        {
+            var metadata = await store.LoadMetadataAsync(threadId, ct);
+            var persistedModeId =
+                metadata?.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                    ? modeObj?.ToString()
+                    : null;
+            var chatMode =
+                await modeStore.GetModeAsync(persistedModeId ?? SystemChatModes.DefaultModeId, ct)
+                ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+            if (chatMode != null)
+            {
+                currentMode = chatMode; // implicit ChatMode -> AgentProfile (non-null)
+            }
+        }
+
+        if (currentMode == null)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new { error = "Could not resolve the conversation's current mode.", threadId });
+        }
+
+        // Switching to a sandbox-backed provider eagerly reprovisions; a gateway rejection or an
+        // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
+        try
+        {
+            _ = await agentPool.RecreateAgentWithProviderAsync(threadId, request.ProviderId, currentMode);
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Provider switch to {ProviderId} for thread {ThreadId} failed: provider unavailable",
+                request.ProviderId,
+                threadId);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Provider switch to {ProviderId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
+                request.ProviderId,
+                threadId,
+                ex.StatusCode);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+        }
+
+        return Ok(new { providerId = request.ProviderId });
+    }
+
+    /// <summary>
     /// Fixes legacy persisted messages where content_block_start leaked "{}" into FunctionArgs,
     /// producing invalid JSON like {}{"query":"..."}.
     /// </summary>

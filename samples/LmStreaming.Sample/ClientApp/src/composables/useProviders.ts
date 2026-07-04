@@ -1,15 +1,16 @@
 import { ref, computed } from 'vue';
 import type { ProviderDescriptor } from '@/types/providers';
-import { listProviders } from '@/api/providersApi';
+import { listProviders, switchConversationProvider } from '@/api/providersApi';
 
 /**
  * Composable that loads the provider catalog from the backend and exposes the
- * user's currently-selected provider for the next new conversation.
+ * user's currently-selected provider.
  *
- * The selection is intentionally process-local: the backend treats a thread's
- * provider as immutable once the thread has its first message, so this state
- * only matters until that point. After the first message we read the locked
- * value from the conversation's metadata instead.
+ * For a NEW (messageless) conversation the selection is process-local and simply
+ * chooses the provider the first message will bind. Once a conversation has started
+ * its provider is mutable ONLY while idle: switching it calls {@link switchProvider}
+ * (POST .../provider), which recreates the agent on the backend. While a run streams
+ * the selector is locked (the backend answers 409).
  */
 export function useProviders() {
   const providers = ref<ProviderDescriptor[]>([]);
@@ -66,6 +67,23 @@ export function useProviders() {
   }
 
   /**
+   * Switches the given (started) conversation's provider on the backend, then reflects it locally.
+   * Mirrors useChatModes.switchMode. Re-throws so the caller (ChatLayout) can surface the failure
+   * and leave the selection unchanged — the backend answers 409 while streaming and 503 when the
+   * target provider is unavailable.
+   */
+  async function switchProvider(threadId: string, providerId: string): Promise<void> {
+    try {
+      await switchConversationProvider(threadId, providerId);
+      selectedProviderId.value = providerId;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to switch provider';
+      console.error('Failed to switch provider:', e);
+      throw e;
+    }
+  }
+
+  /**
    * Look up a descriptor by id. Returns null if the id is unknown — useful for
    * rendering a locked-thread badge when the persisted provider has since been
    * removed from the registry.
@@ -84,6 +102,7 @@ export function useProviders() {
     error,
     loadProviders,
     selectProvider,
+    switchProvider,
     getProviderById,
   };
 }
