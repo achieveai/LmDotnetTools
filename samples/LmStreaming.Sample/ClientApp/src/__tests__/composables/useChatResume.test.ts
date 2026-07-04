@@ -473,6 +473,38 @@ describe('useChat — streaming flag resets when switching to an idle conversati
     expect(chat.isLoading.value, 'switching to an idle conversation must clear the streaming flag').toBe(false);
     expect(chat.isSending.value, 'and the sending flag too').toBe(false);
   });
+
+  // Regression for the BUG 1 fix: the flag must NOT be lowered inside clearMessages. Doing so flashed
+  // a transient "idle" during the awaited history load when switching BACK into a still-streaming
+  // conversation — which raced the stream-idle wait into reading the transcript before the resumed
+  // final text arrived (the StreamingResumeToolPills E2E failure). markStreamLoading() raises the flag
+  // BEFORE the load so a resuming target stays continuously "streaming"; markStreamIdle() lowers it
+  // only once the run state is known to be idle.
+  it('keeps isLoading true throughout a switch-back into a still-streaming conversation', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-A');
+    await chat.sendMessage('hi');
+    expect(chat.isLoading.value, 'A is streaming').toBe(true);
+
+    // Switch AWAY to a fresh idle chat — mirror handleNewChat (clearMessages + markStreamIdle).
+    await chat.disconnectWebSocket();
+    await chat.clearMessages();
+    chat.markStreamIdle();
+    expect(chat.isLoading.value, 'the new idle chat shows Send').toBe(false);
+
+    // Switch BACK to A, which is STILL streaming — mirror handleSelectConversation.
+    await chat.clearMessages();
+    chat.setThreadId('thread-A');
+    chat.markStreamLoading();
+    // The flag must already be raised before the awaited load, so there is no idle window to observe.
+    expect(chat.isLoading.value, 'loading a possibly-active conversation shows Stop, not Send').toBe(true);
+    await chat.loadMessagesFromBackend('thread-A');
+    convMocks.getRunState.mockResolvedValue({ threadId: 'thread-A', isInProgress: true, currentRunId: 'run-A' });
+    await chat.resumeStreamIfActive('thread-A');
+
+    // A is in-flight ⇒ the control stays "Stop" (isLoading true) with no transient flip to idle.
+    expect(chat.isLoading.value, 'a resuming conversation stays streaming').toBe(true);
+  });
 });
 
 // BUG 2: a multi-turn run mixing reasoning + tool calls + text, switched away MID-run and returned to,

@@ -84,6 +84,8 @@ const {
   setThreadId,
   loadMessagesFromBackend,
   resumeStreamIfActive,
+  markStreamIdle,
+  markStreamLoading,
   getResultForToolCall,
 } = useChat({
   getModeId: () => currentModeId.value,
@@ -193,6 +195,10 @@ async function handleNewChat(): Promise<void> {
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  // A fresh chat is always idle — return the Send/Stop control to "Send" if we came from a
+  // streaming conversation (clearMessages no longer lowers the flags to avoid a switch-back
+  // flicker; see useChat.markStreamIdle).
+  markStreamIdle();
 
   // Create new thread (without adding to sidebar yet)
   const newThreadId = createNewConversation();
@@ -219,6 +225,11 @@ async function handleSelectConversation(threadId: string): Promise<void> {
 
   // Load existing messages
   try {
+    // Keep the Send/Stop control on "Stop" while we load + probe run state, so switching back into a
+    // still-streaming conversation stays continuously "streaming" (no flash to "Send" during the
+    // awaited load). resumeStreamIfActive resolves it: it keeps this raised for an in-flight run, or
+    // lowers it via markStreamIdle for an idle target.
+    markStreamLoading();
     await loadMessagesFromBackend(threadId);
     // If a run is still streaming on the backend (the pooled agent keeps running after we
     // disconnected on switch/refresh), re-open the WebSocket to resume the live stream instead
@@ -226,6 +237,8 @@ async function handleSelectConversation(threadId: string): Promise<void> {
     await resumeStreamIfActive(threadId);
   } catch (e) {
     console.error('Failed to load messages:', e);
+    // A load/resume failure must not strand the UI on "Stop" forever.
+    markStreamIdle();
   }
 }
 

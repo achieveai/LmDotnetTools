@@ -1048,9 +1048,39 @@ export function useChat(options: UseChatOptions = {}) {
    * kind-runId-generationId-messageOrderIdx dedups replay vs history). Without this, returning to
    * a streaming conversation showed the partial frozen at the last persisted point.
    */
+  /**
+   * Lower the streaming flags to their idle state. Called when a conversation switch (or new chat)
+   * lands on a target with no resumable in-flight run, so the Send/Stop control returns to "Send"
+   * (BUG 1). It is deliberately NOT done inside clearMessages: clearMessages runs at the START of
+   * every switch, BEFORE the awaited loadMessagesFromBackend + resumeStreamIfActive, so lowering the
+   * flag there produced a transient "idle" window mid switch-back — which a resumed run would flash
+   * through (and which raced the E2E's stream-idle wait into reading the transcript before the
+   * resumed final text arrived). Deciding idle-vs-streaming only once the run state is known keeps a
+   * genuine resume continuously "streaming" with no flicker.
+   */
+  function markStreamIdle(): void {
+    isLoading.value = false;
+    isSending.value = false;
+  }
+
+  /**
+   * Raise the streaming flag while a conversation switch loads and probes the target's run state.
+   * Selecting a conversation runs clearMessages → loadMessagesFromBackend → resumeStreamIfActive; the
+   * caller sets this right before the load so the Send/Stop control stays "Stop" continuously when the
+   * target turns out to still be streaming (resumeStreamIfActive keeps it raised), instead of flashing
+   * to "Send" during the awaited load and only snapping back to "Stop" on resume. A target that is
+   * actually idle resolves to Send via markStreamIdle() in resumeStreamIfActive's no-run branches.
+   */
+  function markStreamLoading(): void {
+    isLoading.value = true;
+  }
+
   async function resumeStreamIfActive(existingThreadId: string): Promise<void> {
     // Only the WebSocket transport maintains a resumable live backend run.
-    if (transport.value !== 'websocket') return;
+    if (transport.value !== 'websocket') {
+      markStreamIdle();
+      return;
+    }
 
     // Already streaming this thread on an open socket — nothing to resume.
     if (
@@ -1068,12 +1098,14 @@ export function useChat(options: UseChatOptions = {}) {
       runState = await getRunState(existingThreadId);
     } catch (err) {
       log.warn('Failed to query run state for resume', { threadId: existingThreadId, error: err });
+      markStreamIdle();
       return;
     }
 
     // The active conversation may have changed while getRunState was in flight (rapid switching).
     // Binding this thread's stream to whatever conversation is now current would contaminate it,
-    // so abort if we've moved on.
+    // so abort if we've moved on. Do NOT touch the streaming flags here — a newer switch already
+    // owns them; clearing them would stomp the conversation we just moved to.
     if (threadId.value !== existingThreadId) {
       log.debug('Thread changed during resume check; aborting', {
         requested: existingThreadId,
@@ -1084,6 +1116,7 @@ export function useChat(options: UseChatOptions = {}) {
 
     if (!runState?.isInProgress) {
       log.debug('No in-flight run to resume', { threadId: existingThreadId });
+      markStreamIdle();
       return;
     }
 
@@ -1139,14 +1172,12 @@ export function useChat(options: UseChatOptions = {}) {
     threadId.value = null;
     currentRunId.value = null;
     toolResults.value.clear();
-    // Reset the streaming flags too. clearMessages is the reset point on every conversation switch
-    // (handleSelectConversation) and new-chat, and it tears down the socket below — so the previous
-    // conversation's in-flight state must not leak onto the next one. Without this, switching FROM a
-    // streaming conversation TO an idle one left isLoading=true (resume only ever RAISES it, never
-    // lowers it), so the idle conversation kept showing the red Stop button forever (BUG 1). A
-    // genuinely in-flight target re-raises isLoading via resumeStreamIfActive right after.
-    isLoading.value = false;
-    isSending.value = false;
+    // NB: the streaming flags (isLoading/isSending) are deliberately NOT reset here. clearMessages
+    // runs at the START of every switch — BEFORE the awaited loadMessagesFromBackend +
+    // resumeStreamIfActive — so lowering them here flashed a transient "idle" through a switch-back
+    // that then resumes (BUG 1's regression on the tool-pill resume path). Idle is decided once the
+    // run state is known: markStreamIdle() in resumeStreamIfActive's no-run branches (switch to an
+    // idle existing conversation) and in handleNewChat (a fresh chat is always idle).
     resetContentTurnEpoch();
     reset();
 
@@ -1355,6 +1386,8 @@ export function useChat(options: UseChatOptions = {}) {
     setThreadId,
     loadMessagesFromBackend,
     resumeStreamIfActive,
+    markStreamIdle,
+    markStreamLoading,
   };
 }
 
