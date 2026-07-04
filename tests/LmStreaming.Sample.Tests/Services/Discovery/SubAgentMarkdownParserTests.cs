@@ -1,4 +1,4 @@
-using LmStreaming.Sample.Services.Discovery;
+using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
 
@@ -12,7 +12,8 @@ public class SubAgentMarkdownParserTests
     [Fact]
     public void Parse_WellFormed_ExposesAllFields()
     {
-        var md = "---\nname: echo-agent\ndescription: Echo discovered marker.\nmodel: claude-sonnet-4-5\ntools:\n  - Read\n  - Glob\n---\nYou are the echo sub-agent.";
+        var md =
+            "---\nname: echo-agent\ndescription: Echo discovered marker.\nmodel: claude-sonnet-4-5\ntools:\n  - Read\n  - Glob\n---\nYou are the echo sub-agent.";
 
         var parsed = SubAgentMarkdownParser.Parse(md, "fallback");
 
