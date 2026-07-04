@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
 
@@ -249,5 +250,79 @@ public class ConversationsControllerTests
 
         result.Should().BeOfType<OkObjectResult>();
         pool.GetEffectiveProviderId(threadId, null).Should().Be("openai");
+    }
+
+    [Fact]
+    public async Task SwitchProvider_ReturnsOk_ViaPersistedModeFallback_WhenAgentNotPooled()
+    {
+        // The real-world switch-after-refresh path: the agent was evicted from the pool
+        // (GetAgentMode == null), but the thread's mode was persisted. The controller must recover the
+        // mode from metadata + the mode store and preserve it across the provider swap. This exercises
+        // the fallback chain (metadata → mode store) that the live-agent tests never reach.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-prov-refresh",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-prov-refresh",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, "math-helper")
+                    .SetItem(MultiTurnAgentPool.ProviderPropertyKey, "test"),
+            });
+        await using var pool = CreatePoolWithRegistry(registry, store);
+
+        var modeStore = new Mock<IChatModeStore>();
+        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SystemChatModes.GetById("math-helper"));
+
+        // No live agent for this thread → forces the persisted-mode fallback chain in the controller.
+        var controller = new ConversationsController(
+            store, pool, modeStore.Object, NullLogger<ConversationsController>.Instance);
+
+        var result = await controller.SwitchProvider(
+            "thread-prov-refresh",
+            new SwitchProviderRequest { ProviderId = "openai" },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        JsonSerializer.Serialize(ok.Value).Should().Contain("\"providerId\":\"openai\"");
+        // Provider switched AND the recovered mode was preserved on the recreated agent.
+        pool.GetEffectiveProviderId("thread-prov-refresh", null).Should().Be("openai");
+        pool.GetAgentMode("thread-prov-refresh")!.Id.Should().Be("math-helper");
+    }
+
+    [Fact]
+    public async Task SwitchProvider_Returns500_WhenNoModeCanBeResolved()
+    {
+        // Agent evicted from the pool (GetAgentMode == null) AND the mode store resolves nothing —
+        // neither a persisted mode nor the system default. The controller cannot preserve a mode across
+        // the swap, so it answers a clean 500 rather than recreating the agent with an unknown mode.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePoolWithRegistry(registry, store);
+
+        var modeStore = new Mock<IChatModeStore>();
+        // GetById on an unknown id returns null (typed ChatMode?), so every resolution attempt fails.
+        modeStore.Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SystemChatModes.GetById("__no_such_mode__"));
+
+        // No agent is created for this thread and no metadata is persisted → GetAgentMode is null and
+        // the fallback chain resolves nothing.
+        var controller = new ConversationsController(
+            store, pool, modeStore.Object, NullLogger<ConversationsController>.Instance);
+
+        var result = await controller.SwitchProvider(
+            "thread-prov-nomode",
+            new SwitchProviderRequest { ProviderId = "openai" },
+            CancellationToken.None);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        obj.StatusCode.Should().Be(500);
+        JsonSerializer.Serialize(obj.Value)
+            .Should().Contain("Could not resolve the conversation");
+        // The failed switch left the thread's persisted provider untouched.
+        pool.GetEffectiveProviderId("thread-prov-nomode", null).Should().Be("test");
     }
 }

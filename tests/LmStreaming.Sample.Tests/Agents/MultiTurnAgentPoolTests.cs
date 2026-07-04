@@ -610,6 +610,50 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task RecreateAgentWithProviderAsync_LeavesExistingAgentPooled_WhenNewAgentConstructionThrows()
+    {
+        // The target provider is available (validation passes), but BUILDING the replacement agent can
+        // still throw AFTER validation — e.g. a Workspace-Agent sandbox session or provider CLI fails to
+        // start. The switch must be transactional: a construction failure must leave the existing working
+        // agent pooled (and the persisted provider untouched), not evict it and strand the conversation
+        // with no agent. Surfaces upstream as a clean 503 for a switch that never happened.
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+        var creations = 0;
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                creations++;
+                if (creations >= 2)
+                {
+                    // Second creation = the recreate. Simulate replacement construction failing.
+                    throw new InvalidOperationException("sandbox session failed to start");
+                }
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var original = pool.GetOrCreateAgent(
+            "thread-prov-construct-throws", mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+        (await WaitForPersistedProviderAsync(store, "thread-prov-construct-throws")).Should().Be("test");
+
+        var act = async () =>
+            await pool.RecreateAgentWithProviderAsync("thread-prov-construct-throws", "openai", mode);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        // Untouched: the SAME original agent is still pooled (a re-fetch does NOT hit the factory again —
+        // proving it was never evicted), and the persisted provider is still the original "test".
+        ReferenceEquals(pool.GetOrCreateAgent("thread-prov-construct-throws", mode), original).Should().BeTrue();
+        creations.Should().Be(2, "the failed recreate is the only extra factory call; the re-fetch reused the pooled agent");
+        pool.GetEffectiveProviderId("thread-prov-construct-throws", null).Should().Be("test");
+    }
+
+    [Fact]
     public async Task ThreadRemoved_SubscriberException_DoesNotPoisonOtherSubscribers()
     {
         // Defensive: a buggy subscriber must not strand subsequent listeners. The pool wraps
