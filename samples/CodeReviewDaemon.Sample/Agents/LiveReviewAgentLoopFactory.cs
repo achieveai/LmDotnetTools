@@ -47,7 +47,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId)
+    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId, string? reasoningEffort = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
@@ -56,21 +56,26 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         // loops. The model id (e.g. claude-sonnet-5) is supplied per run via defaultOptions below.
         var providerAgent = GetSharedAgent();
 
+        // Resolve the adaptive-thinking effort: an explicit per-call value wins, else the configured
+        // default. Attach output_config ONLY when the effort is non-empty — an adaptive model (sonnet)
+        // needs it to keep reasoning bounded, but a non-adaptive model (haiku) REJECTS an effort it does
+        // not support, so it must be omitted for those.
+        var effort = reasoningEffort ?? _options.ReviewReasoningEffort;
+        var extraProperties = string.IsNullOrWhiteSpace(effort)
+            ? ImmutableDictionary<string, object?>.Empty
+            : ImmutableDictionary<string, object?>.Empty.Add(
+                "OutputConfig", new AnthropicOutputConfig { Effort = effort });
+
         var loop = new MultiTurnAgentLoop(
             providerAgent,
             new FunctionRegistry(),
             threadId,
             systemPrompt: profile.SystemPrompt,
-            // MaxToken must leave room for BOTH the adaptive-model reasoning and the answer, and the
-            // effort (output_config.effort) caps the reasoning so the review text is not starved — without
-            // a low effort the adaptive model spends the whole budget reasoning over a large diff and
-            // returns no text.
             defaultOptions: new GenerateReplyOptions
             {
                 ModelId = modelId ?? string.Empty,
                 MaxToken = _options.ReviewMaxTokens,
-                ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(
-                    "OutputConfig", new AnthropicOutputConfig { Effort = _options.ReviewReasoningEffort }),
+                ExtraProperties = extraProperties,
             },
             logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>());
 

@@ -61,6 +61,23 @@ internal sealed class CodeReviewDaemonOptions
     public string ReviewModelId { get; init; } = "claude-sonnet-5";
 
     /// <summary>
+    /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
+    /// model the configured backend accepts — the Copilot backend rejects OpenRouter-style slugs
+    /// (e.g. <c>anthropic/claude-haiku-4-5</c>) with <c>model_not_supported</c>; its haiku id is
+    /// <c>claude-haiku-4.5</c>. The B variant is the model axis of the A/B, so it defaults to a cheaper
+    /// model than the primary <see cref="ReviewModelId"/>.
+    /// </summary>
+    public string VariantModelId { get; init; } = "claude-haiku-4.5";
+
+    /// <summary>
+    /// Adaptive-thinking effort (<c>output_config.effort</c>) for the A/B (B) variant. Empty (default) omits
+    /// it — the default variant model (<c>claude-haiku-4.5</c>) is not an adaptive-thinking model and
+    /// rejects an effort it does not support. Set this only if <see cref="VariantModelId"/> is pointed at
+    /// an adaptive model that needs its reasoning bounded.
+    /// </summary>
+    public string VariantReasoningEffort { get; init; } = "";
+
+    /// <summary>
     /// Max output tokens for a review turn. Copilot's adaptive Claude models emit reasoning before the
     /// answer, and that reasoning counts against the token budget — the provider default (4096) is easily
     /// exhausted by reasoning over a large diff, leaving no room for the review text (an empty review).

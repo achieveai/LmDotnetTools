@@ -15,7 +15,10 @@ internal interface IReviewAgentLoopFactory
     /// <summary>
     /// Creates a fresh agent loop for <paramref name="profile"/> on its own conversation
     /// <paramref name="threadId"/>, overriding the model with <paramref name="modelId"/> when supplied.
-    /// The caller owns the returned loop's lifetime (it is <see cref="IAsyncDisposable"/>).
+    /// <paramref name="reasoningEffort"/> sets the adaptive-thinking effort (<c>output_config.effort</c>)
+    /// for this loop; <c>null</c> uses the daemon's configured default and an empty value omits it
+    /// entirely (required for non-adaptive models — e.g. Copilot's haiku rejects an effort it does not
+    /// support). The caller owns the returned loop's lifetime (it is <see cref="IAsyncDisposable"/>).
     /// </summary>
-    IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId);
+    IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId, string? reasoningEffort = null);
 }

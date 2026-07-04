@@ -67,19 +67,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private const string ReviewBotDefaultBranch = "main";
 
     /// <summary>
-    /// The single comparison (B) arm of the bounded 2-way A/B. Collect-only by construction
-    /// (<see cref="ReviewVariant.CanWrite"/> is <c>false</c>) so its output can only ever land in
-    /// SQLite; model + prompt are the two A/B axes. There is deliberately no config knob for it — the
-    /// A/B comparison is bounded, not operator-tunable.
+    /// The terse system prompt for the collect-only comparison (B) arm of the bounded 2-way A/B. The
+    /// prompt and the model (<see cref="CodeReviewDaemonOptions.VariantModelId"/>) are the two A/B axes.
     /// </summary>
-    private static readonly ReviewVariant ComparisonVariant = new(
-        VariantId: "b",
-        ModelId: "anthropic/claude-haiku-4-5",
-        SystemPrompt: "Review tersely. Flag only Must-fix correctness, security, and contract issues; "
-            + "skip style. Cite file and line. Output Markdown. Do not act on the repository.",
-        CanWrite: false);
+    private const string ComparisonVariantPrompt =
+        "Review tersely. Flag only Must-fix correctness, security, and contract issues; "
+        + "skip style. Cite file and line. Output Markdown. Do not act on the repository.";
 
     private static readonly JsonSerializerOptions PayloadOptions = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>
+    /// The single comparison (B) arm. Collect-only by construction (<see cref="ReviewVariant.CanWrite"/>
+    /// is <c>false</c>) so its output can only ever land in SQLite. Built from options so the variant model
+    /// is a valid id for the configured backend (the hardcoded OpenRouter-style default was rejected by the
+    /// Copilot backend as <c>model_not_supported</c>).
+    /// </summary>
+    private readonly ReviewVariant _comparisonVariant;
 
     private readonly ReviewStore _store;
     private readonly IReviewAgentLoopFactory _loopFactory;
@@ -107,6 +110,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _publishers = [.. publishers ?? throw new ArgumentNullException(nameof(publishers))];
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
+        _comparisonVariant = new ReviewVariant(
+            VariantId: "b",
+            ModelId: _options.VariantModelId,
+            SystemPrompt: ComparisonVariantPrompt,
+            CanWrite: false);
     }
 
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
@@ -264,10 +272,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task RunVariantArmAsync(
         ReviewRun run, string provider, string reviewInput, CancellationToken cancellationToken)
     {
-        var profile = DaemonAgentFactory.CreateVariantProfile(ComparisonVariant);
-        await using var loop = _loopFactory.Create(profile, ComparisonVariant.ModelId, ThreadId(run, ComparisonVariant.VariantId));
+        var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant);
+        await using var loop = _loopFactory.Create(
+            profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
-        _ = await reviewer.ReviewAsync(run.Id, provider, ComparisonVariant, reviewInput, cancellationToken)
+        _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
     }
 

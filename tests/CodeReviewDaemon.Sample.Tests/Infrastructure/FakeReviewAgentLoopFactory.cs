@@ -26,10 +26,14 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Thread ids passed to <see cref="Create"/>, in call order.</summary>
     public List<string> ThreadIds { get; } = [];
 
-    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId)
+    /// <summary>Reasoning-effort values passed to <see cref="Create"/>, in call order (null = default).</summary>
+    public List<string?> ReasoningEfforts { get; } = [];
+
+    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId, string? reasoningEffort = null)
     {
         CreatedProfileIds.Add(profile.Id);
         ThreadIds.Add(threadId);
+        ReasoningEfforts.Add(reasoningEffort);
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
