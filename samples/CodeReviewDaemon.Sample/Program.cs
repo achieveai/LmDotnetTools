@@ -78,6 +78,9 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 // interactive sign-in that no one is present to complete.
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
+// The daemon has no chat sessions/threads to forward to (that's LmStreaming.Sample-only); the
+// shared AuthWebhookController still requires an IAuthWebhookForwarder, so wire the no-op.
+builder.Services.AddSingleton<IAuthWebhookForwarder, NoOpAuthWebhookForwarder>();
 
 // Webhook security layer (plan §9). Enforced by a daemon-only middleware in front of the shared
 // AuthWebhookController: HMAC over the raw body, ±5min timestamp, single-use delivery id, JSON-only and

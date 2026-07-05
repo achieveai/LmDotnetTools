@@ -158,8 +158,8 @@ public sealed class PendingAuthCoordinator(
             {
                 Info = new PendingAuthInfo(
                     providerId,
-                    $"/auth/{providerId}",
-                    $"sandbox egress requires sign-in to '{providerId}'"),
+                    AuthSigninUrls.BuildSigninUrl(providerId),
+                    AuthSigninUrls.BuildReason(providerId)),
                 WaiterCount = 1,
             };
             _pending[providerId] = entry;

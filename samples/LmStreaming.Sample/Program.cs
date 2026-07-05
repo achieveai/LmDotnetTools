@@ -37,6 +37,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -242,6 +243,17 @@ try
     _ = builder.Services.AddSingleton<IAuthEventNotifier, WebSocketAuthEventNotifier>();
     _ = builder.Services.AddSingleton<PendingAuthCoordinator>();
     _ = builder.Services.AddSingleton<IAuthResolutionPolicy, DeferredInteractiveAuthPolicy>();
+
+    // Auth-webhook forwarding: in addition to the WS-facing auth_required/completed/denied
+    // broadcast above, forward the same lifecycle to whichever thread in the session registered a
+    // webhook URL via ConversationsController.Provision (headless REST callers have no WebSocket to
+    // listen on). Depends on SandboxSessionRegistry/IConversationStore, registered below/above.
+    _ = builder.Services.AddSingleton<IAuthWebhookForwarder>(sp => new SandboxAuthWebhookForwarder(
+        sp.GetRequiredService<SandboxSessionRegistry>(),
+        sp.GetRequiredService<IConversationStore>(),
+        new HttpClient { Timeout = TimeSpan.FromSeconds(3) },
+        sp.GetRequiredService<ILogger<SandboxAuthWebhookForwarder>>()
+    ));
 
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
