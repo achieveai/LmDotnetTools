@@ -6,10 +6,12 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// File-based implementation of IConversationStore.
 /// Stores messages and metadata as JSON files in a directory structure.
 /// </summary>
-public sealed class FileConversationStore : IConversationStore
+public sealed class FileConversationStore : IConversationStore, IRunLedgerStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
+    private const string RunsFileName = "runs.json";
+    private const string AcceptedInputsFileName = "accepted-inputs.json";
 
     private readonly string _baseDirectory;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -260,6 +262,183 @@ public sealed class FileConversationStore : IConversationStore
                     .Skip(offset)
                     .Take(limit)
             ];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var threadDir = GetThreadDirectory(entry.ThreadId);
+            _ = Directory.CreateDirectory(threadDir);
+
+            var runsFile = Path.Combine(threadDir, RunsFileName);
+            var runs = await LoadJsonFileAsync<List<RunLedgerEntry>>(runsFile, ct) ?? [];
+
+            var idx = runs.FindIndex(r => r.RunId == entry.RunId);
+            if (idx >= 0)
+            {
+                runs[idx] = entry;
+            }
+            else
+            {
+                runs.Add(entry);
+            }
+
+            await WriteJsonFileAsync(runsFile, runs, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!Directory.Exists(_baseDirectory))
+            {
+                return null;
+            }
+
+            // No threadId-from-runId index exists on disk, so scan each thread's runs.json.
+            foreach (var dir in Directory.GetDirectories(_baseDirectory))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var runsFile = Path.Combine(dir, RunsFileName);
+                var runs = await LoadJsonFileAsync<List<RunLedgerEntry>>(runsFile, ct);
+                var match = runs?.FirstOrDefault(r => r.RunId == runId);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var runsFile = Path.Combine(GetThreadDirectory(threadId), RunsFileName);
+            var runs = await LoadJsonFileAsync<List<RunLedgerEntry>>(runsFile, ct) ?? [];
+
+            return [.. runs.OrderByDescending(r => r.CreatedAt)];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task RecordAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var threadDir = GetThreadDirectory(threadId);
+            _ = Directory.CreateDirectory(threadDir);
+
+            var acceptedFile = Path.Combine(threadDir, AcceptedInputsFileName);
+            var accepted = await LoadJsonFileAsync<List<AcceptedInputEntry>>(acceptedFile, ct) ?? [];
+
+            var idx = accepted.FindIndex(a => a.InputId == inputId);
+            var entry = new AcceptedInputEntry(threadId, inputId, acceptedAt);
+            if (idx >= 0)
+            {
+                accepted[idx] = entry;
+            }
+            else
+            {
+                accepted.Add(entry);
+            }
+
+            await WriteJsonFileAsync(acceptedFile, accepted, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var acceptedFile = Path.Combine(GetThreadDirectory(threadId), AcceptedInputsFileName);
+            var accepted = await LoadJsonFileAsync<List<AcceptedInputEntry>>(acceptedFile, ct);
+            if (accepted == null)
+            {
+                return;
+            }
+
+            if (accepted.RemoveAll(a => a.InputId == inputId) > 0)
+            {
+                await WriteJsonFileAsync(acceptedFile, accepted, ct);
+            }
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var acceptedFile = Path.Combine(GetThreadDirectory(threadId), AcceptedInputsFileName);
+            var accepted = await LoadJsonFileAsync<List<AcceptedInputEntry>>(acceptedFile, ct) ?? [];
+
+            return accepted.Select(a => a.InputId).ToHashSet();
         }
         finally
         {
