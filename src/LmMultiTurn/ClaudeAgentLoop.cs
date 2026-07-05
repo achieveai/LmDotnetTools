@@ -124,6 +124,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// Mutually exclusive with <see cref="ClaudeAgentSdkOptions.AssignSessionId"/>; passing
     /// both throws <see cref="ArgumentException"/>.
     /// </param>
+    /// <param name="persistRunLedger">
+    /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
+    /// (requires <paramref name="store"/> to implement it).
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -136,7 +140,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         ILogger<ClaudeAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
-        string? initialSessionId = null)
+        string? initialSessionId = null,
+        bool persistRunLedger = false)
         : base(
             threadId,
             systemPrompt,
@@ -145,7 +150,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             inputChannelCapacity,
             outputChannelCapacity,
             store,
-            logger)
+            logger,
+            persistRunLedger: persistRunLedger)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
@@ -483,7 +489,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 // ParentRunId / WasForked is sourced from explicit caller fork signal
                 // (UserInput.ParentRunId); absence falls back to _latestRunId continuation.
                 var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-                var assignment = StartRun(batch, batchParent);
+                var assignment = await StartRunAsync(batch, batchParent, ct);
 
                 // Track each input for correlation with enqueue/dequeue events
                 foreach (var input in batch)
@@ -726,7 +732,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     {
                         // Safe to send directly
                         // Track inputs for dequeue correlation
-                        var assignment = StartRun(newInputs);
+                        var assignment = await StartRunAsync(newInputs, ct: ct);
                         foreach (var input in newInputs)
                         {
                             _pendingCliInputs.Enqueue((input, assignment));
@@ -789,7 +795,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Start a SINGLE run for ALL merged inputs. Caller-supplied ParentRunId on
         // any merged input promotes this to an explicit fork.
         var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
-        var assignment = StartRun(mergedInputs, mergedParent);
+        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct);
 
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)

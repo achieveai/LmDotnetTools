@@ -32,6 +32,23 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     private string? _generatedModelInstructionsFile;
     private bool _profileUnsupportedWarningLogged;
 
+    /// <summary>
+    /// Creates a new CopilotAgentLoop.
+    /// </summary>
+    /// <param name="options">Options for the Copilot SDK client</param>
+    /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
+    /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
+    /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
+    /// <param name="logger">Optional logger</param>
+    /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
+    /// <param name="clientFactory">Optional factory for creating ICopilotSdkClient (for testing/mocking)</param>
+    /// <param name="persistRunLedger">
+    /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
+    /// (requires <paramref name="store"/> to implement it).
+    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         string threadId,
@@ -42,7 +59,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<CopilotAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null)
+        Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
+        bool persistRunLedger = false)
         : this(
             options,
             functionRegistry: null,
@@ -55,10 +73,30 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             store,
             logger,
             loggerFactory,
-            clientFactory)
+            clientFactory,
+            persistRunLedger: persistRunLedger)
     {
     }
 
+    /// <summary>
+    /// Creates a new CopilotAgentLoop with optional dynamic tool bridging.
+    /// </summary>
+    /// <param name="options">Options for the Copilot SDK client</param>
+    /// <param name="functionRegistry">Optional registry of dynamic functions to bridge as Copilot tools</param>
+    /// <param name="enabledTools">Optional allow-list of tool names to expose to the session</param>
+    /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
+    /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
+    /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
+    /// <param name="logger">Optional logger</param>
+    /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
+    /// <param name="clientFactory">Optional factory for creating ICopilotSdkClient (for testing/mocking)</param>
+    /// <param name="persistRunLedger">
+    /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
+    /// (requires <paramref name="store"/> to implement it).
+    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         FunctionRegistry? functionRegistry,
@@ -71,7 +109,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<CopilotAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null)
+        Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
+        bool persistRunLedger = false)
         : base(
             threadId,
             systemPrompt,
@@ -80,7 +119,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             inputChannelCapacity,
             outputChannelCapacity,
             store,
-            logger)
+            logger,
+            persistRunLedger: persistRunLedger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory;
@@ -213,7 +253,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             }
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-            var assignment = StartRun(batch, batchParent);
+            var assignment = await StartRunAsync(batch, batchParent, ct);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {

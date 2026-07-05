@@ -30,6 +30,24 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     private string? _generatedModelInstructionsFile;
     private bool _profileUnsupportedWarningLogged;
 
+    /// <summary>
+    /// Creates a new CodexAgentLoop.
+    /// </summary>
+    /// <param name="options">Options for the Codex SDK client</param>
+    /// <param name="mcpServers">MCP server configurations for tools</param>
+    /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
+    /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
+    /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
+    /// <param name="logger">Optional logger</param>
+    /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
+    /// <param name="clientFactory">Optional factory for creating CodexSdkClient (for testing/mocking)</param>
+    /// <param name="persistRunLedger">
+    /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
+    /// (requires <paramref name="store"/> to implement it).
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -41,7 +59,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null)
+        Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
+        bool persistRunLedger = false)
         : this(
             options,
             mcpServers,
@@ -55,10 +74,31 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             store,
             logger,
             loggerFactory,
-            clientFactory)
+            clientFactory,
+            persistRunLedger: persistRunLedger)
     {
     }
 
+    /// <summary>
+    /// Creates a new CodexAgentLoop.
+    /// </summary>
+    /// <param name="options">Options for the Codex SDK client</param>
+    /// <param name="mcpServers">MCP server configurations for tools</param>
+    /// <param name="functionRegistry">Optional function registry supplying dynamic tool contracts and handlers</param>
+    /// <param name="enabledTools">Optional allow-list of tool names to enable</param>
+    /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template</param>
+    /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
+    /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
+    /// <param name="logger">Optional logger</param>
+    /// <param name="loggerFactory">Optional logger factory for creating loggers for internal components</param>
+    /// <param name="clientFactory">Optional factory for creating CodexSdkClient (for testing/mocking)</param>
+    /// <param name="persistRunLedger">
+    /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
+    /// (requires <paramref name="store"/> to implement it).
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -72,7 +112,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         IConversationStore? store = null,
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
-        Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null)
+        Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
+        bool persistRunLedger = false)
         : base(
             threadId,
             systemPrompt,
@@ -81,7 +122,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             inputChannelCapacity,
             outputChannelCapacity,
             store,
-            logger)
+            logger,
+            persistRunLedger: persistRunLedger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
@@ -279,7 +321,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             }
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-            var assignment = StartRun(batch, batchParent);
+            var assignment = await StartRunAsync(batch, batchParent, ct);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {

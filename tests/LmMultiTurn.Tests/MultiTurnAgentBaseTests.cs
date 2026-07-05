@@ -70,7 +70,7 @@ public class MultiTurnAgentBaseTests
                 }
 
                 // Start run
-                var assignment = StartRun(batch);
+                var assignment = await StartRunAsync(batch, ct: ct);
                 ExecuteCallCount++;
                 LastRunId = assignment.RunId;
                 LastGenerationId = assignment.GenerationId;
@@ -374,7 +374,7 @@ public class MultiTurnAgentBaseTests
                 }
 
                 _runIndex++;
-                var assignment = StartRun(batch);
+                var assignment = await StartRunAsync(batch, ct: ct);
                 var stripReceipts = _stripReceiptOnFirstRun && _runIndex == 1;
                 var publishedAssignment = stripReceipts
                     ? assignment with { InputIds = [] }
