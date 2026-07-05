@@ -138,6 +138,35 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return (session.CommandRunner, session.FileSystem);
     }
 
+    /// <summary>
+    /// Builds the per-run tool context for the primary review, or returns null to degrade to diff-only.
+    /// Capability gaps (unreachable session, gateway down) log a warning and degrade — they never fail the
+    /// stage (design §7). Sub-agents are attached in Stage 4; here SubAgentOptions is null.
+    /// </summary>
+    private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (!_options.EnableToolAssistedReview || _provisioner is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var session = await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
+            return new ReviewToolContext(
+                GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+                SessionId: session.SessionId,
+                ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
+                SubAgentOptions: null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
+            return null;
+        }
+    }
+
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(run);
@@ -273,8 +302,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task<string> RunPrimaryReviewAsync(
         ReviewRun run, string provider, string reviewInput, CancellationToken cancellationToken)
     {
+        var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
         var profile = DaemonAgentFactory.CreateReviewProfile();
-        await using var loop = _loopFactory.Create(profile, run.ModelId, ThreadId(run, run.VariantId));
+        await using var loop = _loopFactory.Create(
+            profile, run.ModelId, ThreadId(run, run.VariantId), reasoningEffort: null, toolContext: toolContext);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         var result = await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
 
