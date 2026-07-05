@@ -243,8 +243,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // 1. Clone (or reuse) the TARGET repo into its own checkout (PR #121 H1). The per-run
         // OperationPolicy scopes the fetch to exactly this repo + the ReviewBot remote; submodule init
-        // runs under it too, so an off-allow-list submodule is refused rather than fetched.
-        var policy = DaemonOperationPolicy.BuildForRun(repo, _options.ReviewBotRepoUrl);
+        // runs under it too, so an off-allow-list submodule is refused rather than fetched. The
+        // submodule allow-list additionally scopes the cross-repo AchieveAiReviews store checkout
+        // (Task 16): the reviewed repo + the shared Contracts/ layer are always permitted, and a
+        // sibling private submodule is added only when the confidentiality gate confirms same-trust-domain
+        // (Task 17, design §6 Risk B).
+        var storeSubmodules = BuildStoreSubmoduleAllowList(run, repo);
+        var policy = DaemonOperationPolicy.BuildForRun(
+            repo, _options.ReviewBotRepoUrl, allowWriteOperations: false, allowedSubmodules: storeSubmodules);
         var targetRemote = TargetRemoteUrl(repo, provider);
         await EnsureTargetCheckoutAsync(git, targetRemote, run, cancellationToken).ConfigureAwait(false);
 
@@ -290,6 +296,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _logger.LogInformation("Run {RunId}: persisted {Kind} ({Length} char diff).",
             run.Id, ContextArtifactKind, boundedDiff.Length);
     }
+
+    /// <summary>
+    /// Builds the per-run submodule allow-list for the cross-repo <c>AchieveAiReviews</c> store checkout
+    /// (Task 16). The reviewed repo itself and the shared, low-sensitivity <c>Contracts/</c> layer are
+    /// always permitted; a configured sibling repo (<see cref="CodeReviewDaemonOptions.CrossRepoSiblings"/>)
+    /// is added only when <see cref="AllowsCrossRepoCoLocation"/> confirms this run is same-trust-domain
+    /// (Task 17, design §6 Risk B) — an untrusted (fork/public/unknown-trust) PR never gets a sibling
+    /// co-located beside it, so a prompt-injected agent has nothing extra to read and exfiltrate via the
+    /// posted review. Returns empty for the diff-only path, which never walks any submodule.
+    /// </summary>
+    internal IReadOnlyList<SubmoduleAllowRule> BuildStoreSubmoduleAllowList(ReviewRun run, RepoIdentity repo)
+    {
+        if (!_options.EnableToolAssistedReview)
+        {
+            return [];
+        }
+
+        var rules = new List<SubmoduleAllowRule>
+        {
+            new("github.com", $"/{repo.OrgOrOwner}/{repo.RepoName}"),
+            new("github.com", $"/{repo.OrgOrOwner}/Contracts"),
+        };
+
+        if (AllowsCrossRepoCoLocation(run, repo))
+        {
+            foreach (var sibling in _options.CrossRepoSiblings)
+            {
+                rules.Add(new SubmoduleAllowRule("github.com", $"/{sibling}"));
+            }
+        }
+
+        return rules;
+    }
+
+    /// <summary>
+    /// The confidentiality gate (Task 17, design §6 Risk B): whether a sibling private submodule may be
+    /// co-located beside the run's checkout. This placeholder always denies — Task 17 replaces the body
+    /// with the real same-trust-domain check once the run carries a positive trust signal; until then, no
+    /// sibling is ever co-located (fail closed).
+    /// </summary>
+    internal bool AllowsCrossRepoCoLocation(ReviewRun run, RepoIdentity repo) => false;
 
     /// <summary>
     /// Clones the target repo into <see cref="TargetRoot"/> (or reuses an existing checkout), then

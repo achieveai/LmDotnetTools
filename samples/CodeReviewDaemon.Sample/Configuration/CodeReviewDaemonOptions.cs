@@ -155,4 +155,14 @@ internal sealed class CodeReviewDaemonOptions
     /// never include <c>Write</c>/<c>Edit</c>. Default <c>Read</c>/<c>Grep</c>/<c>Glob</c>/<c>Skill</c>.
     /// </summary>
     public IReadOnlyList<string> ReadOnlyToolAllowList { get; init; } = ["Read", "Grep", "Glob", "Skill"];
+
+    /// <summary>
+    /// GitHub <c>owner/repo</c> paths of the <c>AchieveAiReviews</c> store's sibling-repo submodules the
+    /// tool-assisted review may additionally read for cross-repo context, beyond the reviewed repo and the
+    /// always-allowed <c>Contracts/</c> layer (Task 16). Empty (default) means no sibling co-location.
+    /// These are only added to the run's submodule allow-list when the confidentiality gate
+    /// (<c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>, Task 17) permits it for the run — a
+    /// fork or public-repo PR never gets them, regardless of this configuration.
+    /// </summary>
+    public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
 }
