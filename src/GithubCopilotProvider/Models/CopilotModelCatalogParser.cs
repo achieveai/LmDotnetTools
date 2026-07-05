@@ -11,7 +11,9 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 /// <remarks>
 ///     Pure and side-effect free so it can be unit-tested against the captured real response fixture.
 ///     The response shape is <c>{ "data": [ { "id", "name", "vendor", "supported_endpoints": [...] } ] }</c>;
-///     a bare top-level array is also accepted.
+///     a bare top-level array is also accepted. Response unwrap and endpoint reads are shared with the
+///     CopilotAnthropicProxy resolver via <see cref="CopilotModelsResponse"/>; this parser layers the
+///     vendor partition, transport ranking, and adaptive-thinking projection on top.
 /// </remarks>
 public static class CopilotModelCatalogParser
 {
@@ -24,18 +26,9 @@ public static class CopilotModelCatalogParser
         ArgumentNullException.ThrowIfNull(json);
 
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data)
-            ? data
-            : root;
-
-        if (list.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
 
         var models = new List<CopilotModelInfo>();
-        foreach (var item in list.EnumerateArray())
+        foreach (var item in CopilotModelsResponse.EnumerateModelEntries(doc.RootElement))
         {
             if (TryParseModel(item, out var model))
             {
@@ -50,18 +43,13 @@ public static class CopilotModelCatalogParser
     {
         model = null!;
 
-        if (item.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        var id = GetString(item, "id");
+        var id = CopilotModelsResponse.GetString(item, "id");
         if (string.IsNullOrWhiteSpace(id))
         {
             return false;
         }
 
-        if (!TryNormalizeVendor(GetString(item, "vendor"), out var vendor))
+        if (!TryNormalizeVendor(CopilotModelsResponse.GetString(item, "vendor"), out var vendor))
         {
             return false;
         }
@@ -72,7 +60,7 @@ public static class CopilotModelCatalogParser
             return false;
         }
 
-        var displayName = GetString(item, "name");
+        var displayName = CopilotModelsResponse.GetString(item, "name");
         displayName = string.IsNullOrWhiteSpace(displayName) ? id! : displayName!;
 
         model = new CopilotModelInfo(id!, displayName, vendor, transport, SupportsAdaptiveThinking(item));
@@ -126,46 +114,23 @@ public static class CopilotModelCatalogParser
 
     /// <summary>
     ///     Chooses the routable transport from <c>supported_endpoints</c>. <c>/v1/messages</c> wins
-    ///     (Anthropic Messages), else <c>/responses</c> (or its <c>ws:/responses</c> variant) selects
-    ///     the Responses transport. Absent metadata or only <c>/chat/completions</c> yields
-    ///     <see cref="CopilotModelTransport.Unsupported"/>.
+    ///     (Anthropic Messages) regardless of list order, else <c>/responses</c> (or its
+    ///     <c>ws:/responses</c> variant) selects the Responses transport. Absent metadata or only
+    ///     <c>/chat/completions</c> yields <see cref="CopilotModelTransport.Unsupported"/>.
     /// </summary>
     private static CopilotModelTransport DeriveTransport(JsonElement item)
     {
-        if (!item.TryGetProperty("supported_endpoints", out var endpoints)
-            || endpoints.ValueKind != JsonValueKind.Array)
+        if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.MessagesEndpoint))
         {
-            return CopilotModelTransport.Unsupported;
+            return CopilotModelTransport.Anthropic;
         }
 
-        var hasResponses = false;
-        foreach (var endpoint in endpoints.EnumerateArray())
+        if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesEndpoint)
+            || CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.ResponsesWebSocketEndpoint))
         {
-            if (endpoint.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var value = endpoint.GetString();
-            if (string.Equals(value, "/v1/messages", StringComparison.OrdinalIgnoreCase))
-            {
-                return CopilotModelTransport.Anthropic;
-            }
-
-            if (string.Equals(value, "/responses", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, "ws:/responses", StringComparison.OrdinalIgnoreCase))
-            {
-                hasResponses = true;
-            }
+            return CopilotModelTransport.Responses;
         }
 
-        return hasResponses ? CopilotModelTransport.Responses : CopilotModelTransport.Unsupported;
-    }
-
-    private static string? GetString(JsonElement item, string propertyName)
-    {
-        return item.TryGetProperty(propertyName, out var el) && el.ValueKind == JsonValueKind.String
-            ? el.GetString()
-            : null;
+        return CopilotModelTransport.Unsupported;
     }
 }

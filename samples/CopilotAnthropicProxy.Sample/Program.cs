@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
 using Serilog;
@@ -475,27 +476,15 @@ public static class ProxyModelResolver
     /// <summary>Extracts model ids from an OpenAI-shaped (<c>{"data":[{"id":...}]}</c>) or bare-array list.</summary>
     public static IReadOnlyList<string> ParseModelIds(string json)
     {
-        var ids = new List<string>();
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
 
-        if (list.ValueKind == JsonValueKind.Array)
+        var ids = new List<string>();
+        foreach (var item in CopilotModelsResponse.EnumerateModelEntries(doc.RootElement))
         {
-            foreach (var item in list.EnumerateArray())
+            var id = CopilotModelsResponse.GetString(item, "id");
+            if (!string.IsNullOrWhiteSpace(id))
             {
-                if (
-                    item.ValueKind == JsonValueKind.Object
-                    && item.TryGetProperty("id", out var idEl)
-                    && idEl.ValueKind == JsonValueKind.String
-                )
-                {
-                    var id = idEl.GetString();
-                    if (!string.IsNullOrWhiteSpace(id))
-                    {
-                        ids.Add(id);
-                    }
-                }
+                ids.Add(id);
             }
         }
 
@@ -513,51 +502,27 @@ public static class ProxyModelResolver
     public static IReadOnlyList<string> ParseMessagesCapableModelIds(string json)
     {
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var list = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
+        var entries = CopilotModelsResponse.EnumerateModelEntries(doc.RootElement).ToList();
 
-        if (list.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
-        var items = list.EnumerateArray().ToList();
-        var anyEndpointMetadata = items.Any(item =>
-            item.ValueKind == JsonValueKind.Object && item.TryGetProperty("supported_endpoints", out _)
-        );
-        if (!anyEndpointMetadata)
+        // The fallback is per RESPONSE, not per entry: if NO entry carries supported_endpoints metadata
+        // at all (an older/alternative Copilot-compatible /models shape), fall back to id-only rather
+        // than treating every model as unsupported and failing startup. If ANY entry declares it, filter
+        // the whole response to the /v1/messages-capable ids.
+        if (!entries.Any(CopilotModelsResponse.HasSupportedEndpoints))
         {
             return ParseModelIds(json);
         }
 
         var ids = new List<string>();
-        foreach (var item in items)
+        foreach (var item in entries)
         {
-            if (
-                item.ValueKind != JsonValueKind.Object
-                || !item.TryGetProperty("id", out var idEl)
-                || idEl.ValueKind != JsonValueKind.String
-            )
-            {
-                continue;
-            }
-
-            var id = idEl.GetString();
+            var id = CopilotModelsResponse.GetString(item, "id");
             if (string.IsNullOrWhiteSpace(id))
             {
                 continue;
             }
 
-            if (
-                item.TryGetProperty("supported_endpoints", out var endpoints)
-                && endpoints.ValueKind == JsonValueKind.Array
-                && endpoints
-                    .EnumerateArray()
-                    .Any(e =>
-                        e.ValueKind == JsonValueKind.String
-                        && string.Equals(e.GetString(), "/v1/messages", StringComparison.OrdinalIgnoreCase)
-                    )
-            )
+            if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.MessagesEndpoint))
             {
                 ids.Add(id);
             }
