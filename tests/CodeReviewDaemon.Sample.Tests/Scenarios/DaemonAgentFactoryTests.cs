@@ -76,6 +76,18 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_InstructsSkillSubAgentsAndInjectionSafety()
+    {
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("code-reviewer"); // load the skill
+        prompt.Should().Contain("Skill"); // via the Skill tool
+        prompt.Should().Contain("Contracts/"); // cross-repo reading
+        prompt.Should().MatchRegex("(?i)injection|untrusted"); // injection framing
+        prompt.Should().MatchRegex("(?i)daemon.*post"); // daemon owns posting
+    }
+
+    [Fact]
     public void CreateJudgeProfile_and_CreateKnowledgeProfile_have_stable_ids_and_gating()
     {
         // P4.4 — the executor feeds these to the live agent loop only when the judge / knowledge flags
