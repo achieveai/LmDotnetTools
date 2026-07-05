@@ -32,8 +32,15 @@ public static class SubAgentTemplateMapper
         ArgumentNullException.ThrowIfNull(parsed);
         ArgumentNullException.ThrowIfNull(agentFactory);
 
-        var defaults = !string.IsNullOrWhiteSpace(parsed.Model)
-            ? new GenerateReplyOptions { ModelId = parsed.Model.Trim() }
+        // "inherit" is the Claude-Code convention for "use the parent agent's model" — it is NOT a real
+        // model id. Passing it through as an explicit ModelId makes the provider reject the sub-agent turn
+        // (the GitHub Copilot backend returns model_not_supported for "inherit" and other non-native
+        // aliases). Treat "inherit" (and a blank model) as "no explicit model" so the sub-agent inherits
+        // the parent loop's concrete model instead.
+        var hasExplicitModel = !string.IsNullOrWhiteSpace(parsed.Model)
+            && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
+        var defaults = hasExplicitModel
+            ? new GenerateReplyOptions { ModelId = parsed.Model!.Trim() }
             : null;
 
         return new SubAgentTemplate
