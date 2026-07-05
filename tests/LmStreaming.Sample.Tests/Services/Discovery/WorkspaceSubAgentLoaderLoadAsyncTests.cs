@@ -95,7 +95,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         var path = Path.Combine(".claude", "agents", "echo.md");
         await File.WriteAllTextAsync(Path.Combine(_hostPath, path), WellFormedMarkdown);
         var (_, loader) = CreateLoader(_ => JsonOk($$"""
-            { "items": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "{{path.Replace("\\", "\\\\")}}" } ] }
+            { "discovered": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "{{path.Replace("\\", "\\\\")}}" } ] }
             """));
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
@@ -114,7 +114,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         // Kind-filter pin: skills and unknown kinds must not be mapped as sub-agents even when
         // their path resolves to a parseable file. The filter happens before the read.
         var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "items": [ { "kind": "skill", "name": "review", "description": "x", "path": ".claude/skills/review.md" } ] }
+            { "discovered": [ { "kind": "skill", "name": "review", "description": "x", "path": ".claude/skills/review.md" } ] }
             """));
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
@@ -148,7 +148,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_hostPath, goodPath), WellFormedMarkdown);
         var (_, loader) = CreateLoader(_ => JsonOk($$"""
             {
-              "items": [
+              "discovered": [
                 { "kind": "subagent", "name": "missing", "description": "Missing file.", "path": ".claude/agents/missing.md" },
                 { "kind": "subagent", "name": "echo",    "description": "Echoes.",       "path": "{{goodPath.Replace("\\", "\\\\")}}" }
               ]
@@ -171,7 +171,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_hostPath, badPath), "no frontmatter at all\n");
         var (_, loader) = CreateLoader(_ => JsonOk($$"""
             {
-              "items": [
+              "discovered": [
                 { "kind": "subagent", "name": "bad",  "description": "x", "path": "{{badPath.Replace("\\", "\\\\")}}" },
                 { "kind": "subagent", "name": "echo", "description": "x", "path": "{{goodPath.Replace("\\", "\\\\")}}" }
               ]
@@ -189,7 +189,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     {
         // Path-injection guard at the loader boundary: a "../" item must never be read.
         var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "items": [ { "kind": "subagent", "name": "escape", "description": "x", "path": "../outside.md" } ] }
+            { "discovered": [ { "kind": "subagent", "name": "escape", "description": "x", "path": "../outside.md" } ] }
             """));
 
         var result = await loader.LoadAsync(CreateSession(), AgentFactory);
@@ -225,7 +225,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
             """);
         var (_, loader) = CreateLoader(_ => JsonOk($$"""
             {
-              "items": [
+              "discovered": [
                 { "kind": "subagent", "name": "echo-a", "description": "x", "path": "{{firstPath.Replace("\\", "\\\\")}}" },
                 { "kind": "subagent", "name": "echo-b", "description": "x", "path": "{{secondPath.Replace("\\", "\\\\")}}" }
               ]
@@ -245,7 +245,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         // valid mode for non-workspace providers — the loader must short-circuit, not throw.
         var session = new SandboxSession("default", SessionId, "default", HostPath: "");
         var (_, loader) = CreateLoader(_ => JsonOk("""
-            { "items": [ { "kind": "subagent", "name": "echo", "description": "x", "path": "echo.md" } ] }
+            { "discovered": [ { "kind": "subagent", "name": "echo", "description": "x", "path": "echo.md" } ] }
             """));
 
         var result = await loader.LoadAsync(session, AgentFactory);
@@ -256,7 +256,7 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     [Fact]
     public async Task LoadAsync_NullArguments_Throw()
     {
-        var (_, loader) = CreateLoader(_ => JsonOk("""{ "items": [] }"""));
+        var (_, loader) = CreateLoader(_ => JsonOk("""{ "discovered": [] }"""));
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => loader.LoadAsync(null!, AgentFactory));
         await Assert.ThrowsAsync<ArgumentNullException>(() => loader.LoadAsync(CreateSession(), null!));

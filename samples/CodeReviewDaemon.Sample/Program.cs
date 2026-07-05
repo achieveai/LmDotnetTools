@@ -1,5 +1,7 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
@@ -79,26 +81,16 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
 
-// Webhook security layer (plan §9). Enforced by a daemon-only middleware in front of the shared
-// AuthWebhookController: HMAC over the raw body, ±5min timestamp, single-use delivery id, JSON-only and
-// max-body checks, provider allow-list. The signing secret is shared with the gateway (config or a
-// random fallback so an unconfigured daemon fails closed). The allow-list mirrors the registered
-// providers (GitHub always; ADO when enabled).
-builder.Services.AddSingleton(new WebhookVerificationLimits());
-builder.Services.AddSingleton(new WebhookSigningSecret(
-    builder.Configuration["Auth:Webhook:SigningSecret"]));
-builder.Services.AddSingleton(sp =>
-{
-    var limits = sp.GetRequiredService<WebhookVerificationLimits>();
-    var allowed = daemonOptions.EnableAdoProvider ? new[] { "github", "ado" } : ["github"];
-    return new WebhookRequestVerifier(
-        sp.GetRequiredService<WebhookSigningSecret>(),
-        allowed,
-        limits.TimestampTolerance,
-        limits.MaxBodyBytes);
-});
-builder.Services.AddSingleton(sp =>
-    new DeliveryReplayCache(sp.GetRequiredService<WebhookVerificationLimits>().ReplayWindow));
+// Gateway callback authentication. The real sandbox gateway authenticates its auth-webhook calls with a
+// single shared secret in the `Authorization` header (crates/mcp-gateway/.../proxy_policy/auth_webhook.rs
+// sends ONLY `Authorization: {gateway_auth}` — no body signature, timestamp, or delivery id). The shared
+// AuthWebhookController already verifies that secret (AuthSharedSecret, constant-time) and injects tokens
+// only toward each provider's own hosts. The plan §9 HMAC/timestamp/replay middleware was built for a
+// Stripe-style signing gateway this one is NOT: it hard-required X-Sandbox-Signature/Timestamp/Delivery-Id
+// and so rejected EVERY real callback as MissingHeaders (proven live — clone 403, "Rejected ... MissingHeaders"),
+// breaking all authenticated git (private clone, ReviewBot push). It is therefore not wired; the shared
+// secret carried in Authorization is the gateway↔webhook boundary. (WebhookVerification* + DeliveryReplayCache
+// are retained unwired for a future signing gateway.)
 
 // ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
 // The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
@@ -123,8 +115,58 @@ builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrat
 builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
     new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
 
-// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run.
-builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactory>();
+// Per-run session provisioning (tool-assisted path, Task 7). The diff-only path above talks to the
+// gateway directly via a boot-lifetime SandboxOrchestrator; EnableToolAssistedReview instead provisions
+// one sandbox session per run (design §4) so the checkout git and the review agent's MCP tools share a
+// container. The registry needs a SandboxGatewayLifetime purely to resolve/probe the gateway base URL —
+// it is not registered as a hosted service (AutoSpawn stays false, mirroring the SandboxOrchestrator
+// registration above: the daemon assumes an already-running gateway and never spawns one itself).
+var sandboxGatewayOptions = new SandboxGatewayOptions
+{
+    BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+    AutoSpawn = false,
+    Marketplaces = string.Join(",", daemonOptions.Marketplaces),
+    // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
+    // per-run provisioner mounts a distinct leaf (review-run-{id}) under this base, so it MUST be set or
+    // session-create fails with "no workspace base path is configured". Sourced from env/config so it
+    // tracks whatever the adopted gateway actually mounts (e.g. B:/sandbox-workspaces/workspaces).
+    WorkspaceBasePath = Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
+        ?? builder.Configuration["SandboxGateway:WorkspaceBasePath"],
+};
+builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
+    new SandboxGatewayLifetime(
+        sandboxGatewayOptions,
+        sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
+        new HttpClient()),
+    sandboxGatewayOptions,
+    sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
+    // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration).
+    new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+    authOptions,
+    sp.GetRequiredService<AuthSharedSecret>()));
+builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
+    new RegistrySessionSource(sp.GetRequiredService<SandboxSessionRegistry>()));
+builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
+    sp.GetRequiredService<ISandboxSessionSource>(),
+    daemonOptions,
+    sp.GetRequiredService<ILoggerFactory>()));
+
+// Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
+// narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
+// surface directly. DiscoveredSubAgentTemplateBuilder is pure (no gateway calls), so it is registered
+// as-is.
+builder.Services.AddSingleton<IDiscoveredItemsSource>(sp =>
+    new RegistryDiscoverySource(sp.GetRequiredService<SandboxSessionRegistry>()));
+builder.Services.AddSingleton<DiscoveredSubAgentTemplateBuilder>();
+
+// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run. Registered
+// by its concrete type too (rather than only the IReviewAgentLoopFactory interface) so the executor can
+// also resolve its SharedAgentFactory (Task 12) — the same Copilot-backed agent every review loop and any
+// discovered sub-agent are driven by — without standing up a second provider agent.
+builder.Services.AddSingleton<LiveReviewAgentLoopFactory>();
+builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => sp.GetRequiredService<LiveReviewAgentLoopFactory>());
+builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
+    sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
@@ -153,6 +195,27 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+}
+
+// HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB
+// entry it carries must run OUTSIDE the sandbox the untrusted review agent shares, with the write
+// credential injected only into this host-process git runner. Registered only when a ReviewBot repo is
+// configured — otherwise DaemonReviewStageExecutor's null-fallback keeps writing through the sandbox
+// runner exactly as it does today. This iteration reuses the single existing GitHub credential (a
+// dedicated write-scoped credential is a documented fast-follow, not introduced here).
+if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
+{
+    builder.Services.AddSingleton(sp =>
+    {
+        var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
+            ? Path.Combine(AppContext.BaseDirectory, "workspaces")
+            : daemonOptions.WorkspaceHostRoot;
+        var github = sp.GetRequiredService<GitHubOAuthProvider>();
+        var runner = new HostGitCommandRunner(
+            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+        return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
+    });
 }
 
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
@@ -187,13 +250,9 @@ builder.Services
 
 var app = builder.Build();
 
-// Verify the gateway's signature/timestamp/delivery + body before MVC binds it (plan §9). Scoped to the
-// EXACT webhook route (POST + single provider segment) so it adds NO route — the daemon's single-endpoint
-// surface (AC#4) is intact and a suffix path is never HMAC-verified or allowed to consume a delivery id.
-app.UseWhen(
-    context => WebhookVerificationMiddleware.IsWebhookRoute(context.Request),
-    branch => branch.UseMiddleware<WebhookVerificationMiddleware>());
-
+// The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the
+// gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway
+// does not sign its callbacks, so requiring a signature rejected every real callback.
 app.MapControllers();
 
 app.Run();

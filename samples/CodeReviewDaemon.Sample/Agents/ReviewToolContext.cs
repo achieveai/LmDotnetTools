@@ -1,0 +1,39 @@
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+
+namespace CodeReviewDaemon.Sample.Agents;
+
+/// <summary>
+/// Per-run context that turns a diff-only review loop into a tool-assisted one. Non-null only on the
+/// <c>EnableToolAssistedReview</c> path; when null the factory builds today's empty-registry loop.
+/// </summary>
+internal sealed record ReviewToolContext(
+    string GatewayBaseUrl,
+    string SessionId,
+    IReadOnlyList<string> ReadOnlyToolAllowList,
+    SubAgentOptions? SubAgentOptions);
+
+/// <summary>
+/// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry.
+/// The daemon owns all posting, so <c>Write</c>/<c>Edit</c> (and anything else off the allow-list) are
+/// dropped even if the gateway advertises them — a hard read-only boundary on the agent's tool set.
+/// </summary>
+internal static class ReadOnlyToolFilter
+{
+    public static void Apply(FunctionRegistry source, FunctionRegistry target, IReadOnlyList<string> allowList)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(allowList);
+
+        var allowed = new HashSet<string>(allowList, StringComparer.Ordinal);
+        var (contracts, handlers) = source.Build();
+        foreach (var contract in contracts)
+        {
+            if (allowed.Contains(contract.Name) && handlers.TryGetValue(contract.Name, out var handler))
+            {
+                _ = target.AddFunction(contract, handler, "sandbox");
+            }
+        }
+    }
+}

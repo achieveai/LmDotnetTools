@@ -80,9 +80,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
     }
 
     private static SandboxSessionRegistry.DiscoveredItem Item(
-        string kind,
-        string name,
-        string path) => new(kind, name, $"{name} description", path);
+        string kind, string name, string path, string? content = null, string? qualifiedName = null) =>
+        new(kind, name, $"{name} description", path, content, qualifiedName);
 
     [Fact]
     public async Task LoadOneAsync_HappyPath_ReturnsMappedTemplate()
@@ -102,6 +101,21 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         template.WhenToUse.Should().Be("Echoes a marker.");
         template.SystemPrompt.Should().Contain("echo sub-agent");
         template.MaxTurnsPerRun.Should().Be(WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
+    }
+
+    [Fact]
+    public async Task LoadOneAsync_ContentFirst_ParsesInlineBodyWithoutFile()
+    {
+        // A /marketplaces/... path has no workspace file; the inline content must be parsed directly.
+        var loader = CreateLoader();
+        var item = Item(
+            "subagent", "architecture-review", "/marketplaces/gb-plugins/agents/architecture-review.md",
+            content: WellFormedMarkdown, qualifiedName: "code-reviewer:architecture-review");
+
+        var template = await loader.LoadOneAsync(CreateSession(), item, AgentFactory);
+
+        template.Should().NotBeNull();
+        template!.SystemPrompt.Should().Contain("echo sub-agent");
     }
 
     [Fact]

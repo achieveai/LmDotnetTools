@@ -26,13 +26,32 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Thread ids passed to <see cref="Create"/>, in call order.</summary>
     public List<string> ThreadIds { get; } = [];
 
-    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId)
+    /// <summary>Reasoning-effort values passed to <see cref="Create"/>, in call order (null = default).</summary>
+    public List<string?> ReasoningEfforts { get; } = [];
+
+    /// <summary>Tool contexts passed to <see cref="Create"/>, in call order (null = diff-only path).</summary>
+    public List<ReviewToolContext?> ToolContexts { get; } = [];
+
+    /// <summary>The scripted agents returned by <see cref="Create"/>, in call order, so a test can
+    /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
+    public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
+
+    public IMultiTurnAgent Create(
+        AgentProfile profile,
+        string? modelId,
+        string threadId,
+        string? reasoningEffort = null,
+        ReviewToolContext? toolContext = null)
     {
         CreatedProfileIds.Add(profile.Id);
         ThreadIds.Add(threadId);
+        ReasoningEfforts.Add(reasoningEffort);
+        ToolContexts.Add(toolContext);
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
-        return new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
+        var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
+        CreatedAgents.Add(agent);
+        return agent;
     }
 }

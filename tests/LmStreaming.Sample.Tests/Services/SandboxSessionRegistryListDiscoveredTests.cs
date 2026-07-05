@@ -43,9 +43,12 @@ public class SandboxSessionRegistryListDiscoveredTests
     {
         var json = """
             {
-              "items": [
-                { "kind": "subagent", "name": "echo", "description": "echo agent", "path": ".claude/agents/echo.md" },
-                { "kind": "skill",    "name": "review", "description": null,      "path": ".claude/skills/review.md" }
+              "session_id": "session-abc",
+              "discovered": [
+                { "kind": "subagent", "name": "architecture-review", "qualified_name": "code-reviewer:architecture-review",
+                  "description": "arch review", "path": "/marketplaces/gb-plugins/agents/architecture-review.md",
+                  "content": "---\nname: architecture-review\n---\nYou review architecture." },
+                { "kind": "skill", "name": "review", "description": null, "path": ".claude/skills/review.md" }
               ]
             }
             """;
@@ -58,11 +61,12 @@ public class SandboxSessionRegistryListDiscoveredTests
 
         items.Should().HaveCount(2);
         items[0].Kind.Should().Be("subagent");
-        items[0].Name.Should().Be("echo");
-        items[0].Description.Should().Be("echo agent");
-        items[0].Path.Should().Be(".claude/agents/echo.md");
+        items[0].QualifiedName.Should().Be("code-reviewer:architecture-review");
+        items[0].Content.Should().Contain("You review architecture.");
         items[1].Kind.Should().Be("skill");
-        items[1].Description.Should().BeNull();
+        items[1].Content.Should().BeNull();
+        items[1].QualifiedName.Should().BeNull();
+
         handler.LastRequest.Should().NotBeNull();
         handler.LastRequest!.RequestUri!.ToString().Should().Be($"{GatewayBaseUrl}/api/v1/sandboxes/{SessionId}/discovered");
         handler.LastRequest!.Method.Should().Be(HttpMethod.Get);
@@ -73,7 +77,7 @@ public class SandboxSessionRegistryListDiscoveredTests
     {
         var (registry, _) = CreateRegistry(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{\"items\":[]}", Encoding.UTF8, "application/json"),
+            Content = new StringContent("{\"discovered\":[]}", Encoding.UTF8, "application/json"),
         });
 
         var items = await registry.ListDiscoveredAsync(SessionId);

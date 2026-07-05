@@ -53,6 +53,63 @@ internal sealed class CodeReviewDaemonOptions
     public string? DatabasePath { get; init; }
 
     /// <summary>
+    /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
+    /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
+    /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
+    /// (B) variant keeps its own bounded model id and is unaffected by this knob.
+    /// </summary>
+    public string ReviewModelId { get; init; } = "claude-sonnet-5";
+
+    /// <summary>
+    /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
+    /// model the configured backend accepts — the Copilot backend rejects OpenRouter-style slugs
+    /// (e.g. <c>anthropic/claude-haiku-4-5</c>) with <c>model_not_supported</c>; its haiku id is
+    /// <c>claude-haiku-4.5</c>. The B variant is the model axis of the A/B, so it defaults to a cheaper
+    /// model than the primary <see cref="ReviewModelId"/>.
+    /// </summary>
+    public string VariantModelId { get; init; } = "claude-haiku-4.5";
+
+    /// <summary>
+    /// Adaptive-thinking effort (<c>output_config.effort</c>) for the A/B (B) variant. Empty (default) omits
+    /// it — the default variant model (<c>claude-haiku-4.5</c>) is not an adaptive-thinking model and
+    /// rejects an effort it does not support. Set this only if <see cref="VariantModelId"/> is pointed at
+    /// an adaptive model that needs its reasoning bounded.
+    /// </summary>
+    public string VariantReasoningEffort { get; init; } = "";
+
+    /// <summary>
+    /// Max output tokens for a review turn. Copilot's adaptive Claude models emit reasoning before the
+    /// answer, and that reasoning counts against the token budget — the provider default (4096) is easily
+    /// exhausted by reasoning over a large diff, leaving no room for the review text (an empty review).
+    /// The generous default gives both the reasoning and the answer room. It is a cap, not a target, so a
+    /// single value suits the review, judge, and knowledge agents alike. Raised from the diff-only-era
+    /// default because the tool-assisted path (<see cref="EnableToolAssistedReview"/>) is a multi-turn
+    /// loop that also dispatches <c>code-reviewer:*</c> sub-agents — each turn's reasoning + tool-call
+    /// scaffolding consumes more of the budget than a single-pass diff review.
+    /// </summary>
+    public int ReviewMaxTokens { get; init; } = 32000;
+
+    /// <summary>
+    /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
+    /// <c>low</c> / <c>medium</c> / <c>high</c>). GitHub Copilot's adaptive Claude models reason before
+    /// answering and, left uncapped, spend the whole token budget reasoning over a large diff and emit no
+    /// review text. A low effort keeps reasoning short so the answer lands. Default <c>low</c>. This is
+    /// the diff-only single-pass default; see <see cref="ToolAssistedReasoningEffort"/> for the
+    /// tool-assisted path's default.
+    /// </summary>
+    public string ReviewReasoningEffort { get; init; } = "low";
+
+    /// <summary>
+    /// Reasoning effort for the review agent's adaptive-thinking model when
+    /// <see cref="EnableToolAssistedReview"/> is on (<c>output_config.effort</c>: <c>low</c> /
+    /// <c>medium</c> / <c>high</c>). A multi-turn loop that reads across repos, loads the
+    /// <c>code-reviewer</c> skill, and dispatches sub-agents needs more reasoning headroom per turn than
+    /// the single-pass diff-only reviewer, so this defaults above <see cref="ReviewReasoningEffort"/>'s
+    /// <c>low</c>. Default <c>medium</c>.
+    /// </summary>
+    public string ToolAssistedReasoningEffort { get; init; } = "medium";
+
+    /// <summary>
     /// Remote URL of the ReviewBot workspace repository (seeded once via <c>reviewbot init</c>). When set,
     /// a completed primary review's artifacts (<c>PRs/...</c> + the regenerated <c>KnowledgeBase/...</c>)
     /// are durably persisted onto its default branch via the one-commit retention sequence (AC#6). When
@@ -75,4 +132,55 @@ internal sealed class CodeReviewDaemonOptions
     /// cursor. Default 10.
     /// </summary>
     public int MaxPagesPerPoll { get; init; } = 10;
+
+    /// <summary>
+    /// When <c>false</c> (default) the daemon runs the diff-only review (empty tool registry, no
+    /// sub-agents, boot-lifetime sandbox session) exactly as before. Enabling it provisions a per-run
+    /// sandbox session, exposes the read-only MCP tools + <c>Skill</c>, and dispatches the
+    /// <c>code-reviewer:*</c> sub-agents. Opt-in because it is materially more expensive per review.
+    /// </summary>
+    public bool EnableToolAssistedReview { get; init; }
+
+    /// <summary>
+    /// Host directory that per-run sandbox workspaces are created under (one subdirectory per run, removed
+    /// on completion). When unset (default) the daemon uses <c>workspaces</c> beside the binary.
+    /// </summary>
+    public string? WorkspaceHostRoot { get; init; }
+
+    /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>.</summary>
+    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins"];
+
+    /// <summary>
+    /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
+    /// never include <c>Write</c>/<c>Edit</c>. Default <c>Read</c>/<c>Grep</c>/<c>Glob</c>/<c>Skill</c>.
+    /// </summary>
+    public IReadOnlyList<string> ReadOnlyToolAllowList { get; init; } = ["Read", "Grep", "Glob", "Skill"];
+
+    /// <summary>
+    /// GitHub <c>owner/repo</c> paths of the <c>AchieveAiReviews</c> store's sibling-repo submodules the
+    /// tool-assisted review may additionally read for cross-repo context, beyond the reviewed repo and the
+    /// always-allowed <c>Contracts/</c> layer (Task 16). Empty (default) means no sibling co-location.
+    /// These are only added to the run's submodule allow-list when the confidentiality gate
+    /// (<c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>, Task 17) permits it for the run — a
+    /// fork or public-repo PR never gets them, regardless of this configuration.
+    /// </summary>
+    public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
+
+    /// <summary>
+    /// Remote URL of the <c>AchieveAiReviews</c> cross-repo store to check out as the review superproject:
+    /// the reviewed repo is a submodule under <c>repos/&lt;RepoName&gt;</c> alongside the shared
+    /// <c>Contracts/</c> layer and sibling repos. When a tool-assisted run's reviewed repo is a submodule of
+    /// this store, the daemon clones the store and initializes that submodule so the agent reads across it —
+    /// and, as a bonus, the gateway's Grep/Glob work on a submodule working tree (a gitlink) where they abort
+    /// at a standalone clone root. Blank (default) falls back to <see cref="ReviewBotRepoUrl"/> — the store IS
+    /// the ReviewBot repo — so pointing the daemon at the ReviewBot repo enables both retention and store
+    /// review. When neither is set, or the reviewed repo is not a submodule of the store, the review uses the
+    /// single-repo <c>/workspace/target</c> checkout.
+    /// </summary>
+    public string? CrossRepoStoreUrl { get; init; }
+
+    /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
+    /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
+    public string? ResolvedStoreUrl =>
+        string.IsNullOrWhiteSpace(CrossRepoStoreUrl) ? ReviewBotRepoUrl : CrossRepoStoreUrl;
 }

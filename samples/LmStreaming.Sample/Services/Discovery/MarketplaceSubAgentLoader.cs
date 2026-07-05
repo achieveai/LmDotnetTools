@@ -140,8 +140,8 @@ public sealed class MarketplaceSubAgentLoader
     /// Maps one <see cref="CatalogAgent"/> to a template. <c>description</c> seeds both
     /// <see cref="SubAgentTemplate.Description"/> and <see cref="SubAgentTemplate.WhenToUse"/> (the
     /// catalog has no separate when-to-use field), mirroring
-    /// <see cref="WorkspaceSubAgentLoader.MapToTemplate"/>. The system prompt is best-effort because
-    /// the preview never returns the agent's instruction body.
+    /// <see cref="AchieveAi.LmDotnetTools.LmSampleShared.Discovery.SubAgentTemplateMapper.Map"/>. The
+    /// system prompt is best-effort because the preview never returns the agent's instruction body.
     /// </summary>
     internal static SubAgentTemplate MapToTemplate(
         CatalogAgent agent,

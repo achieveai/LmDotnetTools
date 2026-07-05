@@ -26,6 +26,20 @@ internal sealed class GitRunner
         "core.hooksPath=/dev/null",
     ];
 
+    /// <summary>
+    /// Committer identity prepended to every git command. The sandbox git has no <c>user.name</c>/
+    /// <c>user.email</c> configured, so a daemon <c>git commit</c> (retention publish, ReviewBot seed)
+    /// fails "Author identity unknown" (exit 128) without it. Passed as per-command <c>-c</c> overrides
+    /// so every commit is attributed to the review bot without mutating any global git config.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> IdentityArgs =
+    [
+        "-c",
+        "user.name=AchieveAi Review Bot",
+        "-c",
+        "user.email=review-bot@achieveai.local",
+    ];
+
     private readonly ISandboxCommandRunner _runner;
 
     public GitRunner(ISandboxCommandRunner runner)
@@ -34,8 +48,8 @@ internal sealed class GitRunner
     }
 
     /// <summary>
-    /// Runs <c>git &lt;hardening&gt; &lt;gitArgs&gt;</c> in <paramref name="workingDirectory"/>. The
-    /// arguments are an explicit vector (never a pre-joined string) so attacker-influenced tokens
+    /// Runs <c>git &lt;hardening&gt; &lt;identity&gt; &lt;gitArgs&gt;</c> in <paramref name="workingDirectory"/>.
+    /// The arguments are an explicit vector (never a pre-joined string) so attacker-influenced tokens
     /// (branch names, paths, URLs) stay distinct and are safely quoted at the sandbox boundary.
     /// </summary>
     public Task<SandboxCommandResult> RunAsync(
@@ -50,8 +64,9 @@ internal sealed class GitRunner
             throw new ArgumentException("At least one git argument is required.", nameof(gitArgs));
         }
 
-        var argv = new List<string>(1 + HardeningArgs.Count + gitArgs.Count) { "git" };
+        var argv = new List<string>(1 + HardeningArgs.Count + IdentityArgs.Count + gitArgs.Count) { "git" };
         argv.AddRange(HardeningArgs);
+        argv.AddRange(IdentityArgs);
         argv.AddRange(gitArgs);
 
         return _runner.RunAsync(new SandboxCommand(argv, workingDirectory), cancellationToken);

@@ -129,6 +129,7 @@ internal sealed class PrPollingService : BackgroundService
                 ReviewKind = target.ReviewKind,
                 VariantId = target.VariantId,
                 Mode = target.Mode,
+                ModelId = target.ModelId,
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Pending,
                 PrLifecycleState = pr.LifecycleState,

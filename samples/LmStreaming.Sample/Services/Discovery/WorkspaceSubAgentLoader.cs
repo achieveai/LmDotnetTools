@@ -1,7 +1,7 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
 namespace LmStreaming.Sample.Services.Discovery;
 
@@ -92,11 +92,12 @@ public sealed class WorkspaceSubAgentLoader
                 continue;
             }
 
-            if (!result.TryAdd(loaded.Name, loaded))
+            var key = string.IsNullOrWhiteSpace(item.QualifiedName) ? loaded.Name : item.QualifiedName;
+            if (!result.TryAdd(key, loaded))
             {
                 _logger.LogWarning(
-                    "Discovered sub-agent {Name} collides with an earlier discovery; keeping the first occurrence",
-                    loaded.Name);
+                    "Discovered sub-agent {Key} collides with an earlier discovery; keeping the first occurrence",
+                    key);
             }
         }
 
@@ -131,6 +132,26 @@ public sealed class WorkspaceSubAgentLoader
         if (!string.Equals(item.Kind, SubAgentKind, StringComparison.Ordinal))
         {
             return null;
+        }
+
+        // Content-first: marketplace sub-agents arrive with their full markdown body inline (no workspace
+        // file exists at a /marketplaces/... path). Parse it directly and skip the file read. The file-read
+        // path below remains the fallback for real workspace .claude/agents/*.md whose path is relative.
+        if (!string.IsNullOrWhiteSpace(item.Content))
+        {
+            var stemFromName = string.IsNullOrWhiteSpace(item.QualifiedName)
+                ? item.Name
+                : item.QualifiedName;
+            var parsedInline = SubAgentMarkdownParser.Parse(item.Content, stemFromName);
+            if (parsedInline is null)
+            {
+                _logger.LogWarning(
+                    "Skipping discovered sub-agent {Name}: inline content had no valid frontmatter or empty body",
+                    item.Name);
+                return null;
+            }
+
+            return SubAgentTemplateMapper.Map(parsedInline, agentFactory, DefaultMaxTurnsPerRun);
         }
 
         if (string.IsNullOrWhiteSpace(session.HostPath))
@@ -183,7 +204,7 @@ public sealed class WorkspaceSubAgentLoader
             return null;
         }
 
-        return MapToTemplate(parsed, agentFactory);
+        return SubAgentTemplateMapper.Map(parsed, agentFactory, DefaultMaxTurnsPerRun);
     }
 
     /// <summary>
@@ -214,46 +235,6 @@ public sealed class WorkspaceSubAgentLoader
                     key);
             }
         }
-    }
-
-    /// <summary>
-    /// Maps a parsed markdown sub-agent into a <see cref="SubAgentTemplate"/>. Internal-static so
-    /// the unit tests can pin the mapping table without needing a registry instance.
-    /// </summary>
-    /// <remarks>
-    /// Mapping rules:
-    /// <list type="bullet">
-    ///   <item><c>description</c> → both <see cref="SubAgentTemplate.Description"/> AND
-    ///     <see cref="SubAgentTemplate.WhenToUse"/>, so the Agent-tool catalog isn't blank
-    ///     for discovered templates (which don't carry a separate <c>when_to_use</c> field).</item>
-    ///   <item><c>model</c> → <see cref="SubAgentTemplate.DefaultOptions"/> with only
-    ///     <see cref="GenerateReplyOptions.ModelId"/> set; absent leaves
-    ///     <see cref="SubAgentTemplate.DefaultOptions"/> null so the sub-agent inherits the
-    ///     parent's runtime defaults (matching the built-in templates' shape).</item>
-    ///   <item><c>tools</c> → <see cref="SubAgentTemplate.EnabledTools"/>. Absent (null) means
-    ///     inherit every parent tool; an empty list means deny all tools (distinct case).</item>
-    ///   <item><see cref="DefaultMaxTurnsPerRun"/> to match the existing production templates.</item>
-    /// </list>
-    /// </remarks>
-    internal static SubAgentTemplate MapToTemplate(
-        ParsedSubAgent parsed,
-        Func<IStreamingAgent> agentFactory)
-    {
-        var defaults = !string.IsNullOrWhiteSpace(parsed.Model)
-            ? new GenerateReplyOptions { ModelId = parsed.Model.Trim() }
-            : null;
-
-        return new SubAgentTemplate
-        {
-            Name = parsed.Name,
-            Description = parsed.Description,
-            WhenToUse = parsed.Description,
-            SystemPrompt = parsed.SystemPrompt,
-            AgentFactory = agentFactory,
-            DefaultOptions = defaults,
-            EnabledTools = parsed.Tools,
-            MaxTurnsPerRun = DefaultMaxTurnsPerRun,
-        };
     }
 
     /// <summary>

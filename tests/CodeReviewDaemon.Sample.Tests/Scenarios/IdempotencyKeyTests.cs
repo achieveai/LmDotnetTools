@@ -21,7 +21,7 @@ public sealed class IdempotencyKeyTests
             Operation: "post-review-comment",
             ArtifactKind: "review",
             ArtifactSubject: "summary",
-            TriggerWatermark: "wm-1",
+            HeadSha: "wm-1",
             VariantId: "primary");
 
     [Fact]
