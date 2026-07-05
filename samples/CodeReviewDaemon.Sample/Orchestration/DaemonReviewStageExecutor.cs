@@ -139,7 +139,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// Resolves the runner/filesystem pair this run's checkout git and the review agent's MCP tools
     /// should share (design §4). Tool-assisted runs ask the per-run <see cref="IReviewSessionProvisioner"/>
     /// for the run's sandbox session; the diff-only default (or a host without a provisioner registered)
-    /// keeps using the injected boot-lifetime pair exactly as before this change.
+    /// keeps using the injected boot-lifetime pair exactly as before this change. A <c>null</c> session
+    /// (the host-dir disk guard declined to provision one, Task 18) degrades the same way — the checkout
+    /// git runs against the boot-lifetime pair rather than failing the stage (design §7).
     /// </summary>
     private async Task<(ISandboxCommandRunner Runner, ISandboxFileSystem Fs)> ResolveSandboxAsync(
         ReviewRun run, CancellationToken cancellationToken)
@@ -150,15 +152,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var session = await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
-        return (session.CommandRunner, session.FileSystem);
+        return session is null ? (_commandRunner, _fileSystem) : (session.CommandRunner, session.FileSystem);
     }
 
     /// <summary>
     /// Builds the per-run tool context for the primary review, or returns null to degrade to diff-only.
-    /// Capability gaps (unreachable session, gateway down) log a warning and degrade — they never fail the
-    /// stage (design §7). When the session resolves, sub-agent discovery is a further, independent degrade
-    /// tier: a discovery/mapping failure (or nothing discovered) leaves <c>SubAgentOptions</c> null — a
-    /// skill-only tool context — rather than dropping all the way back to diff-only.
+    /// Capability gaps (unreachable session, gateway down, or the host-dir disk guard declining to
+    /// provision, Task 18) log and degrade — they never fail the stage (design §7). When the session
+    /// resolves, sub-agent discovery is a further, independent degrade tier: a discovery/mapping failure
+    /// (or nothing discovered) leaves <c>SubAgentOptions</c> null — a skill-only tool context — rather than
+    /// dropping all the way back to diff-only.
     /// </summary>
     private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -170,6 +173,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         try
         {
             var session = await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
+            if (session is null)
+            {
+                _logger.LogInformation(
+                    "Run {RunId}: no sandbox session provisioned (disk guard); degrading to diff-only.", run.Id);
+                return null;
+            }
+
             return new ReviewToolContext(
                 GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
@@ -516,6 +526,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
         // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
         await PublishToReviewBotAsync(run, repo, provider, body, cancellationToken).ConfigureAwait(false);
+
+        // Terminal-stage cleanup (Task 18, design §7): tear down the run's per-run sandbox session (and
+        // its host workspace dir, best-effort) now that the run has reached its terminal stage. The
+        // diff-only path never provisioned a session, so there is nothing to consult.
+        if (_options.EnableToolAssistedReview && _provisioner is not null)
+        {
+            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

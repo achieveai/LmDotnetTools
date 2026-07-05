@@ -39,7 +39,9 @@ public class ReviewSessionProvisionerTests
         var a = await provisioner.GetOrCreateAsync(Run(), default);
         var b = await provisioner.GetOrCreateAsync(Run(), default);
 
-        a.SessionId.Should().Be(b.SessionId);
+        a.Should().NotBeNull();
+        b.Should().NotBeNull();
+        a!.SessionId.Should().Be(b!.SessionId);
         fake.CreateCount.Should().Be(1);
     }
 

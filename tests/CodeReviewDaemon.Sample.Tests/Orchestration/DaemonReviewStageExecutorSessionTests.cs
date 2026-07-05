@@ -94,13 +94,13 @@ public sealed class DaemonReviewStageExecutorSessionTests
     {
         public int GetOrCreateCalls { get; private set; }
 
-        public Task<ReviewRunSession> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
             var runner = new FakeSandboxCommandRunner()
                 .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a git repo"))
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
-            return Task.FromResult(new ReviewRunSession(
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}", runner, new FakeSandboxFileSystem()));
         }
 

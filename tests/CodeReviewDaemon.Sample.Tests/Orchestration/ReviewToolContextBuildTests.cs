@@ -230,7 +230,7 @@ public sealed class ReviewToolContextBuildTests
     /// <summary>Simulates an unreachable sandbox gateway/session (design §7 capability gap).</summary>
     private sealed class ThrowingProvisioner : IReviewSessionProvisioner
     {
-        public Task<ReviewRunSession> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
             throw new InvalidOperationException("sandbox gateway unreachable");
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
@@ -238,8 +238,8 @@ public sealed class ReviewToolContextBuildTests
 
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
     {
-        public Task<ReviewRunSession> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult(new ReviewRunSession(
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 sessionId, $"/workspace/{sessionId}", new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
