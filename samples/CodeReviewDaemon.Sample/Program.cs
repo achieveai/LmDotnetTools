@@ -126,6 +126,12 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
     AutoSpawn = false,
     Marketplaces = string.Join(",", daemonOptions.Marketplaces),
+    // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
+    // per-run provisioner mounts a distinct leaf (review-run-{id}) under this base, so it MUST be set or
+    // session-create fails with "no workspace base path is configured". Sourced from env/config so it
+    // tracks whatever the adopted gateway actually mounts (e.g. B:/sandbox-workspaces/workspaces).
+    WorkspaceBasePath = Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
+        ?? builder.Configuration["SandboxGateway:WorkspaceBasePath"],
 };
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
