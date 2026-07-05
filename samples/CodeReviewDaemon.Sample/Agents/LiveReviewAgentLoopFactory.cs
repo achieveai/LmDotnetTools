@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -50,6 +51,14 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
+
+    /// <summary>
+    /// The same shared, lazily-created Copilot-backed agent every review loop is given (see the Lifetime
+    /// remarks on this type), exposed as an <see cref="IStreamingAgent"/> factory so a discovered
+    /// <c>code-reviewer:*</c> sub-agent (Task 12) is driven by the identical provider agent instead of
+    /// standing up a second one.
+    /// </summary>
+    public Func<IStreamingAgent> SharedAgentFactory => GetSharedAgent;
 
     public IMultiTurnAgent Create(
         AgentProfile profile,

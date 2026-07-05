@@ -1,4 +1,7 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -93,6 +96,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
     private readonly IReviewSessionProvisioner? _provisioner;
+    private readonly IDiscoveredItemsSource? _discoveredItemsSource;
+    private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
+    private readonly Func<IStreamingAgent>? _providerAgentFactory;
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -102,7 +108,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CodeReviewDaemonOptions options,
         IEnumerable<IReviewCommentPublisher> publishers,
         ILoggerFactory loggerFactory,
-        IReviewSessionProvisioner? provisioner = null)
+        IReviewSessionProvisioner? provisioner = null,
+        IDiscoveredItemsSource? discoveredItemsSource = null,
+        DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
+        Func<IStreamingAgent>? providerAgentFactory = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -113,6 +122,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
         _provisioner = provisioner;
+        _discoveredItemsSource = discoveredItemsSource;
+        _subAgentTemplateBuilder = subAgentTemplateBuilder;
+        _providerAgentFactory = providerAgentFactory;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -141,7 +153,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Builds the per-run tool context for the primary review, or returns null to degrade to diff-only.
     /// Capability gaps (unreachable session, gateway down) log a warning and degrade — they never fail the
-    /// stage (design §7). Sub-agents are attached in Stage 4; here SubAgentOptions is null.
+    /// stage (design §7). When the session resolves, sub-agent discovery is a further, independent degrade
+    /// tier: a discovery/mapping failure (or nothing discovered) leaves <c>SubAgentOptions</c> null — a
+    /// skill-only tool context — rather than dropping all the way back to diff-only.
     /// </summary>
     private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -157,12 +171,48 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                SubAgentOptions: null);
+                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Discovers <c>code-reviewer:*</c> sub-agents in the resolved session and maps them to
+    /// <see cref="SubAgentTemplate"/>s (Task 11). Only attempted when all three sub-agent dependencies were
+    /// supplied (they default to null, so hosts/tests that don't wire discovery keep today's skill-only
+    /// tool context unchanged). Never throws — a discovery or mapping failure degrades to null (skill-only).
+    /// </summary>
+    private async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
+        ReviewRun run, string sessionId, CancellationToken cancellationToken)
+    {
+        if (_discoveredItemsSource is null || _subAgentTemplateBuilder is null || _providerAgentFactory is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var discovered = await _discoveredItemsSource
+                .ListDiscoveredAsync(sessionId, cancellationToken)
+                .ConfigureAwait(false);
+            var templates = _subAgentTemplateBuilder.Build(discovered, "code-reviewer", _providerAgentFactory);
+            if (templates.Count > 0)
+            {
+                return new SubAgentOptions { Templates = templates };
+            }
+
+            _logger.LogInformation(
+                "Run {RunId}: no code-reviewer sub-agents discovered; skill-only review.", run.Id);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Run {RunId}: sub-agent discovery failed; skill-only review.", run.Id);
             return null;
         }
     }
@@ -581,3 +631,17 @@ internal sealed record ContextArtifactPayload(string PrId, string BaseSha, strin
 
 /// <summary>The persisted primary review output (kind <c>review</c>).</summary>
 internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId);
+
+/// <summary>
+/// The one discovery operation <see cref="DaemonReviewStageExecutor"/> needs from the registry to build
+/// sub-agent templates (Task 11/12). Implemented by
+/// <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox.SandboxSessionRegistry"/> via the
+/// <c>RegistryDiscoverySource</c> adapter (registered in Program.cs) and by a fake in tests — mirrors the
+/// narrow <see cref="ISandboxSessionSource"/> seam already used for session provisioning, so the executor
+/// stays verifiable against a fake without a live gateway.
+/// </summary>
+internal interface IDiscoveredItemsSource
+{
+    Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct);
+}
+

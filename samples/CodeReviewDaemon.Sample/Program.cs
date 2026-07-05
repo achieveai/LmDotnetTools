@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
@@ -144,8 +145,22 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     daemonOptions,
     sp.GetRequiredService<ILoggerFactory>()));
 
-// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run.
-builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactory>();
+// Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
+// narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
+// surface directly. DiscoveredSubAgentTemplateBuilder is pure (no gateway calls), so it is registered
+// as-is.
+builder.Services.AddSingleton<IDiscoveredItemsSource>(sp =>
+    new RegistryDiscoverySource(sp.GetRequiredService<SandboxSessionRegistry>()));
+builder.Services.AddSingleton<DiscoveredSubAgentTemplateBuilder>();
+
+// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run. Registered
+// by its concrete type too (rather than only the IReviewAgentLoopFactory interface) so the executor can
+// also resolve its SharedAgentFactory (Task 12) — the same Copilot-backed agent every review loop and any
+// discovered sub-agent are driven by — without standing up a second provider agent.
+builder.Services.AddSingleton<LiveReviewAgentLoopFactory>();
+builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => sp.GetRequiredService<LiveReviewAgentLoopFactory>());
+builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
+    sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.

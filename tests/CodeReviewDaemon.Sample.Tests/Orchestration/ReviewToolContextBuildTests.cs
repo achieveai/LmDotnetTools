@@ -1,4 +1,6 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -6,6 +8,7 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
@@ -13,6 +16,11 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// Task 9 — the executor builds a <see cref="ReviewToolContext"/> for the primary review only when
 /// <see cref="CodeReviewDaemonOptions.EnableToolAssistedReview"/> is on, and DEGRADES to a null context
 /// (diff-only) rather than failing the stage when the per-run session cannot be provisioned.
+///
+/// Task 12 — once the session resolves, sub-agent discovery is a further, INDEPENDENT degrade tier: a
+/// discovered <c>code-reviewer:*</c> item populates <see cref="ReviewToolContext.SubAgentOptions"/>; no
+/// discovery (or a discovery failure) leaves it null — a skill-only tool context — without dropping all
+/// the way back to diff-only (the context itself, and its <c>SessionId</c>, stay populated).
 /// </summary>
 public sealed class ReviewToolContextBuildTests
 {
@@ -75,11 +83,83 @@ public sealed class ReviewToolContextBuildTests
         factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Reviewed_WithDiscoveredCodeReviewerSubAgent_PopulatesSubAgentOptions()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new FakeReviewSessionProvisioner("session-abc");
+        var discovery = new FakeDiscoveredItemsSource(
+        [
+            new SandboxSessionRegistry.DiscoveredItem(
+                "subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/agents/a.md",
+                Content: SubAgentBody, QualifiedName: "code-reviewer:architecture-review"),
+            new SandboxSessionRegistry.DiscoveredItem(
+                "subagent", "other", "x", "/marketplaces/other/agents/o.md",
+                Content: SubAgentBody, QualifiedName: "other-plugin:thing"),
+        ]);
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner, discovery);
+        var run = SeedRunWithContext(store);
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var toolContext = factory.ToolContexts.Should().ContainSingle().Subject;
+        toolContext.Should().NotBeNull();
+        toolContext!.SubAgentOptions.Should().NotBeNull();
+        toolContext.SubAgentOptions!.Templates.Should().ContainKey("code-reviewer:architecture-review");
+        toolContext.SubAgentOptions.Templates.Should().NotContainKey("other-plugin:thing");
+    }
+
+    [Fact]
+    public async Task Reviewed_NoSubAgentsDiscovered_LeavesSubAgentOptionsNullButToolContextStillPopulated()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new FakeReviewSessionProvisioner("session-abc");
+        var discovery = new FakeDiscoveredItemsSource([]);
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner, discovery);
+        var run = SeedRunWithContext(store);
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var toolContext = factory.ToolContexts.Should().ContainSingle().Subject;
+        toolContext.Should().NotBeNull("the session still resolved — this is a skill-only degrade, not diff-only");
+        toolContext!.SessionId.Should().Be("session-abc");
+        toolContext.SubAgentOptions.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Reviewed_DiscoveryThrows_DegradesToSkillOnly_NotAllTheWayToDiffOnly()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new FakeReviewSessionProvisioner("session-abc");
+        var discovery = new ThrowingDiscoveredItemsSource();
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner, discovery);
+        var run = SeedRunWithContext(store);
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The session resolved fine; only discovery failed, so the tool context degrades to skill-only —
+        // it must NOT collapse to the full diff-only (null) tier.
+        var toolContext = factory.ToolContexts.Should().ContainSingle().Subject;
+        toolContext.Should().NotBeNull();
+        toolContext!.SessionId.Should().Be("session-abc");
+        toolContext.SubAgentOptions.Should().BeNull();
+    }
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
         CodeReviewDaemonOptions options,
-        IReviewSessionProvisioner provisioner) =>
+        IReviewSessionProvisioner provisioner,
+        IDiscoveredItemsSource? discoveredItemsSource = null) =>
         new(
             store,
             factory,
@@ -88,7 +168,22 @@ public sealed class ReviewToolContextBuildTests
             options,
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
-            provisioner);
+            provisioner,
+            discoveredItemsSource,
+            discoveredItemsSource is null
+                ? null
+                : new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance),
+            discoveredItemsSource is null ? null : StubAgentFactory);
+
+    private static readonly Func<IStreamingAgent> StubAgentFactory = () => new Mock<IStreamingAgent>().Object;
+
+    private const string SubAgentBody = """
+        ---
+        name: architecture-review
+        description: Reviews architecture.
+        ---
+        You review architecture across the connected repos.
+        """;
 
     /// <summary>
     /// Seeds a run + the 'review-context' artifact the Reviewed stage reads, so the test can drive
@@ -148,5 +243,20 @@ public sealed class ReviewToolContextBuildTests
                 sessionId, $"/workspace/{sessionId}", new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>Scripted discovery results for the sub-agent degrade-tier tests (Task 12).</summary>
+    private sealed class FakeDiscoveredItemsSource(IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> items)
+        : IDiscoveredItemsSource
+    {
+        public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
+            string sessionId, CancellationToken ct) => Task.FromResult(items);
+    }
+
+    /// <summary>Simulates a discovery-only failure (gateway `ListDiscoveredAsync` unreachable/erroring).</summary>
+    private sealed class ThrowingDiscoveredItemsSource : IDiscoveredItemsSource
+    {
+        public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
+            string sessionId, CancellationToken ct) => throw new InvalidOperationException("discovery unreachable");
     }
 }
