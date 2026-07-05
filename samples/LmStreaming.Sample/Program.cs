@@ -300,9 +300,23 @@ try
     });
     _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
-    // Register the FileConversationStore for conversation persistence
+    // Register the FileConversationStore for conversation persistence (it also implements the
+    // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
     var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    _ = builder.Services.AddSingleton<IConversationStore>(new FileConversationStore(conversationsPath));
+    var conversationStore = new FileConversationStore(conversationsPath);
+    _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
+    _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
+
+    // The REST status resolver (ConversationsController dependency) reads the conversation store plus
+    // its run ledger. Resolve the ledger from the registered IConversationStore so a test host that
+    // swaps the store (see BrowserWebAppFactory) keeps both halves pointing at the same instance —
+    // without this registration the controller cannot be activated and every REST endpoint 500s.
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var store = sp.GetRequiredService<IConversationStore>();
+        var ledger = store as IRunLedgerStore ?? sp.GetRequiredService<IRunLedgerStore>();
+        return new ConversationStatusResolver(store, ledger);
+    });
 
     // Register the FileChatModeStore for chat mode persistence
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
