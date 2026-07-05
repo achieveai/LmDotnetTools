@@ -1200,7 +1200,7 @@ git commit -m "feat(daemon): build per-run tool context with degrade-to-diff-onl
 
 **Files:**
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/DaemonAgentFactory.cs` (`ReviewSystemPrompt`)
-- Test: `tests/CodeReviewDaemon.Sample.Tests/Agents/DaemonAgentFactoryTests.cs`
+- Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/DaemonAgentFactoryTests.cs` (add the new test method to the existing class — there is no `Agents/` test folder)
 
 **Interfaces:**
 - Produces: an updated `ReviewSystemPrompt` string that (a) instructs loading `code-reviewer` via `Skill`; (b) instructs using its sub-agents and reading across `repos/<Repo>` + `Contracts/`; (c) carries untrusted-content / prompt-injection framing; (d) preserves the existing "do not post/push — the daemon owns all posting" clause.
