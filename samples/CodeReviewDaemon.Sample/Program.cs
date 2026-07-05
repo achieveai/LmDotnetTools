@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
@@ -112,6 +113,36 @@ builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrat
     daemonOptions.Limits));
 builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
     new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
+
+// Per-run session provisioning (tool-assisted path, Task 7). The diff-only path above talks to the
+// gateway directly via a boot-lifetime SandboxOrchestrator; EnableToolAssistedReview instead provisions
+// one sandbox session per run (design §4) so the checkout git and the review agent's MCP tools share a
+// container. The registry needs a SandboxGatewayLifetime purely to resolve/probe the gateway base URL —
+// it is not registered as a hosted service (AutoSpawn stays false, mirroring the SandboxOrchestrator
+// registration above: the daemon assumes an already-running gateway and never spawns one itself).
+var sandboxGatewayOptions = new SandboxGatewayOptions
+{
+    BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+    AutoSpawn = false,
+    Marketplaces = string.Join(",", daemonOptions.Marketplaces),
+};
+builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
+    new SandboxGatewayLifetime(
+        sandboxGatewayOptions,
+        sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
+        new HttpClient()),
+    sandboxGatewayOptions,
+    sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
+    // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration).
+    new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+    authOptions,
+    sp.GetRequiredService<AuthSharedSecret>()));
+builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
+    new RegistrySessionSource(sp.GetRequiredService<SandboxSessionRegistry>()));
+builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
+    sp.GetRequiredService<ISandboxSessionSource>(),
+    daemonOptions,
+    sp.GetRequiredService<ILoggerFactory>()));
 
 // The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run.
 builder.Services.AddSingleton<IReviewAgentLoopFactory, LiveReviewAgentLoopFactory>();

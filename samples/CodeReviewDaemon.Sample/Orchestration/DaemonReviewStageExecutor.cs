@@ -92,6 +92,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
+    private readonly IReviewSessionProvisioner? _provisioner;
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -100,7 +101,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ISandboxFileSystem fileSystem,
         CodeReviewDaemonOptions options,
         IEnumerable<IReviewCommentPublisher> publishers,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        IReviewSessionProvisioner? provisioner = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -110,11 +112,30 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _publishers = [.. publishers ?? throw new ArgumentNullException(nameof(publishers))];
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
+        _provisioner = provisioner;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
             SystemPrompt: ComparisonVariantPrompt,
             CanWrite: false);
+    }
+
+    /// <summary>
+    /// Resolves the runner/filesystem pair this run's checkout git and the review agent's MCP tools
+    /// should share (design §4). Tool-assisted runs ask the per-run <see cref="IReviewSessionProvisioner"/>
+    /// for the run's sandbox session; the diff-only default (or a host without a provisioner registered)
+    /// keeps using the injected boot-lifetime pair exactly as before this change.
+    /// </summary>
+    private async Task<(ISandboxCommandRunner Runner, ISandboxFileSystem Fs)> ResolveSandboxAsync(
+        ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (!_options.EnableToolAssistedReview || _provisioner is null)
+        {
+            return (_commandRunner, _fileSystem);
+        }
+
+        var session = await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
+        return (session.CommandRunner, session.FileSystem);
     }
 
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
@@ -135,7 +156,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task FetchContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
-        var git = new GitRunner(_commandRunner);
+        var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
+        var git = new GitRunner(runner);
 
         // 1. Clone (or reuse) the TARGET repo into its own checkout (PR #121 H1). The per-run
         // OperationPolicy scopes the fetch to exactly this repo + the ReviewBot remote; submodule init
@@ -147,7 +169,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // 2. Selectively (and recursively) initialize allow-listed submodules in the target checkout.
         var submoduleInitializer = new SubmoduleInitializer(
             git,
-            _fileSystem,
+            fileSystem,
             policy,
             provider,
             _loggerFactory.CreateLogger<SubmoduleInitializer>());
