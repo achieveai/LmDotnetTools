@@ -1164,11 +1164,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         [property: JsonPropertyName("kind")] string Kind,
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("description")] string? Description,
-        [property: JsonPropertyName("path")] string Path
+        [property: JsonPropertyName("path")] string Path,
+        [property: JsonPropertyName("content")] string? Content = null,
+        [property: JsonPropertyName("qualified_name")] string? QualifiedName = null
     );
 
     private sealed record DiscoveredItemsResponse(
-        [property: JsonPropertyName("items")] IReadOnlyList<DiscoveredItem> Items
+        [property: JsonPropertyName("discovered")] IReadOnlyList<DiscoveredItem> Items
     );
 
     // --- Gateway MCP /mcp JSON-RPC contract (for ReadWorkspaceFileAsync) ---
