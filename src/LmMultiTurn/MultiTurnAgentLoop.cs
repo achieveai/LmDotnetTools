@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -36,6 +37,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
     private readonly SubAgentManager? _subAgentManager;
+
+    // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
+    private readonly TriggerRuntime? _triggerRuntime;
 
     // Deferred tool tracking. Keyed by ToolCallId. Concurrent because resolutions arrive on
     // arbitrary threads (UI callbacks, webhook handlers).
@@ -76,6 +80,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     ///     (MessageTransformation, MessageUpdateJoiner) their own category loggers so their
     ///     ordering/de-dup decisions are visible in structured logs. When null they stay silent.
     /// </param>
+    /// <param name="triggerOptions">
+    ///     Optional Wait/trigger configuration. When provided, the loop enables the
+    ///     <c>Wait</c>/<c>CancelWait</c>/<c>ListWaits</c> tools backed by a <see cref="TriggerRuntime"/>
+    ///     (with the built-in one-shot <c>timer</c> source plus any host registrations). When null,
+    ///     no wait tools are exposed.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -89,7 +99,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         ILogger<MultiTurnAgentLoop>? logger = null,
         SubAgentOptions? subAgentOptions = null,
         MutableSubAgentTemplateSource? subAgentTemplateSource = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        TriggerOptions? triggerOptions = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
@@ -129,6 +140,26 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             _ = functionRegistry.AddProvider(toolProvider);
         }
 
+        // When trigger options are supplied, stand up the Wait/trigger runtime and register the
+        // Wait/CancelWait/ListWaits tools. Registered AFTER the sub-agent snapshot so sub-agents
+        // don't inherit the wait surface. The runtime resolves parked block waits through the
+        // loop's existing public ResolveToolCallAsync — no new loop API is exposed.
+        if (triggerOptions != null)
+        {
+            _triggerRuntime = new TriggerRuntime(
+                triggerOptions,
+                resolve: (toolCallId, result, isError, ct) =>
+                    ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
+                logger: logger);
+            _triggerRuntime.RegisterBuiltIns();
+            foreach (var registration in triggerOptions.AdditionalRegistrations)
+            {
+                _triggerRuntime.Register(registration);
+            }
+
+            _ = functionRegistry.AddProvider(new WaitToolProvider(_triggerRuntime));
+        }
+
         // Build tool call components from registry
         var (toolCallMiddleware, finalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = finalHandlers;
@@ -155,6 +186,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         if (_subAgentManager != null)
         {
             await _subAgentManager.DisposeAsync();
+        }
+
+        if (_triggerRuntime != null)
+        {
+            await _triggerRuntime.DisposeAsync();
         }
     }
 
@@ -185,11 +221,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 // the same run.
                 var realInputs = batch.Where(b => b.Resume == null).ToList();
                 var resumeSentinels = batch.Where(b => b.Resume != null).ToList();
-
-                if (realInputs.Count == 0 && resumeSentinels.Count == 0)
-                {
-                    continue;
-                }
 
                 if (resumeSentinels.Count > 0)
                 {
@@ -818,14 +849,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
-    protected override Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
+    protected override async Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
     {
         // Rebuild the deferred registry from persisted history. Each ToolCallResultMessage
         // with IsDeferred=true gets re-registered so GetDeferredToolCallsAsync surfaces it
         // and ResolveToolCallAsync can complete it after restart.
         if (messages == null || messages.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         // Index ToolCallMessages by ToolCallId so we can recover function name/args for
@@ -880,7 +911,36 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 _deferred.Count);
         }
 
-        return Task.CompletedTask;
+        // Reconcile restored block waits so no parked Wait is left hanging: a restorable source
+        // (e.g. timer) re-arms for its remaining delay; a non-restorable one resolves as
+        // trigger_lost_on_restart. Runs after the deferred set is rebuilt so it sees every entry.
+        List<DeferredEntry> restoredWaitEntries =
+            [.. _deferred.Values.Where(e => e.FunctionName == WaitToolProvider.WaitToolName)];
+
+        if (_triggerRuntime != null)
+        {
+            if (restoredWaitEntries.Count > 0)
+            {
+                List<RestoredWait> restoredList =
+                    [.. restoredWaitEntries.Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs))];
+                await _triggerRuntime.ReconcileRestoredAsync(restoredList, ct);
+            }
+        }
+        else if (restoredWaitEntries.Count > 0)
+        {
+            // Triggers are disabled in this host (or were rolled back after these waits were
+            // persisted) — there is no runtime left to re-arm or fail them. Resolve each restored
+            // Wait with a terminal failure now rather than leaving the run parked forever.
+            foreach (var entry in restoredWaitEntries)
+            {
+                await ResolveToolCallAsync(
+                    entry.ToolCallId,
+                    JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
+                    isError: false,
+                    contentBlocks: null,
+                    ct);
+            }
+        }
     }
 
     private bool HasUnresolvedDeferralsForGeneration(string generationId)

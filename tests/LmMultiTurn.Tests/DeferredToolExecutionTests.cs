@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -6,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -673,6 +675,82 @@ public class DeferredToolExecutionTests
         info.RunId.Should().Be(runId);
         info.GenerationId.Should().Be(generationId);
         info.DeferredAtUnixMs.Should().Be(1_700_000_000_000);
+    }
+
+    [Fact]
+    public async Task OnHistoryRestoredAsync_ResolvesRestoredWait_AsTriggerDisabled_WhenNoTriggerRuntime()
+    {
+        // A Wait placeholder was persisted while triggers were enabled on some earlier process,
+        // but this recovering process has triggerOptions: null (disabled, or rolled back). There
+        // is no TriggerRuntime to re-arm or fail the restored Wait via ReconcileRestoredAsync, so
+        // OnHistoryRestoredAsync must resolve it directly instead of leaving it parked forever.
+        var threadId = "test-thread-restore-wait-disabled";
+        var runId = "run_prev";
+        var generationId = "gen_prev";
+
+        var store = new InMemoryConversationStore();
+
+        var toolCall = new ToolCallMessage
+        {
+            ToolCallId = "tc_wait_persisted",
+            FunctionName = WaitToolProvider.WaitToolName,
+            FunctionArgs = "{\"kind\":\"timer\",\"timeout\":\"10m\"}",
+            Role = Role.Assistant,
+            FromAgent = "test",
+            GenerationId = generationId,
+            RunId = runId,
+        };
+        var deferredResult = new ToolCallResultMessage
+        {
+            ToolCallId = "tc_wait_persisted",
+            ToolName = WaitToolProvider.WaitToolName,
+            Result = string.Empty,
+            IsDeferred = true,
+            DeferredAt = 1_700_000_000_000,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+        };
+
+        await store.AppendMessagesAsync(threadId,
+        [
+            MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
+        ]);
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = runId,
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+        // Recovering loop has no triggerOptions -> _triggerRuntime is null.
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            threadId,
+            store: store,
+            logger: _loggerMock.Object);
+
+        var recovered = await loop.RecoverAsync();
+        recovered.Should().BeTrue();
+
+        // The restored Wait must not be left parked.
+        var pending = await loop.GetDeferredToolCallsAsync();
+        pending.Should().BeEmpty();
+
+        // It must have resolved with a terminal trigger_disabled failure, persisted to the store.
+        var persisted = await store.LoadMessagesAsync(threadId);
+        var resolvedMessages = MessagePersistenceConverter.FromPersistedMessages(persisted);
+        var resolved = resolvedMessages.OfType<ToolCallResultMessage>()
+            .Should().ContainSingle(m => m.ToolCallId == "tc_wait_persisted").Subject;
+        resolved.IsDeferred.Should().BeFalse();
+        resolved.IsError.Should().BeFalse();
+
+        using var payload = JsonDocument.Parse(resolved.Result);
+        payload.RootElement.GetProperty("status").GetString().Should().Be("failed");
+        payload.RootElement.GetProperty("reason").GetString().Should().Be("trigger_disabled");
     }
 
     [Fact]
