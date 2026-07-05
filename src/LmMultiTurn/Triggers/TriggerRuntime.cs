@@ -210,6 +210,16 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
             return WaitArmResult.Accept(waitId);
         }
+        catch (ArgumentException ex)
+        {
+            // The source rejected malformed/contradictory args (e.g. a timer given both `delay`
+            // and `deadline`). This is caller-correctable, so it gets its own reason distinct from
+            // an unexpected internal failure.
+            ReleaseGate(wait);
+            _ = _waits.TryRemove(waitId, out _);
+            _logger?.LogInformation("trigger.arm_rejected {WaitId} kind={Kind} reason={Message}", waitId, reg.Kind, ex.Message);
+            return WaitArmResult.Reject("invalid_args", ex.Message);
+        }
         catch (Exception ex)
         {
             ReleaseGate(wait);

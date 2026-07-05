@@ -222,11 +222,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 var realInputs = batch.Where(b => b.Resume == null).ToList();
                 var resumeSentinels = batch.Where(b => b.Resume != null).ToList();
 
-                if (realInputs.Count == 0 && resumeSentinels.Count == 0)
-                {
-                    continue;
-                }
-
                 if (resumeSentinels.Count > 0)
                 {
                     // Clear the scheduled flag now that we're consuming the sentinel; future
@@ -919,17 +914,31 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         // Reconcile restored block waits so no parked Wait is left hanging: a restorable source
         // (e.g. timer) re-arms for its remaining delay; a non-restorable one resolves as
         // trigger_lost_on_restart. Runs after the deferred set is rebuilt so it sees every entry.
+        List<DeferredEntry> restoredWaitEntries =
+            [.. _deferred.Values.Where(e => e.FunctionName == WaitToolProvider.WaitToolName)];
+
         if (_triggerRuntime != null)
         {
-            List<RestoredWait> restoredList =
-            [
-                .. _deferred.Values
-                    .Where(e => e.FunctionName == WaitToolProvider.WaitToolName)
-                    .Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs)),
-            ];
-            if (restoredList.Count > 0)
+            if (restoredWaitEntries.Count > 0)
             {
+                List<RestoredWait> restoredList =
+                    [.. restoredWaitEntries.Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs))];
                 await _triggerRuntime.ReconcileRestoredAsync(restoredList, ct);
+            }
+        }
+        else if (restoredWaitEntries.Count > 0)
+        {
+            // Triggers are disabled in this host (or were rolled back after these waits were
+            // persisted) — there is no runtime left to re-arm or fail them. Resolve each restored
+            // Wait with a terminal failure now rather than leaving the run parked forever.
+            foreach (var entry in restoredWaitEntries)
+            {
+                await ResolveToolCallAsync(
+                    entry.ToolCallId,
+                    JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
+                    isError: false,
+                    contentBlocks: null,
+                    ct);
             }
         }
     }

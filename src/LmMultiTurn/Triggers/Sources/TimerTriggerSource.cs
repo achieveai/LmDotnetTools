@@ -45,19 +45,39 @@ public sealed class TimerTriggerSource : ITriggerSource
     /// Computes the absolute instant the timer should fire, relative to the arm time so restart
     /// re-arming yields the same wall-clock target.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The args are not a JSON object, supply both <c>delay</c> and <c>deadline</c>, or supply a
+    /// <c>delay</c>/<c>deadline</c> that does not parse. Invalid input is rejected rather than
+    /// silently falling back to the wait's ceiling, so the caller sees a structured rejection it
+    /// can correct instead of an unexpectedly-late fire.
+    /// </exception>
     private static DateTimeOffset ResolveFireInstant(TriggerArmRequest request)
     {
         var (delay, deadline) = ParseArgs(request.ArgsJson);
+        var hasDelay = !string.IsNullOrWhiteSpace(delay);
+        var hasDeadline = !string.IsNullOrWhiteSpace(deadline);
 
-        if (!string.IsNullOrWhiteSpace(deadline)
-            && TriggerDurations.TryResolveInstant(deadline, request.ArmedAt, out var absolute, out _))
+        if (hasDelay && hasDeadline)
         {
+            throw new ArgumentException("timer args must supply at most one of 'delay' or 'deadline', not both.");
+        }
+
+        if (hasDeadline)
+        {
+            if (!TriggerDurations.TryResolveInstant(deadline, request.ArmedAt, out var absolute, out var error))
+            {
+                throw new ArgumentException($"timer 'deadline' is invalid: {error}");
+            }
             return absolute;
         }
 
-        if (!string.IsNullOrWhiteSpace(delay)
-            && TriggerDurations.TryParseDuration(delay, out var relative))
+        if (hasDelay)
         {
+            if (!TriggerDurations.TryParseDuration(delay, out var relative))
+            {
+                throw new ArgumentException(
+                    $"timer 'delay' is invalid: '{delay}' is not a duration (e.g. \"10m\", \"30s\").");
+            }
             return request.ArmedAt + relative;
         }
 
@@ -72,27 +92,41 @@ public sealed class TimerTriggerSource : ITriggerSource
             return (null, null);
         }
 
+        JsonDocument doc;
         try
         {
-            using var doc = JsonDocument.Parse(argsJson);
+            doc = JsonDocument.Parse(argsJson);
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException($"timer args is not valid JSON: {ex.Message}", ex);
+        }
+
+        using (doc)
+        {
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                return (null, null);
+                throw new ArgumentException("timer args must be a JSON object.");
             }
 
-            var delay = root.TryGetProperty("delay", out var d) && d.ValueKind == JsonValueKind.String
-                ? d.GetString()
-                : null;
-            var deadline = root.TryGetProperty("deadline", out var dl) && dl.ValueKind == JsonValueKind.String
-                ? dl.GetString()
-                : null;
-            return (delay, deadline);
+            return (GetOptionalString(root, "delay"), GetOptionalString(root, "deadline"));
         }
-        catch (JsonException)
+    }
+
+    private static string? GetOptionalString(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind == JsonValueKind.Null)
         {
-            return (null, null);
+            return null;
         }
+
+        if (el.ValueKind != JsonValueKind.String)
+        {
+            throw new ArgumentException($"timer '{name}' must be a string.");
+        }
+
+        return el.GetString();
     }
 
     /// <summary>

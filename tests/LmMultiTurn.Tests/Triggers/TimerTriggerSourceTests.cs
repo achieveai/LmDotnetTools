@@ -91,4 +91,23 @@ public class TimerTriggerSourceTests
 
         (await sink.Fired.WaitAsync(TimeSpan.FromSeconds(5))).Should().NotBeNull();
     }
+
+    [Theory]
+    [InlineData("{\"delay\":\"soon\"}")] // malformed relative duration
+    [InlineData("{\"deadline\":\"not-a-date\"}")] // malformed absolute instant
+    [InlineData("{\"delay\":\"10m\",\"deadline\":\"2026-01-01T00:00:00Z\"}")] // contradictory: both supplied
+    [InlineData("not json")] // not JSON at all
+    [InlineData("[1,2,3]")] // valid JSON, but not an object
+    [InlineData("{\"delay\":123}")] // wrong JSON value type
+    public async Task ArmAsync_RejectsInvalidArgs_InsteadOfSilentlyFallingBackToCeiling(string argsJson)
+    {
+        var source = new TimerTriggerSource();
+        var sink = new CapturingSink();
+        var now = DateTimeOffset.UtcNow;
+
+        var act = () => source.ArmAsync(Request(argsJson, now, now.AddMinutes(10)), sink, CancellationToken.None).AsTask();
+
+        await act.Should().ThrowAsync<ArgumentException>(
+            "malformed or contradictory timer args must be rejected, not silently armed against the wait's ceiling");
+    }
 }
