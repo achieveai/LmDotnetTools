@@ -98,7 +98,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var hugeDiff = new string('x', 10_000);
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { Limits = new Configuration.SandboxLimits { MaxArtifactPayloadChars = 256 } },
+            new CodeReviewDaemonOptions
+            {
+                Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 256 },
+            },
             diffResult: new SandboxCommandResult(0, hugeDiff, string.Empty));
         var run = fixture.SeedRun();
 
