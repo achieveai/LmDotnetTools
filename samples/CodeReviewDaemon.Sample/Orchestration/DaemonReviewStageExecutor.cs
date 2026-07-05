@@ -418,8 +418,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
         var profile = DaemonAgentFactory.CreateReviewProfile();
+        // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
+        // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
+        // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
+        // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
+        var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, run.VariantId), reasoningEffort: null, toolContext: toolContext);
+            profile, run.ModelId, ThreadId(run, run.VariantId), reasoningEffort: effort, toolContext: toolContext);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         var result = await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
 

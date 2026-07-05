@@ -103,7 +103,16 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             _ = scratch.AddMcpClientsAsync(
                     new Dictionary<string, McpClient> { ["sandbox"] = client }, "sandbox", omitServerPrefix: true)
                 .GetAwaiter().GetResult();
+            var (srcContracts, _) = scratch.Build();
             ReadOnlyToolFilter.Apply(scratch, registry, toolContext.ReadOnlyToolAllowList);
+            var (keptContracts, _) = registry.Build();
+            _loggerFactory.CreateLogger<LiveReviewAgentLoopFactory>().LogInformation(
+                "Tool-assisted loop {ThreadId} (session {SessionId}): gateway tools=[{Src}] allow=[{Allow}] kept=[{Kept}]",
+                threadId,
+                toolContext.SessionId,
+                string.Join(",", srcContracts.Select(c => c.Name)),
+                string.Join(",", toolContext.ReadOnlyToolAllowList),
+                string.Join(",", keptContracts.Select(c => c.Name)));
         }
 
         var loop = new MultiTurnAgentLoop(
