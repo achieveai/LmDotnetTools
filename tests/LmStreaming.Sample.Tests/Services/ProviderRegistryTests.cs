@@ -250,6 +250,28 @@ public class ProviderRegistryTests
     }
 
     [Fact]
+    public void IsAvailable_CopilotModel_TracksInjectedTokenDelegate()
+    {
+        // The copilotTokenAvailable seam lets tests (and the browser E2E harness) make discovered
+        // Copilot models available without a real gh/Copilot login. It governs only the token gate:
+        // the model is known either way, but only available when the delegate reports a token.
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var copilotModels = new[]
+        {
+            new CopilotModelInfo("claude-opus-4.8", "Claude Opus 4.8", CopilotModelVendor.Anthropic, CopilotModelTransport.Anthropic),
+        };
+
+        var withToken = new ProviderRegistry(
+            new FakeFileSystemProbe(), () => false, copilotModels, copilotTokenAvailable: () => true);
+        var withoutToken = new ProviderRegistry(
+            new FakeFileSystemProbe(), () => false, copilotModels, copilotTokenAvailable: () => false);
+
+        withToken.IsAvailable("claude-opus-4.8").Should().BeTrue();
+        withoutToken.IsAvailable("claude-opus-4.8").Should().BeFalse();
+        withoutToken.IsKnown("claude-opus-4.8").Should().BeTrue();
+    }
+
+    [Fact]
     public void IsAvailable_ClaudeMock_RequiresCliAndRunningHost()
     {
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");

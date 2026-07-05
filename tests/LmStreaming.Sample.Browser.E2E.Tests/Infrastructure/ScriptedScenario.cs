@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -40,7 +41,8 @@ public static class ScriptedScenario
         int? fixedPort = null,
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
-        SandboxGatewayOptions? sandboxOptions = null
+        SandboxGatewayOptions? sandboxOptions = null,
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null
     )
     {
         return fixture.OpenWithBuilderAsync(
@@ -49,7 +51,8 @@ public static class ScriptedScenario
             fixedPort,
             catalogClient,
             sandboxGatewayHandler,
-            sandboxOptions);
+            sandboxOptions,
+            copilotModels);
     }
 
     /// <summary>
@@ -66,7 +69,8 @@ public static class ScriptedScenario
         int? fixedPort = null,
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
-        SandboxGatewayOptions? sandboxOptions = null
+        SandboxGatewayOptions? sandboxOptions = null,
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null
     )
     {
         return fixture.OpenWithBuilderAsync(
@@ -75,7 +79,8 @@ public static class ScriptedScenario
             fixedPort,
             catalogClient,
             sandboxGatewayHandler,
-            sandboxOptions);
+            sandboxOptions,
+            copilotModels);
     }
 
     private static async Task<ScenarioSession> OpenWithBuilderAsync(
@@ -85,7 +90,8 @@ public static class ScriptedScenario
         int? fixedPort,
         IMarketplaceCatalogClient? catalogClient,
         HttpMessageHandler? sandboxGatewayHandler,
-        SandboxGatewayOptions? sandboxOptions
+        SandboxGatewayOptions? sandboxOptions,
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null
     )
     {
         var factory = new BrowserWebAppFactory(
@@ -94,7 +100,8 @@ public static class ScriptedScenario
             fixedPort,
             catalogClient,
             sandboxGatewayHandler,
-            sandboxOptions);
+            sandboxOptions,
+            copilotModels);
         IBrowserContext? context = null;
         try
         {

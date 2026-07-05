@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -43,6 +44,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly IMarketplaceCatalogClient? _catalogClient;
     private readonly HttpMessageHandler? _sandboxGatewayHandler;
     private readonly SandboxGatewayOptions? _sandboxOptions;
+    private readonly IReadOnlyList<CopilotModelInfo>? _copilotModels;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -70,13 +72,21 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// (a temp <c>WorkspaceBasePath</c>, a closed-port <c>BaseUrl</c> so the gateway MCP transport
     /// fails fast and degrades, etc.). Required when a handler is supplied; ignored otherwise.
     /// </param>
+    /// <param name="copilotModels">
+    /// Optional stub GitHub Copilot models. When set, the <see cref="ProviderRegistry"/> singleton is
+    /// rebuilt from these entries with the Copilot token gate forced on (no real gh/Copilot login), so
+    /// the discovered models render as <em>available</em> providers. Used by the provider-dropdown
+    /// overflow regression to deterministically fill the selector. Left null for every other scenario
+    /// (the real startup discovery applies, which yields nothing without a token).
+    /// </param>
     public BrowserWebAppFactory(
         string providerMode,
         ITestAgentBuilder? builder,
         int? fixedPort = null,
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
-        SandboxGatewayOptions? sandboxOptions = null)
+        SandboxGatewayOptions? sandboxOptions = null,
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null)
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -116,6 +126,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         _catalogClient = catalogClient;
         _sandboxGatewayHandler = sandboxGatewayHandler;
         _sandboxOptions = sandboxOptions;
+        _copilotModels = copilotModels;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -168,6 +179,21 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             {
                 services.RemoveAll<IMarketplaceCatalogClient>();
                 services.AddSingleton(_catalogClient);
+            }
+
+            // Swap the discovery-backed ProviderRegistry for one seeded with stub Copilot models and
+            // the Copilot token gate forced on, so the discovered models render as *available* providers
+            // without a real gh/Copilot login. Registered only as the concrete type (ProvidersController
+            // and the agent factory both resolve ProviderRegistry directly), so RemoveAll + AddSingleton
+            // last-wins fully replaces it. Left untouched when null (every non-dropdown scenario).
+            if (_copilotModels is not null)
+            {
+                services.RemoveAll<ProviderRegistry>();
+                services.AddSingleton(new ProviderRegistry(
+                    probe: null,
+                    mockHostIsRunning: () => false,
+                    copilotModels: _copilotModels,
+                    copilotTokenAvailable: () => true));
             }
 
             // Stand-in sandbox gateway: rebuild the gateway lifetime + registry around the capturing
