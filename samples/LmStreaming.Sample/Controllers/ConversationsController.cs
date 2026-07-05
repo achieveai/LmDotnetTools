@@ -2,12 +2,14 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
@@ -18,8 +20,91 @@ public class ConversationsController(
     IConversationStore store,
     MultiTurnAgentPool agentPool,
     IChatModeStore modeStore,
+    IWorkspaceStore workspaceStore,
+    ProviderRegistry providerRegistry,
+    ConversationStatusResolver statusResolver,
     ILogger<ConversationsController> logger) : ControllerBase
 {
+    /// <summary>
+    /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without
+    /// starting a live agent/sandbox session. Enables a headless caller to provision a conversation
+    /// ahead of the first message, so the server (not the caller) mints the thread id.
+    /// </summary>
+    [HttpPost]
+    public async Task<IActionResult> Provision(
+        [FromBody] ProvisionConversationRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var workspace = await workspaceStore.GetAsync(request.WorkspaceId, ct);
+        if (workspace == null)
+        {
+            return NotFound(new { error = $"Workspace '{request.WorkspaceId}' not found." });
+        }
+
+        var mode = await modeStore.GetModeAsync(request.ModeId, ct);
+        if (mode == null)
+        {
+            return NotFound(new { error = $"Mode '{request.ModeId}' not found." });
+        }
+
+        if (!providerRegistry.IsAvailable(request.ProviderId))
+        {
+            var reason = providerRegistry.IsKnown(request.ProviderId)
+                ? $"Provider '{request.ProviderId}' is currently unavailable."
+                : $"Provider '{request.ProviderId}' is not a known provider.";
+            logger.LogWarning(
+                "Provision rejected: provider {ProviderId} unavailable ({Reason})",
+                request.ProviderId,
+                reason);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = request.ProviderId,
+                    detail = reason,
+                });
+        }
+
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                var propertiesBuilder = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
+                propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
+                propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
+
+                if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
+                {
+                    propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
+                    propertiesBuilder["sample.authWebhookProviderId"] = request.ProviderId;
+                    propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
+                }
+
+                return new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    CurrentRunId = existing?.CurrentRunId,
+                    LatestRunId = existing?.LatestRunId,
+                    LastUpdated = now.ToUnixTimeMilliseconds(),
+                    SessionMappings = existing?.SessionMappings,
+                    Properties = propertiesBuilder.ToImmutable(),
+                };
+            },
+            ct);
+
+        return Ok(new ProvisionConversationResponse { ThreadId = threadId });
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(
         int limit = 50,
@@ -109,6 +194,120 @@ public class ConversationsController(
             ThreadId = threadId,
             IsInProgress = runState.IsInProgress,
             CurrentRunId = runState.CurrentRunId,
+        });
+    }
+
+    /// <summary>
+    /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
+    /// input is durably recorded as accepted, before it is necessarily drained into a run — callers
+    /// poll <see cref="GetStatus"/> by the returned <c>inputId</c> to learn when/how it resolved.
+    /// </summary>
+    [HttpPost("{threadId}/messages")]
+    public async Task<IActionResult> SendMessage(
+        string threadId,
+        [FromBody] SendMessageRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (metadata == null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        var persistedModeId =
+            metadata.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                ? modeObj?.ToString()
+                : null;
+        var mode =
+            await modeStore.GetModeAsync(persistedModeId ?? SystemChatModes.DefaultModeId, ct)
+            ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+        if (mode == null)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                new { error = "Could not resolve the conversation's mode.", threadId });
+        }
+
+        IMultiTurnAgent agent;
+        try
+        {
+            agent = agentPool.GetOrCreateAgent(threadId, mode, requestedProviderId: null, requestResponseDumpFileName: null);
+        }
+        catch (ProviderUnavailableException ex)
+        {
+            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable", threadId, ex.ProviderId);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})", threadId, ex.StatusCode);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+        }
+
+        var inputId = Guid.NewGuid().ToString();
+        var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
+
+        // A null return means the input channel is full — TrySendAsync guarantees no accepted-input
+        // record survives in that case. A thrown exception (durable-store write failure) is left to
+        // propagate to a 500, per the REST contract (no inputId returned either way).
+        var receipt = await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+        if (receipt == null)
+        {
+            logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "queue_full", code = "queue_full", threadId });
+        }
+
+        return Accepted(new SendMessageResponse { InputId = inputId, Queued = true });
+    }
+
+    /// <summary>
+    /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or
+    /// <paramref name="inputId"/>. See <see cref="ConversationStatusResolver"/> for the 5-state
+    /// resolution and the tool-only-run final-response convention.
+    /// </summary>
+    [HttpGet("{threadId}/status")]
+    public async Task<IActionResult> GetStatus(
+        string threadId,
+        string? runId = null,
+        string? inputId = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(runId) == string.IsNullOrEmpty(inputId))
+        {
+            return BadRequest(new { error = "Exactly one of 'runId' or 'inputId' must be provided." });
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (metadata == null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        var result = runId != null
+            ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
+            : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
+
+        if (result == null)
+        {
+            var idKind = runId != null ? "runId" : "inputId";
+            var idValue = runId ?? inputId;
+            return NotFound(new { error = $"Unknown {idKind} '{idValue}' for thread '{threadId}'.", code = $"unknown_{idKind}" });
+        }
+
+        return Ok(new ConversationStatusResponse
+        {
+            ThreadId = result.ThreadId,
+            RunId = result.RunId,
+            Status = result.Status.ToString(),
+            Response = result.Response,
         });
     }
 

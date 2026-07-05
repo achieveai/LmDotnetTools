@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.Agents;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -68,6 +70,9 @@ public class ConversationsControllerWorkspaceTests
             store.Object,
             pool,
             Mock.Of<IChatModeStore>(),
+            Mock.Of<IWorkspaceStore>(),
+            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
+            new ConversationStatusResolver(new InMemoryConversationStore(), new InMemoryConversationStore()),
             NullLogger<ConversationsController>.Instance);
     }
 

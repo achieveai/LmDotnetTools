@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
 
@@ -6,6 +7,25 @@ namespace LmStreaming.Sample.Tests.Controllers;
 
 public class ConversationsControllerTests
 {
+    /// <summary>
+    /// Builds a controller for tests exercising <c>SwitchMode</c>/<c>SwitchProvider</c>, which don't
+    /// touch workspace/provider-registry/status-resolver — stand-ins suffice.
+    /// </summary>
+    private static ConversationsController CreateController(
+        IConversationStore store,
+        MultiTurnAgentPool pool,
+        IChatModeStore modeStore)
+    {
+        return new ConversationsController(
+            store,
+            pool,
+            modeStore,
+            Mock.Of<IWorkspaceStore>(),
+            new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
+            new ConversationStatusResolver(new InMemoryConversationStore(), new InMemoryConversationStore()),
+            NullLogger<ConversationsController>.Instance);
+    }
+
     [Fact]
     public async Task SwitchMode_ReturnsConflict_WhenRunIsInProgress()
     {
@@ -19,11 +39,7 @@ public class ConversationsControllerTests
         var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
         agent.CurrentRunId = "run-active";
 
-        var controller = new ConversationsController(
-            Mock.Of<IConversationStore>(),
-            pool,
-            modeStore.Object,
-            NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
 
         var result = await controller.SwitchMode(
             threadId,
@@ -52,11 +68,7 @@ public class ConversationsControllerTests
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         _ = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
 
-        var controller = new ConversationsController(
-            Mock.Of<IConversationStore>(),
-            pool,
-            modeStore.Object,
-            NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
 
         var result = await controller.SwitchMode(
             threadId,
@@ -83,11 +95,7 @@ public class ConversationsControllerTests
         agent.CurrentRunId = "run-stale";
         agent.IsRunning = false;
 
-        var controller = new ConversationsController(
-            Mock.Of<IConversationStore>(),
-            pool,
-            modeStore.Object,
-            NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
 
         var result = await controller.SwitchMode(
             threadId,
@@ -106,11 +114,7 @@ public class ConversationsControllerTests
         modeStore.Setup(m => m.GetModeAsync("missing-mode", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ChatMode?)null);
 
-        var controller = new ConversationsController(
-            Mock.Of<IConversationStore>(),
-            pool,
-            modeStore.Object,
-            NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
 
         var result = await controller.SwitchMode(
             "thread-404",
@@ -149,11 +153,7 @@ public class ConversationsControllerTests
         var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
         agent.CurrentRunId = "run-active";
 
-        var controller = new ConversationsController(
-            Mock.Of<IConversationStore>(),
-            pool,
-            Mock.Of<IChatModeStore>(),
-            NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
@@ -182,8 +182,7 @@ public class ConversationsControllerTests
         _ = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
             threadId, currentMode, requestedProviderId: "test", requestResponseDumpFileName: null);
 
-        var controller = new ConversationsController(
-            store, pool, Mock.Of<IChatModeStore>(), NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
@@ -210,8 +209,7 @@ public class ConversationsControllerTests
         _ = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
             threadId, currentMode, requestedProviderId: "test", requestResponseDumpFileName: null);
 
-        var controller = new ConversationsController(
-            store, pool, Mock.Of<IChatModeStore>(), NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
@@ -240,8 +238,7 @@ public class ConversationsControllerTests
         agent.CurrentRunId = "run-stale";
         agent.IsRunning = false;
 
-        var controller = new ConversationsController(
-            store, pool, Mock.Of<IChatModeStore>(), NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(store, pool, Mock.Of<IChatModeStore>());
 
         var result = await controller.SwitchProvider(
             threadId,
@@ -278,8 +275,7 @@ public class ConversationsControllerTests
             .ReturnsAsync(SystemChatModes.GetById("math-helper"));
 
         // No live agent for this thread → forces the persisted-mode fallback chain in the controller.
-        var controller = new ConversationsController(
-            store, pool, modeStore.Object, NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(store, pool, modeStore.Object);
 
         var result = await controller.SwitchProvider(
             "thread-prov-refresh",
@@ -310,8 +306,7 @@ public class ConversationsControllerTests
 
         // No agent is created for this thread and no metadata is persisted → GetAgentMode is null and
         // the fallback chain resolves nothing.
-        var controller = new ConversationsController(
-            store, pool, modeStore.Object, NullLogger<ConversationsController>.Instance);
+        var controller = CreateController(store, pool, modeStore.Object);
 
         var result = await controller.SwitchProvider(
             "thread-prov-nomode",

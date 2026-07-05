@@ -31,6 +31,15 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 
+    public async ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default)
+    {
+        return await SendAsync(messages, inputId, parentRunId, ct);
+    }
+
 #pragma warning disable CS1998, IDE0391 // Async iterator lacks 'await' - intentional empty stub using yield break
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
