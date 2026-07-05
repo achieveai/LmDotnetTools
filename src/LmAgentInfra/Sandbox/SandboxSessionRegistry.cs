@@ -1159,7 +1159,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
     /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;
-    /// <see cref="Path"/> is workspace-relative.</summary>
+    /// <see cref="Path"/> is workspace-relative. <see cref="Content"/> carries the item's inline
+    /// body when the gateway includes it (e.g. a marketplace sub-agent's full markdown source);
+    /// <see cref="QualifiedName"/> is the plugin-qualified id (e.g.
+    /// <c>code-reviewer:architecture-review</c>).</summary>
     public sealed record DiscoveredItem(
         [property: JsonPropertyName("kind")] string Kind,
         [property: JsonPropertyName("name")] string Name,

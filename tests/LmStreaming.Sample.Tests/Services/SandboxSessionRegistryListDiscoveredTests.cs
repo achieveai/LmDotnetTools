@@ -66,6 +66,10 @@ public class SandboxSessionRegistryListDiscoveredTests
         items[1].Kind.Should().Be("skill");
         items[1].Content.Should().BeNull();
         items[1].QualifiedName.Should().BeNull();
+
+        handler.LastRequest.Should().NotBeNull();
+        handler.LastRequest!.RequestUri!.ToString().Should().Be($"{GatewayBaseUrl}/api/v1/sandboxes/{SessionId}/discovered");
+        handler.LastRequest!.Method.Should().Be(HttpMethod.Get);
     }
 
     [Fact]
