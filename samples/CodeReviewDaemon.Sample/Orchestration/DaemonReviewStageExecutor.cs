@@ -332,11 +332,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// The confidentiality gate (Task 17, design §6 Risk B): whether a sibling private submodule may be
-    /// co-located beside the run's checkout. This placeholder always denies — Task 17 replaces the body
-    /// with the real same-trust-domain check once the run carries a positive trust signal; until then, no
-    /// sibling is ever co-located (fail closed).
+    /// co-located beside the run's checkout. <c>true</c> only when this run is positively established as
+    /// same-trust-domain — the PR head is NOT from a fork AND the target repo is private (same-org
+    /// private→private). A fork PR or a public target could carry a prompt-injected diff that reads the
+    /// sibling repo and surfaces it in the review the daemon posts, so those get target + Contracts/ only.
+    /// Fails closed: <see cref="ReviewRun.IsForkPr"/> and <see cref="ReviewRun.IsTargetRepoPublic"/> both
+    /// default to <c>true</c>, so a run whose trust signal was never positively populated is denied
+    /// co-location exactly like a confirmed fork/public PR — never a permissive default.
     /// </summary>
-    internal bool AllowsCrossRepoCoLocation(ReviewRun run, RepoIdentity repo) => false;
+    internal bool AllowsCrossRepoCoLocation(ReviewRun run, RepoIdentity repo) => !run.IsForkPr && !run.IsTargetRepoPublic;
 
     /// <summary>
     /// Clones the target repo into <see cref="TargetRoot"/> (or reuses an existing checkout), then
