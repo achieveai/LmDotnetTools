@@ -5,10 +5,10 @@ using Microsoft.Data.Sqlite;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
 /// <summary>
-/// SQLite implementation of <see cref="IConversationStore"/>.
+/// SQLite implementation of <see cref="IConversationStore"/> and <see cref="IRunLedgerStore"/>.
 /// Uses a factory pattern for connection pooling and lazy schema initialization.
 /// </summary>
-public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposable
+public sealed class SqliteConversationStore : IConversationStore, IRunLedgerStore, IAsyncDisposable
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
@@ -341,6 +341,179 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
     }
 
     /// <inheritdoc />
+    public async Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        var inputIdsJson = JsonSerializer.Serialize(entry.InputIds, JsonOptions);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO run_ledger (run_id, thread_id, status, input_ids, created_at, updated_at)
+            VALUES ($run_id, $thread_id, $status, $input_ids, $created_at, $updated_at)
+            ON CONFLICT(run_id) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                status = excluded.status,
+                input_ids = excluded.input_ids,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at;
+            """;
+
+        _ = command.Parameters.AddWithValue("$run_id", entry.RunId);
+        _ = command.Parameters.AddWithValue("$thread_id", entry.ThreadId);
+        _ = command.Parameters.AddWithValue("$status", entry.Status.ToString());
+        _ = command.Parameters.AddWithValue("$input_ids", inputIdsJson);
+        _ = command.Parameters.AddWithValue("$created_at", entry.CreatedAt.ToUnixTimeMilliseconds());
+        _ = command.Parameters.AddWithValue("$updated_at", entry.UpdatedAt.ToUnixTimeMilliseconds());
+
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT run_id, thread_id, status, input_ids, created_at, updated_at
+            FROM run_ledger
+            WHERE run_id = $run_id;
+            """;
+        _ = command.Parameters.AddWithValue("$run_id", runId);
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return !await reader.ReadAsync(ct).ConfigureAwait(false)
+            ? null
+            : ReadRunLedgerEntry(reader);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT run_id, thread_id, status, input_ids, created_at, updated_at
+            FROM run_ledger
+            WHERE thread_id = $thread_id
+            ORDER BY created_at DESC;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+
+        var entries = new List<RunLedgerEntry>();
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            entries.Add(ReadRunLedgerEntry(reader));
+        }
+
+        return entries;
+    }
+
+    /// <inheritdoc />
+    public async Task RecordAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO accepted_inputs (thread_id, input_id, accepted_at)
+            VALUES ($thread_id, $input_id, $accepted_at)
+            ON CONFLICT(thread_id, input_id) DO UPDATE SET
+                accepted_at = excluded.accepted_at;
+            """;
+
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+        _ = command.Parameters.AddWithValue("$accepted_at", acceptedAt.ToUnixTimeMilliseconds());
+
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task RemoveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM accepted_inputs WHERE thread_id = $thread_id AND input_id = $input_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT input_id FROM accepted_inputs WHERE thread_id = $thread_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+
+        var inputIds = new HashSet<string>();
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            _ = inputIds.Add(reader.GetString(0));
+        }
+
+        return inputIds;
+    }
+
+    /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -399,6 +572,18 @@ public sealed class SqliteConversationStore : IConversationStore, IAsyncDisposab
             FromAgent = reader.IsDBNull(9) ? null : reader.GetString(9),
             MessageJson = reader.GetString(10),
         };
+    }
+
+    private static RunLedgerEntry ReadRunLedgerEntry(SqliteDataReader reader)
+    {
+        var runId = reader.GetString(0);
+        var threadId = reader.GetString(1);
+        var status = Enum.Parse<RunStatus>(reader.GetString(2));
+        var inputIds = JsonSerializer.Deserialize<List<string>>(reader.GetString(3), JsonOptions) ?? [];
+        var createdAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4));
+        var updatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5));
+
+        return new RunLedgerEntry(threadId, runId, status, inputIds, createdAt, updatedAt);
     }
 
     private static ThreadMetadata ReadMetadata(SqliteDataReader reader)
