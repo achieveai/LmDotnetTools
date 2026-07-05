@@ -165,4 +165,22 @@ internal sealed class CodeReviewDaemonOptions
     /// fork or public-repo PR never gets them, regardless of this configuration.
     /// </summary>
     public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
+
+    /// <summary>
+    /// Remote URL of the <c>AchieveAiReviews</c> cross-repo store to check out as the review superproject:
+    /// the reviewed repo is a submodule under <c>repos/&lt;RepoName&gt;</c> alongside the shared
+    /// <c>Contracts/</c> layer and sibling repos. When a tool-assisted run's reviewed repo is a submodule of
+    /// this store, the daemon clones the store and initializes that submodule so the agent reads across it —
+    /// and, as a bonus, the gateway's Grep/Glob work on a submodule working tree (a gitlink) where they abort
+    /// at a standalone clone root. Blank (default) falls back to <see cref="ReviewBotRepoUrl"/> — the store IS
+    /// the ReviewBot repo — so pointing the daemon at the ReviewBot repo enables both retention and store
+    /// review. When neither is set, or the reviewed repo is not a submodule of the store, the review uses the
+    /// single-repo <c>/workspace/target</c> checkout.
+    /// </summary>
+    public string? CrossRepoStoreUrl { get; init; }
+
+    /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
+    /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
+    public string? ResolvedStoreUrl =>
+        string.IsNullOrWhiteSpace(CrossRepoStoreUrl) ? ReviewBotRepoUrl : CrossRepoStoreUrl;
 }

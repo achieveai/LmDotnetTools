@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -111,6 +112,153 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var diff = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("Diff").GetString()!;
         diff.Length.Should().BeLessThan(hugeDiff.Length, "an oversized diff must be capped before persisting (H4)");
         diff.Should().Contain("truncated");
+    }
+
+    [Fact]
+    public async Task ContextReady_checks_out_the_pr_head_so_reads_reflect_the_proposed_code()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // The working tree must be moved to the PR head so Read/Grep/Glob and the file manifest reflect the
+        // code the PR proposes, not the clone's default branch (which would ground findings in the wrong code).
+        commands.Should().Contain(
+            a => a.Contains("checkout --force") && a.Contains("head-sha"),
+            "the PR head is checked out into the target working tree");
+    }
+
+    [Fact]
+    public async Task ContextReady_persists_a_file_manifest_from_git_ls_files()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        // The head checkout's tracked files — the manifest the review agent Reads by exact path to ground
+        // findings (the gateway's Glob/Grep cannot enumerate the repo root reliably).
+        fixture.Runner.OnArgvContains(
+            "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\nREADME.md\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains("/workspace/target") && a.Contains("ls-files"));
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var manifest = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("FileManifest").GetString()!;
+        manifest.Should().Contain("src/Foo/Bar.cs").And.Contain("README.md");
+    }
+
+    [Fact]
+    public async Task Reviewed_passes_the_file_manifest_to_the_review_agent_input()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContains(
+            "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The primary review agent must actually SEE the manifest in its user input so it can Read files by
+        // exact path instead of globbing the repo root.
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var input = reviewAgent.ReceivedInputs.Should().ContainSingle().Subject;
+        var text = input.Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("/workspace/target").And.Contain("src/Foo/Bar.cs");
+    }
+
+    [Fact]
+    public async Task ContextReady_uses_the_cross_repo_store_when_the_reviewed_repo_is_a_submodule()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        // The store declares the reviewed repo as a submodule under repos/LmDotnetTools.
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\nREADME.md\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("clone") && a.Contains("AchieveAiReviews") && a.Contains("/workspace/store"),
+            "the cross-repo store is cloned as the review superproject");
+        commands.Should().Contain(
+            a => a.Contains("submodule update --init") && a.Contains("repos/LmDotnetTools"),
+            "the reviewed repo's submodule is initialized in the store");
+        commands.Should().Contain(
+            a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("checkout --force") && a.Contains("head-sha"),
+            "the PR head is checked out in the reviewed submodule working tree");
+        commands.Should().Contain(
+            a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"),
+            "the diff is taken from the reviewed submodule, not the store root");
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload.GetProperty("CheckoutRoot").GetString().Should().Be("/workspace/store/repos/LmDotnetTools");
+        payload.GetProperty("StoreRoot").GetString().Should().Be("/workspace/store");
+    }
+
+    [Fact]
+    public async Task ContextReady_falls_back_to_single_repo_when_the_store_lacks_the_reviewed_submodule()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        // The store declares a DIFFERENT repo — the reviewed repo is not in it, so the review falls back to
+        // the single-repo /workspace/target checkout.
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("clone") && a.Contains("github.com/achieveai/LmDotnetTools") && a.Contains("/workspace/target"),
+            "the reviewed repo is cloned directly when it is not a store submodule");
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("StoreRoot").ValueKind
+            .Should().Be(JsonValueKind.Null, "the single-repo fallback records no store root");
+    }
+
+    [Fact]
+    public async Task Reviewed_input_reflects_the_store_layout_and_contracts()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
+        text.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
     }
 
     [Fact]

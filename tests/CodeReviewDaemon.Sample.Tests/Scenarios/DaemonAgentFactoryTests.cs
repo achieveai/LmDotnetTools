@@ -88,6 +88,21 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_GroundsViaReadByPathAndAvoidsRootGlob()
+    {
+        // The gateway's Glob/Grep cannot enumerate the repo root reliably, so the reviewer must ground via
+        // Read of exact paths (using the injected manifest) and scope any search to a subdirectory rather
+        // than globbing /workspace/target itself.
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("/workspace/target"); // the PR head checkout root
+        prompt.Should().MatchRegex("(?i)exact path"); // Read files by exact path
+        prompt.Should().MatchRegex("(?i)manifest"); // the manifest is provided in the input
+        prompt.Should().MatchRegex("(?i)subdirector"); // scope Grep/Glob to a subdirectory
+        prompt.Should().NotContain("Glob the workspace"); // the old root-glob instruction is gone
+    }
+
+    [Fact]
     public void CreateJudgeProfile_and_CreateKnowledgeProfile_have_stable_ids_and_gating()
     {
         // P4.4 — the executor feeds these to the live agent loop only when the judge / knowledge flags

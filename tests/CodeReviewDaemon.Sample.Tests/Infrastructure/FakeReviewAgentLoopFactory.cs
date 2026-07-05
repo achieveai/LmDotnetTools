@@ -32,6 +32,10 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Tool contexts passed to <see cref="Create"/>, in call order (null = diff-only path).</summary>
     public List<ReviewToolContext?> ToolContexts { get; } = [];
 
+    /// <summary>The scripted agents returned by <see cref="Create"/>, in call order, so a test can
+    /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
+    public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
@@ -46,6 +50,8 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
-        return new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
+        var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
+        CreatedAgents.Add(agent);
+        return agent;
     }
 }

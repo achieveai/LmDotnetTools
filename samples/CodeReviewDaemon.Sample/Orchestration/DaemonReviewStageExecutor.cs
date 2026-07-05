@@ -66,6 +66,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private const string TargetRoot = "/workspace/target";
 
+    /// <summary>The cross-repo <c>AchieveAiReviews</c> store superproject checkout (the reviewed repo lives
+    /// under <c>{StoreRoot}/repos/&lt;Repo&gt;</c> beside the shared <c>Contracts/</c> layer). Only used on
+    /// the tool-assisted store path; the single-repo path clones straight into <see cref="TargetRoot"/>.</summary>
+    private const string StoreRoot = "/workspace/store";
+
     /// <summary>The ReviewBot default branch artifacts are durably landed on (plan §2).</summary>
     private const string ReviewBotDefaultBranch = "main";
 
@@ -251,39 +256,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
         var git = new GitRunner(runner);
 
-        // 1. Clone (or reuse) the TARGET repo into its own checkout (PR #121 H1). The per-run
-        // OperationPolicy scopes the fetch to exactly this repo + the ReviewBot remote; submodule init
-        // runs under it too, so an off-allow-list submodule is refused rather than fetched. The
-        // submodule allow-list additionally scopes the cross-repo AchieveAiReviews store checkout
-        // (Task 16): the reviewed repo + the shared Contracts/ layer are always permitted, and a
-        // sibling private submodule is added only when the confidentiality gate confirms same-trust-domain
-        // (Task 17, design §6 Risk B).
+        // Resolve the checkout: prefer the cross-repo AchieveAiReviews store (the reviewed repo as a
+        // submodule under repos/<Repo> beside the shared Contracts/ layer) when configured and applicable;
+        // otherwise the single-repo /workspace/target checkout. The per-run OperationPolicy scopes every
+        // fetch to the reviewed repo + the store's Contracts/ + gated siblings, so an off-allow-list
+        // submodule (e.g. an unrelated sibling for a fork/public PR) is refused rather than fetched.
         var storeSubmodules = BuildStoreSubmoduleAllowList(run, repo);
         var policy = DaemonOperationPolicy.BuildForRun(
             repo, _options.ReviewBotRepoUrl, allowWriteOperations: false, allowedSubmodules: storeSubmodules);
-        var targetRemote = TargetRemoteUrl(repo, provider);
-        await EnsureTargetCheckoutAsync(git, targetRemote, run, cancellationToken).ConfigureAwait(false);
 
-        // 2. Selectively (and recursively) initialize allow-listed submodules in the target checkout.
-        var submoduleInitializer = new SubmoduleInitializer(
-            git,
-            fileSystem,
-            policy,
-            provider,
-            _loggerFactory.CreateLogger<SubmoduleInitializer>());
-        var submoduleOutcome = await submoduleInitializer
-            .InitializeAsync(TargetRoot, GitRemoteUrl.Parse(targetRemote), cancellationToken)
+        var layout = await EnsureCheckoutAsync(git, fileSystem, policy, repo, provider, run, cancellationToken)
             .ConfigureAwait(false);
-        foreach (var denied in submoduleOutcome.Denied)
-        {
-            _logger.LogWarning(
-                "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
-                run.Id, denied.Path, denied.Url, denied.Reason);
-        }
 
-        // 3. Diff the TARGET checkout — base...head — and persist the bounded context artifact.
+        // Diff the reviewed repo — base...head — from wherever it was checked out, and persist the bounded
+        // context artifact alongside the head file manifest (so the agent can Read files by exact path).
         var diff = await git
-            .RunAsync(["-C", TargetRoot, "diff", $"{run.BaseSha}...{run.HeadSha}"], TargetRoot, cancellationToken)
+            .RunAsync(["-C", layout.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"], layout.TargetDir, cancellationToken)
             .ConfigureAwait(false);
         if (!diff.Succeeded)
         {
@@ -292,6 +280,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var fileManifest = await BuildFileManifestAsync(git, layout.TargetDir, cancellationToken).ConfigureAwait(false);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -299,13 +288,240 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactSchemaVersion = ContextArtifactSchemaVersion,
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
-            Payload = JsonSerializer.Serialize(
-                new ContextArtifactPayload(run.PrId, run.BaseSha, run.HeadSha, boundedDiff)),
+            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, layout.TargetDir, layout.StoreRoot)),
         });
 
-        _logger.LogInformation("Run {RunId}: persisted {Kind} ({Length} char diff).",
-            run.Id, ContextArtifactKind, boundedDiff.Length);
+        _logger.LogInformation(
+            "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from {TargetDir} (store={Store}).",
+            run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
+            layout.TargetDir, layout.StoreRoot ?? "(single-repo)");
     }
+
+    /// <summary>Where a run's code was checked out. <see cref="ReviewRoot"/> is what the review agent reads
+    /// from (the cross-repo store root when in store mode — so Contracts/ and sibling repos are visible —
+    /// else the single-repo checkout). <see cref="TargetDir"/> is the reviewed repo itself (the submodule
+    /// working tree in store mode, else the same as ReviewRoot); the diff, head checkout, and file manifest
+    /// are all taken there. <see cref="StoreRoot"/> is non-null only in cross-repo store mode.</summary>
+    private sealed record CheckoutLayout(string ReviewRoot, string TargetDir, string? StoreRoot);
+
+    /// <summary>
+    /// Resolves the run's checkout. When a cross-repo store is configured (<see
+    /// cref="CodeReviewDaemonOptions.ResolvedStoreUrl"/>) and the reviewed repo is one of its submodules,
+    /// clones the store, initializes that submodule (the allow-list denies the rest), and reviews from the
+    /// store root. Otherwise clones the reviewed repo directly into <see cref="TargetRoot"/>. Either way the
+    /// reviewed repo's working tree is moved to the PR head so Read/Grep/Glob and the manifest reflect the
+    /// proposed code.
+    /// </summary>
+    private async Task<CheckoutLayout> EnsureCheckoutAsync(
+        GitRunner git,
+        ISandboxFileSystem fileSystem,
+        OperationPolicy policy,
+        RepoIdentity repo,
+        string provider,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var storeUrl = _options.ResolvedStoreUrl;
+        if (_options.EnableToolAssistedReview && !string.IsNullOrWhiteSpace(storeUrl))
+        {
+            var storeLayout = await TryStoreCheckoutAsync(
+                    git, fileSystem, policy, repo, provider, storeUrl, run, cancellationToken)
+                .ConfigureAwait(false);
+            if (storeLayout is not null)
+            {
+                return storeLayout;
+            }
+
+            _logger.LogInformation(
+                "Run {RunId}: {Repo} is not a submodule of the cross-repo store; using the single-repo checkout.",
+                run.Id, repo.NormalizedKey);
+        }
+
+        // Single-repo checkout: clone the reviewed repo directly, move it to the PR head, init its own
+        // allow-listed submodules.
+        var targetRemote = TargetRemoteUrl(repo, provider);
+        await CloneIfMissingAsync(git, targetRemote, TargetRoot, run, cancellationToken).ConfigureAwait(false);
+        await FetchAndCheckoutHeadAsync(git, TargetRoot, run, cancellationToken).ConfigureAwait(false);
+        _ = await InitAllowListedSubmodulesAsync(
+                git, fileSystem, policy, provider, TargetRoot, GitRemoteUrl.Parse(targetRemote), run, cancellationToken)
+            .ConfigureAwait(false);
+        return new CheckoutLayout(ReviewRoot: TargetRoot, TargetDir: TargetRoot, StoreRoot: null);
+    }
+
+    /// <summary>
+    /// Attempts the cross-repo store checkout: clone the store, find the reviewed repo among its submodules,
+    /// and (if present) initialize that submodule and move it to the PR head. Returns the store layout on
+    /// success, or <c>null</c> when the store declares no submodule for the reviewed repo (or that submodule
+    /// was denied by the allow-list) so the caller falls back to the single-repo checkout.
+    /// </summary>
+    private async Task<CheckoutLayout?> TryStoreCheckoutAsync(
+        GitRunner git,
+        ISandboxFileSystem fileSystem,
+        OperationPolicy policy,
+        RepoIdentity repo,
+        string provider,
+        string storeUrl,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        await CloneIfMissingAsync(git, storeUrl, StoreRoot, run, cancellationToken).ConfigureAwait(false);
+
+        var gitmodules = await fileSystem
+            .ReadFileAsync(PosixJoin(StoreRoot, ".gitmodules"), cancellationToken)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(gitmodules))
+        {
+            return null;
+        }
+
+        var targetUrl = GitRemoteUrl.Parse(TargetRemoteUrl(repo, provider));
+        var entry = GitModulesParser.Parse(gitmodules)
+            .FirstOrDefault(e => SubmoduleTargetsRepo(e.Url, targetUrl));
+        if (entry is null)
+        {
+            return null;
+        }
+
+        // Initialize the store's allow-listed submodules (the reviewed repo + any gated siblings); the
+        // allow-list denies everything else, so an unrelated sibling is never fetched.
+        var outcome = await InitAllowListedSubmodulesAsync(
+                git, fileSystem, policy, provider, StoreRoot, GitRemoteUrl.Parse(storeUrl), run, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!outcome.InitializedPaths.Contains(entry.Path))
+        {
+            _logger.LogWarning(
+                "Run {RunId}: reviewed submodule '{Path}' was not initialized (denied by the allow-list?); "
+                    + "falling back to the single-repo checkout.",
+                run.Id, entry.Path);
+            return null;
+        }
+
+        var targetDir = PosixJoin(StoreRoot, entry.Path);
+        await FetchAndCheckoutHeadAsync(git, targetDir, run, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: reviewing {Repo} as store submodule '{Path}' under {StoreRoot}.",
+            run.Id, repo.NormalizedKey, entry.Path, StoreRoot);
+        return new CheckoutLayout(ReviewRoot: StoreRoot, TargetDir: targetDir, StoreRoot: StoreRoot);
+    }
+
+    /// <summary>Clones <paramref name="remote"/> into <paramref name="dir"/> unless it is already a work
+    /// tree there. A failed clone surfaces (throws) so the stage retries.</summary>
+    private static async Task CloneIfMissingAsync(
+        GitRunner git, string remote, string dir, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var probe = await git
+            .RunAsync(["-C", dir, "rev-parse", "--is-inside-work-tree"], dir, cancellationToken)
+            .ConfigureAwait(false);
+        if (probe.Succeeded)
+        {
+            return;
+        }
+
+        var clone = await git
+            .RunAsync(["clone", remote, dir], workingDirectory: null, cancellationToken)
+            .ConfigureAwait(false);
+        if (!clone.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Cloning '{remote}' for run {run.Id} failed (exit {clone.ExitCode}): {clone.Stderr}");
+        }
+    }
+
+    /// <summary>
+    /// Fetches the exact base + head commits (a fork/branch commit may not be reachable from the default
+    /// fetch) and checks out the PR head (detached) into <paramref name="dir"/> so the review agent's
+    /// Read/Grep/Glob and the file manifest reflect the code the PR PROPOSES, not the clone's default branch.
+    /// Hooks are neutralized on every GitRunner call, so checking out untrusted PR content is no more
+    /// dangerous than the clone that already fetched it.
+    /// </summary>
+    private static async Task FetchAndCheckoutHeadAsync(
+        GitRunner git, string dir, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var fetch = await git
+            .RunAsync(["-C", dir, "fetch", "origin", run.BaseSha, run.HeadSha], dir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!fetch.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the PR commits for run {run.Id} failed (exit {fetch.ExitCode}): {fetch.Stderr}");
+        }
+
+        var checkout = await git
+            .RunAsync(["-C", dir, "checkout", "--force", run.HeadSha], dir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!checkout.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Checking out the PR head for run {run.Id} failed (exit {checkout.ExitCode}): {checkout.Stderr}");
+        }
+    }
+
+    /// <summary>Selectively (and recursively) initializes the allow-listed submodules under
+    /// <paramref name="root"/>, logging each refusal, and returns the walk outcome (initialized paths +
+    /// refusals). A denied submodule is absent and reported, never a hard failure.</summary>
+    private async Task<SubmoduleInitOutcome> InitAllowListedSubmodulesAsync(
+        GitRunner git,
+        ISandboxFileSystem fileSystem,
+        OperationPolicy policy,
+        string provider,
+        string root,
+        GitRemoteUrl rootRemote,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var initializer = new SubmoduleInitializer(
+            git, fileSystem, policy, provider, _loggerFactory.CreateLogger<SubmoduleInitializer>());
+        var outcome = await initializer.InitializeAsync(root, rootRemote, cancellationToken).ConfigureAwait(false);
+        foreach (var denied in outcome.Denied)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
+                run.Id, denied.Path, denied.Url, denied.Reason);
+        }
+
+        return outcome;
+    }
+
+    /// <summary>Whether a store <c>.gitmodules</c> entry's URL points at the reviewed repo (host + owner/name
+    /// match, ignoring a trailing <c>.git</c>), so the store submodule can be paired with the run.</summary>
+    private static bool SubmoduleTargetsRepo(string submoduleUrl, GitRemoteUrl targetUrl)
+    {
+        var url = GitRemoteUrl.Parse(submoduleUrl);
+        return string.Equals(url.Host, targetUrl.Host, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                url.RepoPath.TrimEnd('/'), targetUrl.RepoPath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string PosixJoin(string root, string relative) => $"{root.TrimEnd('/')}/{relative.Trim('/')}";
+
+    /// <summary>
+    /// Lists the target checkout's tracked files (<c>git ls-files</c>) as a newline-joined, bounded
+    /// manifest the review agent can consult to Read files by exact path. Best-effort: a failed listing
+    /// logs and yields an empty manifest rather than failing the stage — the diff is the essential
+    /// artifact and the manifest is only a grounding aid.
+    /// </summary>
+    private async Task<string> BuildFileManifestAsync(GitRunner git, string targetDir, CancellationToken cancellationToken)
+    {
+        var lsFiles = await git
+            .RunAsync(["-C", targetDir, "ls-files"], targetDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!lsFiles.Succeeded)
+        {
+            _logger.LogWarning(
+                "Target file manifest unavailable (git ls-files exit {ExitCode}): {Stderr}",
+                lsFiles.ExitCode, lsFiles.Stderr);
+            return string.Empty;
+        }
+
+        return _options.Limits.CapArtifactPayload(lsFiles.Stdout.Trim());
+    }
+
+    private static int ManifestFileCount(string manifest) =>
+        string.IsNullOrWhiteSpace(manifest)
+            ? 0
+            : manifest.Count(c => c == '\n') + 1;
 
     /// <summary>
     /// Builds the per-run submodule allow-list for the cross-repo <c>AchieveAiReviews</c> store checkout
@@ -352,41 +568,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     internal bool AllowsCrossRepoCoLocation(ReviewRun run, RepoIdentity repo) => !run.IsForkPr && !run.IsTargetRepoPublic;
 
-    /// <summary>
-    /// Clones the target repo into <see cref="TargetRoot"/> (or reuses an existing checkout), then
-    /// fetches the PR's base + head commits so the <c>base...head</c> diff is resolvable. A failed clone
-    /// or fetch surfaces (throws) so the stage retries.
-    /// </summary>
-    private async Task EnsureTargetCheckoutAsync(
-        GitRunner git, string targetRemote, ReviewRun run, CancellationToken cancellationToken)
-    {
-        var probe = await git
-            .RunAsync(["rev-parse", "--is-inside-work-tree"], TargetRoot, cancellationToken)
-            .ConfigureAwait(false);
-        if (!probe.Succeeded)
-        {
-            var clone = await git
-                .RunAsync(["clone", targetRemote, TargetRoot], workingDirectory: null, cancellationToken)
-                .ConfigureAwait(false);
-            if (!clone.Succeeded)
-            {
-                throw new InvalidOperationException(
-                    $"Cloning the target repo for run {run.Id} failed (exit {clone.ExitCode}): {clone.Stderr}");
-            }
-        }
-
-        // Fetch the exact base + head commits the PR identity references (a fork/branch commit may not be
-        // reachable from the default fetch); the diff below relies on both being present.
-        var fetch = await git
-            .RunAsync(["-C", TargetRoot, "fetch", "origin", run.BaseSha, run.HeadSha], TargetRoot, cancellationToken)
-            .ConfigureAwait(false);
-        if (!fetch.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Fetching the PR commits for run {run.Id} failed (exit {fetch.ExitCode}): {fetch.Stderr}");
-        }
-    }
-
     /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider.</summary>
     private static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
         string.Equals(provider, "ado", StringComparison.Ordinal)
@@ -396,7 +577,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task ReviewAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
-        var reviewInput = BuildReviewInput(run, repo, ReadContextDiff(run.Id));
+        var context = ReadContext(run.Id);
+        var reviewInput = BuildReviewInput(
+            run, repo, context.Diff, context.FileManifest, context.CheckoutRoot, context.StoreRoot);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
         var reviewText = await RunPrimaryReviewAsync(run, provider, reviewInput, cancellationToken)
@@ -694,8 +877,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return (repo, provider);
     }
 
-    private string ReadContextDiff(long reviewRunId) =>
-        ReadArtifactPayload<ContextArtifactPayload>(reviewRunId, ContextArtifactKind).Diff;
+    private ContextArtifactPayload ReadContext(long reviewRunId) =>
+        ReadArtifactPayload<ContextArtifactPayload>(reviewRunId, ContextArtifactKind);
 
     private string ReadReviewText(long reviewRunId) =>
         ReadArtifactPayload<ReviewArtifactPayload>(reviewRunId, ReviewArtifactKind).ReviewText;
@@ -710,14 +893,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ?? throw new InvalidOperationException($"The '{kind}' artifact for run {reviewRunId} did not deserialize.");
     }
 
-    private static string BuildReviewInput(ReviewRun run, RepoIdentity repo, string diff) =>
-        $"Review pull request {repo.DisplayName}#{run.PrId} (head {run.HeadSha}).\n\nDiff:\n{diff}";
+    private static string BuildReviewInput(
+        ReviewRun run, RepoIdentity repo, string diff, string? fileManifest, string? checkoutRoot, string? storeRoot)
+    {
+        var input = $"Review pull request {repo.DisplayName}#{run.PrId} (head {run.HeadSha}).\n\nDiff:\n{diff}";
+        if (string.IsNullOrWhiteSpace(fileManifest))
+        {
+            return input;
+        }
+
+        // The reviewed repo is checked out at checkoutRoot (the PR head). Listing its files lets the agent
+        // Read any of them by exact absolute path to ground findings. In cross-repo store mode the reviewed
+        // repo is a submodule of the store, so the shared Contracts/ layer and sibling repos are readable too.
+        var root = string.IsNullOrWhiteSpace(checkoutRoot) ? "/workspace/target" : checkoutRoot;
+        var storeNote = string.IsNullOrWhiteSpace(storeRoot)
+            ? string.Empty
+            : $" It is a submodule of the cross-repo review store at {storeRoot}, so the shared contracts under "
+                + $"{storeRoot}/Contracts and sibling repositories under {storeRoot}/repos are also readable — "
+                + "consult them when a finding depends on cross-repo behavior.";
+        return input
+            + $"\n\nThe reviewed repository ({repo.DisplayName}) is checked out at {root} (the PR head).{storeNote}\n"
+            + $"Read any of these files directly by absolute path — e.g. {root}/<path> — to ground your review "
+            + "in the actual code:\n"
+            + fileManifest;
+    }
 
     private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
 }
 
-/// <summary>The persisted PR diff/context (kind <c>review-context</c>).</summary>
-internal sealed record ContextArtifactPayload(string PrId, string BaseSha, string HeadSha, string Diff);
+/// <summary>The persisted PR diff/context (kind <c>review-context</c>). <see cref="FileManifest"/> is the
+/// newline-joined tracked-file list of the head checkout (bounded), appended so the review agent can Read
+/// files by exact path; <see cref="CheckoutRoot"/> is the absolute dir the reviewed repo is checked out in
+/// (the manifest paths are relative to it), and <see cref="StoreRoot"/> is the cross-repo store root when the
+/// reviewed repo was checked out as a store submodule (else null). All are null/empty on older artifacts.</summary>
+internal sealed record ContextArtifactPayload(
+    string PrId,
+    string BaseSha,
+    string HeadSha,
+    string Diff,
+    string? FileManifest = null,
+    string? CheckoutRoot = null,
+    string? StoreRoot = null);
 
 /// <summary>The persisted primary review output (kind <c>review</c>).</summary>
 internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId);
