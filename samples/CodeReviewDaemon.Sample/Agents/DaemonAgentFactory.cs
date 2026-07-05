@@ -29,8 +29,10 @@ internal static class DaemonAgentFactory
            sub-skills). Follow the methodology it returns.
         2. Use the code-reviewer:* sub-agents (via the Agent tool) for the dimensions they specialize in
            (architecture, exceptions, performance, tests, …) rather than doing everything inline.
-        3. Read across the checked-out tree — the reviewed repo under repos/<Repo> and the shared Contracts/
-           layer — using Read/Grep/Glob to ground each finding in the actual code, not just the diff.
+        3. Read across the checked-out tree with Read/Grep/Glob to ground each finding in the actual code,
+           not just the diff. The reviewed repository is checked out at /workspace/target; when a cross-repo
+           store is present its repositories are under repos/<Repo> alongside a shared Contracts/ layer. If
+           you are unsure where a file lives, Glob the workspace to locate it before concluding it is missing.
 
         Produce one focused review:
         - Call out correctness bugs, security issues, and contract/compatibility breaks first.
