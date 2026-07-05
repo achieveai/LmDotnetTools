@@ -7,7 +7,9 @@ using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using CodeReviewDaemon.Sample.Configuration;
+using ModelContextProtocol.Client;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -16,8 +18,10 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <see cref="MultiTurnAgentLoop"/> routed through the GitHub Copilot backend (mirrors the Copilot-backed
 /// Anthropic wiring in <c>LmStreaming.Sample</c>). The bearer token comes from the local GitHub Copilot /
 /// <c>gh</c> CLI login via <see cref="CliCredentialCopilotTokenProvider"/> — no API key / base URL config
-/// knob. The registry is empty — the daemon's agents are collect-only text agents that reason over the diff
-/// the executor supplies and never call tools.
+/// knob. When <see cref="Create"/> is called without a <see cref="ReviewToolContext"/> the registry stays
+/// empty — the daemon's agents are collect-only text agents that reason over the diff the executor
+/// supplies and never call tools. Supplying a <see cref="ReviewToolContext"/> connects the gateway MCP
+/// client and exposes its tools filtered to the read-only allow-list instead.
 /// <para>
 /// This path is <b>dead by default</b>: with the repo allow-list empty the poller has no targets, so
 /// the executor is never invoked and this factory is never called. It does no work at construction
@@ -47,7 +51,12 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
-    public IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId, string? reasoningEffort = null)
+    public IMultiTurnAgent Create(
+        AgentProfile profile,
+        string? modelId,
+        string threadId,
+        string? reasoningEffort = null,
+        ReviewToolContext? toolContext = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
@@ -66,9 +75,31 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             : ImmutableDictionary<string, object?>.Empty.Add(
                 "OutputConfig", new AnthropicOutputConfig { Effort = effort });
 
+        // Only on the tool-assisted path (toolContext is not null) do we connect the gateway MCP client and
+        // filter its tools down to the read-only allow-list — the diff-only path keeps today's empty
+        // registry exactly as before.
+        var registry = new FunctionRegistry();
+        IReadOnlyList<McpClient> ownedClients = [];
+        if (toolContext is not null)
+        {
+            var scratch = new FunctionRegistry();
+            var transport = new HttpClientTransport(new HttpClientTransportOptions
+            {
+                Name = "sandbox",
+                Endpoint = new Uri($"{toolContext.GatewayBaseUrl}/mcp"),
+                AdditionalHeaders = new Dictionary<string, string> { ["X-Session-ID"] = toolContext.SessionId },
+            });
+            var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
+            ownedClients = [client];
+            _ = scratch.AddMcpClientsAsync(
+                    new Dictionary<string, McpClient> { ["sandbox"] = client }, "sandbox", omitServerPrefix: true)
+                .GetAwaiter().GetResult();
+            ReadOnlyToolFilter.Apply(scratch, registry, toolContext.ReadOnlyToolAllowList);
+        }
+
         var loop = new MultiTurnAgentLoop(
             providerAgent,
-            new FunctionRegistry(),
+            registry,
             threadId,
             systemPrompt: profile.SystemPrompt,
             defaultOptions: new GenerateReplyOptions
@@ -77,7 +108,9 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
                 MaxToken = _options.ReviewMaxTokens,
                 ExtraProperties = extraProperties,
             },
-            logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>());
+            logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
+            subAgentOptions: toolContext?.SubAgentOptions,
+            loggerFactory: _loggerFactory);
 
         // Start the loop's background processing task before returning: ExecuteRunAsync only enqueues input
         // and reads the output channel — it does NOT start RunLoopAsync — so without this the caller's
@@ -91,7 +124,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default);
 
-        return loop;
+        return ownedClients.Count > 0 ? new ToolScopedReviewLoop(loop, ownedClients) : loop;
     }
 
     private AnthropicAgent GetSharedAgent()

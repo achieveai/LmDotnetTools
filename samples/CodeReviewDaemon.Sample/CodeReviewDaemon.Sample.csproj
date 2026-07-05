@@ -33,6 +33,9 @@
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
+    <!-- LiveReviewAgentLoopFactory's tool-assisted path registers the gateway MCP client's tools onto a
+         FunctionRegistry via FunctionRegistryExtensions.AddMcpClientsAsync (mirrors LmStreaming.Sample). -->
+    <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The route-exposure test (AC#4) boots this host via WebApplicationFactory<Program> and

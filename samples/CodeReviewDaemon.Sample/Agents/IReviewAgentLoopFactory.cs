@@ -18,7 +18,15 @@ internal interface IReviewAgentLoopFactory
     /// <paramref name="reasoningEffort"/> sets the adaptive-thinking effort (<c>output_config.effort</c>)
     /// for this loop; <c>null</c> uses the daemon's configured default and an empty value omits it
     /// entirely (required for non-adaptive models — e.g. Copilot's haiku rejects an effort it does not
-    /// support). The caller owns the returned loop's lifetime (it is <see cref="IAsyncDisposable"/>).
+    /// support). <paramref name="toolContext"/> is <c>null</c> on the diff-only path (today's behavior:
+    /// empty tool registry, no sub-agents); when supplied it connects the gateway MCP client filtered to
+    /// its read-only allow-list and attaches any configured sub-agents. The caller owns the returned
+    /// loop's lifetime (it is <see cref="IAsyncDisposable"/>).
     /// </summary>
-    IMultiTurnAgent Create(AgentProfile profile, string? modelId, string threadId, string? reasoningEffort = null);
+    IMultiTurnAgent Create(
+        AgentProfile profile,
+        string? modelId,
+        string threadId,
+        string? reasoningEffort = null,
+        ReviewToolContext? toolContext = null);
 }
