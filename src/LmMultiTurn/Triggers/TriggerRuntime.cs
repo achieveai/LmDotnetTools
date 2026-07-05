@@ -440,10 +440,16 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         _ = Task.Run(async () =>
         {
-            var delay = wait.Deadline + TimeSpan.FromMilliseconds(CeilingGraceMs) - DateTimeOffset.UtcNow;
-            if (delay < TimeSpan.Zero)
+            var grace = TimeSpan.FromMilliseconds(CeilingGraceMs);
+            var delay = wait.Deadline + grace - DateTimeOffset.UtcNow;
+            if (delay < grace)
             {
-                delay = TimeSpan.Zero;
+                // The deadline itself may already be in the past (e.g. a wait restored after the
+                // process was offline past its timeout). The source's own timer also clamps its
+                // remaining delay to "fire ASAP" in that case, so the ceiling must still wait the
+                // full grace period measured from now - clamping straight to zero here would erase
+                // the source's head start and turn the "fired vs timed_out" outcome into a race.
+                delay = grace;
             }
 
             try
