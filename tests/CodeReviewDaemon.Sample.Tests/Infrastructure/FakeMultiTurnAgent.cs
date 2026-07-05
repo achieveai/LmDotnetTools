@@ -51,6 +51,13 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         CancellationToken ct = default
     ) => throw new NotSupportedException();
 
+    public ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default
+    ) => throw new NotSupportedException();
+
     public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default) =>
         throw new NotSupportedException();
 
