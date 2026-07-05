@@ -89,6 +89,26 @@ public sealed class ReviewAgentTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ReviewAsync_keeps_only_the_final_generation_dropping_inter_turn_narration()
+    {
+        // A tool-using review agent narrates its process in earlier turns (each its own streaming
+        // generation) and emits the finished review in the final turn. The collector must return ONLY the
+        // final generation's text, so the narration never leaks into the persisted review.
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextUpdateMessage { Text = "Let me check the file.", Role = Role.Assistant, GenerationId = "g1" },
+            new TextUpdateMessage { Text = "Sub-agents returned empty; proceeding.", Role = Role.Assistant, GenerationId = "g2" },
+            new TextUpdateMessage { Text = "## Review\n", Role = Role.Assistant, GenerationId = "g3" },
+            new TextUpdateMessage { Text = "Approve with comments.", Role = Role.Assistant, GenerationId = "g3" }
+        );
+
+        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+
+        result.ReviewText.Should().Be("## Review\nApprove with comments.");
+        result.ReviewText.Should().NotContain("Let me check").And.NotContain("Sub-agents returned empty");
+    }
+
+    [Fact]
     public async Task ReviewAsync_returns_empty_text_when_the_agent_yields_no_assistant_prose()
     {
         var agent = new FakeMultiTurnAgent(

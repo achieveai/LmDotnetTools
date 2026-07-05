@@ -38,8 +38,10 @@ internal static class AgentTextCollector
         // Finalized assistant TextMessages, if the provider emits any.
         var finalizedText = new StringBuilder();
         var finalizedCount = 0;
+        string? finalizedGenerationId = null;
         // Fallback: incremental assistant TextUpdateMessage deltas accumulated in arrival order.
         var streamedText = new StringBuilder();
+        string? streamedGenerationId = null;
         string? runId = null;
 
         await foreach (
@@ -52,6 +54,18 @@ internal static class AgentTextCollector
                     runId ??= finalized.RunId;
                     if (!finalized.IsThinking && finalized.Role == Role.Assistant && !string.IsNullOrEmpty(finalized.Text))
                     {
+                        // Keep only the LATEST generation's answer. A multi-turn tool-using agent narrates
+                        // its process in intermediate turns and emits the finished answer in the final turn,
+                        // each a distinct generation; concatenating all of them leaks the narration into the
+                        // collected result. Resetting on a new GenerationId keeps just the final turn's text
+                        // (mirrors SubAgentManager's sub-agent-result reconstruction).
+                        if (!string.Equals(finalizedGenerationId, finalized.GenerationId, StringComparison.Ordinal))
+                        {
+                            finalizedGenerationId = finalized.GenerationId;
+                            _ = finalizedText.Clear();
+                            finalizedCount = 0;
+                        }
+
                         if (finalizedText.Length > 0)
                         {
                             _ = finalizedText.Append('\n');
@@ -67,6 +81,15 @@ internal static class AgentTextCollector
                     runId ??= update.RunId;
                     if (!update.IsThinking && update.Role == Role.Assistant && !string.IsNullOrEmpty(update.Text))
                     {
+                        // Same reconstruction as the finalized path: keep only the latest generation's
+                        // streamed deltas so a tool-using agent's inter-turn narration is dropped and the
+                        // result is just the final answer.
+                        if (!string.Equals(streamedGenerationId, update.GenerationId, StringComparison.Ordinal))
+                        {
+                            streamedGenerationId = update.GenerationId;
+                            _ = streamedText.Clear();
+                        }
+
                         _ = streamedText.Append(update.Text);
                     }
 
