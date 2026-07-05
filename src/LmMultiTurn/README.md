@@ -80,9 +80,9 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         TryDrainInputs(out var batch);
 
         // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
-        // Resolve BEFORE StartRun so the assignment's ParentRunId reflects the caller fork.
+        // Resolve BEFORE StartRunAsync so the assignment's ParentRunId reflects the caller fork.
         var (parent, isForked) = ResolveBatchParent(batch);
-        var assignment = StartRun(batch, parent);
+        var assignment = await StartRunAsync(batch, parent, ct);
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
         try
@@ -125,9 +125,9 @@ protected override async Task RunLoopAsync(CancellationToken ct)
         await InputReader.WaitToReadAsync(ct);
         TryDrainInputs(out var batch);
 
-        // Resolve caller fork intent BEFORE StartRun so RunAssignment.ParentRunId reflects it.
+        // Resolve caller fork intent BEFORE StartRunAsync so RunAssignment.ParentRunId reflects it.
         var (parent, isForked) = ResolveBatchParent(batch);
-        var assignment = StartRun(batch, parent);
+        var assignment = await StartRunAsync(batch, parent, ct);
         await PublishToAllAsync(new RunAssignmentMessage { ... }, ct);
 
         // Watch for new inputs concurrently while agent processes

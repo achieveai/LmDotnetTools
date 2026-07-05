@@ -37,6 +37,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -243,6 +244,17 @@ try
     _ = builder.Services.AddSingleton<PendingAuthCoordinator>();
     _ = builder.Services.AddSingleton<IAuthResolutionPolicy, DeferredInteractiveAuthPolicy>();
 
+    // Auth-webhook forwarding: in addition to the WS-facing auth_required/completed/denied
+    // broadcast above, forward the same lifecycle to whichever thread in the session registered a
+    // webhook URL via ConversationsController.Provision (headless REST callers have no WebSocket to
+    // listen on). Depends on SandboxSessionRegistry/IConversationStore, registered below/above.
+    _ = builder.Services.AddSingleton<IAuthWebhookForwarder>(sp => new SandboxAuthWebhookForwarder(
+        sp.GetRequiredService<SandboxSessionRegistry>(),
+        sp.GetRequiredService<IConversationStore>(),
+        new HttpClient { Timeout = TimeSpan.FromSeconds(3) },
+        sp.GetRequiredService<ILogger<SandboxAuthWebhookForwarder>>()
+    ));
+
     _ = builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         sp.GetRequiredService<SandboxGatewayLifetime>(),
         sandboxOptions,
@@ -288,9 +300,23 @@ try
     });
     _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
-    // Register the FileConversationStore for conversation persistence
+    // Register the FileConversationStore for conversation persistence (it also implements the
+    // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
     var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    _ = builder.Services.AddSingleton<IConversationStore>(new FileConversationStore(conversationsPath));
+    var conversationStore = new FileConversationStore(conversationsPath);
+    _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
+    _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
+
+    // The REST status resolver (ConversationsController dependency) reads the conversation store plus
+    // its run ledger. Resolve the ledger from the registered IConversationStore so a test host that
+    // swaps the store (see BrowserWebAppFactory) keeps both halves pointing at the same instance —
+    // without this registration the controller cannot be activated and every REST endpoint 500s.
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var store = sp.GetRequiredService<IConversationStore>();
+        var ledger = store as IRunLedgerStore ?? sp.GetRequiredService<IRunLedgerStore>();
+        return new ConversationStatusResolver(store, ledger);
+    });
 
     // Register the FileChatModeStore for chat mode persistence
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
@@ -931,7 +957,8 @@ try
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
                         subAgentTemplateSource: sharedSubAgentSource,
-                        loggerFactory: loggerFactory
+                        loggerFactory: loggerFactory,
+                        persistRunLedger: true
                     );
 
                     if (workflowRuntime is not null)
@@ -1559,7 +1586,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CodexAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 
@@ -2113,7 +2141,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 
@@ -2215,7 +2244,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 

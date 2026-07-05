@@ -194,6 +194,20 @@ async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate)
   }
 }
 
+// A conversation requested via ?threadId= that isn't in the backend's conversation list (never
+// provisioned, or deleted). Drives the not-found panel below; cleared whenever the user picks a
+// real conversation or starts a new chat.
+const notFoundThreadId = ref<string | null>(null);
+
+/**
+ * Reads the ?threadId= deep-link query param, mirroring the ?record= convention already used by
+ * useChat's isRecordingEnabledFromPageQuery (plain URLSearchParams, no router in this app).
+ */
+function getDeepLinkThreadIdFromPageQuery(): string | null {
+  const value = new URLSearchParams(window.location.search).get('threadId');
+  return value && value.trim().length > 0 ? value : null;
+}
+
 // Load conversations and modes on mount
 onMounted(async () => {
   // Load modes, tools, and providers in parallel with conversations
@@ -205,6 +219,20 @@ onMounted(async () => {
     loadWorkspaces(),
   ]);
 
+  // A ?threadId= deep link takes priority over the "select most recent" default below — it's an
+  // explicit navigation to one conversation, so an unknown id should surface as not-found rather
+  // than silently falling back to the most recent conversation.
+  const deepLinkThreadId = getDeepLinkThreadIdFromPageQuery();
+  if (deepLinkThreadId) {
+    const exists = conversations.value.some((c) => c.threadId === deepLinkThreadId);
+    if (exists) {
+      await handleSelectConversation(deepLinkThreadId);
+    } else {
+      notFoundThreadId.value = deepLinkThreadId;
+    }
+    return;
+  }
+
   // If there are existing conversations, select the most recent one
   if (conversations.value.length > 0) {
     await handleSelectConversation(conversations.value[0].threadId);
@@ -213,6 +241,8 @@ onMounted(async () => {
 
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
+  notFoundThreadId.value = null;
+
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
@@ -228,6 +258,7 @@ async function handleNewChat(): Promise<void> {
 
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
+  notFoundThreadId.value = null;
   if (threadId === currentThreadId.value) return;
 
   // Disconnect current WebSocket and clear state
@@ -442,7 +473,22 @@ onBeforeUnmount(() => {
     />
 
     <main class="chat-main">
-      <div class="chat-view">
+      <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
+        <button
+          v-if="sidebarCollapsed"
+          class="menu-btn not-found-menu-btn"
+          @click="handleToggleCollapse"
+          title="Open sidebar"
+        >
+          =
+        </button>
+        <div class="not-found-content">
+          <h2>Conversation not found</h2>
+          <p>The conversation "{{ notFoundThreadId }}" does not exist or is no longer available.</p>
+          <button class="new-chat-btn" @click="handleNewChat">Start a new chat</button>
+        </div>
+      </div>
+      <div v-else class="chat-view">
         <header class="chat-header">
           <button
             v-if="sidebarCollapsed"
@@ -654,5 +700,49 @@ onBeforeUnmount(() => {
   color: #155724;
   border-top: 1px solid #c3e6cb;
   font-size: 13px;
+}
+
+.not-found-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.not-found-menu-btn {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+}
+
+.not-found-content {
+  text-align: center;
+  padding: 24px;
+  max-width: 400px;
+}
+
+.not-found-content h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.not-found-content p {
+  color: #666;
+  margin: 0 0 16px;
+  word-break: break-word;
+}
+
+.new-chat-btn {
+  padding: 8px 16px;
+  background: #2d6cdf;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.new-chat-btn:hover {
+  background: #2057bd;
 }
 </style>

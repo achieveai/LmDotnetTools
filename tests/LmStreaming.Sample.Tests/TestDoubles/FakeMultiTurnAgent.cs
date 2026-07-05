@@ -17,6 +17,14 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     /// failure tearing down the PREVIOUS agent (the new one is already swapped in).</summary>
     public bool ThrowOnDispose { get; set; }
 
+    /// <summary>When true, <see cref="TrySendAsync"/> returns null — simulates the input channel
+    /// being full (the controller maps this to a 503).</summary>
+    public bool RejectAsQueueFull { get; set; }
+
+    /// <summary>When true, <see cref="TrySendAsync"/> throws — simulates a durable accepted-input
+    /// write failure (the controller lets this propagate to a 500).</summary>
+    public bool ThrowOnTrySend { get; set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -29,6 +37,25 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
+    }
+
+    public async ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default)
+    {
+        if (ThrowOnTrySend)
+        {
+            throw new InvalidOperationException("Simulated durable accepted-input write failure.");
+        }
+
+        if (RejectAsQueueFull)
+        {
+            return null;
+        }
+
+        return await SendAsync(messages, inputId, parentRunId, ct);
     }
 
 #pragma warning disable CS1998, IDE0391 // Async iterator lacks 'await' - intentional empty stub using yield break

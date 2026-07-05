@@ -80,6 +80,9 @@ builder.Services.AddHostedService<OAuthTokenHydrator>();
 // interactive sign-in that no one is present to complete.
 builder.Services.AddSingleton<IAuthEventNotifier, DaemonAuthEventNotifier>();
 builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>();
+// The daemon has no chat sessions/threads to forward to (that's LmStreaming.Sample-only); the
+// shared AuthWebhookController still requires an IAuthWebhookForwarder, so wire the no-op.
+builder.Services.AddSingleton<IAuthWebhookForwarder, NoOpAuthWebhookForwarder>();
 
 // Gateway callback authentication. The real sandbox gateway authenticates its auth-webhook calls with a
 // single shared secret in the `Authorization` header (crates/mcp-gateway/.../proxy_policy/auth_webhook.rs

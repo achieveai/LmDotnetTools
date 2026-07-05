@@ -80,6 +80,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     ///     (MessageTransformation, MessageUpdateJoiner) their own category loggers so their
     ///     ordering/de-dup decisions are visible in structured logs. When null they stay silent.
     /// </param>
+    /// <param name="persistRunLedger">When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/> (requires <paramref name="store"/> to implement it).</param>
     /// <param name="triggerOptions">
     ///     Optional Wait/trigger configuration. When provided, the loop enables the
     ///     <c>Wait</c>/<c>CancelWait</c>/<c>ListWaits</c> tools backed by a <see cref="TriggerRuntime"/>
@@ -100,8 +101,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         SubAgentOptions? subAgentOptions = null,
         MutableSubAgentTemplateSource? subAgentTemplateSource = null,
         ILoggerFactory? loggerFactory = null,
+        bool persistRunLedger = false,
         TriggerOptions? triggerOptions = null)
-        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger)
+        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger, persistRunLedger: persistRunLedger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
@@ -239,7 +241,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 // to _latestRunId continuation when realInputs is empty.
                 var inputsForAssignment = realInputs.Count > 0 ? realInputs : resumeSentinels;
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
-                var assignment = StartRun(inputsForAssignment, batchParent);
+                var assignment = await StartRunAsync(inputsForAssignment, batchParent, ct);
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
                     Assignment = assignment,
@@ -356,6 +358,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                         Assignment = injectionAssignment,
                         ThreadId = ThreadId,
                     }, ct);
+
+                    await RecordInjectedInputsAsync(runId, injectionAssignment.InputIds!, ct);
 
                     foreach (var input in realNewInputs)
                     {

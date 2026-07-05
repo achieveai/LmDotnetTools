@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import ChatLayout from '@/components/ChatLayout.vue';
 
@@ -29,6 +29,8 @@ const sharedMocks = vi.hoisted(() => ({
   selectWorkspace: vi.fn(),
   addOrUpdateConversation: vi.fn(),
   resumeStreamIfActive: vi.fn(async () => {}),
+  markStreamIdle: vi.fn(),
+  markStreamLoading: vi.fn(),
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -128,6 +130,8 @@ vi.mock('@/composables/useChat', async () => {
       setThreadId: vi.fn(),
       loadMessagesFromBackend: vi.fn(async () => {}),
       resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
+      markStreamIdle: sharedMocks.markStreamIdle,
+      markStreamLoading: sharedMocks.markStreamLoading,
       getResultForToolCall: vi.fn(() => null),
     }),
   };
@@ -448,5 +452,93 @@ describe('ChatLayout restores bound provider/mode/workspace on conversation sele
     expect(sharedMocks.selectProvider).not.toHaveBeenCalled();
     expect(sharedMocks.selectWorkspace).not.toHaveBeenCalled();
     expect(sharedMocks.selectMode).not.toHaveBeenCalled();
+  });
+});
+
+// A ?threadId= deep link lets a caller (e.g. a headless REST integration handing a link back to
+// a human) navigate straight to one conversation. Priority over the "select most recent" default,
+// and a not-found state when the id isn't in the backend's conversation list (never provisioned,
+// or deleted) — see ChatLayout.vue's getDeepLinkThreadIdFromPageQuery/notFoundThreadId.
+describe('ChatLayout ?threadId= deep link', () => {
+  const setQuery = (query: string) => {
+    window.history.pushState({}, '', query ? `/?${query}` : '/');
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.resumeStreamIfActive.mockReset();
+    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    setQuery('');
+  });
+
+  it('selects the deep-linked conversation when it exists, in preference to the most recent one', async () => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+    setQuery('threadId=thread-2');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-2');
+  });
+
+  it('shows a not-found state for a deep-linked thread absent from the conversation list', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    setQuery('threadId=thread-missing');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    const notFound = wrapper.find('[data-testid="conversation-not-found"]');
+    expect(notFound.exists()).toBe(true);
+    expect(notFound.text()).toContain('thread-missing');
+    // Must not silently fall back to the most recent conversation instead.
+    expect(sharedMocks.resumeStreamIfActive).not.toHaveBeenCalled();
+  });
+
+  it('clears the not-found state and starts a new chat when "Start a new chat" is clicked', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    setQuery('threadId=thread-missing');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(true);
+
+    await wrapper.get('.new-chat-btn').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
+  });
+
+  it('falls back to selecting the most recent conversation when no ?threadId is present', async () => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+    setQuery('');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-1');
   });
 });

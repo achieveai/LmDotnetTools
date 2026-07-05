@@ -48,6 +48,25 @@ public interface IMultiTurnAgent : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Non-blocking variant of <see cref="SendAsync"/> for callers (e.g. an HTTP request handler)
+    /// that cannot block on channel backpressure and need a queue-full outcome they can map to a
+    /// distinct response (e.g. HTTP 503) rather than waiting. When the implementation persists a
+    /// run ledger, durably records the input as accepted before attempting to enqueue it, and
+    /// rolls that record back if the queue turns out to be full — so a caller polling status by
+    /// <paramref name="inputId"/> never observes "accepted" for an input that was in fact rejected.
+    /// </summary>
+    /// <param name="messages">The messages to submit (user messages, possibly with images)</param>
+    /// <param name="inputId">Client-provided correlation ID (optional) - echoed back in receipt and assignment</param>
+    /// <param name="parentRunId">Parent run ID to fork from. If null, continues from latest run</param>
+    /// <param name="ct">Cancellation token</param>
+    /// <returns>The receipt if accepted and enqueued, or null if the input queue is full.</returns>
+    ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Execute a single run synchronously (foreground-style).
     /// Sends the user input, subscribes to messages, and yields all messages for this run until completion.
     /// This provides a simpler API for cases where you don't need the full background loop capabilities.

@@ -71,3 +71,60 @@ public record SwitchProviderRequest
 {
     public required string ProviderId { get; init; }
 }
+
+/// <summary>
+/// Request to reserve a new conversation thread and lock its workspace/provider/mode as metadata,
+/// without starting a live agent/sandbox session or sending a first message. Enables headless
+/// callers (e.g. a REST-only integration) to provision a conversation ahead of time.
+/// </summary>
+public record ProvisionConversationRequest
+{
+    public required string WorkspaceId { get; init; }
+    public required string ProviderId { get; init; }
+    public required string ModeId { get; init; }
+
+    /// <summary>
+    /// Optional webhook URL the sample forwards auth-required/completed/denied notifications to
+    /// for this thread's provider sign-ins. Persisted alongside the registration time so the
+    /// forwarder can apply a first-wins tie-break among a session's attached threads.
+    /// </summary>
+    public string? AuthWebhookUrl { get; init; }
+}
+
+/// <summary>
+/// Response to a successful <see cref="ProvisionConversationRequest"/> — carries the
+/// server-generated thread id the caller uses for subsequent send/status calls.
+/// </summary>
+public record ProvisionConversationResponse
+{
+    public required string ThreadId { get; init; }
+}
+
+/// <summary>
+/// Request to enqueue a message onto a previously-provisioned conversation thread.
+/// </summary>
+public record SendMessageRequest
+{
+    public required string Text { get; init; }
+}
+
+/// <summary>
+/// Response to a queued <see cref="SendMessageRequest"/>. Carries only the input id the caller
+/// polls status by — no run id, since an injected send may fold into a run already in flight.
+/// </summary>
+public record SendMessageResponse
+{
+    public required string InputId { get; init; }
+    public required bool Queued { get; init; }
+}
+
+/// <summary>
+/// Resolved status of a conversation run, polled by either <c>runId</c> or <c>inputId</c>.
+/// </summary>
+public record ConversationStatusResponse
+{
+    public required string ThreadId { get; init; }
+    public string? RunId { get; init; }
+    public required string Status { get; init; }
+    public object? Response { get; init; }
+}

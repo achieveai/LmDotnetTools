@@ -37,6 +37,31 @@ public static class SqliteSchemaInitializer
         );
         """;
 
+    private const string CreateRunLedgerTableSql = """
+        CREATE TABLE IF NOT EXISTS run_ledger (
+            run_id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_ids TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        """;
+
+    private const string CreateRunLedgerIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_run_ledger_thread_id
+        ON run_ledger (thread_id, created_at);
+        """;
+
+    private const string CreateAcceptedInputsTableSql = """
+        CREATE TABLE IF NOT EXISTS accepted_inputs (
+            thread_id TEXT NOT NULL,
+            input_id TEXT NOT NULL,
+            accepted_at INTEGER NOT NULL,
+            PRIMARY KEY (thread_id, input_id)
+        );
+        """;
+
     /// <summary>
     /// Initializes the database schema if it doesn't exist.
     /// </summary>
@@ -66,6 +91,21 @@ public static class SqliteSchemaInitializer
             createMetadataCmd.CommandText = CreateMetadataTableSql;
             createMetadataCmd.Transaction = transaction;
             _ = await createMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            using var createRunLedgerCmd = connection.CreateCommand();
+            createRunLedgerCmd.CommandText = CreateRunLedgerTableSql;
+            createRunLedgerCmd.Transaction = transaction;
+            _ = await createRunLedgerCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            using var createRunLedgerIndexCmd = connection.CreateCommand();
+            createRunLedgerIndexCmd.CommandText = CreateRunLedgerIndexSql;
+            createRunLedgerIndexCmd.Transaction = transaction;
+            _ = await createRunLedgerIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            using var createAcceptedInputsCmd = connection.CreateCommand();
+            createAcceptedInputsCmd.CommandText = CreateAcceptedInputsTableSql;
+            createAcceptedInputsCmd.Transaction = transaction;
+            _ = await createAcceptedInputsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             transaction.Commit();
         }

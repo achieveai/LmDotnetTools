@@ -57,6 +57,15 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 
+    public async ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default)
+    {
+        return await SendAsync(messages, inputId, parentRunId, ct);
+    }
+
 #pragma warning disable CS1998, IDE0391
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,

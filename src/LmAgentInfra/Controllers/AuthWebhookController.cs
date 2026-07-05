@@ -23,6 +23,8 @@ public sealed class AuthWebhookController(
     IEnumerable<IOAuthTokenProvider> providers,
     AuthSharedSecret sharedSecret,
     IAuthResolutionPolicy authPolicy,
+    IAuthWebhookForwarder authWebhookForwarder,
+    AuthOptions authOptions,
     ILogger<AuthWebhookController> logger) : ControllerBase
 {
     /// <summary>
@@ -127,6 +129,13 @@ public sealed class AuthWebhookController(
         // app holds the call open and prompts a connected client to sign in (allow once a token
         // lands, deny on timeout); the unattended daemon raises an operator "auth required" signal
         // and denies at once. Runs under its own try/catch so the always-200 contract holds here too.
+        //
+        // In parallel (and independent of the policy above), a session-registered webhook may also
+        // want to hear about this: NotifyAuthRequiredAsync resolves that target ONCE here and the
+        // captured value is reused for whichever terminal call fires below — the policy resolution
+        // in between must never cause a second, possibly different, resolution.
+        var capturedTarget = await TryNotifyAuthRequiredAsync(tokenProvider.ProviderId);
+
         try
         {
             var resolved = await authPolicy.ResolveAsync(tokenProvider, body.RequiredScopes, ct);
@@ -136,6 +145,7 @@ public sealed class AuthWebhookController(
                     "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}) after policy resolution.",
                     tokenProvider.ProviderId,
                     body.DestinationHost);
+                await TryNotifyAuthCompletedAsync(capturedTarget, tokenProvider.ProviderId);
                 return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, resolved));
             }
 
@@ -143,6 +153,7 @@ public sealed class AuthWebhookController(
                 "Auth-webhook deny for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
+            await TryNotifyAuthDeniedAsync(capturedTarget, tokenProvider.ProviderId, "no valid token; sign in required");
             return Ok(AuthWebhookResponse.Deny($"no valid token for provider '{tokenProvider.ProviderId}'; sign in required"));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -159,7 +170,71 @@ public sealed class AuthWebhookController(
                 "Auth-webhook policy-resolution failure for provider {ProviderId} (host {DestinationHost}); denying.",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
+            await TryNotifyAuthDeniedAsync(capturedTarget, tokenProvider.ProviderId, "token acquisition failed");
             return Ok(AuthWebhookResponse.Deny($"token acquisition failed for provider '{tokenProvider.ProviderId}'"));
+        }
+
+        // Best-effort webhook-forwarder call sites: none of these may ever turn an allow/deny
+        // decision into a 500. A missing session id (no session-aware caller) is a no-op, not an
+        // error — the forwarder is additive to, and independent of, the WS-facing IAuthEventNotifier.
+        async Task<AuthWebhookTarget?> TryNotifyAuthRequiredAsync(string providerId)
+        {
+            if (string.IsNullOrEmpty(body.SessionId))
+            {
+                return null;
+            }
+
+            try
+            {
+                return await authWebhookForwarder.NotifyAuthRequiredAsync(
+                    body.SessionId,
+                    providerId,
+                    AuthSigninUrls.BuildAbsoluteSigninUrl(authOptions.Webhook.CallbackBaseUrl, providerId),
+                    AuthSigninUrls.BuildReason(providerId),
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Auth-webhook forwarder failed on auth-required for provider {ProviderId}; continuing without a forwarding target.",
+                    providerId);
+                return null;
+            }
+        }
+
+        async Task TryNotifyAuthCompletedAsync(AuthWebhookTarget? target, string providerId)
+        {
+            if (string.IsNullOrEmpty(body.SessionId))
+            {
+                return;
+            }
+
+            try
+            {
+                await authWebhookForwarder.NotifyAuthCompletedAsync(target, body.SessionId, providerId, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Auth-webhook forwarder failed on auth-completed for provider {ProviderId}.", providerId);
+            }
+        }
+
+        async Task TryNotifyAuthDeniedAsync(AuthWebhookTarget? target, string providerId, string reason)
+        {
+            if (string.IsNullOrEmpty(body.SessionId))
+            {
+                return;
+            }
+
+            try
+            {
+                await authWebhookForwarder.NotifyAuthDeniedAsync(target, body.SessionId, providerId, reason, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Auth-webhook forwarder failed on auth-denied for provider {ProviderId}.", providerId);
+            }
         }
     }
 

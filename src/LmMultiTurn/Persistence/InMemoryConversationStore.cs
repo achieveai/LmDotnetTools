@@ -6,10 +6,12 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// In-memory implementation of IConversationStore for testing and development.
 /// Thread-safe using ConcurrentDictionary.
 /// </summary>
-public sealed class InMemoryConversationStore : IConversationStore
+public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerStore
 {
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
+    private readonly ConcurrentDictionary<string, RunLedgerEntry> _runLedger = new();
+    private readonly ConcurrentDictionary<(string ThreadId, string InputId), AcceptedInputEntry> _acceptedInputs = new();
     private readonly object _messagesLock = new();
     private readonly object _metadataLock = new();
 
@@ -138,6 +140,20 @@ public sealed class InMemoryConversationStore : IConversationStore
         }
 
         _ = _metadata.TryRemove(threadId, out _);
+
+        foreach (var runId in _runLedger
+            .Where(kvp => kvp.Value.ThreadId == threadId)
+            .Select(kvp => kvp.Key)
+            .ToList())
+        {
+            _ = _runLedger.TryRemove(runId, out _);
+        }
+
+        foreach (var key in _acceptedInputs.Keys.Where(k => k.ThreadId == threadId).ToList())
+        {
+            _ = _acceptedInputs.TryRemove(key, out _);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -184,6 +200,64 @@ public sealed class InMemoryConversationStore : IConversationStore
         return Task.FromResult<IReadOnlyList<ThreadMetadata>>(result);
     }
 
+    /// <inheritdoc />
+    public Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        _runLedger[entry.RunId] = entry;
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default)
+    {
+        _ = _runLedger.TryGetValue(runId, out var entry);
+        return Task.FromResult(entry);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        var result = _runLedger.Values
+            .Where(e => e.ThreadId == threadId)
+            .OrderByDescending(e => e.CreatedAt)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<RunLedgerEntry>>(result);
+    }
+
+    /// <inheritdoc />
+    public Task RecordAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        _acceptedInputs[(threadId, inputId)] = new AcceptedInputEntry(threadId, inputId, acceptedAt);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
+    {
+        _ = _acceptedInputs.TryRemove((threadId, inputId), out _);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        var result = new HashSet<string>(
+            _acceptedInputs.Keys.Where(k => k.ThreadId == threadId).Select(k => k.InputId));
+
+        return Task.FromResult<IReadOnlySet<string>>(result);
+    }
+
     /// <summary>
     /// Gets the count of messages for a thread. Useful for testing.
     /// </summary>
@@ -214,5 +288,7 @@ public sealed class InMemoryConversationStore : IConversationStore
         }
 
         _metadata.Clear();
+        _runLedger.Clear();
+        _acceptedInputs.Clear();
     }
 }

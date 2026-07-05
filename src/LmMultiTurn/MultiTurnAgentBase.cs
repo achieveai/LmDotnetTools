@@ -64,6 +64,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private bool _historyRecovered;
     private volatile bool _isDisposed;
 
+    // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
+    // re-reconciles on an explicit restart within the same process (only a genuine new process
+    // start should treat prior Queued/InProgress rows as dangling).
+    private bool _runLedgerReconciled;
+
     #endregion
 
     #region Protected Properties
@@ -109,6 +114,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// Optional persistence store for conversation state.
     /// </summary>
     protected IConversationStore? Store { get; }
+
+    /// <summary>
+    /// Non-null only when the constructor's <c>persistRunLedger</c> flag is set, in which case
+    /// <see cref="Store"/> is guaranteed to also implement this interface. All run-ledger
+    /// durability (atomic mint+queue write, InProgress/terminal transitions, injected-input
+    /// folding, and restart reconciliation) is gated on this being non-null, so it — not a
+    /// separate bool — is the single source of truth for whether run-ledger persistence is on.
+    /// </summary>
+    protected IRunLedgerStore? RunLedgerStore { get; }
 
     /// <summary>
     /// Grace period the deferred-fallback in <see cref="ExecuteRunAsync"/> waits
@@ -172,6 +186,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="logger">Optional logger</param>
     /// <param name="maxReplayBufferSize">Max messages buffered for mid-run reconnect replay (default: 10,000).</param>
     /// <param name="maxReplayBufferBytes">Max estimated bytes buffered for mid-run reconnect replay (default: 8 MiB).</param>
+    /// <param name="persistRunLedger">
+    /// When true, durably tracks run status and pre-run input acceptance via <paramref name="store"/>
+    /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables <see cref="TrySendAsync"/>
+    /// and restart reconciliation. Default false preserves existing in-memory-only behavior.
+    /// </param>
     protected MultiTurnAgentBase(
         string threadId,
         string? systemPrompt = null,
@@ -182,7 +201,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         IConversationStore? store = null,
         ILogger? logger = null,
         int maxReplayBufferSize = 10_000,
-        long maxReplayBufferBytes = 8L * 1024 * 1024)
+        long maxReplayBufferBytes = 8L * 1024 * 1024,
+        bool persistRunLedger = false)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -196,6 +216,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         DefaultOptions = defaultOptions ?? new GenerateReplyOptions();
         Store = store;
         Logger = logger ?? NullLogger.Instance;
+
+        if (persistRunLedger)
+        {
+            RunLedgerStore = store as IRunLedgerStore
+                ?? throw new ArgumentException(
+                    $"{nameof(persistRunLedger)} is true but {nameof(store)} is null or does not implement {nameof(IRunLedgerStore)}.",
+                    nameof(store));
+        }
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
@@ -670,6 +698,49 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <inheritdoc />
+    public virtual async ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+        var queuedAt = DateTimeOffset.UtcNow;
+
+        if (RunLedgerStore != null)
+        {
+            // Persist acceptance BEFORE attempting to enqueue. A store failure here propagates
+            // to the caller (surfaces as an HTTP 500) with no channel write attempted, so an
+            // accepted-input record is never left dangling without a corresponding enqueue
+            // attempt — see plan-comment-v5.md Approach, TrySendAsync ordering.
+            await RunLedgerStore.RecordAcceptedInputAsync(ThreadId, receiptId, queuedAt, ct);
+        }
+
+        var input = new UserInput(messages, inputId, parentRunId);
+        var queued = new QueuedInput(input, receiptId, queuedAt);
+
+        if (!_inputChannel.Writer.TryWrite(queued))
+        {
+            Logger.LogWarning("Input channel full, rejecting TrySendAsync. ReceiptId: {ReceiptId}", receiptId);
+
+            if (RunLedgerStore != null)
+            {
+                // Roll back the acceptance record: the input was never actually queued, so a
+                // caller polling by inputId must not see it as durably accepted.
+                await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, receiptId, ct);
+            }
+
+            return null;
+        }
+
+        Logger.LogDebug("Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
+
+        return new SendReceipt(receiptId, inputId, queuedAt);
+    }
+
+    /// <inheritdoc />
     public virtual async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -1040,6 +1111,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             }
         }
 
+        if (RunLedgerStore != null && !_runLedgerReconciled)
+        {
+            _runLedgerReconciled = true;
+            await ReconcileRunLedgerAsync(ct);
+        }
+
         await OnBeforeRunAsync();
 
         _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1183,11 +1260,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     /// <summary>
     /// Start a new run for the given inputs. Call this from RunLoopAsync when ready to process.
+    /// When run-ledger persistence is enabled, mints the run id and durably records it as
+    /// <see cref="RunStatus.Queued"/> in a single step (so a runId is never handed back without
+    /// a corresponding ledger row), then immediately transitions the row to
+    /// <see cref="RunStatus.InProgress"/> since turn execution begins synchronously after this
+    /// returns. These are two separate durable writes — restart reconciliation can therefore
+    /// observe either a dangling Queued row (crash between the two writes) or a dangling
+    /// InProgress row (crash after, before the terminal write in <see cref="CompleteRunAsync"/>).
     /// </summary>
     /// <param name="inputs">The queued inputs to process in this run</param>
     /// <param name="parentRunId">Optional parent run ID (defaults to latest run)</param>
+    /// <param name="ct">Cancellation token</param>
     /// <returns>The run assignment</returns>
-    protected RunAssignment StartRun(IReadOnlyList<QueuedInput> inputs, string? parentRunId = null)
+    protected async Task<RunAssignment> StartRunAsync(
+        IReadOnlyList<QueuedInput> inputs,
+        string? parentRunId = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -1201,6 +1289,24 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _currentRunId = runId;
         }
 
+        if (RunLedgerStore != null)
+        {
+            var createdAt = DateTimeOffset.UtcNow;
+            await RunLedgerStore.UpsertRunLedgerAsync(
+                new RunLedgerEntry(ThreadId, runId, RunStatus.Queued, inputIds, createdAt, createdAt),
+                ct);
+            await RunLedgerStore.UpsertRunLedgerAsync(
+                new RunLedgerEntry(ThreadId, runId, RunStatus.InProgress, inputIds, createdAt, DateTimeOffset.UtcNow),
+                ct);
+
+            // Now folded into the run's own InputIds above — the pre-run acceptance record has
+            // served its purpose (see TrySendAsync) and would otherwise accumulate forever.
+            foreach (var inputId in inputIds)
+            {
+                await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, inputId, ct);
+            }
+        }
+
         Logger.LogInformation(
             "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
             runId,
@@ -1212,7 +1318,59 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
-    /// Complete a run and publish the completion message.
+    /// Durably folds newly-injected input receipt ids into the active run's ledger entry.
+    /// Called by <c>MultiTurnAgentLoop</c> at its injection point — where a new send that
+    /// arrives while a run is still in-flight is folded into that same run
+    /// (<see cref="RunAssignment.WasInjected"/>) rather than starting a new one — so the ledger's
+    /// <see cref="RunLedgerEntry.InputIds"/> stays the source of truth an injected inputId
+    /// resolves through to its shared run. No-op when run-ledger persistence is disabled.
+    /// </summary>
+    /// <param name="runId">The active run the inputs were injected into.</param>
+    /// <param name="injectedInputIds">The newly-injected inputs' receipt ids.</param>
+    /// <param name="ct">Cancellation token</param>
+    protected async Task RecordInjectedInputsAsync(
+        string runId,
+        IReadOnlyList<string> injectedInputIds,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(injectedInputIds);
+
+        if (RunLedgerStore == null || injectedInputIds.Count == 0)
+        {
+            return;
+        }
+
+        var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
+        if (existing == null)
+        {
+            Logger.LogWarning(
+                "No run ledger entry found for RunId {RunId} to record injected inputs {InputIds}",
+                runId,
+                string.Join(",", injectedInputIds));
+            return;
+        }
+
+        var mergedInputIds = existing.InputIds.Union(injectedInputIds, StringComparer.Ordinal).ToList();
+        await RunLedgerStore.UpsertRunLedgerAsync(
+            existing with { InputIds = mergedInputIds, UpdatedAt = DateTimeOffset.UtcNow },
+            ct);
+
+        // Same cleanup as StartRunAsync: these ids are now covered by the run's InputIds.
+        foreach (var injectedInputId in injectedInputIds)
+        {
+            await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, injectedInputId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Complete a run: persists the terminal run-ledger status, then publishes the completion
+    /// message. The ledger write happens FIRST and is allowed to throw and propagate — the REST
+    /// status API treats the ledger as the source of truth, so a subscriber must never observe a
+    /// <see cref="RunCompletedMessage"/> for a run whose terminal status failed to persist (which
+    /// would otherwise let <c>GET /status</c> keep reporting <see cref="RunStatus.InProgress"/>
+    /// after completion was broadcast). Propagating also means a persistence failure here is
+    /// caught by the caller's per-run try/catch as a run failure, so at most one terminal outcome
+    /// is ever published for a given run — not a Completed publish followed by a later Errored one.
     /// </summary>
     /// <param name="runId">The run ID that completed</param>
     /// <param name="generationId">The generation ID</param>
@@ -1232,6 +1390,24 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         string? errorMessage = null,
         CancellationToken ct = default)
     {
+        if (RunLedgerStore != null)
+        {
+            var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
+            if (existing != null)
+            {
+                var status = isError ? RunStatus.Errored : RunStatus.Completed;
+                await RunLedgerStore.UpsertRunLedgerAsync(
+                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
+                    ct);
+            }
+            else
+            {
+                Logger.LogWarning(
+                    "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
+                    runId);
+            }
+        }
+
         await PublishToAllAsync(new RunCompletedMessage
         {
             CompletedRunId = runId,
@@ -1262,6 +1438,83 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         // Persist metadata after run completes
         await UpdateMetadataAsync(ct);
+    }
+
+    /// <summary>
+    /// Reconciles run-ledger state left behind by a prior process instance. Runs once per
+    /// process start (guarded by <c>_runLedgerReconciled</c> in <see cref="RunAsync"/>), never on
+    /// an explicit in-process restart. Two kinds of dangling state are resolved, both to
+    /// <see cref="RunStatus.Interrupted"/>:
+    /// - A <see cref="RunStatus.Queued"/> or <see cref="RunStatus.InProgress"/> ledger row: this
+    ///   process just started, so nothing can still be running it.
+    /// - An accepted-input record (<see cref="IRunLedgerStore.ListAcceptedInputIdsAsync"/>) whose
+    ///   inputId is not covered by any ledger entry's <see cref="RunLedgerEntry.InputIds"/>: the
+    ///   input was durably accepted (see <see cref="TrySendAsync"/>) but the process crashed
+    ///   before a run was ever assigned to it. A synthetic orphan ledger row is created so
+    ///   resolving by that inputId needs no restart-specific branch of its own.
+    /// Reconciliation failures are logged and swallowed — a transient store fault here must not
+    /// prevent the agent from starting.
+    /// </summary>
+    private async Task ReconcileRunLedgerAsync(CancellationToken ct)
+    {
+        if (RunLedgerStore == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var runs = await RunLedgerStore.ListRunLedgerAsync(ThreadId, ct);
+            var coveredInputIds = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var run in runs)
+            {
+                foreach (var id in run.InputIds)
+                {
+                    _ = coveredInputIds.Add(id);
+                }
+
+                if (run.Status is RunStatus.Queued or RunStatus.InProgress)
+                {
+                    await RunLedgerStore.UpsertRunLedgerAsync(
+                        run with { Status = RunStatus.Interrupted, UpdatedAt = DateTimeOffset.UtcNow },
+                        ct);
+                    Logger.LogWarning(
+                        "Marking dangling run {RunId} (status {Status}) Interrupted on restart for thread {ThreadId}",
+                        run.RunId,
+                        run.Status,
+                        ThreadId);
+                }
+            }
+
+            var acceptedInputIds = await RunLedgerStore.ListAcceptedInputIdsAsync(ThreadId, ct);
+            foreach (var inputId in acceptedInputIds)
+            {
+                if (coveredInputIds.Contains(inputId))
+                {
+                    continue;
+                }
+
+                var orphanRunId = Guid.NewGuid().ToString("N");
+                var now = DateTimeOffset.UtcNow;
+                await RunLedgerStore.UpsertRunLedgerAsync(
+                    new RunLedgerEntry(ThreadId, orphanRunId, RunStatus.Interrupted, [inputId], now, now),
+                    ct);
+                Logger.LogWarning(
+                    "Synthesized orphan Interrupted run {RunId} for accepted-but-never-assigned InputId {InputId} on restart for thread {ThreadId}",
+                    orphanRunId,
+                    inputId,
+                    ThreadId);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it", ThreadId);
+        }
     }
 
     #endregion
@@ -1295,7 +1548,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// The main run loop. Implementation owns this entirely and decides:
     /// - When to drain inputs from the queue (TryDrainInputs or InputReader.WaitToReadAsync)
-    /// - When to start runs (StartRun)
+    /// - When to start runs (StartRunAsync)
     /// - How to handle mid-run input (poll between turns vs concurrent watching)
     /// - When to complete runs (CompleteRunAsync)
     /// </summary>

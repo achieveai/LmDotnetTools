@@ -21,6 +21,10 @@ internal sealed class ToolScopedReviewLoop(IMultiTurnAgent inner, IReadOnlyList<
         List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
         => inner.SendAsync(messages, inputId, parentRunId, ct);
 
+    public ValueTask<SendReceipt?> TrySendAsync(
+        List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
+        => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+
     public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default)
         => inner.ExecuteRunAsync(userInput, ct);
 
