@@ -99,6 +99,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly IDiscoveredItemsSource? _discoveredItemsSource;
     private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
     private readonly Func<IStreamingAgent>? _providerAgentFactory;
+    private readonly HostRetentionWorkspace? _hostRetention;
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -111,7 +112,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IReviewSessionProvisioner? provisioner = null,
         IDiscoveredItemsSource? discoveredItemsSource = null,
         DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
-        Func<IStreamingAgent>? providerAgentFactory = null)
+        Func<IStreamingAgent>? providerAgentFactory = null,
+        HostRetentionWorkspace? hostRetention = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -125,6 +127,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _discoveredItemsSource = discoveredItemsSource;
         _subAgentTemplateBuilder = subAgentTemplateBuilder;
         _providerAgentFactory = providerAgentFactory;
+        _hostRetention = hostRetention;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -388,11 +391,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var profile = DaemonAgentFactory.CreateKnowledgeProfile();
         await using var loop = _loopFactory.Create(profile, run.ModelId, ThreadId(run, DaemonAgentFactory.KnowledgeProfileId));
-        var agent = new KnowledgeAgent(loop, _fileSystem, _loggerFactory.CreateLogger<KnowledgeAgent>());
+
+        // Write to the HOST-side checkout when retention is configured (design §6 Risk A) — the KB entry
+        // lands in the same clone the Posted-stage retention commit captures, never in the sandbox the
+        // review agent shares.
+        var fileSystem = _hostRetention?.FileSystem ?? _fileSystem;
+        var repoRoot = _hostRetention?.RepoRoot ?? RepoRoot;
+        var agent = new KnowledgeAgent(loop, fileSystem, _loggerFactory.CreateLogger<KnowledgeAgent>());
 
         var title = $"{repo.DisplayName} PR {run.PrId}";
         var knowledgeInput = $"{reviewInput}\n\n## Review\n{reviewText}";
-        _ = await agent.WriteEntryAsync(RepoRoot, title, knowledgeInput, cancellationToken).ConfigureAwait(false);
+        _ = await agent.WriteEntryAsync(repoRoot, title, knowledgeInput, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task JudgeAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -473,17 +482,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return;
         }
 
-        var git = new GitRunner(_commandRunner);
+        // Retention must run against the HOST-side workspace when one is configured (design §6 Risk A) —
+        // the push (and the KB write RunKnowledgeArmAsync made into the same checkout) happen with the
+        // write credential in the daemon process, never in the read-only sandbox the review agent shares.
+        var retention = _hostRetention;
+        var git = new GitRunner(retention?.Git ?? _commandRunner);
+        var fileSystem = retention?.FileSystem ?? _fileSystem;
+        var repoRoot = retention?.RepoRoot ?? RepoRoot;
 
         // PR #121 H3: clone (or reuse) the configured ReviewBot remote and validate its skeleton before
         // pushing. The daemon must not assume the checkout exists/is well-formed — a missing remote gives
         // a classified clone diagnosis, a malformed skeleton fails fast rather than pushing into a corrupt
         // repo.
-        await EnsureReviewBotCheckoutAsync(git, run, cancellationToken).ConfigureAwait(false);
+        await EnsureReviewBotCheckoutAsync(git, fileSystem, repoRoot, run, cancellationToken).ConfigureAwait(false);
 
         var manager = new ReviewBotRepoManager(
             git,
-            _fileSystem,
+            fileSystem,
             provider,
             _loggerFactory.CreateLogger<ReviewBotRepoManager>());
 
@@ -498,7 +513,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             DefaultBranch: ReviewBotDefaultBranch,
             Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
 
-        var result = await manager.PublishAsync(RepoRoot, request, cancellationToken).ConfigureAwait(false);
+        var result = await manager.PublishAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
 
         var outbox = _store.EnqueueOutbox(new OutboxEntry
         {
@@ -528,15 +543,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Clones (or reuses) the configured ReviewBot remote into <see cref="RepoRoot"/> and validates its
+    /// Clones (or reuses) the configured ReviewBot remote into <paramref name="repoRoot"/> and validates its
     /// skeleton before any push (PR #121 H3). A failed clone surfaces a classified diagnosis; a malformed
     /// skeleton fails fast rather than pushing into a corrupt repo. A freshly-cloned empty repo is seeded.
     /// </summary>
-    private async Task EnsureReviewBotCheckoutAsync(GitRunner git, ReviewRun run, CancellationToken cancellationToken)
+    private async Task EnsureReviewBotCheckoutAsync(
+        GitRunner git, ISandboxFileSystem fileSystem, string repoRoot, ReviewRun run, CancellationToken cancellationToken)
     {
         var cloneFailure = await ReviewBotCheckout
             .EnsureCheckoutAsync(
-                git, _options.ReviewBotRepoUrl!, RepoRoot,
+                git, _options.ReviewBotRepoUrl!, repoRoot,
                 _loggerFactory.CreateLogger("reviewbot-checkout"), cancellationToken)
             .ConfigureAwait(false);
         if (cloneFailure is not null)
@@ -546,9 +562,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var initializer = new ReviewBotInitializer(
-            git, _fileSystem, _loggerFactory.CreateLogger<ReviewBotInitializer>());
+            git, fileSystem, _loggerFactory.CreateLogger<ReviewBotInitializer>());
         var init = await initializer
-            .InitializeAsync(RepoRoot, ReviewBotDefaultBranch, cancellationToken)
+            .InitializeAsync(repoRoot, ReviewBotDefaultBranch, cancellationToken)
             .ConfigureAwait(false);
         if (init.Outcome == ReviewBotInitOutcome.Malformed)
         {

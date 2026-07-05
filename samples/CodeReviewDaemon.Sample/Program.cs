@@ -191,6 +191,27 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
 
+// HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB
+// entry it carries must run OUTSIDE the sandbox the untrusted review agent shares, with the write
+// credential injected only into this host-process git runner. Registered only when a ReviewBot repo is
+// configured — otherwise DaemonReviewStageExecutor's null-fallback keeps writing through the sandbox
+// runner exactly as it does today. This iteration reuses the single existing GitHub credential (a
+// dedicated write-scoped credential is a documented fast-follow, not introduced here).
+if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
+{
+    builder.Services.AddSingleton(sp =>
+    {
+        var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
+            ? Path.Combine(AppContext.BaseDirectory, "workspaces")
+            : daemonOptions.WorkspaceHostRoot;
+        var github = sp.GetRequiredService<GitHubOAuthProvider>();
+        var runner = new HostGitCommandRunner(
+            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+        return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
+    });
+}
+
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
 builder.Services.AddSingleton<IReviewStageExecutor, DaemonReviewStageExecutor>();
 builder.Services.AddSingleton<PrOrchestrator>();
