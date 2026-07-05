@@ -266,6 +266,77 @@ public class TriggerRuntimeTests
         payload.Should().Contain("trigger_lost_on_restart");
     }
 
+    [Fact]
+    public async Task ReconcileRestored_ExpiredTimer_LeavesNoZombieWait()
+    {
+        // Regression: an already-elapsed restored timer must fire cleanly and leave no armed entry
+        // (an earlier version fired synchronously inside ArmAsync, re-inserting a terminal zombie).
+        var resolver = new RecordingResolver();
+        await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
+        runtime.RegisterBuiltIns();
+
+        var longAgo = DateTimeOffset.UtcNow.AddMinutes(-30).ToUnixTimeMilliseconds();
+        var waitArgs = JsonSerializer.Serialize(new { kind = "timer", args = new { }, timeout = "5m" });
+        await runtime.ReconcileRestoredAsync(
+            [new RestoredWait("tc-zombie", waitArgs, longAgo)],
+            CancellationToken.None);
+
+        await resolver.FirstPayload.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(100);
+        runtime.ListWaits().Should().BeEmpty("an expired restored timer must not leave an armed entry");
+    }
+
+    [Fact]
+    public async Task ReconcileRestored_RejectedReArm_ResolvesInsteadOfHanging()
+    {
+        // Regression: if re-arming a restored wait is rejected (e.g. concurrency limit), the wait
+        // must be resolved (failed), never left parked forever.
+        var resolver = new RecordingResolver();
+        var source = new ManualTriggerSource();
+        // One slot, already taken by a live wait, so the restored re-arm cannot acquire it.
+        await using var runtime = new TriggerRuntime(FastOptions(maxConcurrent: 1), resolver.Resolve);
+        runtime.Register(Registration("dummy", source));
+        await runtime.ArmAsync("live", "dummy", "{}", "10m", null, CancellationToken.None);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var waitArgs = JsonSerializer.Serialize(new { kind = "dummy", args = new { }, timeout = "10m" });
+        await runtime.ReconcileRestoredAsync(
+            [new RestoredWait("tc-reject", waitArgs, now)],
+            CancellationToken.None);
+
+        var payload = await resolver.FirstPayload.WaitAsync(TimeSpan.FromSeconds(5));
+        ReadStatus(payload).Should().Be("failed");
+    }
+
+    [Fact]
+    public async Task Fire_Delivers_EvenWhenSourceTokenCancelsOnDispose_AndDeliveryRetries()
+    {
+        // Regression for the fire-path token bug: disposing the source (which cancels the source's
+        // token) must not abort delivery, even when the first resolve attempt is transiently
+        // rejected (the register-window). Delivery uses an uncancellable token.
+        var attempts = 0;
+        var delivered = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task Resolve(string id, string payload, bool isError, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref attempts) < 3)
+            {
+                throw new InvalidOperationException($"no matching deferred call for '{id}'");
+            }
+            delivered.TrySetResult(payload);
+            return Task.CompletedTask;
+        }
+
+        var source = new TokenCancellingSource();
+        await using var runtime = new TriggerRuntime(FastOptions(), Resolve);
+        runtime.Register(Registration("cancel_on_dispose", source));
+
+        await runtime.ArmAsync("tc-token", "cancel_on_dispose", "{}", "10m", null, CancellationToken.None);
+        await source.FireAsync();
+
+        var payload = await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        ReadStatus(payload).Should().Be("fired");
+    }
+
     private static TriggerSourceRegistration Registration(string kind, ITriggerSource source, bool supportsRestore = true) => new()
     {
         Kind = kind,
@@ -324,6 +395,50 @@ public class TriggerRuntimeTests
             public ValueTask DisposeAsync()
             {
                 Disposed = true;
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A source that fires with a token it cancels on disposal — mimics the built-in timer, whose
+    /// DisposeAsync cancels the token the fire callback carries. Used to prove delivery is robust to
+    /// that cancellation.
+    /// </summary>
+    private sealed class TokenCancellingSource : ITriggerSource
+    {
+        private readonly Handle _handle = new();
+        private volatile ITriggerEventSink? _sink;
+
+        public ValueTask<IArmedTrigger> ArmAsync(TriggerArmRequest request, ITriggerEventSink eventSink, CancellationToken cancellationToken)
+        {
+            _sink = eventSink;
+            return ValueTask.FromResult<IArmedTrigger>(_handle);
+        }
+
+        public async Task FireAsync()
+        {
+            var sink = _sink;
+            if (sink != null)
+            {
+                // Fire carries the source's own token, exactly as the timer source does.
+                await sink.FireAsync(new TriggerFireEvent("payload"), _handle.Token);
+            }
+        }
+
+        private sealed class Handle : IArmedTrigger
+        {
+            private readonly CancellationTokenSource _cts = new();
+
+            public string WaitId { get; } = "tc-token";
+            public CancellationToken Token => _cts.Token;
+
+            public ValueTask DisposeAsync()
+            {
+                // Cancels the token the in-flight fire callback is carrying — the runtime must not
+                // let this abort delivery.
+                _cts.Cancel();
+                _cts.Dispose();
                 return ValueTask.CompletedTask;
             }
         }

@@ -45,9 +45,10 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     // The loop registers a deferral and appends its placeholder to history immediately AFTER the
     // handler returns Deferred; a fast fire can briefly precede that append. Tolerate it with a
-    // bounded retry rather than exposing loop internals to gate on.
-    private const int DeliverMaxAttempts = 50;
-    private const int DeliverRetryMs = 20;
+    // bounded retry (generous total budget for slow persistence) rather than exposing loop
+    // internals to gate on. ~200 * 50ms ≈ 10s worst case.
+    private const int DeliverMaxAttempts = 200;
+    private const int DeliverRetryMs = 50;
 
     private readonly TriggerOptions _options;
     private readonly TriggerResolveDelegate _resolve;
@@ -189,6 +190,17 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
             var sink = new WaitSink(this, wait);
             wait.Source = await reg.Source.ArmAsync(request, sink, _shutdown.Token);
+
+            // Defensive: a well-behaved source fires asynchronously (never during ArmAsync), but if
+            // one fired synchronously the wait already reached a terminal state and FinalizeAsync ran
+            // before wait.Source was assigned (so it could not dispose the source). Complete that
+            // cleanup here and don't re-register or start a ceiling for an already-terminal wait.
+            if (wait.State != WaitState.Pending)
+            {
+                await wait.Source.DisposeAsync();
+                return WaitArmResult.Accept(waitId);
+            }
+
             _waits[waitId] = wait;
             StartCeilingTimer(wait);
 
@@ -219,7 +231,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         var cancelled = 0;
         foreach (var wait in matches)
         {
-            if (await FinalizeAsync(wait, WaitState.Cancelled, BuildTerminalPayload("cancelled", wait), isError: false, ct))
+            if (await FinalizeAsync(wait, WaitState.Cancelled, BuildTerminalPayload("cancelled", wait), isError: false))
             {
                 cancelled++;
             }
@@ -278,7 +290,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             if (!WaitToolArgs.TryParse(r.FunctionArgs, out var parsed))
             {
-                await DeliverAsync(r.ToolCallId, BuildFailedPayload(r.ToolCallId, "unknown", null, "trigger_lost_on_restart"), isError: false, ct);
+                await DeliverAsync(r.ToolCallId, BuildFailedPayload(r.ToolCallId, "unknown", null, "trigger_lost_on_restart"), isError: false);
                 continue;
             }
 
@@ -287,33 +299,44 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 await DeliverAsync(
                     r.ToolCallId,
                     BuildFailedPayload(r.ToolCallId, parsed.Kind, parsed.Label, "trigger_lost_on_restart"),
-                    isError: false,
-                    ct);
+                    isError: false);
                 continue;
             }
 
-            var armedAt = DateTimeOffset.FromUnixTimeMilliseconds(r.DeferredAtUnixMs);
+            // A missing arm timestamp (older/hand-authored data) would otherwise map to the Unix
+            // epoch and expire instantly — restart the clock from now instead.
+            var armedAt = r.DeferredAtUnixMs > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(r.DeferredAtUnixMs)
+                : DateTimeOffset.UtcNow;
             if (!TriggerDurations.TryResolveDeadline(parsed.Timeout, armedAt, _options.MaxBlockWaitDuration, out var deadline, out _))
             {
                 // Ceiling already elapsed while offline (or unparseable) — resolve as timed out.
                 await DeliverAsync(
                     r.ToolCallId,
                     BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, ArmedAt = armedAt, Deadline = armedAt }),
-                    isError: false,
-                    ct);
+                    isError: false);
                 continue;
             }
 
-            _ = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, armedAt, deadline, ct);
+            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, armedAt, deadline, ct);
+            if (!armResult.IsArmed)
+            {
+                // Re-arm was rejected (e.g. concurrency limit, source arm failure). Do NOT leave the
+                // parked run hanging — resolve it as a restart failure.
+                await DeliverAsync(
+                    r.ToolCallId,
+                    BuildFailedPayload(r.ToolCallId, parsed.Kind, parsed.Label, armResult.Reason ?? "trigger_lost_on_restart"),
+                    isError: false);
+            }
         }
     }
 
     // ---- internal transition machinery -------------------------------------------------------
 
-    private async ValueTask OnSourceFiredAsync(ArmedWait wait, TriggerFireEvent fire, CancellationToken ct)
+    private async ValueTask OnSourceFiredAsync(ArmedWait wait, TriggerFireEvent fire)
     {
         var payload = BuildFiredPayload(wait, fire);
-        _ = await FinalizeAsync(wait, WaitState.Fired, payload, isError: false, ct);
+        _ = await FinalizeAsync(wait, WaitState.Fired, payload, isError: false);
     }
 
     /// <summary>
@@ -321,7 +344,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// ceiling timer, disposes the source (no fire after dispose), releases the concurrency slot,
     /// and delivers the one result. Returns true only for the winning caller.
     /// </summary>
-    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError, CancellationToken ct)
+    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
     {
         if (!wait.TryClaim(state))
         {
@@ -354,12 +377,16 @@ public sealed class TriggerRuntime : IAsyncDisposable
         _ = _waits.TryRemove(wait.WaitId, out _);
         ReleaseGate(wait);
 
-        await DeliverAsync(wait.WaitId, payload, isError, ct);
+        // Deliver with a fresh, uncancellable token: the terminal result must reach the loop even
+        // though disposing the source above cancels the source's own token, and even if the
+        // operation that triggered this transition (a CancelWait) carried a cancelled token.
+        await DeliverAsync(wait.WaitId, payload, isError);
         return true;
     }
 
-    private async Task DeliverAsync(string toolCallId, string payload, bool isError, CancellationToken ct)
+    private async Task DeliverAsync(string toolCallId, string payload, bool isError)
     {
+        var ct = CancellationToken.None;
         for (var attempt = 1; ; attempt++)
         {
             try
@@ -418,7 +445,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 return; // wait already terminated another way.
             }
 
-            _ = await FinalizeAsync(wait, WaitState.TimedOut, BuildTerminalPayload("timed_out", wait), isError: false, CancellationToken.None);
+            _ = await FinalizeAsync(wait, WaitState.TimedOut, BuildTerminalPayload("timed_out", wait), isError: false);
         });
     }
 
@@ -426,7 +453,15 @@ public sealed class TriggerRuntime : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref wait.GateReleased, 1) == 0)
         {
-            _ = _concurrencyGate.Release();
+            try
+            {
+                _ = _concurrencyGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A fire/timeout finalizing concurrently with runtime disposal may reach here after
+                // the gate is disposed. The slot no longer matters once the runtime is shutting down.
+            }
         }
     }
 
@@ -437,8 +472,10 @@ public sealed class TriggerRuntime : IAsyncDisposable
         var detail = fire.Payload;
         if (detail != null && Encoding.UTF8.GetByteCount(detail) > _options.MaxPayloadBytes)
         {
-            var truncated = TruncateUtf8(detail, _options.MaxPayloadBytes);
-            detail = truncated + $"\n[truncated to {_options.MaxPayloadBytes} bytes]";
+            // Reserve room for the marker so the resulting detail stays within MaxPayloadBytes.
+            var marker = $"\n[truncated to {_options.MaxPayloadBytes} bytes]";
+            var budget = Math.Max(0, _options.MaxPayloadBytes - Encoding.UTF8.GetByteCount(marker));
+            detail = TruncateUtf8(detail, budget) + marker;
         }
 
         return Serialize(new Dictionary<string, object?>
@@ -576,6 +613,6 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private sealed class WaitSink(TriggerRuntime runtime, ArmedWait wait) : ITriggerEventSink
     {
         public ValueTask FireAsync(TriggerFireEvent fire, CancellationToken cancellationToken) =>
-            runtime.OnSourceFiredAsync(wait, fire, cancellationToken);
+            runtime.OnSourceFiredAsync(wait, fire);
     }
 }

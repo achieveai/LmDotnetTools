@@ -115,6 +115,11 @@ public sealed class TimerTriggerSource : ITriggerSource
 
         private static async Task RunAsync(DateTimeOffset fireAt, ITriggerEventSink sink, CancellationToken ct)
         {
+            // Yield first so the fire is always asynchronous — never synchronous within ArmAsync,
+            // even when the instant has already elapsed (Task.Delay(0) would otherwise continue
+            // synchronously and fire before the runtime has finished registering the wait).
+            await Task.Yield();
+
             var remaining = fireAt - DateTimeOffset.UtcNow;
             if (remaining < TimeSpan.Zero)
             {

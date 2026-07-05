@@ -10,7 +10,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 /// Implementations MUST be safe to reuse across many concurrent arms (each <see cref="ArmAsync"/>
 /// call returns an independent <see cref="IArmedTrigger"/> handle and must hold no per-wait state
 /// on the source itself). A source must never resolve tool calls, enforce timeouts, or count
-/// fires — those are runtime concerns.
+/// fires — those are runtime concerns. Fires MUST be asynchronous: a source must not invoke the
+/// sink synchronously from within <see cref="ArmAsync"/> (yield first if the event is already due).
 /// </remarks>
 public interface ITriggerSource
 {
