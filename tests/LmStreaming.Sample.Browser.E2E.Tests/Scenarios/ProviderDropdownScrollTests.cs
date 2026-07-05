@@ -78,17 +78,37 @@ public sealed class ProviderDropdownScrollTests
         (await page.ProviderOption("copilot-model-00").IsEnabledAsync()).Should().BeTrue(
             "injected Copilot models render available when the token gate is forced on");
 
-        // The menu must actually be scrollable — its content exceeds the capped visible height.
-        (await menu.EvaluateAsync<bool>("el => el.scrollHeight > el.clientHeight")).Should().BeTrue(
-            "the overflowing Copilot list must scroll inside the capped-height menu, not run off-screen");
+        // The menu must actually be scrollable via CSS — `scrollHeight > clientHeight` alone proves the
+        // content overflows, but that would hold even if `overflow-y` regressed back to the default
+        // `visible` (content would simply spill out unclipped instead of scrolling).
+        (await menu.EvaluateAsync<string>("el => getComputedStyle(el).overflowY")).Should().BeOneOf(
+            ["auto", "scroll"],
+            "the overflowing Copilot list must scroll inside the capped-height menu, not spill out unclipped");
 
-        // The last option starts below the fold; scrolling must bring it fully into view, and it must be
-        // enabled/reachable. We stop here — selecting it is intentionally out of scope.
+        // Prove the menu is actually scrollable, not merely eligible per its computed style: driving
+        // scrollTop to scrollHeight must move the offset off zero (the browser clamps to the real max).
+        await menu.EvaluateAsync("el => { el.scrollTop = el.scrollHeight; }");
+        (await menu.EvaluateAsync<double>("el => el.scrollTop")).Should().BeGreaterThan(
+            0,
+            "scrolling the menu to its content height must move the scroll offset off zero");
+
+        // The last option must be enabled, and — after scrolling — its bounding box must actually fall
+        // within the menu's clipped viewport. IsVisibleAsync alone does not prove containment within a
+        // scrollable ancestor's viewport, so we stop at bounding-box containment; selecting it remains
+        // out of scope.
         var lastOption = options.Last;
         (await lastOption.IsEnabledAsync()).Should().BeTrue();
-        await lastOption.ScrollIntoViewIfNeededAsync();
-        (await lastOption.IsVisibleAsync()).Should().BeTrue(
-            "the last option must be reachable by scrolling the menu");
+
+        var menuBox = await menu.BoundingBoxAsync();
+        var lastOptionBox = await lastOption.BoundingBoxAsync();
+        menuBox.Should().NotBeNull("the menu must be laid out to assert reachability against it");
+        lastOptionBox.Should().NotBeNull("the last option must be laid out to assert reachability against it");
+        lastOptionBox!.Y.Should().BeGreaterThanOrEqualTo(
+            menuBox!.Y,
+            "the last option must be reachable within the menu's top edge after scrolling");
+        (lastOptionBox.Y + lastOptionBox.Height).Should().BeLessThanOrEqualTo(
+            menuBox.Y + menuBox.Height,
+            "the last option must be fully reachable within the menu's clipped bottom edge, not scrolled past it");
 
         await session.SaveSuccessScreenshotAsync("ProviderDropdownScroll.overflow_reaches_last_option");
     }
