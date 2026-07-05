@@ -91,8 +91,11 @@ internal sealed class ReviewStore : IDisposable
 
     /// <summary>
     /// Inserts <paramref name="run"/>, or returns the existing row when its identity tuple already
-    /// exists. Idempotent: the same (repo, pr, head/base, watermark, kind, variant, mode) tuple never
-    /// creates a second run.
+    /// exists. Idempotent: the same (repo, pr, head/base, kind, variant, mode) tuple never creates a
+    /// second run. <c>trigger_watermark</c> (the PR's <c>updated_at</c>) is stored for diagnostics but is
+    /// deliberately NOT part of the identity — posting a review comment mutates <c>updated_at</c>, so
+    /// keying identity on it would spawn a fresh run (and a duplicate review) on the very next poll. A
+    /// review is scoped to a commit; a new <c>head_sha</c> is what legitimately starts a new run.
     /// </summary>
     public ReviewRun CreateOrGetReviewRun(ReviewRun run)
     {
@@ -134,14 +137,13 @@ internal sealed class ReviewStore : IDisposable
         select.CommandText = """
             SELECT * FROM review_run
             WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $head AND base_sha = $base
-              AND trigger_watermark = $watermark AND review_kind = $kind AND variant_id = $variant
+              AND review_kind = $kind AND variant_id = $variant
               AND mode = $mode;
             """;
         _ = select.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = select.Parameters.AddWithValue("$prId", run.PrId);
         _ = select.Parameters.AddWithValue("$head", run.HeadSha);
         _ = select.Parameters.AddWithValue("$base", run.BaseSha);
-        _ = select.Parameters.AddWithValue("$watermark", run.TriggerWatermark);
         _ = select.Parameters.AddWithValue("$kind", run.ReviewKind);
         _ = select.Parameters.AddWithValue("$variant", run.VariantId);
         _ = select.Parameters.AddWithValue("$mode", run.Mode);

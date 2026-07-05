@@ -517,6 +517,34 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
+    /// Destroys the session cached for <paramref name="workspaceId"/> (per-run cleanup): evicts the
+    /// creation entry + reverse maps, then issues the gateway DELETE. Idempotent — a no-op when no
+    /// session is cached for the id. Best-effort: gateway failures are logged inside
+    /// <see cref="DestroySessionAsync"/> and swallowed so run teardown never throws.
+    /// </summary>
+    public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+
+        if (!_sessions.TryRemove(workspaceId, out var lazy)
+            || !lazy.IsValueCreated
+            || !lazy.Value.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        var session = lazy.Value.Result;
+        _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+            new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+        _ = _subAgentBindings.TryRemove(session.SessionId, out _);
+        _ = _sessionThreads.TryRemove(session.SessionId, out _);
+        _ = _discoverySeen.TryRemove(session.SessionId, out _);
+
+        await DestroySessionAsync(session).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Best-effort destroys every successfully-created session on shutdown. Errors are logged and
     /// swallowed so disposal never throws.
     /// </summary>
@@ -1159,16 +1187,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
     /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;
-    /// <see cref="Path"/> is workspace-relative.</summary>
+    /// <see cref="Path"/> is workspace-relative. <see cref="Content"/> carries the item's inline
+    /// body when the gateway includes it (e.g. a marketplace sub-agent's full markdown source);
+    /// <see cref="QualifiedName"/> is the plugin-qualified id (e.g.
+    /// <c>code-reviewer:architecture-review</c>).</summary>
     public sealed record DiscoveredItem(
         [property: JsonPropertyName("kind")] string Kind,
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("description")] string? Description,
-        [property: JsonPropertyName("path")] string Path
+        [property: JsonPropertyName("path")] string Path,
+        [property: JsonPropertyName("content")] string? Content = null,
+        [property: JsonPropertyName("qualified_name")] string? QualifiedName = null
     );
 
     private sealed record DiscoveredItemsResponse(
-        [property: JsonPropertyName("items")] IReadOnlyList<DiscoveredItem> Items
+        [property: JsonPropertyName("discovered")] IReadOnlyList<DiscoveredItem> Items
     );
 
     // --- Gateway MCP /mcp JSON-RPC contract (for ReadWorkspaceFileAsync) ---

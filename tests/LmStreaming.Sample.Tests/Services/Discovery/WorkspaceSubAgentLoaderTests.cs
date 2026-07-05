@@ -1,11 +1,12 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 using LmStreaming.Sample.Services.Discovery;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
 
 /// <summary>
 /// Unit tests for <see cref="WorkspaceSubAgentLoader"/>'s pure helpers:
-/// <see cref="WorkspaceSubAgentLoader.MapToTemplate"/> (mapping table),
+/// <see cref="SubAgentTemplateMapper.Map"/> (mapping table),
 /// <see cref="WorkspaceSubAgentLoader.TryResolveContainedPath"/> (path-injection guard) and
 /// <see cref="WorkspaceSubAgentLoader.NormalizeBasePath"/> (trailing-separator pin).
 /// The HTTP-driven <c>LoadAsync</c> orchestration is thin (registry → filter → resolve →
@@ -25,9 +26,10 @@ public class WorkspaceSubAgentLoaderTests
             Description: "Echoes a discovered marker.",
             Model: null,
             Tools: null,
-            SystemPrompt: "You are echo.");
+            SystemPrompt: "You are echo."
+        );
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.Name.Should().Be("echo");
         template.Description.Should().Be("Echoes a discovered marker.");
@@ -43,9 +45,10 @@ public class WorkspaceSubAgentLoaderTests
             Description: null,
             Model: "claude-sonnet-4-5",
             Tools: null,
-            SystemPrompt: "Body.");
+            SystemPrompt: "Body."
+        );
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.DefaultOptions.Should().NotBeNull();
         template.DefaultOptions!.ModelId.Should().Be("claude-sonnet-4-5");
@@ -59,9 +62,10 @@ public class WorkspaceSubAgentLoaderTests
             Description: null,
             Model: null,
             Tools: null,
-            SystemPrompt: "Body.");
+            SystemPrompt: "Body."
+        );
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.DefaultOptions.Should().BeNull();
     }
@@ -71,7 +75,7 @@ public class WorkspaceSubAgentLoaderTests
     {
         var parsed = new ParsedSubAgent("echo", null, null, Tools: null, SystemPrompt: "Body.");
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.EnabledTools.Should().BeNull();
     }
@@ -81,7 +85,7 @@ public class WorkspaceSubAgentLoaderTests
     {
         var parsed = new ParsedSubAgent("echo", null, null, Tools: [], SystemPrompt: "Body.");
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.EnabledTools.Should().NotBeNull();
         template.EnabledTools.Should().BeEmpty();
@@ -92,7 +96,7 @@ public class WorkspaceSubAgentLoaderTests
     {
         var parsed = new ParsedSubAgent("echo", null, null, Tools: ["Read", "Glob"], SystemPrompt: "Body.");
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.EnabledTools.Should().Equal("Read", "Glob");
     }
@@ -102,7 +106,7 @@ public class WorkspaceSubAgentLoaderTests
     {
         var parsed = new ParsedSubAgent("echo", null, null, null, "Body.");
 
-        var template = WorkspaceSubAgentLoader.MapToTemplate(parsed, AgentFactory);
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
 
         template.MaxTurnsPerRun.Should().Be(WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun);
     }
@@ -115,7 +119,8 @@ public class WorkspaceSubAgentLoaderTests
         var contained = WorkspaceSubAgentLoader.TryResolveContainedPath(
             basePath,
             relativeOrAbsolute: Path.Combine("..", "outside.md"),
-            out var resolved);
+            out var resolved
+        );
 
         contained.Should().BeFalse();
         resolved.Should().BeEmpty();
@@ -133,7 +138,8 @@ public class WorkspaceSubAgentLoaderTests
         var contained = WorkspaceSubAgentLoader.TryResolveContainedPath(
             basePath,
             relativeOrAbsolute: Path.Combine(sibling, "agent.md"),
-            out _);
+            out _
+        );
 
         contained.Should().BeFalse();
     }
@@ -146,7 +152,8 @@ public class WorkspaceSubAgentLoaderTests
         var contained = WorkspaceSubAgentLoader.TryResolveContainedPath(
             basePath,
             relativeOrAbsolute: Path.Combine(".claude", "agents", "echo.md"),
-            out var resolved);
+            out var resolved
+        );
 
         contained.Should().BeTrue();
         resolved.Should().StartWith(basePath);
@@ -162,7 +169,8 @@ public class WorkspaceSubAgentLoaderTests
         var contained = WorkspaceSubAgentLoader.TryResolveContainedPath(
             basePath,
             relativeOrAbsolute: absolute,
-            out var resolved);
+            out var resolved
+        );
 
         contained.Should().BeTrue();
         resolved.Should().EndWith("echo.md");

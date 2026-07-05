@@ -19,7 +19,7 @@ namespace CodeReviewDaemon.Sample.Workspace.ReviewBot;
 internal static class ReviewBotInitCommand
 {
     private const string DefaultBranch = "main";
-    private const string DefaultWorkdir = "/work/reviewbot";
+    private const string DefaultWorkdir = "/workspace/reviewbot";
 
     /// <summary>Runs <c>reviewbot init</c>. Expects <paramref name="args"/> to start with <c>reviewbot init</c>.</summary>
     public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken = default)

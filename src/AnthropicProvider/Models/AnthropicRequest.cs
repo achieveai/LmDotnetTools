@@ -112,6 +112,14 @@ public record AnthropicRequest
     public string? Container { get; init; }
 
     /// <summary>
+    ///     Output configuration (e.g. adaptive-thinking <c>effort</c> for GitHub Copilot Claude models).
+    ///     Omitted from the request when null, so it is inert for callers that do not set it.
+    /// </summary>
+    [JsonPropertyName("output_config")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnthropicOutputConfig? OutputConfig { get; init; }
+
+    /// <summary>
     ///     Creates an AnthropicRequest from a list of LmCore messages and options.
     /// </summary>
     /// <param name="messages">The messages to include in the request.</param>
@@ -245,6 +253,17 @@ public record AnthropicRequest
             thinking = thinkingValue;
         }
 
+        // Extract the OutputConfig (Copilot adaptive-thinking effort) from ExtraProperties if present.
+        AnthropicOutputConfig? outputConfig = null;
+        if (
+            options?.ExtraProperties != null
+            && options.ExtraProperties.TryGetValue("OutputConfig", out var outputConfigObj)
+            && outputConfigObj is AnthropicOutputConfig outputConfigValue
+        )
+        {
+            outputConfig = outputConfigValue;
+        }
+
         // Combine function tools and built-in tools
         var tools = MapFunctionsAndBuiltInTools(options?.Functions, options?.BuiltInTools);
 
@@ -268,6 +287,8 @@ public record AnthropicRequest
             Thinking = thinking,
             // Add container for code execution
             Container = options?.ContainerId,
+            // Add output_config (Copilot adaptive-thinking effort) if present
+            OutputConfig = outputConfig,
         };
 
         // Apply prompt caching if enabled

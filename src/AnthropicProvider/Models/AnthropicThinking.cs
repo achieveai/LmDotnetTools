@@ -44,3 +44,18 @@ public record AnthropicThinking
     [JsonPropertyName("budget_tokens")]
     public int BudgetTokens { get; init; } = 1024;
 }
+
+/// <summary>
+///     Output configuration for a request. Currently carries <c>effort</c>, the control the GitHub
+///     Copilot backend's <em>adaptive-thinking</em> Claude models expose (via <c>output_config.effort</c>)
+///     to bound how much the model reasons before answering. Those models reject the classic
+///     <c>thinking.type=enabled</c>/<c>budget_tokens</c> knobs; a low effort keeps reasoning short so the
+///     answer is not starved of the token budget. Omitted from the request when not set, so it is inert
+///     for api.anthropic.com and any caller that does not supply it.
+/// </summary>
+public record AnthropicOutputConfig
+{
+    /// <summary>Reasoning effort — e.g. <c>"low"</c>, <c>"medium"</c>, <c>"high"</c>.</summary>
+    [JsonPropertyName("effort")]
+    public string? Effort { get; init; }
+}

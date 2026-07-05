@@ -6,9 +6,12 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// logical artifact collapse to one row — the first half of exactly-once posting. The leading
 /// <c>v1:</c> lets the key shape evolve without colliding with keys minted by an older daemon.
 /// <para>
-/// Shape: <c>v1:{provider}:{org}:{project?}:{repo_stable_id}:{pr_id}:{operation}:{artifact_kind}:{artifact_subject}:{trigger_watermark}:{variant_id}</c>.
+/// Shape: <c>v1:{provider}:{org}:{project?}:{repo_stable_id}:{pr_id}:{operation}:{artifact_kind}:{artifact_subject}:{head_sha}:{variant_id}</c>.
 /// A null project emits an <i>empty</i> segment so the colon count stays fixed regardless of provider
-/// (GitHub has no project layer; ADO does) — the segment positions never shift.
+/// (GitHub has no project layer; ADO does) — the segment positions never shift. The <c>head_sha</c> scopes
+/// the key to the reviewed commit: it changes only on a new push (so a genuinely new commit gets a fresh
+/// key + review), and — unlike the PR's <c>updated_at</c> — is never mutated by the act of posting the
+/// review comment, so a re-poll of the same commit resolves to the same key and never double-posts.
 /// </para>
 /// </summary>
 internal static class IdempotencyKey
@@ -36,7 +39,7 @@ internal static class IdempotencyKey
             Require(components.Operation, nameof(components.Operation)),
             Require(components.ArtifactKind, nameof(components.ArtifactKind)),
             Require(components.ArtifactSubject, nameof(components.ArtifactSubject)),
-            Require(components.TriggerWatermark, nameof(components.TriggerWatermark)),
+            Require(components.HeadSha, nameof(components.HeadSha)),
             Require(components.VariantId, nameof(components.VariantId)),
         };
 
@@ -58,8 +61,9 @@ internal static class IdempotencyKey
 /// <summary>
 /// The inputs that uniquely identify one external side effect. <see cref="ArtifactSubject"/> scopes the
 /// key below the artifact <em>kind</em> (e.g. a specific finding id or file path) so two distinct
-/// comments of the same kind on the same run get distinct keys; <see cref="VariantId"/> keeps the A/B
-/// arms' side effects independent.
+/// comments of the same kind on the same run get distinct keys; <see cref="HeadSha"/> scopes it to the
+/// reviewed commit (stable across re-polls and unaffected by posting, unlike the PR's <c>updated_at</c>);
+/// <see cref="VariantId"/> keeps the A/B arms' side effects independent.
 /// </summary>
 internal sealed record IdempotencyKeyComponents(
     string Provider,
@@ -70,5 +74,5 @@ internal sealed record IdempotencyKeyComponents(
     string Operation,
     string ArtifactKind,
     string ArtifactSubject,
-    string TriggerWatermark,
+    string HeadSha,
     string VariantId);

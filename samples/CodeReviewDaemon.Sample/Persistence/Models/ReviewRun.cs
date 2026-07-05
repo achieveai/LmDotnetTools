@@ -36,4 +36,22 @@ internal sealed record ReviewRun
     public required ReviewStage Stage { get; init; }
     public required WorkflowStatus WorkflowStatus { get; init; }
     public required PrLifecycleState PrLifecycleState { get; init; }
+
+    // ── Confidentiality trust signal (Task 17, design §6 Risk B) ────────────────────────────────
+    /// <summary>
+    /// True when the PR head comes from a fork (or this is unknown). Defaults <c>true</c> (fail closed):
+    /// a run nothing has positively marked as same-org must be treated as untrusted, the same as a
+    /// confirmed fork PR, so <c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c> never co-locates
+    /// the sibling private submodule beside it. Intended to be populated from the PR provider's fork
+    /// indicator (GitHub <c>head.repo.fork</c>) once the poller plumbs it through — not yet wired (gap).
+    /// </summary>
+    public bool IsForkPr { get; init; } = true;
+
+    /// <summary>
+    /// True when the target repo is public (or this is unknown). Defaults <c>true</c> (fail closed) for
+    /// the same reason as <see cref="IsForkPr"/>. Intended to be populated from the PR provider's
+    /// visibility field (GitHub <c>base.repo.private</c>, inverted) once the poller plumbs it through —
+    /// not yet wired (gap).
+    /// </summary>
+    public bool IsTargetRepoPublic { get; init; } = true;
 }

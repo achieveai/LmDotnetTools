@@ -1,7 +1,7 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
-namespace LmStreaming.Sample.Services.Discovery;
+namespace AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
 /// <summary>
 /// Result of parsing a sub-agent markdown file (the Claude-Code convention of a YAML
