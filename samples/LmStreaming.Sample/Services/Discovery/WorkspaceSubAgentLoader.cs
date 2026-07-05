@@ -92,11 +92,12 @@ public sealed class WorkspaceSubAgentLoader
                 continue;
             }
 
-            if (!result.TryAdd(loaded.Name, loaded))
+            var key = string.IsNullOrWhiteSpace(item.QualifiedName) ? loaded.Name : item.QualifiedName;
+            if (!result.TryAdd(key, loaded))
             {
                 _logger.LogWarning(
-                    "Discovered sub-agent {Name} collides with an earlier discovery; keeping the first occurrence",
-                    loaded.Name);
+                    "Discovered sub-agent {Key} collides with an earlier discovery; keeping the first occurrence",
+                    key);
             }
         }
 
@@ -131,6 +132,26 @@ public sealed class WorkspaceSubAgentLoader
         if (!string.Equals(item.Kind, SubAgentKind, StringComparison.Ordinal))
         {
             return null;
+        }
+
+        // Content-first: marketplace sub-agents arrive with their full markdown body inline (no workspace
+        // file exists at a /marketplaces/... path). Parse it directly and skip the file read. The file-read
+        // path below remains the fallback for real workspace .claude/agents/*.md whose path is relative.
+        if (!string.IsNullOrWhiteSpace(item.Content))
+        {
+            var stemFromName = string.IsNullOrWhiteSpace(item.QualifiedName)
+                ? item.Name
+                : item.QualifiedName;
+            var parsedInline = SubAgentMarkdownParser.Parse(item.Content, stemFromName);
+            if (parsedInline is null)
+            {
+                _logger.LogWarning(
+                    "Skipping discovered sub-agent {Name}: inline content had no valid frontmatter or empty body",
+                    item.Name);
+                return null;
+            }
+
+            return SubAgentTemplateMapper.Map(parsedInline, agentFactory, DefaultMaxTurnsPerRun);
         }
 
         if (string.IsNullOrWhiteSpace(session.HostPath))
