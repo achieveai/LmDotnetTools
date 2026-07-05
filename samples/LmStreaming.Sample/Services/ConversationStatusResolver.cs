@@ -102,10 +102,14 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
 
     /// <summary>
     /// Derives the run's final response from persisted messages tagged with its run id — the single
-    /// source of truth (see plan decisions.md, "FinalResponse derivation"). Tool-only-run convention:
-    /// prefers the last assistant <see cref="TextMessage"/> produced by the run; if the run produced
-    /// no text (a pure tool-call run), falls back to the last message of any type so a Completed/Errored
-    /// run never resolves to a null response as long as it produced at least one message.
+    /// source of truth (see plan decisions.md, "FinalResponse derivation"). Prefers the last
+    /// assistant, non-thinking <see cref="TextMessage"/> the run produced: a run's own user-input
+    /// echo and any provider thinking/reasoning trace are ALSO persisted as <see cref="TextMessage"/>
+    /// under the same run id, so a bare <c>MessageType</c> match would wrongly surface the prompt or
+    /// an internal reasoning trace as the answer. If the run produced no genuine assistant answer (a
+    /// pure tool-call run), falls back to the last non-user message so a Completed/Errored run still
+    /// surfaces its tool activity — but never falls back to the user's own input (e.g. an errored run
+    /// that never got past persisting the prompt resolves to a null response, not an echo of the ask).
     /// </summary>
     private async Task<object?> LoadFinalResponseAsync(string threadId, string runId, CancellationToken ct)
     {
@@ -116,8 +120,43 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
             return null;
         }
 
-        var textMessage = runMessages.LastOrDefault(m => m.MessageType == nameof(TextMessage));
-        return DeserializeMessage(textMessage ?? runMessages[^1]);
+        for (var i = runMessages.Count - 1; i >= 0; i--)
+        {
+            var candidate = runMessages[i];
+            if (candidate.MessageType != nameof(TextMessage) || candidate.Role != nameof(Role.Assistant))
+            {
+                continue;
+            }
+
+            if (TryDeserializeAssistantAnswer(candidate) is { } answer)
+            {
+                return answer;
+            }
+        }
+
+        var fallback = runMessages.LastOrDefault(m => m.Role != nameof(Role.User));
+        return fallback == null ? null : DeserializeMessage(fallback);
+    }
+
+    /// <summary>
+    /// Deserializes a candidate assistant <see cref="TextMessage"/> and returns its serialized form
+    /// only when it's a genuine answer, not a thinking/reasoning trace. <see cref="TextMessage.IsThinking"/>
+    /// isn't flattened onto <see cref="PersistedMessage"/> (unlike <see cref="PersistedMessage.Role"/>),
+    /// so ruling it out requires deserializing the candidate.
+    /// </summary>
+    private static object? TryDeserializeAssistantAnswer(PersistedMessage message)
+    {
+        try
+        {
+            var msg = JsonSerializer.Deserialize<IMessage>(message.MessageJson, ResponseMessageOptions);
+            return msg is not TextMessage { IsThinking: false }
+                ? null
+                : JsonSerializer.SerializeToElement(msg, msg.GetType(), ResponseMessageOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static object? DeserializeMessage(PersistedMessage message)

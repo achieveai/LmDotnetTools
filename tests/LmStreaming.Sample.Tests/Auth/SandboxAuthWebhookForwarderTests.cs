@@ -91,6 +91,34 @@ public sealed class SandboxAuthWebhookForwarderTests
     }
 
     [Fact]
+    public async Task Forwarded_payload_uses_the_documented_lower_camel_case_wire_names()
+    {
+        await using var registry = CreateRegistry();
+        var store = new InMemoryConversationStore();
+        var handler = new CapturingHandler();
+        var forwarder = CreateForwarder(registry, store, handler);
+
+        await RegisterEligibleThreadAsync(store, registry, SessionA, "thread-a", "https://a.test/hook", "github", 100, "run-a");
+
+        await forwarder.NotifyAuthRequiredAsync(SessionA, "github", "http://host/auth/github", "expired", CancellationToken.None);
+
+        var root = handler.Posts.Should().ContainSingle().Which.Body.RootElement;
+        root.GetProperty("type").GetString().Should().Be("auth_required");
+        root.GetProperty("sessionId").GetString().Should().Be(SessionA);
+        root.GetProperty("threadId").GetString().Should().Be("thread-a");
+        root.GetProperty("runId").GetString().Should().Be("run-a");
+        root.GetProperty("providerId").GetString().Should().Be("github");
+        root.GetProperty("signinUrl").GetString().Should().Be("http://host/auth/github");
+        root.GetProperty("reason").GetString().Should().Be("expired");
+
+        foreach (var pascalName in new[] { "Type", "SessionId", "ThreadId", "RunId", "ProviderId", "SigninUrl", "Reason" })
+        {
+            root.TryGetProperty(pascalName, out _).Should().BeFalse(
+                $"the wire contract is documented in camelCase; '{pascalName}' must not also appear");
+        }
+    }
+
+    [Fact]
     public async Task Two_concurrent_sessions_resolve_and_forward_independently()
     {
         await using var registry = CreateRegistry();
@@ -109,9 +137,9 @@ public sealed class SandboxAuthWebhookForwarderTests
 
         handler.Posts.Should().HaveCount(2, "each session's auth_required must forward exactly once, to its own thread's webhook");
         handler.Posts.Should().ContainSingle(p => p.Url == "https://a.test/hook")
-            .Which.Body.RootElement.GetProperty("ThreadId").GetString().Should().Be("thread-a");
+            .Which.Body.RootElement.GetProperty("threadId").GetString().Should().Be("thread-a");
         handler.Posts.Should().ContainSingle(p => p.Url == "https://b.test/hook")
-            .Which.Body.RootElement.GetProperty("ThreadId").GetString().Should().Be("thread-b");
+            .Which.Body.RootElement.GetProperty("threadId").GetString().Should().Be("thread-b");
     }
 
     [Fact]

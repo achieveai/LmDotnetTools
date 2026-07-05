@@ -102,11 +102,13 @@ public sealed class AuthWebhookControllerForwarderTests
         IAuthResolutionPolicy policy,
         IAuthWebhookForwarder forwarder)
     {
+        var authOptions = new AuthOptions { Webhook = new WebhookOptions { GatewaySharedSecret = Secret } };
         var controller = new AuthWebhookController(
             [provider],
-            new AuthSharedSecret(new AuthOptions { Webhook = new WebhookOptions { GatewaySharedSecret = Secret } }),
+            new AuthSharedSecret(authOptions),
             policy,
             forwarder,
+            authOptions,
             NullLogger<AuthWebhookController>.Instance);
 
         var httpContext = new DefaultHttpContext();
@@ -160,6 +162,21 @@ public sealed class AuthWebhookControllerForwarderTests
         forwarder.CompletedCalls.Should().BeEmpty();
         forwarder.DeniedCalls.Should().ContainSingle()
             .Which.Target.Should().Be(forwarder.TargetToReturn, "the terminal call must reuse the target captured at auth_required, not re-resolve it");
+    }
+
+    [Fact]
+    public async Task Forwarded_signin_url_is_absolute_not_the_same_origin_relative_path()
+    {
+        var provider = new FakeTokenProvider("github"); // no token: falls through to the policy
+        var forwarder = new RecordingForwarder();
+        var controller = CreateController(provider, new StubResolutionPolicy(null), forwarder);
+
+        await controller.Evaluate("github", NewRequest("session-1"), CancellationToken.None);
+
+        forwarder.RequiredCalls.Should().ContainSingle()
+            .Which.SigninUrl.Should().Be(
+                "http://127.0.0.1:5000/auth/github",
+                "an external webhook receiver cannot resolve a same-origin relative path");
     }
 
     [Fact]

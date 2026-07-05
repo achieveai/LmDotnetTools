@@ -24,6 +24,7 @@ public sealed class AuthWebhookController(
     AuthSharedSecret sharedSecret,
     IAuthResolutionPolicy authPolicy,
     IAuthWebhookForwarder authWebhookForwarder,
+    AuthOptions authOptions,
     ILogger<AuthWebhookController> logger) : ControllerBase
 {
     /// <summary>
@@ -188,7 +189,7 @@ public sealed class AuthWebhookController(
                 return await authWebhookForwarder.NotifyAuthRequiredAsync(
                     body.SessionId,
                     providerId,
-                    AuthSigninUrls.BuildSigninUrl(providerId),
+                    AuthSigninUrls.BuildAbsoluteSigninUrl(authOptions.Webhook.CallbackBaseUrl, providerId),
                     AuthSigninUrls.BuildReason(providerId),
                     ct);
             }

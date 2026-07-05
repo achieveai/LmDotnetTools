@@ -104,6 +104,46 @@ public class ConversationStatusResolverTests
     }
 
     [Fact]
+    public async Task ResolveByRunIdAsync_Errored_WithOnlyUserInput_ReturnsNullResponse_NotTheUsersOwnPrompt()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Errored, "input-1"));
+        var userPrompt = new TextMessage { Text = "please do the thing", Role = Role.User };
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [MessagePersistenceConverter.ToPersistedMessage(userPrompt, ThreadId, "run-1")]);
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        result!.Status.Should().Be(ConversationRunStatus.Errored);
+        result.Response.Should().BeNull("a run that never produced an assistant answer must not echo the user's own prompt back as the response");
+    }
+
+    [Fact]
+    public async Task ResolveByRunIdAsync_Completed_SkipsThinkingTrace_ReturnsTheActualAnswer()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Completed, "input-1"));
+        var thinking = new TextMessage { Text = "reasoning about the request...", Role = Role.Assistant, IsThinking = true };
+        var answer = new TextMessage { Text = "final answer", Role = Role.Assistant, IsThinking = false };
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(thinking, ThreadId, "run-1"),
+                MessagePersistenceConverter.ToPersistedMessage(answer, ThreadId, "run-1"),
+            ]);
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        result!.Status.Should().Be(ConversationRunStatus.Completed);
+        var json = JsonSerializer.Serialize(result.Response);
+        json.Should().Contain("final answer");
+        json.Should().NotContain("reasoning about the request");
+    }
+
+    [Fact]
     public async Task ResolveByInputIdAsync_ResolvesViaLedgerEntry_WhenInputIdFoldedIntoRun()
     {
         var store = new InMemoryConversationStore();

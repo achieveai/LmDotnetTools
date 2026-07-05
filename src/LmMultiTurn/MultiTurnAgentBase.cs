@@ -1298,6 +1298,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             await RunLedgerStore.UpsertRunLedgerAsync(
                 new RunLedgerEntry(ThreadId, runId, RunStatus.InProgress, inputIds, createdAt, DateTimeOffset.UtcNow),
                 ct);
+
+            // Now folded into the run's own InputIds above — the pre-run acceptance record has
+            // served its purpose (see TrySendAsync) and would otherwise accumulate forever.
+            foreach (var inputId in inputIds)
+            {
+                await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, inputId, ct);
+            }
         }
 
         Logger.LogInformation(
@@ -1347,10 +1354,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         await RunLedgerStore.UpsertRunLedgerAsync(
             existing with { InputIds = mergedInputIds, UpdatedAt = DateTimeOffset.UtcNow },
             ct);
+
+        // Same cleanup as StartRunAsync: these ids are now covered by the run's InputIds.
+        foreach (var injectedInputId in injectedInputIds)
+        {
+            await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, injectedInputId, ct);
+        }
     }
 
     /// <summary>
-    /// Complete a run and publish the completion message.
+    /// Complete a run: persists the terminal run-ledger status, then publishes the completion
+    /// message. The ledger write happens FIRST and is allowed to throw and propagate — the REST
+    /// status API treats the ledger as the source of truth, so a subscriber must never observe a
+    /// <see cref="RunCompletedMessage"/> for a run whose terminal status failed to persist (which
+    /// would otherwise let <c>GET /status</c> keep reporting <see cref="RunStatus.InProgress"/>
+    /// after completion was broadcast). Propagating also means a persistence failure here is
+    /// caught by the caller's per-run try/catch as a run failure, so at most one terminal outcome
+    /// is ever published for a given run — not a Completed publish followed by a later Errored one.
     /// </summary>
     /// <param name="runId">The run ID that completed</param>
     /// <param name="generationId">The generation ID</param>
@@ -1370,6 +1390,24 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         string? errorMessage = null,
         CancellationToken ct = default)
     {
+        if (RunLedgerStore != null)
+        {
+            var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
+            if (existing != null)
+            {
+                var status = isError ? RunStatus.Errored : RunStatus.Completed;
+                await RunLedgerStore.UpsertRunLedgerAsync(
+                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
+                    ct);
+            }
+            else
+            {
+                Logger.LogWarning(
+                    "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
+                    runId);
+            }
+        }
+
         await PublishToAllAsync(new RunCompletedMessage
         {
             CompletedRunId = runId,
@@ -1387,24 +1425,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         {
             _latestRunId = runId;
             _currentRunId = null;
-        }
-
-        if (RunLedgerStore != null)
-        {
-            var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
-            if (existing != null)
-            {
-                var status = isError ? RunStatus.Errored : RunStatus.Completed;
-                await RunLedgerStore.UpsertRunLedgerAsync(
-                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
-                    ct);
-            }
-            else
-            {
-                Logger.LogWarning(
-                    "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
-                    runId);
-            }
         }
 
         if (isError)

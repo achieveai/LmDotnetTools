@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Xunit;
@@ -113,6 +114,103 @@ public class TrySendAsyncDurabilityTests
         store.CallLog.Should().NotContain("RemoveAccepted:happy-1");
     }
 
+    [Fact]
+    public async Task TrySendAsync_AfterRunStarts_RemovesTheAcceptedInputRecord_NowFoldedIntoTheLedger()
+    {
+        // Arrange: accept an input but don't start the loop yet, so it's durably accepted and
+        // nothing else.
+        var store = new FaultInjectingLedgerStore();
+        var threadId = "thread-fold-cleanup";
+        await using var agent = new LedgerTestAgent(threadId, store, persistRunLedger: true);
+
+        var receipt = await agent.TrySendAsync(UserMessages("hello"), inputId: "fold-1");
+        receipt.Should().NotBeNull();
+
+        var acceptedBeforeRun = await store.ListAcceptedInputIdsAsync(threadId);
+        acceptedBeforeRun.Should().Contain("fold-1", "accepted before any run has drained it");
+
+        // Act: start the loop so StartRunAsync folds "fold-1" into the new run's InputIds.
+        using var cts = new CancellationTokenSource();
+        _ = agent.RunAsync(cts.Token);
+        await Task.Delay(150);
+
+        // Assert: the pre-run acceptance record is gone now that the run ledger itself covers the
+        // input id — it must not be retained forever once folded (see StartRunAsync).
+        var acceptedAfterRun = await store.ListAcceptedInputIdsAsync(threadId);
+        acceptedAfterRun.Should().NotContain("fold-1",
+            "once StartRunAsync folds the input id into the run's ledger InputIds, the pre-run acceptance record must be cleaned up rather than retained forever");
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task CompleteRunAsync_WhenTerminalLedgerUpsertFails_NeverPublishesRunCompleted()
+    {
+        // Arrange: only the terminal (Completed/Errored) ledger write fails — the earlier
+        // Queued/InProgress writes in StartRunAsync succeed normally.
+        var store = new FaultInjectingLedgerStore
+        {
+            OnUpsertRunLedger = entry =>
+            {
+                if (entry.Status is RunStatus.Completed or RunStatus.Errored)
+                {
+                    throw new InvalidOperationException("simulated terminal-ledger-write failure");
+                }
+
+                return Task.CompletedTask;
+            },
+        };
+        var threadId = "thread-terminal-fail";
+        var agent = new LedgerTestAgent(threadId, store, persistRunLedger: true);
+
+        var received = new List<IMessage>();
+        using var subscribeCts = new CancellationTokenSource();
+        var subscribeTask = Task.Run(async () =>
+        {
+            await foreach (var message in agent.SubscribeAsync(subscribeCts.Token))
+            {
+                received.Add(message);
+            }
+        });
+
+        try
+        {
+            var receipt = await agent.TrySendAsync(UserMessages("hello"), inputId: "terminal-1");
+            receipt.Should().NotBeNull();
+
+            // Act: the loop drains the input, starts the run, then CompleteRunAsync's terminal
+            // ledger write throws before it ever reaches PublishToAllAsync.
+            var runTask = agent.RunAsync(CancellationToken.None);
+            await Task.Delay(200);
+
+            // Assert: the failed run loop must not have published a RunCompletedMessage — the REST
+            // status API's ledger-as-source-of-truth invariant would otherwise be violated (a
+            // subscriber sees "completed" while GET /status still reports InProgress forever).
+            received.OfType<RunCompletedMessage>().Should().BeEmpty(
+                "the terminal ledger write failed, so CompleteRunAsync must never reach the publish call");
+
+            // Assert: the failure actually propagated out of the run loop rather than being
+            // swallowed.
+            var awaitRun = async () => await runTask;
+            await awaitRun.Should().ThrowAsync<InvalidOperationException>()
+                .WithMessage("*simulated terminal-ledger-write failure*");
+        }
+        finally
+        {
+            await subscribeCts.CancelAsync();
+
+            // The run loop is already faulted by design here — DisposeAsync's own StopAsync would
+            // re-observe (and rethrow) that same fault, which isn't what this test is checking.
+            try
+            {
+                await agent.DisposeAsync();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+    }
+
     /// <summary>
     /// Test-double agent whose run loop counts how many inputs it drains, so a test can assert
     /// (behaviorally) that nothing reached the input channel. Threads <c>persistRunLedger</c> and
@@ -170,6 +268,9 @@ public class TrySendAsyncDurabilityTests
         /// <summary>Runs first inside <see cref="RecordAcceptedInputAsync"/>; may throw to simulate a store failure.</summary>
         public Func<string, Task>? OnRecordAcceptedInput { get; set; }
 
+        /// <summary>Runs first inside <see cref="UpsertRunLedgerAsync"/>; may throw to simulate a store failure for a specific entry (e.g. only the terminal Completed/Errored write, leaving the earlier Queued/InProgress writes untouched).</summary>
+        public Func<RunLedgerEntry, Task>? OnUpsertRunLedger { get; set; }
+
         /// <summary>Records the order of accepted-input record/remove calls (e.g. "RecordAccepted:id", "RemoveAccepted:id").</summary>
         public List<string> CallLog { get; } = [];
 
@@ -202,8 +303,15 @@ public class TrySendAsyncDurabilityTests
 
         // === IRunLedgerStore: run ledger (plain forwarding) ===
 
-        public Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default) =>
-            _inner.UpsertRunLedgerAsync(entry, ct);
+        public async Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
+        {
+            if (OnUpsertRunLedger != null)
+            {
+                await OnUpsertRunLedger(entry);
+            }
+
+            await _inner.UpsertRunLedgerAsync(entry, ct);
+        }
 
         public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default) =>
             _inner.LoadRunLedgerAsync(runId, ct);

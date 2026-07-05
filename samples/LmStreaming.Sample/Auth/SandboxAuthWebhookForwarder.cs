@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -242,14 +243,32 @@ public sealed class SandboxAuthWebhookForwarder(
     private static string SafeHost(string webhookUrl) =>
         Uri.TryCreate(webhookUrl, UriKind.Absolute, out var uri) ? uri.Host : "(unparseable)";
 
+    /// <summary>
+    /// The outbound webhook wire contract, documented (issue #138) in lower-camel-case. Pinned
+    /// explicitly rather than relying on <see cref="JsonOptions"/>'s naming policy so the wire
+    /// shape stays fixed regardless of the app's serializer defaults.
+    /// </summary>
     private sealed record AuthWebhookForwardPayload
     {
+        [JsonPropertyName("type")]
         public required string Type { get; init; }
+
+        [JsonPropertyName("sessionId")]
         public required string SessionId { get; init; }
+
+        [JsonPropertyName("threadId")]
         public required string ThreadId { get; init; }
+
+        [JsonPropertyName("runId")]
         public string? RunId { get; init; }
+
+        [JsonPropertyName("providerId")]
         public required string ProviderId { get; init; }
+
+        [JsonPropertyName("signinUrl")]
         public string? SigninUrl { get; init; }
+
+        [JsonPropertyName("reason")]
         public string? Reason { get; init; }
     }
 }
