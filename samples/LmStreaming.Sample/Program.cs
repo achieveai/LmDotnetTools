@@ -931,7 +931,8 @@ try
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
                         subAgentTemplateSource: sharedSubAgentSource,
-                        loggerFactory: loggerFactory
+                        loggerFactory: loggerFactory,
+                        persistRunLedger: true
                     );
 
                     if (workflowRuntime is not null)
@@ -1559,7 +1560,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CodexAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 
@@ -2113,7 +2115,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 
@@ -2215,7 +2218,8 @@ public partial class Program
             },
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
-            loggerFactory: loggerFactory
+            loggerFactory: loggerFactory,
+            persistRunLedger: true
         );
     }
 
