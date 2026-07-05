@@ -517,6 +517,34 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
+    /// Destroys the session cached for <paramref name="workspaceId"/> (per-run cleanup): evicts the
+    /// creation entry + reverse maps, then issues the gateway DELETE. Idempotent — a no-op when no
+    /// session is cached for the id. Best-effort: gateway failures are logged inside
+    /// <see cref="DestroySessionAsync"/> and swallowed so run teardown never throws.
+    /// </summary>
+    public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+
+        if (!_sessions.TryRemove(workspaceId, out var lazy)
+            || !lazy.IsValueCreated
+            || !lazy.Value.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        var session = lazy.Value.Result;
+        _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+            new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+        _ = _subAgentBindings.TryRemove(session.SessionId, out _);
+        _ = _sessionThreads.TryRemove(session.SessionId, out _);
+        _ = _discoverySeen.TryRemove(session.SessionId, out _);
+
+        await DestroySessionAsync(session).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Best-effort destroys every successfully-created session on shutdown. Errors are logged and
     /// swallowed so disposal never throws.
     /// </summary>
