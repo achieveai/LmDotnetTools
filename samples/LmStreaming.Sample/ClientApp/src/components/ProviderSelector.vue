@@ -128,7 +128,7 @@ watch(
       <span class="dropdown-arrow">{{ dropdownOpen ? '▲' : '▼' }}</span>
     </button>
 
-    <div v-if="dropdownOpen" class="dropdown-menu">
+    <div v-if="dropdownOpen" class="dropdown-menu" data-testid="provider-selector-menu">
       <template v-for="group in groupedProviders" :key="group.label ?? '__ungrouped__'">
         <div
           v-if="group.label"

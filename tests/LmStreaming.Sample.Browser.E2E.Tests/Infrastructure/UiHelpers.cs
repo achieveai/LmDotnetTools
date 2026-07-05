@@ -142,6 +142,12 @@ public static class UiHelpers
         return page.GetByTestId("provider-selector-button");
     }
 
+    /// <summary>The opened provider-selector dropdown menu (the scrollable, capped-height container).</summary>
+    public static ILocator ProviderSelectorMenu(this IPage page)
+    {
+        return page.GetByTestId("provider-selector-menu");
+    }
+
     /// <summary>Provider option menu item. Pass the provider id (e.g., <c>test</c>, <c>test-anthropic</c>).</summary>
     public static ILocator ProviderOption(this IPage page, string providerId)
     {

@@ -65,7 +65,7 @@ public sealed class ProviderDropdownScrollTests
 
         // Open the dropdown and wait for the menu to actually render before measuring it.
         await page.ProviderSelectorButton().ClickAsync();
-        var menu = page.Locator(".dropdown-menu");
+        var menu = page.ProviderSelectorMenu();
         await menu.WaitForAsync();
 
         // Setup assertion: the injected Copilot options are present and enabled. This fails loudly if the
