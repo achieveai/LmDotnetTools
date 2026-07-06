@@ -157,11 +157,19 @@ internal sealed class DaemonRestClient
         {
             return await _httpClient.SendAsync(request, ct);
         }
-        catch (HttpRequestException ex) when (ex.InnerException is SocketException)
+        catch (HttpRequestException ex)
+            when (ex.InnerException is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
         {
+            // Only connection-REFUSED means "the server isn't listening" — the actionable
+            // "start the server" guidance. Other socket errors (DNS/host-unreachable/reset) are
+            // genuine HTTP-layer failures and are left to propagate as HttpRequestException.
             throw new DaemonConnectionException(DaemonMessages.ConnectionRefused(_baseUrl), ex);
         }
-        catch (SocketException ex)
+        // Retained for the fake-handler unit test path (which injects a bare SocketException) and as
+        // defensiveness: a real HttpClient wraps SocketException in HttpRequestException, so this
+        // bare catch is not normally reached in production. Narrowed to connection-refused so a
+        // non-refused socket error is not mislabeled "start the server".
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused)
         {
             throw new DaemonConnectionException(DaemonMessages.ConnectionRefused(_baseUrl), ex);
         }

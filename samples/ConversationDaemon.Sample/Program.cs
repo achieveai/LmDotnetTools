@@ -85,14 +85,39 @@ try
 }
 catch (DaemonConnectionException ex)
 {
+    // Server not listening — DaemonConnectionException derives from Exception (not
+    // HttpRequestException), so it must be caught before the broader HTTP/Exception clauses below.
     Console.Error.WriteLine();
     Console.Error.WriteLine(ex.Message);
+    return 1;
+}
+catch (TimeoutException ex)
+{
+    // A per-request or park-and-wake timeout — surface the concise reason, not a stack trace.
+    Console.Error.WriteLine();
+    Console.Error.WriteLine(ex.Message);
+    return 2;
+}
+catch (HttpRequestException ex)
+{
+    // A genuine HTTP-layer failure (non-refused socket error, DNS failure, 5xx surfaced by
+    // EnsureSuccessStatusCode, …). Keep the polished CLI UX with a one-line message.
+    Console.Error.WriteLine();
+    Console.Error.WriteLine($"HTTP request to {baseUrl} failed: {ex.Message}");
     return 1;
 }
 catch (OperationCanceledException)
 {
     Console.Error.WriteLine("Cancelled.");
     return 130;
+}
+catch (Exception ex)
+{
+    // Last-resort guard: any other unexpected failure prints a concise message instead of dumping
+    // a raw stack trace to the console.
+    Console.Error.WriteLine();
+    Console.Error.WriteLine(ex.Message);
+    return 1;
 }
 
 // Sends one scripted prompt, waits for the run to go idle, then prints the resolved status.

@@ -1,4 +1,8 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Logging;
@@ -448,6 +452,87 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task HasArmedWaitAsync_ReturnsFalse_WhenNoAgentPooled()
+    {
+        await using var pool = CreatePool();
+
+        // Nothing pooled for this threadId → no armed Wait to lose on a switch.
+        (await pool.HasArmedWaitAsync("never-created")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HasArmedWaitAsync_ReturnsFalse_ForPooledNonLoopAgent()
+    {
+        // The pooled agent is a FakeMultiTurnAgent, not a MultiTurnAgentLoop, so the concrete
+        // `is MultiTurnAgentLoop` downcast in HasArmedWaitAsync fails and the method degrades to false
+        // (a non-loop agent exposes no deferred-call inspection). This is the realistic path the
+        // controller's switch tests take, which is why their Warning is null.
+        await using var pool = CreatePool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-nonloop", mode);
+
+        (await pool.HasArmedWaitAsync("thread-nonloop")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HasArmedWaitAsync_ReturnsTrue_WhenPooledLoopHasArmedWait()
+    {
+        // TRUE path (finding 3c): a real MultiTurnAgentLoop parked on a Wait. HasArmedWaitAsync does a
+        // concrete `is MultiTurnAgentLoop` downcast, so only a real loop (not the FakeMultiTurnAgent) can
+        // exercise the positive branch. The loop's mock LLM emits a Wait tool call that the registry
+        // defers, leaving an armed Wait in the loop's deferred set. The run is driven deterministically
+        // via ExecuteRunAsync (it blocks until the run parks — no sleeps), drained by the pool's own
+        // background RunAsync pump.
+        var waitCall = new ToolCallMessage
+        {
+            FunctionName = WaitToolProvider.WaitToolName,
+            FunctionArgs = "{\"kind\":\"timer\",\"timeout\":\"10m\"}",
+            ToolCallId = "tc_wait",
+            Role = Role.Assistant,
+        };
+
+        var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() => Task.FromResult(ToAsyncEnumerable(waitCall)));
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = WaitToolProvider.WaitToolName,
+                Description = "Parks the run on a timer.",
+                Parameters = [],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    mockAgent.Object,
+                    registry,
+                    threadId,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-armed-wait", mode);
+
+        // Drive one run to park it on the Wait. ExecuteRunAsync enqueues the input and yields until the
+        // run completes (parked with a deferred Wait), which the pool's background pump processes.
+        var userInput = new UserInput([new TextMessage { Text = "wait please", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(userInput))
+        {
+            // drain
+        }
+
+        (await pool.HasArmedWaitAsync("thread-armed-wait")).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ThreadRemoved_FiresOnce_OnRemoveAgentAsync()
     {
         await using var pool = CreatePool();
@@ -848,6 +933,16 @@ public class MultiTurnAgentPoolTests
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             NullLogger<MultiTurnAgentPool>.Instance
         );
+    }
+
+    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
+        params IMessage[] messages)
+    {
+        foreach (var msg in messages)
+        {
+            yield return msg;
+            await Task.Yield();
+        }
     }
 
     private static async Task<string?> WaitForPersistedProviderAsync(

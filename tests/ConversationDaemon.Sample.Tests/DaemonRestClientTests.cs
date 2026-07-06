@@ -75,6 +75,21 @@ public sealed class DaemonRestClientTests
         thrown.Which.Should().NotBeOfType<DaemonConnectionException>();
     }
 
+    [Fact]
+    public async Task ProvisionAsync_does_not_wrap_a_non_refused_socket_error()
+    {
+        // The socket guard is narrowed to ConnectionRefused only. A different socket error
+        // (host-not-found / DNS failure) is a genuine HTTP-layer failure, NOT "server not running",
+        // so it must propagate as HttpRequestException rather than be mislabeled "start the server".
+        var client = ClientThatThrows(
+            () => new HttpRequestException("boom", new SocketException((int)SocketError.HostNotFound)));
+
+        var act = () => client.ProvisionAsync("ws", "provider", "mode", CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<HttpRequestException>();
+        thrown.Which.Should().NotBeOfType<DaemonConnectionException>();
+    }
+
     private static DaemonRestClient ClientThatThrows(Func<Exception> exceptionFactory)
     {
         var handler = new FakeHttpMessageHandler().OnAnyThrow(exceptionFactory);
