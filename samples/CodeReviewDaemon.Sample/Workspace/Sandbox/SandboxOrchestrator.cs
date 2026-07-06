@@ -71,13 +71,9 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
         var headers = new Dictionary<string, string>
         {
             ["X-Session-ID"] = sessionId,
-            ["X-Sbx-App-Id"] = credential.AppId,
         };
 
-        if (!string.IsNullOrEmpty(credential.AppKey))
-        {
-            headers["X-Sbx-App-Key"] = credential.AppKey;
-        }
+        credential.StampHeaders(headers);
 
         return headers;
     }

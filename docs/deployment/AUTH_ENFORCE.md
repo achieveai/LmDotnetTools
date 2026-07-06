@@ -17,7 +17,7 @@ These are separate trust boundaries with separate secrets. Do not reuse one for 
 |---|---|---|---|---|
 | `X-Sbx-App-Id` | Sample/daemon → SandboxGateway | Caller's app identity | `SandboxGateway:AppId` | (per-app; see below) |
 | `X-Sbx-App-Key` | Sample/daemon → SandboxGateway | Caller's app secret (base64, ≥32 bytes) | `SandboxGateway:AppKey` | (per-app; see below) |
-| `X-S2S-Auth` | S2S caller → LmStreaming.Sample REST API | Inbound shared secret gating headless endpoints | `Auth:S2SInboundSecret` | `LMSTREAMING_S2S_INBOUND_SECRET` |
+| `X-S2S-Auth` | S2S caller → LmStreaming.Sample REST API | Inbound shared secret gating headless endpoints | `Auth:S2SInboundSecret` | `LMSTREAMING_S2S_INBOUND_SECRET` (bridged to the config key at startup) |
 | `CRD_SANDBOX_APP_ID` / `CRD_SANDBOX_APP_KEY` | Code-Review Daemon's own outbound identity | The daemon's `X-Sbx-*` pair when it talks to the gateway directly | n/a (env-only) | `CRD_SANDBOX_APP_ID` (default `codereview-daemon`), `CRD_SANDBOX_APP_KEY` |
 
 `X-Sbx-App-Id` / `X-Sbx-App-Key` are read from `SandboxGateway:AppId` / `SandboxGateway:AppKey`
@@ -50,9 +50,12 @@ order to avoid an outage:
    sending headers. From this point, a request without a valid `X-Sbx-App-Id`/`X-Sbx-App-Key` pair
    is rejected by the gateway.
 4. **(Optional, independent) Turn on the inbound `X-S2S-Auth` guard** by setting
-   `Auth:S2SInboundSecret` (`LMSTREAMING_S2S_INBOUND_SECRET`) on LmStreaming.Sample once every S2S
-   caller (e.g. the daemon) is updated to send the header. This is orthogonal to `AUTH_ENFORCE` —
-   it gates LmStreaming.Sample's own REST API, not the gateway.
+   `LMSTREAMING_S2S_INBOUND_SECRET` (bridged into `Auth:S2SInboundSecret` at startup; the section key
+   also accepts `Auth__S2SInboundSecret` or an `appsettings.json` value directly) on LmStreaming.Sample
+   once every S2S caller (e.g. the daemon) is updated to send the header. This is orthogonal to
+   `AUTH_ENFORCE` — it gates LmStreaming.Sample's own credential-passthrough REST surface, not the
+   gateway, and only for requests that carry an S2S marker (see the compatibility matrix below); the
+   same-origin SPA is unaffected.
 
 Rolling back is a plain client-build revert: the gateway's session cache is in-memory and
 process-local (cleared on its own restart), so there is no persisted state to migrate either way.
@@ -70,12 +73,24 @@ In-flight interactive sessions simply recreate on the next message after a rollb
 
 ### Compatibility matrix (LmStreaming.Sample `Auth:S2SInboundSecret`)
 
-| Caller | `Auth:S2SInboundSecret` configured? | `X-S2S-Auth` header | Result |
-|---|---|---|---|
-| Any | Not configured (unset/blank) | (ignored) | Allowed — keyless dev path, one process-wide startup warning logged |
-| Any | Configured | Missing | 401 |
-| Any | Configured | Wrong value | 401 |
-| Any | Configured | Matches (constant-time compare) | Allowed |
+The inbound guard is **marker-gated**: it enforces the shared secret only on *service-to-service*
+requests — those carrying an `X-S2S-Auth` header or an `X-Sbx-App-Id` caller-credential marker (the
+header that asks the sample to forward a distinct identity to the gateway). A same-origin browser
+request from the bundled SPA carries neither marker, so it is always allowed through and runs under
+the sample's own gateway identity. This is deliberate: turning the secret on locks down the
+credential-passthrough / headless surface **without** breaking the interactive UI, which calls the
+same `/api/conversations*` routes with plain `fetch` and correctly holds no S2S secret. It is **not**
+a blanket lock on the same-origin interactive API — an operator who needs every route (including
+same-origin) authenticated should front the app with a real browser-auth mechanism (cookie/OIDC),
+not this S2S service secret.
+
+| Caller / request | `Auth:S2SInboundSecret` configured? | S2S marker present? | `X-S2S-Auth` header | Result |
+|---|---|---|---|---|
+| Any | Not configured (unset/blank) | (either) | (ignored) | Allowed — keyless dev path, one process-wide startup warning logged |
+| Same-origin SPA (browser `fetch`) | Configured | No (`X-S2S-Auth` and `X-Sbx-App-Id` both absent) | Absent | Allowed — runs under the sample's own identity |
+| S2S caller | Configured | Yes | Missing | 401 |
+| S2S caller | Configured | Yes | Wrong value | 401 |
+| S2S caller | Configured | Yes | Matches (constant-time compare) | Allowed |
 
 ## Cross-actor resume (per-conversation identity binding)
 

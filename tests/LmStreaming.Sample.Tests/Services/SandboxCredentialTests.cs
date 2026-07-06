@@ -130,4 +130,69 @@ public class SandboxCredentialTests
 
         act.Should().Throw<ArgumentNullException>();
     }
+
+    // ---------------------------------------------------------------------------------------
+    // ToString redaction (issue #153 MEDIUM): the auto-generated record-struct ToString would echo
+    // the key; the override must not.
+    // ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ToString_RedactsAppKey_ButShowsAppId()
+    {
+        var credential = new SandboxCredential(AppId, "super-secret-key-value");
+
+        var rendered = credential.ToString();
+
+        rendered.Should().Contain(AppId);
+        rendered.Should().Contain("[REDACTED]");
+        rendered.Should().NotContain("super-secret-key-value");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // StampHeaders (issue #153 MEDIUM): single home for "stamp AppId, conditionally stamp AppKey".
+    // ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public void StampHeaders_Dictionary_StampsBothHeaders_WhenKeyPresent()
+    {
+        var headers = new Dictionary<string, string>();
+
+        new SandboxCredential("app-x", "key-x").StampHeaders(headers);
+
+        headers[SandboxCredential.AppIdHeader].Should().Be("app-x");
+        headers[SandboxCredential.AppKeyHeader].Should().Be("key-x");
+    }
+
+    [Fact]
+    public void StampHeaders_Dictionary_OmitsKeyHeader_WhenKeyBlank()
+    {
+        var headers = new Dictionary<string, string>();
+
+        new SandboxCredential("app-x", "").StampHeaders(headers);
+
+        headers[SandboxCredential.AppIdHeader].Should().Be("app-x");
+        headers.ContainsKey(SandboxCredential.AppKeyHeader).Should().BeFalse("a blank key must never be sent");
+    }
+
+    [Fact]
+    public void StampHeaders_HttpRequest_StampsBothHeaders_WhenKeyPresent()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://gateway.example/mcp");
+
+        new SandboxCredential("app-x", "key-x").StampHeaders(request);
+
+        request.Headers.GetValues(SandboxCredential.AppIdHeader).Should().ContainSingle().Which.Should().Be("app-x");
+        request.Headers.GetValues(SandboxCredential.AppKeyHeader).Should().ContainSingle().Which.Should().Be("key-x");
+    }
+
+    [Fact]
+    public void StampHeaders_HttpRequest_OmitsKeyHeader_WhenKeyBlank()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://gateway.example/mcp");
+
+        new SandboxCredential("app-x", "").StampHeaders(request);
+
+        request.Headers.Contains(SandboxCredential.AppIdHeader).Should().BeTrue();
+        request.Headers.Contains(SandboxCredential.AppKeyHeader).Should().BeFalse("a blank key must never be sent");
+    }
 }

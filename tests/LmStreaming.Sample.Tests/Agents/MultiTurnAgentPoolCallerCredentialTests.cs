@@ -93,7 +93,10 @@ public class MultiTurnAgentPoolCallerCredentialTests
         );
 
         var newMode = SystemChatModes.All[0];
-        _ = await pool.RecreateAgentWithModeAsync("thread-mode-cred", newMode);
+
+        // The same caller (matching AppId) drives the switch — passing the frozen credential is what
+        // authorizes it. Both creations must have seen the SAME frozen credential.
+        _ = await pool.RecreateAgentWithModeAsync("thread-mode-cred", newMode, credential);
 
         // Two creations: the original + the recreate. Both must have seen the SAME frozen credential —
         // a mode switch is neither a create nor a cross-actor request, so it must not drop/change it.
@@ -131,7 +134,8 @@ public class MultiTurnAgentPoolCallerCredentialTests
             callerCredential: credential
         );
 
-        _ = await pool.RecreateAgentWithProviderAsync("thread-prov-cred", "openai", mode);
+        // Same caller (matching AppId) authorizes the provider switch.
+        _ = await pool.RecreateAgentWithProviderAsync("thread-prov-cred", "openai", mode, credential);
 
         seenCredentials.Should().HaveCount(2);
         seenCredentials[0].Should().Be(credential);
@@ -390,5 +394,125 @@ public class MultiTurnAgentPoolCallerCredentialTests
 
         successes.Count.Should().Be(callCount / 2, "half the calls carry the winning credential's AppId");
         failures.Count.Should().Be(callCount / 2, "the other half carry the losing credential's AppId");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Cross-actor guard on mode/provider SWITCH (issue #153 BLOCKER #3): a switch must be rejected
+    // for a caller that is not the app the conversation is bound to — same guard SendMessage enforces.
+    // ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task RecreateAgentWithModeAsync_Throws_WhenCallerAppIdDiffersFromOwner()
+    {
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-mode-conflict",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: new SandboxCredential("owner-a", "key-a")
+        );
+
+        var newMode = SystemChatModes.All[0];
+        var act = () =>
+            pool.RecreateAgentWithModeAsync("thread-mode-conflict", newMode, new SandboxCredential("intruder-b", "key-b"));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxCredentialConflictException>()).Which;
+        thrown.ThreadId.Should().Be("thread-mode-conflict");
+        thrown.ExistingAppId.Should().Be("owner-a");
+        thrown.RequestedAppId.Should().Be("intruder-b");
+        thrown.Message.Should().NotContain("key-a").And.NotContain("key-b");
+    }
+
+    [Fact]
+    public async Task RecreateAgentWithModeAsync_Throws_WhenNullCallerFollowsS2SOwner()
+    {
+        // A plain UI (no-credential) switch on an S2S-owned conversation must conflict — mirrors the
+        // Cross-Actor Resume Matrix's "Plain UI continuer on S2S-created -> 409".
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-mode-null-conflict",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: new SandboxCredential("owner-s2s", "key-s2s")
+        );
+
+        var newMode = SystemChatModes.All[0];
+        var act = () => pool.RecreateAgentWithModeAsync("thread-mode-null-conflict", newMode, callerCredential: null);
+
+        var thrown = (await act.Should().ThrowAsync<SandboxCredentialConflictException>()).Which;
+        thrown.ExistingAppId.Should().Be("owner-s2s");
+        thrown.RequestedAppId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RecreateAgentWithModeAsync_Succeeds_WhenBothNullCredential()
+    {
+        // Interactive UI-owned conversation, interactive switch: null owner + null caller must NOT
+        // conflict (the common browser path).
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent("thread-mode-ui", mode);
+
+        var newMode = SystemChatModes.All[0];
+        var recreated = await pool.RecreateAgentWithModeAsync("thread-mode-ui", newMode, callerCredential: null);
+
+        recreated.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RecreateAgentWithProviderAsync_Throws_WhenCallerAppIdDiffersFromOwner()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var store = new InMemoryConversationStore();
+
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            registry.ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        _ = pool.GetOrCreateAgent(
+            "thread-prov-conflict",
+            mode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: new SandboxCredential("owner-a", "key-a")
+        );
+
+        var act = () =>
+            pool.RecreateAgentWithProviderAsync("thread-prov-conflict", "openai", mode, new SandboxCredential("intruder-b", "key-b"));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxCredentialConflictException>()).Which;
+        thrown.ThreadId.Should().Be("thread-prov-conflict");
+        thrown.ExistingAppId.Should().Be("owner-a");
+        thrown.RequestedAppId.Should().Be("intruder-b");
+        thrown.Message.Should().NotContain("key-a").And.NotContain("key-b");
     }
 }

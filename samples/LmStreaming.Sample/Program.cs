@@ -38,6 +38,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Auth;
+using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -69,6 +70,19 @@ try
     Log.Information("Starting LmStreaming.Sample application");
 
     var builder = WebApplication.CreateBuilder(args);
+
+    // Bridge the operator-facing flat env var LMSTREAMING_S2S_INBOUND_SECRET into the section key the
+    // InboundS2SAuth filter actually reads (Auth:S2SInboundSecret). The standard env-var provider only
+    // maps the double-underscore form (Auth__S2SInboundSecret) into that section, so the documented
+    // flat name would otherwise land in an unrelated key and silently leave the inbound guard DISABLED
+    // (issue #153). Anything already bound to the section key (appsettings.json or Auth__S2SInboundSecret)
+    // wins — this only fills the gap for the documented flat name.
+    var s2sInboundSecretEnv = Environment.GetEnvironmentVariable("LMSTREAMING_S2S_INBOUND_SECRET");
+    if (!string.IsNullOrWhiteSpace(s2sInboundSecretEnv)
+        && string.IsNullOrWhiteSpace(builder.Configuration[InboundS2SAuthAttribute.SecretConfigKey]))
+    {
+        builder.Configuration[InboundS2SAuthAttribute.SecretConfigKey] = s2sInboundSecretEnv;
+    }
 
     // Configure Serilog from appsettings.json with all enrichers
     _ = builder.Host.UseSerilog(
@@ -2413,18 +2427,12 @@ public partial class Program
 
     /// <summary>
     ///     Stamps the sandbox gateway's per-app auth headers (issue #153 / ADR 0029) onto an MCP
-    ///     transport header dictionary. <see cref="SandboxCredential.AppKey"/> is omitted when blank
-    ///     — the keyless <c>AUTH_ENFORCE=off</c> dev path — so the gateway never receives an empty
-    ///     header value.
+    ///     transport header dictionary. Thin wrapper over <see cref="SandboxCredential.StampHeaders(IDictionary{string,string})"/>
+    ///     — the single home for the "stamp id, conditionally stamp key" rule — kept so the two MCP
+    ///     dictionary call sites read clearly.
     /// </summary>
-    private static void AddSandboxAuthHeaders(IDictionary<string, string> headers, SandboxCredential cred)
-    {
-        headers["X-Sbx-App-Id"] = cred.AppId;
-        if (!string.IsNullOrEmpty(cred.AppKey))
-        {
-            headers["X-Sbx-App-Key"] = cred.AppKey;
-        }
-    }
+    private static void AddSandboxAuthHeaders(IDictionary<string, string> headers, SandboxCredential cred) =>
+        cred.StampHeaders(headers);
 
     /// <summary>
     ///     Builds a single-entry MCP server configuration for an HTTP endpoint.

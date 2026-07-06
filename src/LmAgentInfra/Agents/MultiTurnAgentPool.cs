@@ -858,8 +858,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     /// <param name="threadId">The thread identifier</param>
     /// <param name="mode">The new chat mode to use</param>
+    /// <param name="callerCredential">
+    /// The credential of the caller requesting the switch, or <c>null</c> for the interactive
+    /// (no-credential) UI path. Validated against the app id the conversation was frozen to at
+    /// creation: a mismatch throws <see cref="SandboxCredentialConflictException"/> so a foreign S2S
+    /// caller cannot mutate another app's conversation mode (issue #153 M2). The frozen credential
+    /// itself is preserved across the swap — this parameter only authorizes the switch.
+    /// </param>
     /// <returns>The new agent for this thread</returns>
-    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(string threadId, AgentProfile mode)
+    /// <exception cref="SandboxCredentialConflictException">
+    /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
+    /// conversation is bound to.
+    /// </exception>
+    public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(
+        string threadId,
+        AgentProfile mode,
+        SandboxCredential? callerCredential = null
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
@@ -883,7 +898,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             mode,
             resolvedProviderId,
             resolvedWorkspaceId,
-            switchKind: "mode"
+            switchKind: "mode",
+            callerCredential
         );
 
         // A mode switch is deliberate and mutable: overwrite the persisted mode so a later refresh
@@ -905,11 +921,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <param name="threadId">The thread identifier</param>
     /// <param name="newProviderId">The provider to switch to</param>
     /// <param name="currentMode">The thread's current mode, preserved across the switch</param>
+    /// <param name="callerCredential">
+    /// The credential of the caller requesting the switch, or <c>null</c> for the interactive
+    /// (no-credential) UI path. Validated against the app id the conversation was frozen to at
+    /// creation: a mismatch throws <see cref="SandboxCredentialConflictException"/> so a foreign S2S
+    /// caller cannot mutate another app's conversation provider (issue #153 M2). The frozen credential
+    /// itself is preserved across the swap — this parameter only authorizes the switch.
+    /// </param>
     /// <returns>The new agent for this thread</returns>
+    /// <exception cref="SandboxCredentialConflictException">
+    /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
+    /// conversation is bound to.
+    /// </exception>
     public async Task<IMultiTurnAgent> RecreateAgentWithProviderAsync(
         string threadId,
         string newProviderId,
-        AgentProfile currentMode
+        AgentProfile currentMode,
+        SandboxCredential? callerCredential = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -937,7 +965,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             currentMode,
             newProviderId,
             resolvedWorkspaceId,
-            switchKind: "provider"
+            switchKind: "provider",
+            callerCredential
         );
 
         // A provider switch is deliberate and mutable: overwrite the persisted provider so a later
@@ -963,7 +992,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         AgentProfile mode,
         string providerId,
         string? workspaceId,
-        string switchKind
+        string switchKind,
+        SandboxCredential? callerCredential = null
     )
     {
         // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
@@ -977,7 +1007,25 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             // the caller identity the thread is bound to. Peeked (not removed) under the same lock
             // that guards the swap below, so no concurrent GetOrCreateAgent can interleave.
             _agents.TryGetValue(threadId, out var existingEntry);
-            var callerCredential = existingEntry?.CallerCredential;
+            var frozenCredential = existingEntry?.CallerCredential;
+
+            // Cross-actor guard (issue #153): a switch must be rejected for a caller that is NOT the
+            // app the conversation is bound to — otherwise a different S2S caller could mutate another
+            // app's mode/provider, bypassing the same guard SendMessage enforces. Compare by AppId
+            // only (never the key), null-safe, mirroring GetOrCreateAgent: both null (interactive UI)
+            // matches; one null / one set (UI<->S2S) and two differing set values (S2S-A<->S2S-B)
+            // conflict. Skipped when there is no existing entry (the agent was evicted) — the recreate
+            // then binds to the caller as the new owner, exactly as a fresh create would. Runs inside
+            // the same lock as the swap so no concurrent caller can race between check and act.
+            if (existingEntry != null)
+            {
+                var existingAppId = frozenCredential?.AppId;
+                var requestedAppId = callerCredential?.AppId;
+                if (!string.Equals(existingAppId, requestedAppId, StringComparison.Ordinal))
+                {
+                    throw new SandboxCredentialConflictException(threadId, existingAppId, requestedAppId);
+                }
+            }
 
             // Construct BEFORE evicting — a throw here leaves the current agent registered (the thread
             // is untouched) rather than stranding the conversation with no pooled agent.
@@ -987,7 +1035,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 providerId,
                 requestResponseDumpFileName: null,
                 workspaceId,
-                callerCredential
+                frozenCredential
             );
             _ = _agents.TryRemove(threadId, out oldEntry);
             _agents[threadId] = entry;

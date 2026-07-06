@@ -18,10 +18,13 @@ namespace LmStreaming.Sample.Tests.Controllers;
 /// slice) rather than folding in, per the task's file-separation instruction.
 /// <para>
 /// The attribute is an <see cref="IAsyncActionFilter"/> that only runs through the real MVC action
-/// invocation pipeline, never when a test calls a controller action method directly. Scenarios (a)
-/// and (b) below therefore invoke <see cref="InboundS2SAuthAttribute.OnActionExecutionAsync"/>
-/// directly against a hand-built <see cref="ActionExecutingContext"/> — the smallest harness that
-/// exercises the filter's actual logic without standing up a full <c>WebApplicationFactory</c>.
+/// invocation pipeline, never when a test calls a controller action method directly. These scenarios
+/// invoke <see cref="InboundS2SAuthAttribute.OnActionExecutionAsync"/> directly against a hand-built
+/// <see cref="ActionExecutingContext"/> — the smallest harness that exercises the filter's actual
+/// logic (including issue #153 BLOCKER #1's marker-gating: only requests carrying an S2S marker are
+/// gated; a marker-less same-origin browser request passes even with the secret configured).
+/// <see cref="ConversationsControllerS2SPipelineTests"/> complements this by asserting the attribute
+/// is actually wired onto the controller and route-scoped through a real <c>TestServer</c> pipeline.
 /// </para>
 /// </summary>
 public class ConversationsControllerS2SAuthTests
@@ -102,7 +105,10 @@ public class ConversationsControllerS2SAuthTests
     // InboundS2SAuthAttribute — direct filter invocation (scenarios a/b + never-leaks assertion)
     // ---------------------------------------------------------------------------------------
 
-    private static DefaultHttpContext CreateHttpContextWithConfig(string? configuredSecret, string? presentedHeader)
+    private static DefaultHttpContext CreateHttpContextWithConfig(
+        string? configuredSecret,
+        string? presentedHeader,
+        string? appIdMarker = null)
     {
         var configData = new Dictionary<string, string?>();
         if (configuredSecret != null)
@@ -119,6 +125,13 @@ public class ConversationsControllerS2SAuthTests
         if (presentedHeader != null)
         {
             httpContext.Request.Headers[InboundS2SAuthAttribute.HeaderName] = presentedHeader;
+        }
+
+        // The X-Sbx-App-Id caller-credential header is (like X-S2S-Auth itself) an S2S surface marker
+        // that arms the guard — set it to simulate a service caller that presents no/other markers.
+        if (appIdMarker != null)
+        {
+            httpContext.Request.Headers[SandboxCredential.AppIdHeader] = appIdMarker;
         }
 
         return httpContext;
@@ -158,9 +171,55 @@ public class ConversationsControllerS2SAuthTests
     }
 
     [Fact]
+    public async Task Filter_Allows_BrowserRequest_WhenSecretConfigured_AndNoMarkers()
+    {
+        // Regression for issue #153 BLOCKER #1: the SPA calls the same /api/conversations* routes with
+        // plain browser fetch — no X-S2S-Auth, no X-Sbx-App-Id. Even with the secret configured, such
+        // a marker-less same-origin request must pass through, or enabling the guard breaks the UI.
+        var httpContext = CreateHttpContextWithConfig(
+            configuredSecret: "s3cr3t-inbound-value",
+            presentedHeader: null,
+            appIdMarker: null);
+        var executingContext = CreateActionExecutingContext(httpContext);
+        var nextCalled = false;
+        var next = CreateNextDelegate(executingContext, () => nextCalled = true);
+
+        await new InboundS2SAuthAttribute().OnActionExecutionAsync(executingContext, next);
+
+        nextCalled.Should().BeTrue("a marker-less same-origin browser request must not be gated by the S2S secret");
+        executingContext.Result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Filter_Returns401_WhenSecretConfigured_AndAppIdMarkerPresent_ButNoAuthHeader()
+    {
+        // An S2S caller that forwards a credential (X-Sbx-App-Id) but omits X-S2S-Auth is a service
+        // request and MUST authenticate — it does not get the browser pass-through.
+        var httpContext = CreateHttpContextWithConfig(
+            configuredSecret: "s3cr3t-inbound-value",
+            presentedHeader: null,
+            appIdMarker: "app-a");
+        var executingContext = CreateActionExecutingContext(httpContext);
+        var nextCalled = false;
+        var next = CreateNextDelegate(executingContext, () => nextCalled = true);
+
+        await new InboundS2SAuthAttribute().OnActionExecutionAsync(executingContext, next);
+
+        nextCalled.Should().BeFalse();
+        var unauthorized = Assert.IsType<UnauthorizedObjectResult>(executingContext.Result);
+        unauthorized.StatusCode.Should().Be(401);
+    }
+
+    [Fact]
     public async Task Filter_Returns401_WhenSecretConfigured_AndHeaderMissing()
     {
-        var httpContext = CreateHttpContextWithConfig(configuredSecret: "s3cr3t-inbound-value", presentedHeader: null);
+        // "Header missing" only gates when the request is an S2S request — supply an X-Sbx-App-Id
+        // marker so the guard is armed (a bare marker-less request would legitimately pass, covered by
+        // Filter_Allows_BrowserRequest_WhenSecretConfigured_AndNoMarkers).
+        var httpContext = CreateHttpContextWithConfig(
+            configuredSecret: "s3cr3t-inbound-value",
+            presentedHeader: null,
+            appIdMarker: "app-a");
         var executingContext = CreateActionExecutingContext(httpContext);
         var nextCalled = false;
         var next = CreateNextDelegate(executingContext, () => nextCalled = true);

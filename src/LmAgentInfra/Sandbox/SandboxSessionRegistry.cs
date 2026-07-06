@@ -222,13 +222,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead
     )
     {
-        request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", credential.AppId);
-        if (!string.IsNullOrEmpty(credential.AppKey))
-        {
-            // Omit the key header entirely when blank (the keyless AUTH_ENFORCE=off dev path), matching
-            // the other transports (AddSandboxAuthHeaders, BuildTransportHeaders, MarketplaceCatalogClient).
-            request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", credential.AppKey);
-        }
+        credential.StampHeaders(request);
         if (sessionId is not null)
         {
             request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);
@@ -630,9 +624,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                 throw new SandboxSessionUnavailableException(
                     workspaceId,
                     (int)response.StatusCode,
+                    // Client-safe: the raw gateway auth body is logged above but deliberately kept OUT
+                    // of the exception message, which controllers surface verbatim as the public
+                    // `detail` field. Naming only the app id + status code avoids echoing arbitrary
+                    // (potentially secret-bearing) upstream auth output through our API.
                     $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
-                        + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}': "
-                        + $"{(int)response.StatusCode} {body}"
+                        + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
+                        + $"({(int)response.StatusCode})."
                 );
             }
 
@@ -645,8 +643,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             throw new SandboxSessionUnavailableException(
                 workspaceId,
                 (int)response.StatusCode,
+                // Client-safe: body is logged above but kept out of the controller-surfaced message.
                 $"Sandbox gateway returned {(int)response.StatusCode} creating a session for "
-                    + $"workspace '{workspaceId}': {body}"
+                    + $"workspace '{workspaceId}'."
             );
         }
 

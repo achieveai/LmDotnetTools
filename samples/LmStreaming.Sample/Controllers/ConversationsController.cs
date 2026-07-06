@@ -18,36 +18,48 @@ using Microsoft.AspNetCore.Mvc.Filters;
 namespace LmStreaming.Sample.Controllers;
 
 /// <summary>
-/// Inbound S2S auth guard for every action on <see cref="ConversationsController"/> (issue #153 M2;
-/// see <c>decisions.md</c> #1/#2 and the plan's Step 10). Implemented directly as an attribute
-/// filter: ASP.NET Core's default filter provider recognizes any controller/action attribute that
-/// implements <see cref="IAsyncActionFilter"/> and runs it as-is — no <c>IFilterFactory</c>, no
-/// constructor DI, no Program.cs registration required — so applying <c>[InboundS2SAuth]</c> on the
-/// controller is entirely self-contained in this file.
+/// Inbound S2S auth guard for <see cref="ConversationsController"/> (issue #153 M2; see
+/// <c>decisions.md</c> #1/#2 and the plan's Step 10). Implemented directly as an attribute filter:
+/// ASP.NET Core's default filter provider recognizes any controller/action attribute that implements
+/// <see cref="IAsyncActionFilter"/> and runs it as-is — no <c>IFilterFactory</c>, no constructor DI,
+/// no Program.cs registration required — so applying <c>[InboundS2SAuth]</c> on the controller is
+/// entirely self-contained in this file.
 /// <para>
-/// The shared secret is read fresh on every request from <c>Auth:S2SInboundSecret</c> (env
-/// <c>LMSTREAMING_S2S_INBOUND_SECRET</c>) via <see cref="HttpContext.RequestServices"/> — no
-/// caching, matching the decision log's "per-request constant-time validation" (BS3). When the
-/// secret is unset/blank the guard is DISABLED: the keyless dev path, mirroring the sandbox
-/// gateway's own <c>AUTH_ENFORCE=off</c> behavior. That state is logged as a single process-wide
-/// warning (not per request) the first time it's observed.
+/// The shared secret is read fresh on every request from <c>Auth:S2SInboundSecret</c> via
+/// <see cref="HttpContext.RequestServices"/> — no caching, matching the decision log's "per-request
+/// constant-time validation" (BS3). Operators set it via the flat env var
+/// <c>LMSTREAMING_S2S_INBOUND_SECRET</c>, which <c>Program.cs</c> bridges into
+/// <c>Auth:S2SInboundSecret</c> at startup (the flat name does NOT bind to that section key through
+/// the standard env-var provider on its own — only <c>Auth__S2SInboundSecret</c> would). When the
+/// secret is unset/blank the guard is DISABLED: the keyless dev path, mirroring the sandbox gateway's
+/// own <c>AUTH_ENFORCE=off</c> behavior. That state is logged as a single process-wide warning (not
+/// per request) the first time it's observed.
 /// </para>
 /// <para>
-/// When configured, every request must present a matching <c>X-S2S-Auth</c> header. The comparison
-/// is constant-time (<see cref="CryptographicOperations.FixedTimeEquals"/> over a SHA-256 digest of
-/// each side) — the same shape as <c>AuthSharedSecret</c>, but deliberately NOT that
-/// instance: the S2S inbound secret is a separate trust boundary from the gateway/webhook shared
-/// secret it guards (decisions.md #1). A missing or mismatched header is rejected with 401. Neither
-/// the configured secret nor the presented header value is ever logged or echoed in the response.
+/// SCOPE — the guard enforces only on <b>service-to-service requests</b>, identified by the presence
+/// of the <see cref="HeaderName"/> (<c>X-S2S-Auth</c>) header or a caller-credential marker
+/// (<see cref="SandboxCredential.AppIdHeader"/>, <c>X-Sbx-App-Id</c> — the header that triggers
+/// per-caller credential passthrough). Those requests MUST present a matching <c>X-S2S-Auth</c>;
+/// missing or mismatched → 401. A request carrying none of those markers is the interactive
+/// same-origin browser path (the SPA calls these same <c>/api/conversations*</c> routes with plain
+/// <c>fetch</c> and, correctly, no S2S secret) and is allowed through to run under the sample's own
+/// gateway identity — so enabling the secret does NOT break the UI. This is deliberately a gate on
+/// the credential-passthrough surface, not a blanket lock on the same-origin interactive API; see
+/// <c>docs/deployment/AUTH_ENFORCE.md</c>. The comparison is constant-time
+/// (<see cref="CryptographicOperations.FixedTimeEquals"/> over a SHA-256 digest of each side) — the
+/// same shape as <c>AuthSharedSecret</c>, but deliberately NOT that instance: the S2S inbound secret
+/// is a separate trust boundary from the gateway/webhook shared secret it guards (decisions.md #1).
+/// Neither the configured secret nor the presented header value is ever logged or echoed in the response.
 /// </para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Class)]
 public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
 {
     /// <summary>
-    /// Configuration key the inbound shared secret is read from (env
-    /// <c>LMSTREAMING_S2S_INBOUND_SECRET</c> binds here via the standard ASP.NET Core env-var
-    /// configuration provider's <c>__</c>→<c>:</c> section mapping).
+    /// Configuration key the inbound shared secret is read from. Operators set the flat env var
+    /// <c>LMSTREAMING_S2S_INBOUND_SECRET</c>, which <c>Program.cs</c> bridges into this key at startup
+    /// (the flat env var does not bind here on its own — only <c>Auth__S2SInboundSecret</c> would,
+    /// via the standard env-var provider's <c>__</c>→<c>:</c> section mapping).
     /// </summary>
     public const string SecretConfigKey = "Auth:S2SInboundSecret";
 
@@ -76,6 +88,15 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
             return;
         }
 
+        // Marker-gate: only S2S requests are subject to the secret. A same-origin browser request
+        // (the SPA) carries neither the S2S header nor the caller-credential marker, so it passes
+        // through unchanged — enabling the secret must not turn every existing UI operation into 401.
+        if (!IsServiceToServiceRequest(httpContext.Request))
+        {
+            await next().ConfigureAwait(false);
+            return;
+        }
+
         var presented = httpContext.Request.Headers[HeaderName].ToString();
         if (!ConstantTimeEquals(secret, presented))
         {
@@ -85,6 +106,16 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
 
         await next().ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// True when the request presents an S2S surface marker: the <see cref="HeaderName"/> secret
+    /// header itself, or the <see cref="SandboxCredential.AppIdHeader"/> caller-credential header that
+    /// asks the controller to forward a distinct identity to the gateway. Either marker means the
+    /// caller is acting as a service (not the same-origin SPA), so the shared secret is required.
+    /// </summary>
+    private static bool IsServiceToServiceRequest(HttpRequest request) =>
+        request.Headers.ContainsKey(HeaderName)
+        || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
 
     private static void WarnGuardDisabledOnce(HttpContext httpContext)
     {
@@ -533,9 +564,23 @@ public class ConversationsController(
         // Switching into a sandbox-backed mode (e.g. Workspace Agent) eagerly creates the sandbox
         // session. A gateway rejection or an unreachable gateway must answer a clean 503 — not crash
         // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
+        var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         try
         {
-            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode);
+            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode, callerCredential);
+        }
+        catch (SandboxCredentialConflictException ex)
+        {
+            // Same cross-actor rejection SendMessage enforces (issue #153): a caller may not switch
+            // the mode of a conversation bound to a different app identity. Message carries only app
+            // ids, never keys.
+            logger.LogWarning(
+                "Mode switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
+                threadId,
+                ex.ExistingAppId ?? "(none)",
+                ex.RequestedAppId ?? "(none)");
+            return Conflict(
+                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -627,9 +672,23 @@ public class ConversationsController(
 
         // Switching to a sandbox-backed provider eagerly reprovisions; a gateway rejection or an
         // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
+        var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         try
         {
-            _ = await agentPool.RecreateAgentWithProviderAsync(threadId, request.ProviderId, currentMode);
+            _ = await agentPool.RecreateAgentWithProviderAsync(threadId, request.ProviderId, currentMode, callerCredential);
+        }
+        catch (SandboxCredentialConflictException ex)
+        {
+            // Same cross-actor rejection SendMessage enforces (issue #153): a caller may not switch
+            // the provider of a conversation bound to a different app identity. Message carries only
+            // app ids, never keys.
+            logger.LogWarning(
+                "Provider switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
+                threadId,
+                ex.ExistingAppId ?? "(none)",
+                ex.RequestedAppId ?? "(none)");
+            return Conflict(
+                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
         }
         catch (ProviderUnavailableException ex)
         {

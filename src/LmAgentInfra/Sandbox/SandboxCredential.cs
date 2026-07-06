@@ -14,6 +14,52 @@ public readonly record struct SandboxCredential(string AppId, string AppKey)
     /// <summary>Minimum number of decoded bytes an app key must contain.</summary>
     private const int MinKeyBytes = 32;
 
+    /// <summary>Header the gateway reads the caller's app identity from (ADR 0029).</summary>
+    public const string AppIdHeader = "X-Sbx-App-Id";
+
+    /// <summary>Header the gateway reads the caller's app secret from (ADR 0029). SECRET.</summary>
+    public const string AppKeyHeader = "X-Sbx-App-Key";
+
+    /// <summary>
+    /// Redacted rendering — the auto-generated <c>record struct</c> <see cref="object.ToString"/>
+    /// would otherwise print every positional member, including <see cref="AppKey"/>. Overriding it
+    /// makes accidental leakage via structured logging (e.g. <c>logger.LogDebug("cred={Cred}", cred)</c>)
+    /// structurally impossible rather than relying on the never-log social contract.
+    /// </summary>
+    public override string ToString() => $"SandboxCredential {{ AppId = {AppId}, AppKey = [REDACTED] }}";
+
+    /// <summary>
+    /// Stamps <see cref="AppIdHeader"/> (and <see cref="AppKeyHeader"/> when the key is non-blank)
+    /// onto <paramref name="headers"/>. The key header is omitted entirely on the keyless
+    /// <c>AUTH_ENFORCE=off</c> dev path so an empty value never reaches the gateway. Single home for
+    /// the "stamp id, conditionally stamp key" rule shared by every transport.
+    /// </summary>
+    public void StampHeaders(IDictionary<string, string> headers)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+        headers[AppIdHeader] = AppId;
+        if (!string.IsNullOrEmpty(AppKey))
+        {
+            headers[AppKeyHeader] = AppKey;
+        }
+    }
+
+    /// <summary>
+    /// Stamps <see cref="AppIdHeader"/> (and <see cref="AppKeyHeader"/> when the key is non-blank)
+    /// onto <paramref name="request"/> via <see cref="System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation(string,string)"/>.
+    /// Per-request only — never touches <c>HttpClient.DefaultRequestHeaders</c>, which is process-global
+    /// and would leak one caller's credential onto every other concurrent caller's request.
+    /// </summary>
+    public void StampHeaders(HttpRequestMessage request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        request.Headers.TryAddWithoutValidation(AppIdHeader, AppId);
+        if (!string.IsNullOrEmpty(AppKey))
+        {
+            request.Headers.TryAddWithoutValidation(AppKeyHeader, AppKey);
+        }
+    }
+
     /// <summary>
     /// Resolves the default credential from <paramref name="options"/>. Returns <c>null</c> when
     /// <see cref="SandboxGatewayOptions.AppKey"/> is unset/blank — the keyless dev path used when
