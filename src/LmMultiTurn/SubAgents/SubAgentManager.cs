@@ -400,6 +400,23 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Test-only peek at whether a sub-agent's completion currently auto-relays to the parent.
+    /// Internal + <c>InternalsVisibleTo</c>-gated (see the csproj) so
+    /// <c>SubAgentCompletionTriggerSourceTests</c> can assert the flag was flipped/restored without
+    /// exposing <see cref="SubAgentState"/> itself; production callers use
+    /// <see cref="SetNotifyParentOnCompletion"/> / <see cref="ObserveCompletionAsync"/> instead.
+    /// </summary>
+    internal bool PeekNotifyParentOnCompletion(string agentId)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        return state.NotifyParentOnCompletion;
+    }
+
+    /// <summary>
     /// Get the list of available template names.
     /// </summary>
     public IReadOnlyList<string> GetTemplateNames()

@@ -931,7 +931,16 @@ try
                         sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     }
 
-                    var agent = new MultiTurnAgentLoop(
+                    // Declared before construction so the trigger-options closure below can read the
+                    // just-built loop's SubAgentManager: the loop consumes AdditionalRegistrations
+                    // inside its own ctor, so a subagent-kind source can't be handed the manager
+                    // directly — it resolves it lazily once the loop (and thus the manager) exists.
+                    MultiTurnAgentLoop agent = null!;
+                    var triggerOptions = SampleTriggerRegistrations.Build(
+                        sandboxEnabled: sandboxSession is not null,
+                        subAgentManagerAccessor: () => agent?.SubAgentManager);
+
+                    agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
                         threadId,
@@ -960,7 +969,7 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
                         persistRunLedger: true,
-                        triggerOptions: SampleTriggerRegistrations.Build(sandboxEnabled: sandboxSession is not null)
+                        triggerOptions: triggerOptions
                     );
 
                     if (workflowRuntime is not null)

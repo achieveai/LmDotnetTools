@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
 namespace AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
@@ -9,7 +10,17 @@ namespace AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 /// </summary>
 public static class SampleTriggerRegistrations
 {
-    public static TriggerOptions Build(bool sandboxEnabled)
+    /// <param name="sandboxEnabled">Whether the sandbox session is active (gates the process kind).</param>
+    /// <param name="subAgentManagerAccessor">
+    /// Lazily resolves the loop's <see cref="SubAgentManager"/> (the loop builds it inside its own
+    /// ctor, after these registrations are assembled, so it can't be handed in directly). Null skips
+    /// registering the <c>subagent</c> kind entirely; a non-null accessor may itself still resolve to
+    /// null at arm time (e.g. a conversation with no sub-agent orchestration configured), which the
+    /// source rejects as an arm-time <see cref="ArgumentException"/>.
+    /// </param>
+    public static TriggerOptions Build(
+        bool sandboxEnabled,
+        Func<SubAgentManager?>? subAgentManagerAccessor = null)
     {
         var registrations = new List<TriggerSourceRegistration>();
 
@@ -35,7 +46,20 @@ public static class SampleTriggerRegistrations
             Source = new ScheduleTriggerSource(),
         });
 
-        // (#144) subagent registration appended here in a later task.
+        // (#144) subagent: registered only when the conversation has sub-agent orchestration
+        // configured — the source needs a live SubAgentManager to observe.
+        if (subAgentManagerAccessor != null)
+        {
+            registrations.Add(new TriggerSourceRegistration
+            {
+                Kind = SubAgentCompletionTriggerSource.KindName,
+                Description = "Fire when a specific spawned sub-agent completes.",
+                ArgsSchema = SubAgentCompletionTriggerSource.ArgsSchemaText,
+                Capabilities = SubAgentCompletionTriggerSource.Capabilities,
+                Source = new SubAgentCompletionTriggerSource(subAgentManagerAccessor),
+            });
+        }
+
         // (#142) process registration appended here, guarded by `if (sandboxEnabled)`, in Task 9.
         if (sandboxEnabled)
         {

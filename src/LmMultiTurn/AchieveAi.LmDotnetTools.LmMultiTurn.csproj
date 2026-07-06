@@ -12,6 +12,9 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="LmMultiTurn.Tests" />
+    <!-- SubAgentCompletionTriggerSourceTests peeks NotifyParentOnCompletion to assert the
+         arm/dispose flag flip+restore without exposing internal SubAgentState. -->
+    <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />

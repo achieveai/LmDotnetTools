@@ -36,7 +36,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
-    private readonly SubAgentManager? _subAgentManager;
+
+    /// <summary>The sub-agent manager for this loop, or null when no sub-agent options were supplied.
+    /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
+    /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
+    public SubAgentManager? SubAgentManager { get; }
 
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
@@ -124,7 +128,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             var source = subAgentTemplateSource
                 ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
 
-            _subAgentManager = new SubAgentManager(
+            SubAgentManager = new SubAgentManager(
                 parentAgent: this,
                 parentContracts: [.. contracts],
                 parentHandlers: handlers,
@@ -136,7 +140,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 parentModelId: DefaultOptions.ModelId);
 
             var toolProvider = new SubAgentToolProvider(
-                _subAgentManager,
+                SubAgentManager,
                 source);
 
             _ = functionRegistry.AddProvider(toolProvider);
@@ -186,9 +190,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <inheritdoc />
     protected override async Task OnDisposeAsync()
     {
-        if (_subAgentManager != null)
+        if (SubAgentManager != null)
         {
-            await _subAgentManager.DisposeAsync();
+            await SubAgentManager.DisposeAsync();
         }
 
         if (_triggerRuntime != null)
