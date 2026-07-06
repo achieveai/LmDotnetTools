@@ -18,4 +18,41 @@ public record QueuedInput(
     string ReceiptId,
     DateTimeOffset QueuedAt,
     ResumeSentinel? Resume = null,
-    TriggerEnvelope? Trigger = null);
+    TriggerEnvelope? Trigger = null)
+{
+    /// <summary>
+    /// Binary-compatibility overload for the pre-<see cref="Trigger"/> 4-arg positional shape.
+    /// Delegates to the primary constructor with <see cref="Trigger"/> left <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="resume"/> intentionally has no default value here: giving it one would make
+    /// this constructor ambiguous with the primary constructor for a 3-arg call (both would be
+    /// applicable via default-substitution, and neither is preferred by the language's tie-break
+    /// rules). Omitting the default keeps this overload applicable only to genuine 4-arg calls
+    /// (where it is unambiguously preferred, since it substitutes no optional parameters) while
+    /// 3-arg calls still resolve — unambiguously — to the primary constructor.
+    /// </remarks>
+    public QueuedInput(
+        UserInput input,
+        string receiptId,
+        DateTimeOffset queuedAt,
+        ResumeSentinel? resume)
+        : this(input, receiptId, queuedAt, resume, Trigger: null)
+    {
+    }
+
+    /// <summary>
+    /// Binary-compatibility 4-value deconstruction matching the pre-<see cref="Trigger"/> shape.
+    /// </summary>
+    public void Deconstruct(
+        out UserInput input,
+        out string receiptId,
+        out DateTimeOffset queuedAt,
+        out ResumeSentinel? resume)
+    {
+        input = Input;
+        receiptId = ReceiptId;
+        queuedAt = QueuedAt;
+        resume = Resume;
+    }
+}
