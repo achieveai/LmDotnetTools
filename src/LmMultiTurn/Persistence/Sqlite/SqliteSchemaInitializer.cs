@@ -62,6 +62,24 @@ public static class SqliteSchemaInitializer
         );
         """;
 
+    private const string CreateNotifyWaitsTableSql = """
+        CREATE TABLE IF NOT EXISTS notify_waits (
+            wait_id       TEXT PRIMARY KEY,
+            thread_id     TEXT NOT NULL,
+            kind          TEXT NOT NULL,
+            args          TEXT NOT NULL,
+            label         TEXT NULL,
+            max_fires     INTEGER NULL,
+            fires_so_far  INTEGER NOT NULL DEFAULT 0,
+            timeout_at    INTEGER NOT NULL,
+            armed_at      INTEGER NOT NULL,
+            status        TEXT NOT NULL
+        );
+        """;
+
+    private const string CreateNotifyWaitsIndexSql =
+        "CREATE INDEX IF NOT EXISTS ix_notify_waits_thread ON notify_waits (thread_id);";
+
     /// <summary>
     /// Initializes the database schema if it doesn't exist.
     /// </summary>
@@ -106,6 +124,16 @@ public static class SqliteSchemaInitializer
             createAcceptedInputsCmd.CommandText = CreateAcceptedInputsTableSql;
             createAcceptedInputsCmd.Transaction = transaction;
             _ = await createAcceptedInputsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            using var createNotifyWaitsCmd = connection.CreateCommand();
+            createNotifyWaitsCmd.CommandText = CreateNotifyWaitsTableSql;
+            createNotifyWaitsCmd.Transaction = transaction;
+            _ = await createNotifyWaitsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            using var createNotifyWaitsIndexCmd = connection.CreateCommand();
+            createNotifyWaitsIndexCmd.CommandText = CreateNotifyWaitsIndexSql;
+            createNotifyWaitsIndexCmd.Transaction = transaction;
+            _ = await createNotifyWaitsIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             transaction.Commit();
         }
