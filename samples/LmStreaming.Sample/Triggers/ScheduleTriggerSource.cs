@@ -130,7 +130,34 @@ public sealed class ScheduleTriggerSource : ITriggerSource
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
             await Task.Yield();
 
+            // Restore safety: a restored notify wait is re-armed with its ORIGINAL persisted arm
+            // time, which after any outage longer than one period is in the past. Skip forward to
+            // the next occurrence AT/AFTER now rather than replaying every occurrence missed during
+            // the outage — a naive walk from `armedAt` would fire hundreds of stale events
+            // back-to-back (delay <= 0 → no Task.Delay), flooding the notify channel + persistence.
+            // The next-fire instant stays a pure function of (schedule, armedAt, now); a live arm
+            // (armedAt ≈ now) advances nothing and behaves exactly as before.
+            var now = DateTimeOffset.UtcNow;
             var last = armedAt;
+            if (last < now)
+            {
+                if (expr is null)
+                {
+                    // Interval: jump to the most recent occurrence at/before now, so the first
+                    // `next = last + interval` lands on the first FUTURE occurrence (one wait, not
+                    // a burst of overdue fires).
+                    var missed = (long)((now - armedAt).TotalSeconds / intervalSeconds!.Value);
+                    last = armedAt.AddSeconds(missed * intervalSeconds.Value);
+                }
+                else
+                {
+                    // Cron: seed the first walk just before now. GetNextOccurrence is exclusive of
+                    // its input, so `now - 1 tick` yields the occurrence at/after now (keeping one
+                    // landing exactly on now in scope) instead of the first stale one after armedAt.
+                    last = now.AddTicks(-1);
+                }
+            }
+
             while (!ct.IsCancellationRequested)
             {
                 DateTimeOffset next;

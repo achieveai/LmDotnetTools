@@ -10,13 +10,13 @@ namespace LmStreaming.Sample.Tests.Triggers;
 /// </summary>
 public class ScheduleTriggerSourceTests
 {
-    private static TriggerArmRequest ArmReq(string argsJson) =>
+    private static TriggerArmRequest ArmReq(string argsJson, DateTimeOffset? armedAt = null) =>
         new()
         {
             WaitId = "tc-" + Guid.NewGuid().ToString("N"),
             Kind = ScheduleTriggerSource.KindName,
             ArgsJson = argsJson,
-            ArmedAt = DateTimeOffset.UtcNow,
+            ArmedAt = armedAt ?? DateTimeOffset.UtcNow,
             Deadline = DateTimeOffset.UtcNow.AddMinutes(10),
         };
 
@@ -60,6 +60,29 @@ public class ScheduleTriggerSourceTests
             ArmReq("""{"intervalSeconds":1}"""), sink, CancellationToken.None);
         await Task.Delay(TimeSpan.FromMilliseconds(2500));
         fires.Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    [Fact]
+    public async Task Interval_OnRestore_SkipsMissedOccurrences_NoCatchUpStorm()
+    {
+        // Simulate a restored notify wait: the runtime re-arms with the ORIGINAL persisted arm
+        // time, which after an outage is far in the past. A 5-minute gap on a 1s interval means
+        // ~300 occurrences elapsed while the process was down. The source MUST skip forward to the
+        // next FUTURE occurrence — not replay every missed tick back-to-back (a catch-up storm
+        // that floods the notify channel + persistence).
+        var src = new ScheduleTriggerSource();
+        var fires = 0;
+        var sink = SinkCounting(() => Interlocked.Increment(ref fires));
+
+        await using var handle = await src.ArmAsync(
+            ArmReq("""{"intervalSeconds":1}""", DateTimeOffset.UtcNow.AddMinutes(-5)),
+            sink,
+            CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        // With the catch-up-storm bug this is ~300 (every missed second fires immediately). Fixed:
+        // the next fire is a full interval away, so ~0 fire in the first 300ms.
+        fires.Should().BeLessThanOrEqualTo(2, "a restored schedule must skip missed occurrences, not replay them");
     }
 
     [Fact]
