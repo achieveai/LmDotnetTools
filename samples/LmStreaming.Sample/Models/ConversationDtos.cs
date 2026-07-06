@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace LmStreaming.Sample.Models;
 
 /// <summary>
@@ -64,12 +66,42 @@ public record SwitchModeRequest
 }
 
 /// <summary>
+/// Response to a successful mode switch. <see cref="Warning"/> is populated (otherwise null) when the
+/// switched-away agent had an armed <c>Wait</c> that the recreate discarded, so a headless caller can
+/// surface that a pending park-and-wake was dropped.
+/// </summary>
+public record SwitchModeResponse
+{
+    [JsonPropertyName("modeId")]
+    public required string ModeId { get; init; }
+
+    [JsonPropertyName("modeName")]
+    public required string ModeName { get; init; }
+
+    [JsonPropertyName("warning")]
+    public string? Warning { get; init; }
+}
+
+/// <summary>
 /// DTO for switching a conversation's provider. Unlike workspace (bound for life), a conversation's
 /// provider is mutable once its run is idle — this carries the target provider id.
 /// </summary>
 public record SwitchProviderRequest
 {
     public required string ProviderId { get; init; }
+}
+
+/// <summary>
+/// Response to a successful provider switch. <see cref="Warning"/> mirrors <see cref="SwitchModeResponse.Warning"/>:
+/// non-null when the recreate discarded an armed <c>Wait</c> on the thread.
+/// </summary>
+public record SwitchProviderResponse
+{
+    [JsonPropertyName("providerId")]
+    public required string ProviderId { get; init; }
+
+    [JsonPropertyName("warning")]
+    public string? Warning { get; init; }
 }
 
 /// <summary>
