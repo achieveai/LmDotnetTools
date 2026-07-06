@@ -9,6 +9,8 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using CodeReviewDaemon.Sample.Configuration;
 using ModelContextProtocol.Client;
 
@@ -44,7 +46,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
     private readonly ICopilotTokenProvider _tokenProvider = new CliCredentialCopilotTokenProvider();
     private readonly CopilotSessionContext _session = new();
     private readonly object _agentGate = new();
-    private AnthropicAgent? _agent;
+    private IStreamingAgent? _agent;
 
     public LiveReviewAgentLoopFactory(ILoggerFactory loggerFactory, CodeReviewDaemonOptions options)
     {
@@ -70,19 +72,31 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
-        // Anthropic Messages agent over the Copilot backend (POST {copilot-host}/v1/messages); shared across
-        // loops. The model id (e.g. claude-sonnet-5) is supplied per run via defaultOptions below.
+        // Anthropic Messages agent (claude-*) or OpenAI Responses agent (gpt-*/o-series) over the Copilot
+        // backend, chosen by the configured model's vendor; shared across loops. The model id is supplied
+        // per run via defaultOptions below.
         var providerAgent = GetSharedAgent();
 
-        // Resolve the adaptive-thinking effort: an explicit per-call value wins, else the configured
-        // default. Attach output_config ONLY when the effort is non-empty — an adaptive model (sonnet)
-        // needs it to keep reasoning bounded, but a non-adaptive model (haiku) REJECTS an effort it does
-        // not support, so it must be omitted for those.
+        // Resolve the reasoning effort and attach the request shape matching the model's backend: the
+        // Copilot Anthropic Messages agent takes an adaptive-thinking output_config.effort (and a
+        // non-adaptive model like haiku REJECTS an effort it does not support, so it is omitted when empty);
+        // the Copilot OpenAI Responses agent (gpt-5.5) takes a reasoning request (effort + summary).
         var effort = reasoningEffort ?? _options.ReviewReasoningEffort;
-        var extraProperties = string.IsNullOrWhiteSpace(effort)
-            ? ImmutableDictionary<string, object?>.Empty
-            : ImmutableDictionary<string, object?>.Empty.Add(
-                "OutputConfig", new AnthropicOutputConfig { Effort = effort });
+        var extraProperties = ImmutableDictionary<string, object?>.Empty;
+        if (IsOpenAiModel(_options.ReviewModelId))
+        {
+            extraProperties = extraProperties.Add(
+                "Reasoning",
+                new ResponseReasoningOptions
+                {
+                    Effort = string.IsNullOrWhiteSpace(effort) ? null : effort,
+                    Summary = "auto",
+                });
+        }
+        else if (!string.IsNullOrWhiteSpace(effort))
+        {
+            extraProperties = extraProperties.Add("OutputConfig", new AnthropicOutputConfig { Effort = effort });
+        }
 
         // Only on the tool-assisted path (toolContext is not null) do we connect the gateway MCP client and
         // filter its tools down to the read-only allow-list — the diff-only path keeps today's empty
@@ -145,7 +159,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         return ownedClients.Count > 0 ? new ToolScopedReviewLoop(loop, ownedClients) : loop;
     }
 
-    private AnthropicAgent GetSharedAgent()
+    private IStreamingAgent GetSharedAgent()
     {
         if (_agent is not null)
         {
@@ -154,14 +168,33 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
 
         lock (_agentGate)
         {
-            _agent ??= CopilotAnthropicAgentFactory.Create(
-                "CopilotAnthropic",
-                _tokenProvider,
-                _session,
-                logger: _loggerFactory.CreateLogger<AnthropicAgent>());
+            _agent ??= IsOpenAiModel(_options.ReviewModelId)
+                ? CopilotResponsesAgentFactory.Create(
+                    "CopilotResponses",
+                    _tokenProvider,
+                    CopilotResponsesTransport.Sse,
+                    _session,
+                    logger: _loggerFactory.CreateLogger<OpenAiResponsesAgent>())
+                : CopilotAnthropicAgentFactory.Create(
+                    "CopilotAnthropic",
+                    _tokenProvider,
+                    _session,
+                    logger: _loggerFactory.CreateLogger<AnthropicAgent>());
             return _agent;
         }
     }
 
-    public void Dispose() => _agent?.Dispose();
+    /// <summary>
+    /// Whether the configured review model is served by the Copilot <b>OpenAI Responses</b> backend
+    /// (<c>gpt-*</c>, <c>o1/o3/o4</c>) rather than the Anthropic Messages backend (<c>claude-*</c>). Drives
+    /// both which provider agent is created and which reasoning-request shape is attached.
+    /// </summary>
+    private static bool IsOpenAiModel(string? modelId) =>
+        !string.IsNullOrWhiteSpace(modelId)
+        && (modelId.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
+            || modelId.StartsWith("o1", StringComparison.OrdinalIgnoreCase)
+            || modelId.StartsWith("o3", StringComparison.OrdinalIgnoreCase)
+            || modelId.StartsWith("o4", StringComparison.OrdinalIgnoreCase));
+
+    public void Dispose() => (_agent as IDisposable)?.Dispose();
 }
