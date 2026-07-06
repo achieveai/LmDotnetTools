@@ -23,15 +23,12 @@ namespace LmMultiTurn.Tests.Triggers;
 /// scaffold and reuses the shared notify-capable <see cref="ManualTriggerSource"/> fake.
 /// </summary>
 /// <remarks>
-/// The original notify-mode <c>Wait</c> tool call still parks as <c>Deferred()</c> today (dispatch
-/// not returning a normal result for notify mode is a documented follow-up, see the #140 design
-/// spec and the #140 Task-2 commit) and is never resolved through <c>ResolveToolCallAsync</c> — so
-/// its deferred placeholder stays in history. That means the run started by an injected trigger
-/// envelope can itself fail its "no unresolved deferred tool calls" precondition before ever
-/// calling the provider again. This test therefore reads the injected envelope back from a
-/// conversation store (populated by the loop's own <c>AddToHistory</c> persistence, which runs
-/// before that precondition is even evaluated) rather than from the mock provider's next captured
-/// call — the assertion is about queue-gate delivery, not about a subsequent successful LLM turn.
+/// A notify-mode <c>Wait</c> returns an immediate "armed" acknowledgment (it does not park a
+/// deferred tool call), so the arming run completes normally and the notify wait stays armed for
+/// fires. Each fire is injected as a fresh <c>&lt;trigger&gt;</c>-tagged user turn through the
+/// loop's queue gate and drives a new run. This test reads the injected envelope back from the
+/// conversation store (populated by the loop's own <c>AddToHistory</c> persistence) — the
+/// assertion is about queue-gate delivery.
 /// </remarks>
 public class NotifyEnvelopeDeliveryTests
 {
@@ -121,10 +118,9 @@ public class NotifyEnvelopeDeliveryTests
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
         await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Parked: the notify-mode Wait call armed but was never resolved through _resolve — it
-        // stays a live deferral (armed) while the loop is otherwise idle between fires.
-        callCount.Should().Be(1);
-        (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_notify");
+        // Notify mode returns an immediate "armed" ack (no deferral); the arming run completes
+        // normally and the wait stays armed, so its sink is registered under the tool-call id.
+        manual.Sinks.Should().ContainKey("tc_notify");
 
         for (var i = 0; i < fireCount; i++)
         {
