@@ -33,4 +33,15 @@ public class CodeReviewDaemonOptionsTests
                 "the diff-only default of 'low' is tuned for a single-pass review; a multi-turn + sub-agent loop wants more reasoning headroom"
             );
     }
+
+    [Fact]
+    public void Pool_and_scoped_tool_defaults_are_conservative()
+    {
+        var o = new CodeReviewDaemonOptions();
+        o.ReviewPoolSize.Should().Be(2);
+        o.EnableReviewerWrites.Should().BeFalse("writes are an explicit opt-in");
+        o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
+        o.MergeNotesBranchOnClose.Should().BeTrue();
+        o.ScratchDirName.Should().Be("scratch");
+    }
 }

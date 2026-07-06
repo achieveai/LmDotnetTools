@@ -179,6 +179,25 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public string? CrossRepoStoreUrl { get; init; }
 
+    /// <summary>Warm review-checkout slots kept ready to skip re-cloning. Default 2.</summary>
+    public int ReviewPoolSize { get; init; } = 2;
+
+    /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
+    public string? ReviewPoolHostRoot { get; init; }
+
+    /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
+    public string ScratchDirName { get; init; } = "scratch";
+
+    /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
+    /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
+    public bool EnableReviewerWrites { get; init; }
+
+    /// <summary>Extra tool names granted when <see cref="EnableReviewerWrites"/> is on.</summary>
+    public IReadOnlyList<string> WritableToolAllowList { get; init; } = ["Write", "Edit", "Bash"];
+
+    /// <summary>Merge the persistent PR notes branch into the store default branch on PR close.</summary>
+    public bool MergeNotesBranchOnClose { get; init; } = true;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>
