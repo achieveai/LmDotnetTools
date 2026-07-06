@@ -22,6 +22,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
@@ -958,7 +959,8 @@ try
                         subAgentOptions: subAgentOptions,
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
-                        persistRunLedger: true
+                        persistRunLedger: true,
+                        triggerOptions: SampleTriggerRegistrations.Build(sandboxEnabled: sandboxSession is not null)
                     );
 
                     if (workflowRuntime is not null)
