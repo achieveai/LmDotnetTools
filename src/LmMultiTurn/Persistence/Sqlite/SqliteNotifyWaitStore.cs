@@ -4,6 +4,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 public sealed class SqliteNotifyWaitStore : INotifyWaitStore
 {
     private readonly ISqliteConnectionFactory _factory;
+    private readonly SemaphoreSlim _schemaLock = new(1, 1);
+    private bool _schemaInitialized;
 
     public SqliteNotifyWaitStore(ISqliteConnectionFactory factory)
     {
@@ -11,9 +13,40 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         _factory = factory;
     }
 
+    /// <summary>
+    /// Lazily initializes the schema on first use so callers don't need to remember to invoke
+    /// <see cref="SqliteSchemaInitializer"/> themselves before constructing this store — mirrors
+    /// <c>SqliteConversationStore.EnsureSchemaAsync</c>'s double-checked-lock pattern.
+    /// </summary>
+    private async Task EnsureSchemaAsync(CancellationToken ct)
+    {
+        if (_schemaInitialized)
+        {
+            return;
+        }
+
+        await _schemaLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_schemaInitialized)
+            {
+                return;
+            }
+
+            await SqliteSchemaInitializer.InitializeSchemaAsync(_factory, ct).ConfigureAwait(false);
+            _schemaInitialized = true;
+        }
+        finally
+        {
+            _ = _schemaLock.Release();
+        }
+    }
+
     public async Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(record);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
 
@@ -48,6 +81,8 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
     {
         ArgumentNullException.ThrowIfNull(waitId);
 
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
@@ -61,6 +96,8 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
 

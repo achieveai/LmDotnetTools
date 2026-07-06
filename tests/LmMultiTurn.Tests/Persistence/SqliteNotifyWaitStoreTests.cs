@@ -49,6 +49,34 @@ public class SqliteNotifyWaitStoreTests
     }
 
     [Fact]
+    public async Task SaveAsync_WithoutPriorExplicitSchemaInit_SelfInitializesAndRoundTrips()
+    {
+        // Regression: a store constructed without the caller remembering to invoke
+        // SqliteSchemaInitializer.InitializeSchemaAsync beforehand must still work — lazy,
+        // idempotent, double-checked schema init on first use (mirrors SqliteConversationStore).
+        await using var factory = new InMemorySqliteConnectionFactory();
+        var store = new SqliteNotifyWaitStore(factory);
+
+        var rec = new NotifyWaitRecord("w-lazy", "threadLazy", "schedule", "{}", "hourly", 3, 0, 0, 0, "active");
+        await store.SaveAsync(rec);
+
+        (await store.LoadActiveAsync("threadLazy")).Should().ContainSingle(r => r.WaitId == "w-lazy");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithoutPriorExplicitSchemaInit_SelfInitializes()
+    {
+        await using var factory = new InMemorySqliteConnectionFactory();
+        var store = new SqliteNotifyWaitStore(factory);
+
+        // Deleting a non-existent row on a never-initialized schema must not throw — schema init
+        // happens lazily inside DeleteAsync itself, same as SaveAsync/LoadActiveAsync.
+        var act = () => store.DeleteAsync("does-not-exist");
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
     public async Task Delete_RemovesRow()
     {
         await using var factory = new InMemorySqliteConnectionFactory();
