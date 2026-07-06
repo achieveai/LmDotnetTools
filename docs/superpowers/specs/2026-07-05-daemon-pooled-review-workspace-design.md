@@ -133,6 +133,20 @@ New / changed, each with one clear purpose:
 - **R2 — Slot ↔ gateway-session mapping.** Confirm the cleanest way to mount an already-populated host slot into a gateway session (the store review already proves a populated host dir mounts fine; confirm it for the pool root path shape).
 - **R3 — Bash egress default.** Confirm the gateway can present the agent's Bash with egress denied while the daemon's separate host-side git retains push access.
 
+### R1–R3 resolution (spiked 2026-07-05)
+
+- **R1 — per-path RO mount: NOT available.** The gateway mounts one workspace dir with a single whole-workspace `read_only` flag (`WorkspaceVolumeDto.ReadOnly`); it exposes no way to mount `repos/<Repo>` read-only while `PRs/`+scratch stay writable. So filesystem-mount cannot be the boundary.
+- **R2 — chmod: NOT a reliable boundary.** Applying `chmod`-as-root needs a dependable `docker exec -u root` into the session container; the gateway's container is not cleanly addressable by a stable name/lifecycle (exec-by-name failed), and NTFS-bind-mount perm enforcement is uncertain. Dropped.
+- **R3 — egress is OPEN by default.** A plain session's agent Bash reached `example.com` (`rc=0`). Egress denial is **not** automatic; it requires the daemon to send a restrictive **network policy** on the agent session.
+
+**Chosen primary enforcement (does not depend on RO-mount, chmod, or docker-exec):**
+1. **Commit gate** — the daemon commits only `PRs/<pr>/…` and only it advances the submodule pointer, so nothing the agent writes elsewhere (code or scratch) ever reaches git.
+2. **No write credential** in the agent session.
+3. **`ScopedToolFilter` `Write`/`Edit` path-wrapper** — rejects `file_path` outside `PRs/<pr>/`+scratch before the gateway call.
+4. **Egress-deny network policy** on the agent session — the real confidentiality boundary (a prompt-injected agent reading a private repo must not be able to POST it out). Because R3 shows egress is open by default, the daemon MUST attach a deny policy; this is a **hard dependency** verified as the first step of the implementing task. If the gateway cannot deny egress, gate reviewer-writes+Bash to **public-repo reviews only** (or run the agent phase in a no-network container option) until it can.
+
+**Consequence for `repos/<Repo>`:** it stays writable to the agent (Bash can `echo > code.cs`), but such writes are **ineffective** — thrown away with the slot, never committed, only capable of poisoning the agent's own review (a quality risk already covered by the untrusted-content framing), not a persistence or exfil risk. Exfil is closed by (4); persistence by (1)+(2).
+
 ## 10. Testing strategy
 
 - **Unit (no gateway):** `ReviewSlotPool` (lease/return/free-list, cap, degrade), `ReviewSlotPreparer` (git command sequence: fetch → branch resolve new-vs-existing → submodule advance → scratch wipe → perms) against a fake runner, `ScopedToolFilter` (kept/added/wrapped tools + path allow-list), `ReviewBranchManager` split ops (commit-keeps-branch; merge; delete), `PrLifecycleSweeper` (open→re-review, merged→merge+delete, abandoned→delete; idempotency), executor wiring.
