@@ -745,18 +745,15 @@ public class ConversationsController(
             return null;
         }
 
-        var appId = headers[SbxAppIdHeader].ToString();
+        var appId = headers[SandboxCredential.AppIdHeader].ToString();
         if (string.IsNullOrEmpty(appId))
         {
             return null;
         }
 
-        var appKey = headers[SbxAppKeyHeader].ToString();
+        var appKey = headers[SandboxCredential.AppKeyHeader].ToString();
         return new SandboxCredential(appId, appKey);
     }
-
-    private const string SbxAppIdHeader = "X-Sbx-App-Id";
-    private const string SbxAppKeyHeader = "X-Sbx-App-Key";
 
     /// <summary>
     /// Fixes legacy persisted messages where content_block_start leaked "{}" into FunctionArgs,
