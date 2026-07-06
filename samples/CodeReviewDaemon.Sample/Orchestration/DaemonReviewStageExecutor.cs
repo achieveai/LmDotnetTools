@@ -105,6 +105,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
     private readonly Func<IStreamingAgent>? _providerAgentFactory;
     private readonly HostRetentionWorkspace? _hostRetention;
+    private readonly SandboxCredential _credential;
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -118,7 +119,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IDiscoveredItemsSource? discoveredItemsSource = null,
         DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
         Func<IStreamingAgent>? providerAgentFactory = null,
-        HostRetentionWorkspace? hostRetention = null)
+        HostRetentionWorkspace? hostRetention = null,
+        SandboxCredential credential = default)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -133,6 +135,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _subAgentTemplateBuilder = subAgentTemplateBuilder;
         _providerAgentFactory = providerAgentFactory;
         _hostRetention = hostRetention;
+        _credential = credential;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -189,7 +192,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false));
+                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false),
+                Credential: _credential);
         }
         catch (Exception ex)
         {

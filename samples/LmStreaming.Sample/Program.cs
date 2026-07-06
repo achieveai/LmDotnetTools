@@ -174,6 +174,56 @@ try
     var sandboxOptions =
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
         ?? new SandboxGatewayOptions();
+
+    // Fail-fast sandbox credential validation (issue #153 M1). A configured-but-malformed key (bad
+    // base64 / too short) is almost certainly a copy-paste/config mistake, so surface it as an
+    // actionable startup error instead of a confusing 401 on the first sandbox request later. When
+    // no key is configured at all this is the keyless AUTH_ENFORCE=off dev path: warn once and fall
+    // back to an id-only credential (the empty key is omitted from headers by AddSandboxAuthHeaders).
+    SandboxCredential sandboxCredential;
+    try
+    {
+        var resolvedSandboxCredential = SandboxCredential.FromOptions(sandboxOptions);
+        if (resolvedSandboxCredential is null)
+        {
+            Log.Warning(
+                "No sandbox app key configured (SandboxGateway:AppKey); requests to the sandbox "
+                    + "gateway will be unauthenticated for app id '{AppId}' — AUTH_ENFORCE must be "
+                    + "off on the gateway for this to work.",
+                sandboxOptions.AppId
+            );
+            sandboxCredential = new SandboxCredential(sandboxOptions.AppId, sandboxOptions.AppKey ?? string.Empty);
+        }
+        else
+        {
+            sandboxCredential = resolvedSandboxCredential.Value;
+        }
+    }
+    catch (ArgumentException ex)
+    {
+        throw new InvalidOperationException(
+            $"Sandbox gateway app key is invalid for app '{sandboxOptions.AppId}' "
+                + "(SandboxGateway:AppKey) — fix the configured key (or unset it to run keyless "
+                + $"while AUTH_ENFORCE=off) and restart. Detail: {ex.Message}",
+            ex
+        );
+    }
+
+    if (sandboxOptions.ValidateCredentialOnStartup)
+    {
+        // TODO(#153 M6): optional startup credential probe. Once SandboxSessionRegistry is
+        // constructed (below) and the gateway hosted service is up, best-effort create+destroy a
+        // throwaway session under a dedicated workspace id to catch a rejected-but-well-formed key
+        // at boot, logging success/failure NON-FATALLY. Deferred here: it needs the registry built
+        // first (which itself depends on SandboxGatewayLifetime) plus a throwaway workspace id that
+        // can't collide with the "default" workspace's session — more plumbing than fits at this
+        // call site.
+        Log.Information(
+            "SandboxGateway:ValidateCredentialOnStartup is set, but the startup credential probe is "
+                + "not yet wired (see TODO(#153 M6)); a rejected key still only surfaces on first use."
+        );
+    }
+
     _ = builder.Services.AddSingleton(sandboxOptions);
     _ = builder.Services.AddSingleton(sp => new SandboxGatewayLifetime(
         sandboxOptions,
@@ -657,6 +707,18 @@ try
 
                 if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
                 {
+                    // Sandbox MCP header dict: X-Session-ID plus the app's sandbox auth headers
+                    // (issue #153 M1).
+                    Dictionary<string, string>? sandboxMcpHeaders = null;
+                    if (isWorkspaceMode)
+                    {
+                        sandboxMcpHeaders = new Dictionary<string, string>
+                        {
+                            ["X-Session-ID"] = sandboxSession!.SessionId,
+                        };
+                        AddSandboxAuthHeaders(sandboxMcpHeaders, sandboxCredential);
+                    }
+
                     return new MultiTurnAgentPool.AgentCreationResult(
                         CreateCopilotAgentLoop(
                             threadId,
@@ -666,11 +728,7 @@ try
                             conversationStore,
                             loggerFactory,
                             extraMcpServers: isWorkspaceMode
-                                ? BuildHttpMcpServer(
-                                    "sandbox",
-                                    $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                                    new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId }
-                                )
+                                ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
                                 : null,
                             workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null
                         )
@@ -761,12 +819,18 @@ try
                     }
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
-                    // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header.
+                    // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header
+                    // and the app's sandbox auth headers (issue #153 M1).
+                    var sandboxMcpHeaders = new Dictionary<string, string>
+                    {
+                        ["X-Session-ID"] = sandboxSession!.SessionId,
+                    };
+                    AddSandboxAuthHeaders(sandboxMcpHeaders, sandboxCredential);
                     var sandboxClients = ConnectHttpMcpClient(
                         filteredRegistry,
                         "sandbox",
                         $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                        new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId },
+                        sandboxMcpHeaders,
                         loggerFactory,
                         // Expose sandbox tools under their natural names (bash, edit, …) rather than
                         // sandbox-bash; the gateway is the sole MCP server here, so no collisions.
@@ -2328,6 +2392,21 @@ public partial class Program
         }
 
         return (registry, createdClients);
+    }
+
+    /// <summary>
+    ///     Stamps the sandbox gateway's per-app auth headers (issue #153 / ADR 0029) onto an MCP
+    ///     transport header dictionary. <see cref="SandboxCredential.AppKey"/> is omitted when blank
+    ///     — the keyless <c>AUTH_ENFORCE=off</c> dev path — so the gateway never receives an empty
+    ///     header value.
+    /// </summary>
+    private static void AddSandboxAuthHeaders(IDictionary<string, string> headers, SandboxCredential cred)
+    {
+        headers["X-Sbx-App-Id"] = cred.AppId;
+        if (!string.IsNullOrEmpty(cred.AppKey))
+        {
+            headers["X-Sbx-App-Key"] = cred.AppKey;
+        }
     }
 
     /// <summary>

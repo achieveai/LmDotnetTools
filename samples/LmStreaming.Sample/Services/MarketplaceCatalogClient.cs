@@ -44,10 +44,19 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
             requestUri += $"?marketplaces={Uri.EscapeDataString(string.Join(',', marketplaces))}";
         }
 
+        // Own-identity browse: stamp the app's own sandbox credential (issue #153 M1), not a
+        // caller's — this is a read-only catalog browse, not a session bound to any caller.
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+        request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", _options.AppId);
+        if (!string.IsNullOrEmpty(_options.AppKey))
+        {
+            request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", _options.AppKey);
+        }
+
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.GetAsync(requestUri, ct).ConfigureAwait(false);
+            response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {

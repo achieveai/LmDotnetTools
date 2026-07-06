@@ -1,4 +1,5 @@
 using System.Globalization;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -33,6 +34,7 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
 
     private readonly Uri _endpoint;
     private readonly string _sessionId;
+    private readonly SandboxCredential _credential;
     private readonly SandboxLimits _limits;
     private readonly ILogger<SandboxOrchestrator> _logger;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
@@ -43,6 +45,7 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
         string gatewayBaseUrl,
         string sessionId,
         ILogger<SandboxOrchestrator> logger,
+        SandboxCredential credential,
         SandboxLimits? limits = null
     )
     {
@@ -50,8 +53,33 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         _endpoint = new Uri($"{gatewayBaseUrl.TrimEnd('/')}/mcp");
         _sessionId = sessionId;
+        _credential = credential;
         _limits = limits ?? new SandboxLimits();
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    /// <summary>
+    /// Builds the transport header set every daemon MCP client stamps on its gateway connection: the
+    /// session binding (<c>X-Session-ID</c>) plus the per-app credential the gateway requires on every
+    /// app-facing call (ADR 0029). <c>X-Sbx-App-Key</c> is omitted entirely when the credential carries no
+    /// key — the keyless <c>AUTH_ENFORCE=off</c> dev path — rather than sent as an empty header value.
+    /// Shared by <see cref="EnsureConnectedAsync"/> and <c>LiveReviewAgentLoopFactory</c>'s own <c>/mcp</c>
+    /// transport, the daemon's other direct (registry-bypassing) MCP client.
+    /// </summary>
+    internal static Dictionary<string, string> BuildTransportHeaders(string sessionId, SandboxCredential credential)
+    {
+        var headers = new Dictionary<string, string>
+        {
+            ["X-Session-ID"] = sessionId,
+            ["X-Sbx-App-Id"] = credential.AppId,
+        };
+
+        if (!string.IsNullOrEmpty(credential.AppKey))
+        {
+            headers["X-Sbx-App-Key"] = credential.AppKey;
+        }
+
+        return headers;
     }
 
     public async Task<SandboxCommandResult> RunAsync(
@@ -114,10 +142,7 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
                     {
                         Name = "sandbox",
                         Endpoint = _endpoint,
-                        AdditionalHeaders = new Dictionary<string, string>
-                        {
-                            ["X-Session-ID"] = _sessionId,
-                        },
+                        AdditionalHeaders = BuildTransportHeaders(_sessionId, _credential),
                     });
 
                 _client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken)

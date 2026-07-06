@@ -33,6 +33,23 @@ var daemonOptions =
     ?? new CodeReviewDaemonOptions();
 builder.Services.AddSingleton(daemonOptions);
 
+// ── Sandbox gateway per-app identity (ADR 0029) ─────────────────────────────────────────────────
+// The daemon authenticates to the sandbox gateway under its OWN app identity — distinct from
+// LmStreaming.Sample's default ("lmstreaming-sample") — so the shared SandboxSessionRegistry's
+// default credential (derived from sandboxGatewayOptions.AppId/AppKey below) and the daemon's two
+// direct /mcp transports (SandboxOrchestrator, LiveReviewAgentLoopFactory) all stamp the SAME
+// X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
+// absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
+// built (never blocking startup, and never logging the key itself).
+var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "codereview-daemon";
+var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY");
+var daemonKeyMissing = string.IsNullOrWhiteSpace(daemonAppKey);
+if (!daemonKeyMissing)
+{
+    SandboxCredential.ValidateKeyOrThrow(daemonAppId, daemonAppKey!);
+}
+var daemonCredential = new SandboxCredential(daemonAppId, daemonAppKey ?? string.Empty);
+
 // ── OAuth auth-provider services ───────────────────────────────────────────────────────────────
 // Shared with LmStreaming.Sample (see its Program.cs): the sandbox gateway calls back into the
 // auth webhook to obtain a per-provider bearer/basic credential for an outbound request, and these
@@ -114,6 +131,7 @@ builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrat
     Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxOrchestrator>>(),
+    daemonCredential,
     daemonOptions.Limits));
 builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
     new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
@@ -135,6 +153,11 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     // tracks whatever the adopted gateway actually mounts (e.g. B:/sandbox-workspaces/workspaces).
     WorkspaceBasePath = Environment.GetEnvironmentVariable("CRD_WORKSPACE_BASE_PATH")
         ?? builder.Configuration["SandboxGateway:WorkspaceBasePath"],
+    // The daemon's own identity (see above) — so the registry's default credential (used to stamp its
+    // own REST/MCP calls) matches the two direct /mcp transports rather than defaulting to
+    // "lmstreaming-sample".
+    AppId = daemonAppId,
+    AppKey = daemonKeyMissing ? null : daemonAppKey,
 };
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
@@ -152,7 +175,8 @@ builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
 builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
     sp.GetRequiredService<ISandboxSessionSource>(),
     daemonOptions,
-    sp.GetRequiredService<ILoggerFactory>()));
+    sp.GetRequiredService<ILoggerFactory>(),
+    daemonCredential));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
@@ -222,7 +246,10 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
 }
 
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
-builder.Services.AddSingleton<IReviewStageExecutor, DaemonReviewStageExecutor>();
+// SandboxCredential is a value type, so it cannot be a DI singleton; pass the daemon identity explicitly
+// via ActivatorUtilities (its ctor param is the trailing, type-matched arg) while the rest resolves from DI.
+builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
+    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential));
 builder.Services.AddSingleton<PrOrchestrator>();
 
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
@@ -252,6 +279,16 @@ builder.Services
     });
 
 var app = builder.Build();
+
+// One-time, non-blocking notice for the keyless dev path (see the per-app identity block above) — never
+// logs the key itself, since none was configured.
+if (daemonKeyMissing)
+{
+    app.Logger.LogWarning(
+        "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with no key "
+            + "(keyless AUTH_ENFORCE=off dev path). Set CRD_SANDBOX_APP_KEY for a gateway that enforces auth.",
+        daemonAppId);
+}
 
 // The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the
 // gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway

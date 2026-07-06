@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using CodeReviewDaemon.Sample.Configuration;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using ModelContextProtocol.Client;
 
 namespace CodeReviewDaemon.Sample.Agents;
@@ -96,7 +97,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             {
                 Name = "sandbox",
                 Endpoint = new Uri($"{toolContext.GatewayBaseUrl}/mcp"),
-                AdditionalHeaders = new Dictionary<string, string> { ["X-Session-ID"] = toolContext.SessionId },
+                AdditionalHeaders = SandboxOrchestrator.BuildTransportHeaders(toolContext.SessionId, toolContext.Credential),
             });
             var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
             ownedClients = [client];

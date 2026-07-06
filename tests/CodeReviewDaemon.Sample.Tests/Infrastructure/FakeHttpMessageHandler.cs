@@ -83,7 +83,9 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
             request.RequestUri!,
             request.Headers.Authorization is { } auth ? $"{auth.Scheme} {auth.Parameter}" : null,
             request.Headers.UserAgent.ToString(),
-            body));
+            body,
+            GetHeader(request, "X-Sbx-App-Id"),
+            GetHeader(request, "X-Sbx-App-Key")));
 
         foreach (var route in _routes)
         {
@@ -99,6 +101,12 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         };
     }
 
+    /// <summary>Reads a single request header value, or <c>null</c> when absent — used to capture the
+    /// sandbox gateway's per-app auth headers (ADR 0029) alongside the existing bearer/basic Authorization
+    /// capture above.</summary>
+    private static string? GetHeader(HttpRequestMessage request, string name) =>
+        request.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
+
     private sealed record Route(
         Func<HttpRequestMessage, bool> Predicate,
         Func<HttpRequestMessage, HttpResponseMessage> Respond);
@@ -109,5 +117,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         Uri Uri,
         string? Authorization,
         string UserAgent,
-        string? Body);
+        string? Body,
+        string? SbxAppId = null,
+        string? SbxAppKey = null);
 }

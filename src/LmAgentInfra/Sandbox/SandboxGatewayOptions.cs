@@ -117,6 +117,22 @@ public sealed class SandboxGatewayOptions
     public string AppId { get; set; } = "lmstreaming-sample";
 
     /// <summary>
+    /// Base64-encoded app secret the gateway requires alongside <see cref="AppId"/> (ADR 0029),
+    /// sent as the <c>X-Sbx-App-Key</c> header. SECRET — never logged. <c>null</c>/blank means no
+    /// credential is configured, which is only valid while the gateway runs with
+    /// <c>AUTH_ENFORCE=off</c> (the keyless dev path).
+    /// </summary>
+    public string? AppKey { get; set; }
+
+    /// <summary>
+    /// When <c>true</c>, the app probes the gateway with the configured credential at startup
+    /// (create + immediately destroy a throwaway session) so a misconfigured/rejected key is
+    /// caught at boot rather than on the first real request. Defaults to <c>false</c> because boot
+    /// is best-effort and the gateway may not be up yet when this app starts.
+    /// </summary>
+    public bool ValidateCredentialOnStartup { get; set; } = false;
+
+    /// <summary>
     /// When <c>true</c> and the gateway is not already healthy, spawn it.
     /// </summary>
     public bool AutoSpawn { get; set; } = true;
