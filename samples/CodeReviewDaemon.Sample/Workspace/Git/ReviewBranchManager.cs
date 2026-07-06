@@ -92,11 +92,18 @@ internal sealed class ReviewBranchManager
     /// accumulate across re-reviews instead of being wiped. The branch is always kept: it is the
     /// caller's job to eventually call <see cref="MergeToDefaultAsync"/> or
     /// <see cref="DeleteBranchAsync"/> once the PR reaches a terminal state.
+    /// <para>
+    /// <paramref name="stagePaths"/> scopes what is staged: when supplied, only those repo-relative
+    /// paths are <c>git add</c>-ed (the pooled-store commit gate — stage ONLY <c>PRs/&lt;pr&gt;/…</c>, never
+    /// the moved code-submodule pointer). When null (the ReviewBot retention path) the whole worktree is
+    /// staged via <c>git add -A</c> so a sibling <c>KnowledgeBase/…</c> write is picked up too.
+    /// </para>
     /// </summary>
     public async Task<ReviewBotPublishResult> CommitNotesAsync(
         string repoRoot,
         ReviewBotPublishRequest request,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? stagePaths = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
@@ -133,14 +140,26 @@ internal sealed class ReviewBranchManager
                 .ConfigureAwait(false);
         }
 
-        await RunGitAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
+        // 3. Stage — scoped to the supplied paths (the commit gate) or the whole worktree by default.
+        if (stagePaths is { Count: > 0 })
+        {
+            foreach (var path in stagePaths)
+            {
+                await RunGitAsync(["add", "--", path], repoRoot, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await RunGitAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
+        }
+
         await RunGitAsync(
                 ["commit", "-m", BuildCommitMessage(request)],
                 repoRoot,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // 3. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
+        // 4. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
         // no fast-forward of the default and no delete happen here.
         var pushed = await TryPushWithRebaseAsync(repoRoot, reviewBranch, cancellationToken)
             .ConfigureAwait(false);
@@ -298,7 +317,15 @@ internal sealed class ReviewBranchManager
     /// safe as a git ref. Exposed so callers (and tests) can resolve the branch name for a request.
     /// </summary>
     public string BuildReviewBranchName(ReviewBotPublishRequest request) =>
-        $"review/{_provider}/{SlugifyRepo(request.TargetRepo)}/{request.PrNumber}";
+        BuildReviewBranchName(_provider, request.TargetRepo, request.PrNumber);
+
+    /// <summary>
+    /// The provider-parameterized branch-name builder the executor's commit-notes, the slot preparer, and
+    /// the PR-lifecycle sweeper all share so they name a PR's persistent notes branch identically (the
+    /// sweeper resolves the branch for a reviewed row without a full request).
+    /// </summary>
+    public static string BuildReviewBranchName(string provider, RepoIdentity repo, int prNumber) =>
+        $"review/{provider}/{SlugifyRepo(repo)}/{prNumber}";
 
     private string BuildCommitMessage(ReviewBotPublishRequest request) =>
         $"Review {_provider} {request.TargetRepo.DisplayName}#{request.PrNumber} @ {ShortSha(request.HeadSha)}";

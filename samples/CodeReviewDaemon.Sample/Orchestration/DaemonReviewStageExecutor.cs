@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -71,6 +73,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// the tool-assisted store path; the single-repo path clones straight into <see cref="TargetRoot"/>.</summary>
     private const string StoreRoot = "/workspace/store";
 
+    /// <summary>The container mount point the leased pool slot is exposed at (design §4.1): the slot's
+    /// <c>store/</c> child is <see cref="StoreRoot"/> and its <c>scratch/</c> child is a sibling outside the
+    /// git tree. The daemon's host-side git operates on the slot's HOST paths; the review agent's MCP tools
+    /// address these container paths — they are the ones recorded on the context artifact + tool context.</summary>
+    private const string SandboxWorkspaceRoot = "/workspace";
+
     /// <summary>The ReviewBot default branch artifacts are durably landed on (plan §2).</summary>
     private const string ReviewBotDefaultBranch = "main";
 
@@ -105,6 +113,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
     private readonly Func<IStreamingAgent>? _providerAgentFactory;
     private readonly HostRetentionWorkspace? _hostRetention;
+    private readonly ReviewSlotWorkspace? _slotWorkspace;
+
+    /// <summary>
+    /// The per-run pooled lease, populated by <see cref="FetchContextAsync"/> when the pooled
+    /// scoped-writable path handled a run and consumed by <see cref="ReviewAsync"/> (scoped tool context)
+    /// and <see cref="PostAsync"/> (commit-notes + slot return). Held in memory because a leased slot is a
+    /// host-process resource, not persisted state; the stages of a run execute in-process and serially, so
+    /// a resume after a crash simply finds no lease and degrades to the read-only / host-retention path.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, LeasedReview> _leasedReviews = new();
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -118,7 +136,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IDiscoveredItemsSource? discoveredItemsSource = null,
         DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
         Func<IStreamingAgent>? providerAgentFactory = null,
-        HostRetentionWorkspace? hostRetention = null)
+        HostRetentionWorkspace? hostRetention = null,
+        ReviewSlotWorkspace? slotWorkspace = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -133,6 +152,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _subAgentTemplateBuilder = subAgentTemplateBuilder;
         _providerAgentFactory = providerAgentFactory;
         _hostRetention = hostRetention;
+        _slotWorkspace = slotWorkspace;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -185,11 +205,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return null;
             }
 
+            // Scoped-writable reviewer (Layer 1): when this run leased a pooled slot and reviewer-writes are
+            // enabled, hand the agent scoped Write/Edit/Bash + the (container) notes/scratch roots the writes
+            // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
+            var writeScope = ResolvePooledWriteScope(run);
+
             return new ReviewToolContext(
                 GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false));
+                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false),
+                EnableReviewerWrites: writeScope.Enabled,
+                WritableToolAllowList: writeScope.WritableAllow,
+                NotesDir: writeScope.NotesDir,
+                ScratchDir: writeScope.ScratchDir);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -253,6 +282,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task FetchContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
+
+        // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
+        // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
+        // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
+        // false and the existing per-run/diff-only checkout below runs unchanged (degrade intact, §7).
+        if (UsePooledReview
+            && await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
         var git = new GitRunner(runner);
 
@@ -298,12 +338,181 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             layout.TargetDir, layout.StoreRoot ?? "(single-repo)");
     }
 
+    /// <summary>Whether the pooled scoped-writable review path is wired and enabled: tool-assisted +
+    /// reviewer-writes on, a pool wired (Program.cs), and a resolved store to clone into the slots. When
+    /// off, <see cref="FetchContextAsync"/> uses the existing per-run/diff-only checkout unchanged.</summary>
+    private bool UsePooledReview =>
+        _options.EnableToolAssistedReview
+        && _options.EnableReviewerWrites
+        && _slotWorkspace is not null
+        && !string.IsNullOrWhiteSpace(_options.ResolvedStoreUrl);
+
+    /// <summary>
+    /// The pooled ContextReady phase: lease a warm slot, prepare it host-side (fetch, reuse-or-create the
+    /// PR's persistent notes branch, advance the reviewed submodule to the PR head, wipe scratch), diff the
+    /// prepared submodule host-side, and persist the context artifact carrying the <b>container</b> paths
+    /// the review agent's tools address. Returns <c>true</c> when it handled the run (the lease is carried
+    /// forward on <see cref="_leasedReviews"/> for the review + commit-notes + return), or <c>false</c> when
+    /// the reviewed repo is not a submodule of the store so the caller falls back to the per-run checkout.
+    /// The slot is always returned on any decline/failure so a transient error can never leak pool capacity;
+    /// a genuine prep/diff failure surfaces (throws) so the stage retries with no partial artifact (§8).
+    /// </summary>
+    private async Task<bool> TryPooledFetchContextAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
+    {
+        var storeUrl = _options.ResolvedStoreUrl!;
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
+        var hostFileSystem = _slotWorkspace.HostFileSystem;
+
+        var slot = await _slotWorkspace.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
+        var handedOff = false;
+        try
+        {
+            var submoduleRelPath = await ResolveStoreSubmodulePathAsync(hostFileSystem, slot.StorePath, repo, provider)
+                .ConfigureAwait(false);
+            if (submoduleRelPath is null)
+            {
+                _logger.LogInformation(
+                    "Run {RunId}: {Repo} is not a submodule of the pooled store; using the per-run checkout.",
+                    run.Id, repo.NormalizedKey);
+                return false;
+            }
+
+            var branch = BuildNotesBranchName(hostGit, hostFileSystem, provider, repo, run);
+            var notesRelPath = BuildNotesRelPath(provider, repo, run.PrId);
+            var policy = DaemonOperationPolicy.BuildForRun(
+                repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
+                allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
+
+            var prepared = await _slotWorkspace.Preparer.PrepareAsync(
+                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            // Diff + manifest run HOST-side against the prepared submodule working tree (privileged daemon
+            // git), never in the sandbox the agent shares.
+            var diff = await hostGit
+                .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"], prepared.TargetDir, cancellationToken)
+                .ConfigureAwait(false);
+            if (!diff.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
+            }
+
+            var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+            var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken).ConfigureAwait(false);
+
+            // Container paths the agent's MCP tools address (the slot is mounted at /workspace) — these, not
+            // the host paths the daemon git used, are what the review input + tool context reference.
+            var targetDirSandbox = PosixJoin(StoreRoot, submoduleRelPath);
+            var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
+            var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
+
+            _ = _store.AddArtifact(new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = ContextArtifactSchemaVersion,
+                ArtifactKind = ContextArtifactKind,
+                Provider = provider,
+                Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                    run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, targetDirSandbox, StoreRoot)),
+            });
+
+            _leasedReviews[run.Id] = new LeasedReview(
+                slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox);
+            handedOff = true;
+
+            _logger.LogInformation(
+                "Run {RunId}: pooled slot {Index} prepared on branch '{Branch}' ({Length} char diff, {Files} "
+                    + "manifest files) from {TargetDir}.",
+                run.Id, slot.Index, branch, boundedDiff.Length, ManifestFileCount(fileManifest), prepared.TargetDir);
+            return true;
+        }
+        finally
+        {
+            // Return the slot on decline (not-a-submodule) or failure (exception). On success the lease owns
+            // it until PostAsync returns it, so it is NOT returned here (handedOff).
+            if (!handedOff)
+            {
+                await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>Resolves the reviewed repo's submodule path under the leased slot's store clone by parsing
+    /// its <c>.gitmodules</c> (mirrors <see cref="TryStoreCheckoutAsync"/>'s pairing), or <c>null</c> when
+    /// the store declares no submodule for the reviewed repo — the signal to fall back to the per-run
+    /// checkout.</summary>
+    private async Task<string?> ResolveStoreSubmodulePathAsync(
+        ISandboxFileSystem fileSystem, string storeRoot, RepoIdentity repo, string provider)
+    {
+        var gitmodules = await fileSystem
+            .ReadFileAsync(PosixJoin(storeRoot, ".gitmodules"), CancellationToken.None)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(gitmodules))
+        {
+            return null;
+        }
+
+        var targetUrl = GitRemoteUrl.Parse(TargetRemoteUrl(repo, provider));
+        var entry = GitModulesParser.Parse(gitmodules)
+            .FirstOrDefault(e => SubmoduleTargetsRepo(e.Url, targetUrl));
+        return entry?.Path;
+    }
+
+    /// <summary>The PR's persistent notes branch name (<c>review/{provider}/{owner-repo}/{pr}</c>) — resolved
+    /// through <see cref="ReviewBranchManager.BuildReviewBranchName(ReviewBotPublishRequest)"/> so the preparer,
+    /// the commit-notes step, and the sweeper all name the branch identically.</summary>
+    private string BuildNotesBranchName(
+        GitRunner hostGit, ISandboxFileSystem hostFileSystem, string provider, RepoIdentity repo, ReviewRun run) =>
+        new ReviewBranchManager(hostGit, hostFileSystem, provider, _loggerFactory.CreateLogger<ReviewBranchManager>())
+            .BuildReviewBranchName(BuildNotesRequest(repo, run, []));
+
+    /// <summary>The PR's persistent notes directory under the store (<c>PRs/{provider}/{owner-repo}/{pr}</c>,
+    /// design §4.3 D3 — one accumulating dir per PR). Each re-review adds a per-commit subdir under it.</summary>
+    private static string BuildNotesRelPath(string provider, RepoIdentity repo, string prId) =>
+        $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{prId}";
+
+    private static ReviewBotPublishRequest BuildNotesRequest(
+        RepoIdentity repo, ReviewRun run, IReadOnlyList<ReviewArtifactFile> files) =>
+        new(
+            repo,
+            PrNumber: int.Parse(run.PrId, CultureInfo.InvariantCulture),
+            HeadSha: run.HeadSha,
+            DefaultBranch: ReviewBotDefaultBranch,
+            Files: files);
+
+    /// <summary>The scoped-write config for the run's review agent: the writable tool allow-list + the
+    /// container notes/scratch roots when this run leased a pooled slot and reviewer-writes are on, else
+    /// read-only (no writable tools). Only a pooled lease supplies concrete write roots, so a run that fell
+    /// back to the per-run checkout stays read-only.</summary>
+    private (bool Enabled, IReadOnlyList<string>? WritableAllow, string? NotesDir, string? ScratchDir) ResolvePooledWriteScope(
+        ReviewRun run) =>
+        _options.EnableReviewerWrites && _leasedReviews.TryGetValue(run.Id, out var lease)
+            ? (true, _options.WritableToolAllowList, lease.NotesDirSandbox, lease.ScratchDirSandbox)
+            : (false, null, null, null);
+
     /// <summary>Where a run's code was checked out. <see cref="ReviewRoot"/> is what the review agent reads
     /// from (the cross-repo store root when in store mode — so Contracts/ and sibling repos are visible —
     /// else the single-repo checkout). <see cref="TargetDir"/> is the reviewed repo itself (the submodule
     /// working tree in store mode, else the same as ReviewRoot); the diff, head checkout, and file manifest
     /// are all taken there. <see cref="StoreRoot"/> is non-null only in cross-repo store mode.</summary>
     private sealed record CheckoutLayout(string ReviewRoot, string TargetDir, string? StoreRoot);
+
+    /// <summary>The in-memory carry between the stages of a pooled run: the leased <see cref="Slot"/> (to
+    /// return on the terminal stage), the host-side <see cref="Prepared"/> checkout (its <c>StoreRoot</c> is
+    /// where commit-notes stages the PR dir), the PR notes <see cref="NotesRelPath"/> (the commit gate's
+    /// scoped stage path + branch derivation), the <see cref="Branch"/> the notes persist on, and the
+    /// container <see cref="NotesDirSandbox"/>/<see cref="ScratchDirSandbox"/> the scoped review agent
+    /// writes to.</summary>
+    private sealed record LeasedReview(
+        ReviewSlot Slot,
+        PreparedCheckout Prepared,
+        string NotesRelPath,
+        string Branch,
+        string NotesDirSandbox,
+        string ScratchDirSandbox);
 
     /// <summary>
     /// Resolves the run's checkout. When a cross-repo store is configured (<see
@@ -711,9 +920,27 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
 
-        // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
-        // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
-        await PublishToReviewBotAsync(run, repo, provider, body, cancellationToken).ConfigureAwait(false);
+        // Retention (design §4.4, the commit gate). A run that leased a pooled slot commits its notes onto
+        // the slot's store checkout scoped to ONLY the PR notes dir, then returns the slot; every other run
+        // uses the host ReviewBot retention checkout exactly as before. The slot is returned even if the
+        // commit throws, and the atomic TryRemove guards against a double-return.
+        if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
+        {
+            try
+            {
+                await CommitPooledNotesAsync(run, repo, provider, body, lease, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
+            // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
+            await PublishToReviewBotAsync(run, repo, provider, body, cancellationToken).ConfigureAwait(false);
+        }
 
         // Terminal-stage cleanup (Task 18, design §7): tear down the run's per-run sandbox session (and
         // its host workspace dir, best-effort) now that the run has reached its terminal stage. The
@@ -721,6 +948,57 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         if (_options.EnableToolAssistedReview && _provisioner is not null)
         {
             await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The pooled commit gate (design §4.4/§5.4): commits the review body into the PR's persistent notes
+    /// dir on the slot's store checkout, staging <b>only</b> <c>PRs/&lt;pr&gt;/…</c> — never the moved code
+    /// submodule pointer, never scratch — and pushes the notes branch (kept for later re-reviews; merged or
+    /// deleted only by the PR-lifecycle sweep). Records the <c>reviewbot_push</c> outcome in the outbox
+    /// exactly like <see cref="PublishToReviewBotAsync"/>: terminal <see cref="OutboxStatus.Posted"/> with
+    /// the pushed SHA on success, left non-terminal on <see cref="ReviewBotPublishOutcome.GitSyncFailed"/>.
+    /// </summary>
+    private async Task CommitPooledNotesAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewBody, LeasedReview lease,
+        CancellationToken cancellationToken)
+    {
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
+        var manager = new ReviewBranchManager(
+            hostGit, _slotWorkspace.HostFileSystem, provider, _loggerFactory.CreateLogger<ReviewBranchManager>());
+
+        // The per-commit review file lives inside the accumulating per-PR notes dir (design §4.3 D3); only
+        // that dir is staged, so nothing the agent wrote elsewhere (code, scratch) can reach the commit.
+        var reviewFile = $"{lease.NotesRelPath}/{ShortSha(run.HeadSha)}/review.md";
+        var reqFiles = new[] { new ReviewArtifactFile(reviewFile, reviewBody) };
+        var request = BuildNotesRequest(repo, run, reqFiles);
+
+        var result = await manager
+            .CommitNotesAsync(lease.Prepared.StoreRoot, request, cancellationToken, stagePaths: [lease.NotesRelPath])
+            .ConfigureAwait(false);
+
+        var outbox = _store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = BuildPushKey(run, repo, provider),
+            Provider = provider,
+            ReviewRunId = run.Id,
+            Operation = PushReviewBotOperation,
+            ArtifactKind = ReviewArtifactKind,
+            Status = OutboxStatus.Pending,
+        });
+
+        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
+        {
+            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
+            _logger.LogInformation(
+                "Run {RunId}: pooled notes pushed {Sha} onto branch '{Branch}' (kept for later re-reviews).",
+                run.Id, result.PushedSha, result.ReviewBranch);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Run {RunId}: pooled notes failed to push; branch '{Branch}' kept for reconcile.",
+                run.Id, result.ReviewBranch);
         }
     }
 
@@ -939,6 +1217,19 @@ internal sealed record ContextArtifactPayload(
 
 /// <summary>The persisted primary review output (kind <c>review</c>).</summary>
 internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId);
+
+/// <summary>
+/// The host-side pooled-review dependencies (Layer 1), non-null in <see cref="DaemonReviewStageExecutor"/>
+/// only when the pooled scoped-writable path is wired in Program.cs; the diff-only and per-run-session
+/// paths leave it null and behave exactly as before. <see cref="HostRunner"/>/<see cref="HostFileSystem"/>
+/// are the daemon-process (privileged, write-credentialled) git+fs the pooled diff and commit-notes run
+/// through — never the sandbox the review agent shares (design §4.7).
+/// </summary>
+internal sealed record ReviewSlotWorkspace(
+    IReviewSlotPool Pool,
+    IReviewSlotPreparer Preparer,
+    ISandboxCommandRunner HostRunner,
+    ISandboxFileSystem HostFileSystem);
 
 /// <summary>
 /// The one discovery operation <see cref="DaemonReviewStageExecutor"/> needs from the registry to build

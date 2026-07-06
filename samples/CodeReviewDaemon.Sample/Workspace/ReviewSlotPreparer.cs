@@ -13,6 +13,24 @@ namespace CodeReviewDaemon.Sample.Workspace;
 internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, string NotesDir, string Branch);
 
 /// <summary>
+/// The narrow prepare seam <see cref="ReviewSlotPreparer"/> exposes to the executor, so the pooled-review
+/// wiring can be verified against a fake preparer (mirroring <see cref="IReviewSlotPool"/>).
+/// </summary>
+internal interface IReviewSlotPreparer
+{
+    Task<PreparedCheckout> PrepareAsync(
+        ReviewSlot slot,
+        ReviewRun run,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string defaultBranch,
+        string notesRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// The privileged phase (design task 6) that prepares a leased warm slot (task 5) for one PR review:
 /// fetches the store, checks out — or reuses — the PR's <b>persistent</b> notes branch so prior notes
 /// survive a re-lease, advances the reviewed submodule to the PR head, and wipes the ephemeral scratch
@@ -22,7 +40,7 @@ internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, stri
 /// checkout, so the same allow-listed, hardened git sequence governs both paths. No filesystem-perms step
 /// here — the spike ruled RO-mount/chmod out; enforcement of what the review agent can write is elsewhere.
 /// </summary>
-internal sealed class ReviewSlotPreparer
+internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 {
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;

@@ -104,14 +104,38 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
                     new Dictionary<string, McpClient> { ["sandbox"] = client }, "sandbox", omitServerPrefix: true)
                 .GetAwaiter().GetResult();
             var (srcContracts, _) = scratch.Build();
-            ReadOnlyToolFilter.Apply(scratch, registry, toolContext.ReadOnlyToolAllowList);
+
+            // The pooled scoped-writable reviewer (Layer 1) keeps the read-only tools AND adds scoped
+            // Write/Edit/Bash (code stays read-only; Write/Edit are path-wrapped to the PR notes dir +
+            // scratch). Absent that config the reviewer stays hard read-only exactly as before.
+            var scopedWrite = toolContext.EnableReviewerWrites
+                && toolContext.WritableToolAllowList is { Count: > 0 } writableAllow
+                && !string.IsNullOrWhiteSpace(toolContext.NotesDir)
+                && !string.IsNullOrWhiteSpace(toolContext.ScratchDir);
+            if (scopedWrite)
+            {
+                ScopedToolFilter.Apply(
+                    scratch,
+                    registry,
+                    toolContext.ReadOnlyToolAllowList,
+                    toolContext.WritableToolAllowList!,
+                    toolContext.NotesDir!,
+                    toolContext.ScratchDir!);
+            }
+            else
+            {
+                ReadOnlyToolFilter.Apply(scratch, registry, toolContext.ReadOnlyToolAllowList);
+            }
+
             var (keptContracts, _) = registry.Build();
             _loggerFactory.CreateLogger<LiveReviewAgentLoopFactory>().LogInformation(
-                "Tool-assisted loop {ThreadId} (session {SessionId}): gateway tools=[{Src}] allow=[{Allow}] kept=[{Kept}]",
+                "Tool-assisted loop {ThreadId} (session {SessionId}): gateway tools=[{Src}] ro-allow=[{Allow}] "
+                    + "writable=[{Writable}] kept=[{Kept}]",
                 threadId,
                 toolContext.SessionId,
                 string.Join(",", srcContracts.Select(c => c.Name)),
                 string.Join(",", toolContext.ReadOnlyToolAllowList),
+                scopedWrite ? string.Join(",", toolContext.WritableToolAllowList!) : "(read-only)",
                 string.Join(",", keptContracts.Select(c => c.Name)));
         }
 

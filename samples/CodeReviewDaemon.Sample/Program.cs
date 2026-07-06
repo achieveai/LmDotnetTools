@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
@@ -221,10 +222,96 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
     });
 }
 
+// ── Pooled scoped-writable review workspace + PR-lifecycle sweep (Layer 1) ─────────────────────────
+// Wired only when the pooled path is enabled (tool-assisted + reviewer-writes) AND a store is resolved.
+// Otherwise DaemonReviewStageExecutor's null-fallback keeps the per-run/diff-only checkout and no sweeper
+// runs. The pool, preparer, and sweeper share ONE host-side git runner (privileged, with the write
+// credential) — never the sandbox the untrusted review agent shares (design §4.7).
+if (daemonOptions.EnableToolAssistedReview
+    && daemonOptions.EnableReviewerWrites
+    && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
+{
+    string storeUrl = daemonOptions.ResolvedStoreUrl;
+    var poolRoot = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+        ? Path.Combine(AppContext.BaseDirectory, "review-pool")
+        : daemonOptions.ReviewPoolHostRoot;
+
+    builder.Services.AddSingleton(sp =>
+    {
+        var github = sp.GetRequiredService<GitHubOAuthProvider>();
+        var hostRunner = new HostGitCommandRunner(
+            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+        var hostFileSystem = new HostFileSystem();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
+        var pool = new ReviewSlotPool(
+            daemonOptions.ReviewPoolSize,
+            poolRoot,
+            daemonOptions.ScratchDirName,
+            async (slot, ct) =>
+            {
+                var clone = await new GitRunner(hostRunner)
+                    .RunAsync(["clone", storeUrl, slot.StorePath], workingDirectory: null, ct)
+                    .ConfigureAwait(false);
+                if (!clone.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Cloning the review store into slot {slot.Index} failed (exit {clone.ExitCode}): {clone.Stderr}");
+                }
+            },
+            loggerFactory.CreateLogger<ReviewSlotPool>());
+
+        // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
+        var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        return new ReviewSlotWorkspace(pool, preparer, hostRunner, hostFileSystem);
+    });
+
+    builder.Services.AddSingleton(sp =>
+    {
+        var slots = sp.GetRequiredService<ReviewSlotWorkspace>();
+        var store = sp.GetRequiredService<ReviewStore>();
+        var providers = sp.GetServices<IPrProvider>().ToList();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var hostGit = new GitRunner(slots.HostRunner);
+        var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
+        var branchManager = new ReviewBranchManager(
+            hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
+        var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
+
+        return new PrLifecycleSweeper(
+            async ct =>
+            {
+                // Ensure a host store checkout exists to merge/delete branches in; a clone failure logs and
+                // skips this sweep (retried next cycle) rather than aborting.
+                var cloneFailure = await ReviewBotCheckout
+                    .EnsureCheckoutAsync(hostGit, storeUrl, sweeperRepoRoot, sweepLogger, ct)
+                    .ConfigureAwait(false);
+                if (cloneFailure is not null)
+                {
+                    sweepLogger.LogWarning(
+                        "PR-lifecycle sweep skipped: store checkout unavailable ({Kind}): {Message}",
+                        cloneFailure.Kind, cloneFailure.Message);
+                    return [];
+                }
+
+                var rows = await store.ListReviewedPrsAsync(ct).ConfigureAwait(false);
+                IReadOnlyList<ReviewedPr> reviewed =
+                    [.. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!)];
+                return reviewed;
+            },
+            (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
+            branchManager,
+            sweeperRepoRoot,
+            "main",
+            daemonOptions.MergeNotesBranchOnClose,
+            loggerFactory.CreateLogger<PrLifecycleSweeper>());
+    });
+}
+
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
 builder.Services.AddSingleton<IReviewStageExecutor, DaemonReviewStageExecutor>();
 builder.Services.AddSingleton<PrOrchestrator>();
-
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -232,7 +319,10 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetServices<IPrProvider>(),
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
-    sp.GetRequiredService<ILogger<PrPollingService>>()));
+    sp.GetRequiredService<ILogger<PrPollingService>>(),
+    // The PR-lifecycle sweep runs on the poller cadence when the pooled path registered a sweeper; the
+    // GetService is null otherwise, so the poller keeps polling with no sweep (design §4.5).
+    sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth

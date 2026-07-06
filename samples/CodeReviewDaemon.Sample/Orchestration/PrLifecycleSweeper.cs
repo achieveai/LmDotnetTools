@@ -1,14 +1,62 @@
+using System.Globalization;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
+/// The glue the daemon composes the <see cref="PrLifecycleSweeper"/>'s two seams from (kept out of the
+/// composition root so it is unit-testable): mapping a reviewed-PR row to a sweep unit and routing a sweep
+/// unit's lifecycle lookup to the matching provider.
+/// </summary>
+internal static class PrLifecycleSweepSeam
+{
+    /// <summary>
+    /// Maps a <see cref="ReviewedPrRow"/> from <see cref="ReviewStore.ListReviewedPrsAsync"/> to a
+    /// <see cref="ReviewedPr"/> sweep unit: the storage provider is mapped to the branch/poll namespace
+    /// (<c>azure-devops</c> → <c>ado</c>) and the persistent notes branch name is derived the same way the
+    /// executor's commit-notes does (<see cref="ReviewBranchManager.BuildReviewBranchName(string, RepoIdentity, int)"/>),
+    /// so the sweep targets the exact branch the reviews pushed to. Returns <c>null</c> for a non-numeric PR
+    /// id (which cannot name a branch) so the caller can skip it without aborting the sweep.
+    /// </summary>
+    public static ReviewedPr? MapReviewedPr(ReviewedPrRow row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+
+        if (!int.TryParse(row.PrId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var prNumber))
+        {
+            return null;
+        }
+
+        var provider = string.Equals(row.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : row.Provider;
+        return new ReviewedPr(
+            row.Repo, provider, row.PrId, ReviewBranchManager.BuildReviewBranchName(provider, row.Repo, prNumber));
+    }
+
+    /// <summary>
+    /// Routes a sweep unit's lifecycle lookup to the <see cref="IPrProvider"/> whose namespace matches the
+    /// PR's (mapped) provider, throwing when none is registered — the <c>getPrLifecycleAsync</c> seam.
+    /// </summary>
+    public static Task<PrLifecycle> ResolveLifecycleAsync(
+        IReadOnlyList<IPrProvider> providers, ReviewedPr pr, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(providers);
+        ArgumentNullException.ThrowIfNull(pr);
+
+        var provider = providers.FirstOrDefault(p =>
+            string.Equals(p.Provider, pr.Provider, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No IPrProvider registered for '{pr.Provider}'.");
+        return provider.GetPrStateAsync(pr.Repo, pr.PrId, cancellationToken);
+    }
+}
+
+/// <summary>
 /// One reviewed PR whose persistent notes branch may need resolving once the PR reaches a terminal
 /// lifecycle. <see cref="Branch"/> is the review branch
-/// <see cref="ReviewBranchManager.BuildReviewBranchName"/> produced for it (precomputed by the caller —
-/// the real <c>ReviewStore</c> query wired in a later task; here it is supplied by the
-/// <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
+/// <see cref="ReviewBranchManager.BuildReviewBranchName(string, RepoIdentity, int)"/> produced for it
+/// (precomputed by the caller — the <c>ReviewStore</c> query supplies the rows and the caller derives the
+/// branch name via the <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
 /// </summary>
 internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch);
 

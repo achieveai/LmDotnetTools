@@ -21,6 +21,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly PrOrchestrator _orchestrator;
     private readonly ILogger<PrPollingService> _logger;
     private readonly TimeSpan _pollInterval;
+    private readonly Func<CancellationToken, Task>? _sweepAsync;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -28,7 +29,8 @@ internal sealed class PrPollingService : BackgroundService
         ReviewStore store,
         PrOrchestrator orchestrator,
         ILogger<PrPollingService> logger,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        Func<CancellationToken, Task>? sweepAsync = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -36,6 +38,7 @@ internal sealed class PrPollingService : BackgroundService
         _orchestrator = orchestrator;
         _logger = logger;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
+        _sweepAsync = sweepAsync;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -53,6 +56,25 @@ internal sealed class PrPollingService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Poll cycle failed; continuing after the interval.");
+            }
+
+            // PR-lifecycle sweep (design §4.5): merge-on-close / delete-on-abandon for reviewed PRs' notes
+            // branches, on the same cadence as polling. Isolated from the poll so a sweep failure never stops
+            // the poller (the sweeper is itself degrade-not-throw per PR).
+            if (_sweepAsync is not null)
+            {
+                try
+                {
+                    await _sweepAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "PR-lifecycle sweep failed; continuing after the interval.");
+                }
             }
 
             try

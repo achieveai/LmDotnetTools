@@ -15,6 +15,18 @@ namespace CodeReviewDaemon.Sample.Workspace;
 internal sealed record ReviewSlot(int Index, string HostPath, string StorePath, string ScratchPath);
 
 /// <summary>
+/// The narrow lease/return seam <see cref="ReviewSlotPool"/> exposes to the executor, mirroring the
+/// <c>IReviewSessionProvisioner</c>/<c>ISandboxSessionSource</c> seams so the pooled-review wiring stays
+/// verifiable against a fake without standing up the real host-side pool.
+/// </summary>
+internal interface IReviewSlotPool
+{
+    Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken);
+
+    Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// A warm host-side pool of <see cref="ReviewSlot"/>s (design task 5): the daemon leases a slot, uses
 /// its store clone for a review, then returns it — the store is cloned once per slot and never
 /// re-cloned, so repeated reviews avoid the cost of a fresh clone.
@@ -29,7 +41,7 @@ internal sealed record ReviewSlot(int Index, string HostPath, string StorePath, 
 /// index invokes the clone callback; a returned-and-re-leased slot already has its store on disk and
 /// skips it entirely.
 /// </remarks>
-internal sealed class ReviewSlotPool
+internal sealed class ReviewSlotPool : IReviewSlotPool
 {
     private readonly string _hostRoot;
     private readonly string _scratchDirName;
