@@ -210,6 +210,20 @@ public class ProcessTriggerSourceTests
     }
 
     [Fact]
+    public async Task ArmAsync_Throws_WhenBackedByNoopObserver()
+    {
+        // Regression: with no real exit observer wired in, arming used to park harmlessly until
+        // the wait's own ceiling timeout — a slow, confusing way to fail. It must now fail fast at
+        // arm time with a clear reason (maps to the runtime's invalid_args rejection).
+        var src = new ProcessTriggerSource(NoopProcessExitObserver.Instance);
+
+        var act = () => src.ArmAsync(
+            ArmReq("""{"handle":"h1","expectExitCode":0}"""), NoopSinkInstance, CancellationToken.None).AsTask();
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
     public async Task Dispose_StopsFurtherFires()
     {
         var observer = new FakeProcessObserver();

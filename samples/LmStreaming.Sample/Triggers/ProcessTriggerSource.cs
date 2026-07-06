@@ -54,6 +54,15 @@ public sealed class ProcessTriggerSource : ITriggerSource
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(eventSink);
 
+        if (_observer is NoopProcessExitObserver)
+        {
+            // The placeholder observer never completes, so arming against it would silently park
+            // until the wait's own ceiling timeout — a confusing, slow way to fail. Reject at arm
+            // time instead (maps to the runtime's `invalid_args` rejection) with a clear reason.
+            throw new ArgumentException(
+                "The 'process' trigger has no exit observer wired in this host; arming is not supported until a real IProcessExitObserver is provided.");
+        }
+
         var (handle, expectCode, stdoutPattern) = ParseArgs(request.ArgsJson);
         Regex? regex = null;
         if (!string.IsNullOrEmpty(stdoutPattern))
@@ -225,11 +234,12 @@ public sealed class ProcessTriggerSource : ITriggerSource
 
 /// <summary>
 /// Placeholder <see cref="IProcessExitObserver"/> registered until a real Bash-tool exit observer
-/// is wired in. Its <see cref="WaitForExitAsync"/> never completes on its own — only when the arm
-/// is cancelled (disposed, or the wait's own ceiling elapses) — so a <c>process</c> wait armed
-/// against it simply parks harmlessly rather than throwing or fabricating a fake exit. Wiring a
-/// real observer over the Bash-tool process registry (so this kind can actually fire in
-/// production) is a documented follow-up, not part of this task.
+/// is wired in. <see cref="ProcessTriggerSource.ArmAsync"/> fails fast with an <see
+/// cref="ArgumentException"/> when the source is backed by this placeholder, rather than arming a
+/// wait that would otherwise park harmlessly (and confusingly) until its own ceiling timeout — its
+/// <see cref="WaitForExitAsync"/> never completes on its own, only when its own token is
+/// cancelled. Wiring a real observer over the Bash-tool process registry (so this kind can
+/// actually fire in production) is a documented follow-up, not part of this task.
 /// </summary>
 public sealed class NoopProcessExitObserver : IProcessExitObserver
 {
