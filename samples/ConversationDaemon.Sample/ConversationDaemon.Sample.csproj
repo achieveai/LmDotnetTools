@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <RootNamespace>ConversationDaemon.Sample</RootNamespace>
+    <AssemblyName>ConversationDaemon.Sample</AssemblyName>
+  </PropertyGroup>
+  <!-- Pure REST client of an already-running LmStreaming.Sample instance: this sample drives the
+       headless conversation API (#138/#149) purely over HTTP and deliberately takes NO project
+       reference to LmStreaming.Sample (AC1 — no in-process reuse of its types). BCL HttpClient +
+       System.Text.Json cover the entire surface, so there are no package references. -->
+  <ItemGroup>
+    <!-- The daemon's own logic (connection-refused handling, poll/resume sequencing) is unit-tested
+         via a minimal test project that reaches its internal types. -->
+    <InternalsVisibleTo Include="ConversationDaemon.Sample.Tests" />
+  </ItemGroup>
+</Project>

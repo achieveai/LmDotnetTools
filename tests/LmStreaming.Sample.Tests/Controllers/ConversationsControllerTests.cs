@@ -97,6 +97,9 @@ public class ConversationsControllerTests
         var ok = Assert.IsType<OkObjectResult>(result);
         var payload = JsonSerializer.Serialize(ok.Value);
         payload.Should().Contain("\"modeId\":\"math-helper\"");
+        // No Wait is armed on the FakeMultiTurnAgent (HasArmedWaitAsync degrades to false for a
+        // non-loop agent), so a clean switch must carry no warning.
+        Assert.IsType<SwitchModeResponse>(ok.Value).Warning.Should().BeNull();
         pool.GetAgentMode(threadId)!.Id.Should().Be("math-helper");
     }
 
@@ -210,6 +213,8 @@ public class ConversationsControllerTests
 
         var ok = Assert.IsType<OkObjectResult>(result);
         JsonSerializer.Serialize(ok.Value).Should().Contain("\"providerId\":\"openai\"");
+        // No armed Wait on the FakeMultiTurnAgent → the successful switch reports no warning.
+        Assert.IsType<SwitchProviderResponse>(ok.Value).Warning.Should().BeNull();
         pool.GetEffectiveProviderId(threadId, null).Should().Be("openai"); // persisted overwrite
         pool.GetAgentMode(threadId)!.Id.Should().Be(SystemChatModes.DefaultModeId); // mode preserved
     }
