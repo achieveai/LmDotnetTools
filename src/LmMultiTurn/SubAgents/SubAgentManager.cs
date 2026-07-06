@@ -367,6 +367,39 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Awaits a sub-agent's completion by id, returning its final text (or throwing its
+    /// <see cref="SubAgentExecutionException"/> on failure). Used by the sample-app
+    /// SubAgentCompletionTriggerSource so a Wait can observe a sub-agent the same way the internal
+    /// synchronous path does. If the caller's <paramref name="ct"/> fires, the sub-agent is cancelled
+    /// (identical to the internal synchronous wait).
+    /// </summary>
+    public Task<string> ObserveCompletionAsync(string agentId, CancellationToken ct)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        return AwaitCompletionAsync(state, ct);
+    }
+
+    /// <summary>
+    /// Sets whether a specific sub-agent's completion is automatically relayed to the parent. A
+    /// trigger source waiting on this sub-agent flips it to <c>false</c> at arm time (so the result
+    /// arrives once, via the trigger envelope, not twice) and MUST restore it to <c>true</c> if the
+    /// wait is cancelled before completion.
+    /// </summary>
+    public void SetNotifyParentOnCompletion(string agentId, bool value)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        state.NotifyParentOnCompletion = value;
+    }
+
+    /// <summary>
     /// Get the list of available template names.
     /// </summary>
     public IReadOnlyList<string> GetTemplateNames()
