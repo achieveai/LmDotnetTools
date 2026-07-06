@@ -49,4 +49,33 @@ public sealed class CodeReviewDaemonOptionsTests
         options.EnableAdoProvider.Should().BeTrue();
         options.EnabledRepos.Should().Equal("achieveai/LmDotnetTools", "contoso/widgets");
     }
+
+    [Fact]
+    public void Binds_the_pooled_review_workspace_options_from_the_CodeReviewDaemon_section()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CodeReviewDaemon:ReviewPoolSize"] = "4",
+                ["CodeReviewDaemon:ReviewPoolHostRoot"] = "/var/crd/review-pool",
+                ["CodeReviewDaemon:ScratchDirName"] = "work",
+                ["CodeReviewDaemon:EnableReviewerWrites"] = "true",
+                ["CodeReviewDaemon:WritableToolAllowList:0"] = "PrNotes",
+                ["CodeReviewDaemon:MergeNotesBranchOnClose"] = "false",
+            })
+            .Build();
+
+        var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+
+        options.Should().NotBeNull();
+        options!.ReviewPoolSize.Should().Be(4);
+        options.ReviewPoolHostRoot.Should().Be("/var/crd/review-pool");
+        options.ScratchDirName.Should().Be("work");
+        options.EnableReviewerWrites.Should().BeTrue();
+        options.MergeNotesBranchOnClose.Should().BeFalse();
+        // A distinctive value (not one of the ["Write","Edit","Bash"] defaults) proves the list bound. Note
+        // the config binder APPENDS bound items onto a non-empty default collection rather than replacing it,
+        // so the configured entry is asserted via Contain rather than exact equality.
+        options.WritableToolAllowList.Should().Contain("PrNotes");
+    }
 }

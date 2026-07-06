@@ -127,4 +127,35 @@ public class ReviewSlotPoolTests : IDisposable
         slot.Index.Should().Be(0);
         attempts.Should().Be(2);
     }
+
+    [Fact]
+    public async Task LeaseAsync_WhenCloneWritesPartialStoreThenThrows_SecondLeaseReclonesInsteadOfReusingPartialStore()
+    {
+        var attempts = 0;
+        var pool = CreatePool(maxSlots: 1, (slot, _) =>
+        {
+            attempts++;
+            Directory.CreateDirectory(slot.StorePath);
+            if (attempts == 1)
+            {
+                // A real interrupted `git clone` leaves the store dir non-empty; write a partial file, then
+                // fail. Without the failure-path wipe this partial dir would be mistaken for a warm clone.
+                File.WriteAllText(Path.Combine(slot.StorePath, ".partial"), "half a clone");
+                throw new InvalidOperationException("clone interrupted after writing a partial store");
+            }
+
+            File.WriteAllText(Path.Combine(slot.StorePath, ".cloned"), "");
+            return Task.CompletedTask;
+        });
+
+        var failingLease = async () => await pool.LeaseAsync(default);
+        await failingLease.Should().ThrowAsync<InvalidOperationException>();
+
+        // The second lease must RE-INVOKE the clone: the failed lease's partial store was wiped, so the
+        // "already cloned" check no longer sees a non-empty dir and treats it as not-yet-cloned.
+        var slot = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        attempts.Should().Be(2, "the partial store from the failed lease must not be reused as a warm clone");
+        File.Exists(Path.Combine(slot.StorePath, ".cloned")).Should().BeTrue("the retry produced a complete clone");
+        File.Exists(Path.Combine(slot.StorePath, ".partial")).Should().BeFalse("the partial store was wiped before re-cloning");
+    }
 }

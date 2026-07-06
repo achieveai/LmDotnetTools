@@ -71,9 +71,9 @@ internal sealed class ReviewSlotPool
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         var index = TakeIndex();
+        var slot = BuildSlot(index);
         try
         {
-            var slot = BuildSlot(index);
             Directory.CreateDirectory(slot.HostPath);
             Directory.CreateDirectory(slot.ScratchPath);
 
@@ -91,9 +91,15 @@ internal sealed class ReviewSlotPool
         }
         catch
         {
-            // Setup failed after acquiring the permit + index (directory IO, or the clone callback threw).
-            // Recycle BOTH the index and the permit so a transient clone/IO failure cannot permanently
-            // consume pool capacity — otherwise repeated failures exhaust the pool until a daemon restart.
+            // Setup failed after acquiring the permit + index (directory IO, or the clone callback threw
+            // or was cancelled). A partially-populated store must NOT be left behind: the next lease of this
+            // recycled index would see a non-empty StorePath, treat it as a warm clone, and skip re-cloning —
+            // yielding a corrupt, incomplete checkout. Wipe it (best-effort) so a later lease re-clones from
+            // scratch. Then recycle BOTH the index and the permit so a transient clone/IO failure cannot
+            // permanently consume pool capacity — otherwise repeated failures exhaust the pool until a daemon
+            // restart.
+            TryResetStore(slot.StorePath);
+
             lock (_freeIndexesLock)
             {
                 _freeIndexes.Push(index);
@@ -133,6 +139,35 @@ internal sealed class ReviewSlotPool
     {
         var hostPath = Path.Combine(_hostRoot, $"slot-{index}");
         return new ReviewSlot(index, hostPath, Path.Combine(hostPath, "store"), Path.Combine(hostPath, _scratchDirName));
+    }
+
+    /// <summary>Best-effort wipe of a slot's store directory after a failed lease, so partial contents are
+    /// never mistaken for a warm clone on the next lease. Read-only attributes are cleared first (a git
+    /// object store leaves read-only files) — mirrors <c>ReviewSessionProvisioner.ClearReadOnly</c>.</summary>
+    private void TryResetStore(string storePath)
+    {
+        try
+        {
+            if (!Directory.Exists(storePath))
+            {
+                return;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(storePath, "*", SearchOption.AllDirectories))
+            {
+                var attributes = File.GetAttributes(file);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+                }
+            }
+
+            Directory.Delete(storePath, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Best-effort store reset failed for review slot at {StorePath}.", storePath);
+        }
     }
 
     private static bool IsDirectoryEmpty(string path) => !Directory.EnumerateFileSystemEntries(path).Any();

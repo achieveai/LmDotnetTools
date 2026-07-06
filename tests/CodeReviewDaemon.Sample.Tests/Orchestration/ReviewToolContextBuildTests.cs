@@ -154,6 +154,45 @@ public sealed class ReviewToolContextBuildTests
         toolContext.SubAgentOptions.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Reviewed_ProvisionerThrowsOperationCanceled_Propagates()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new CancelingProvisioner();
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner);
+        var run = SeedRunWithContext(store);
+
+        // Cancellation is not a capability gap — it must surface (the catch filter excludes
+        // OperationCanceledException), not be swallowed into a silent diff-only degrade.
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
+    }
+
+    [Fact]
+    public async Task Reviewed_DiscoveryThrowsOperationCanceled_Propagates()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new FakeReviewSessionProvisioner("session-abc");
+        var discovery = new CancelingDiscoveredItemsSource();
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner, discovery);
+        var run = SeedRunWithContext(store);
+
+        // A cancellation raised while discovering sub-agents must propagate too — it is not the same as a
+        // discovery failure (which degrades to skill-only); the sub-agent catch filter excludes it.
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
+    }
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
@@ -236,6 +275,15 @@ public sealed class ReviewToolContextBuildTests
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }
 
+    /// <summary>Simulates provisioning being cancelled — must propagate, never degrade to diff-only.</summary>
+    private sealed class CancelingProvisioner : IReviewSessionProvisioner
+    {
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+            throw new OperationCanceledException("provisioning cancelled");
+
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+    }
+
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
     {
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
@@ -258,5 +306,12 @@ public sealed class ReviewToolContextBuildTests
     {
         public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
             string sessionId, CancellationToken ct) => throw new InvalidOperationException("discovery unreachable");
+    }
+
+    /// <summary>Simulates discovery being cancelled — must propagate, never degrade to skill-only.</summary>
+    private sealed class CancelingDiscoveredItemsSource : IDiscoveredItemsSource
+    {
+        public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
+            string sessionId, CancellationToken ct) => throw new OperationCanceledException("discovery cancelled");
     }
 }
