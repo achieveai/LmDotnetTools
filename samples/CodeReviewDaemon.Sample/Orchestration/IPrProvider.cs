@@ -19,6 +19,27 @@ internal interface IPrProvider
     /// poll. When <see cref="PrPollRequest.Cursor"/> is <c>null</c> the provider resyncs from scratch.
     /// </summary>
     Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Classifies a single PR's terminal lifecycle (Open, Merged, or Abandoned) for the PR-lifecycle
+    /// sweep, which merges a reviewed PR's persistent notes branch once the PR merges and deletes it once
+    /// the PR is abandoned. Distinct from the coarser <see cref="PrLifecycleState"/> captured while polling
+    /// the open-PR list.
+    /// </summary>
+    Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// A single PR's Open/Merged/Abandoned classification returned by <see cref="IPrProvider.GetPrStateAsync"/>.
+/// Feeds the PR-lifecycle sweep (a later task) that merges a PR's notes branch when merged and deletes it
+/// when abandoned (closed without merging). Distinct from the coarser <see cref="PrLifecycleState"/>
+/// recorded while polling the open-PR list.
+/// </summary>
+internal enum PrLifecycle
+{
+    Open,
+    Merged,
+    Abandoned,
 }
 
 /// <summary>One poll request for a single (repo, scope) target.</summary>
