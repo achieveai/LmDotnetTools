@@ -34,7 +34,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        var armed = await runtime.ArmAsync("tc1", "dummy", "{}", "10m", "wait-a", CancellationToken.None);
+        var armed = await runtime.ArmAsync("tc1", "dummy", "{}", "10m", "wait-a", WaitMode.Block, maxFires: null, CancellationToken.None);
         armed.IsArmed.Should().BeTrue("an external source registered through the seam must arm");
 
         await source.FireAsync("hello");
@@ -55,7 +55,7 @@ public class TriggerRuntimeTests
         runtime.Register(Registration("dummy", source));
 
         // Never fire; the runtime ceiling timer must resolve the wait as timed_out.
-        await runtime.ArmAsync("tc-timeout", "dummy", "{}", "300ms", null, CancellationToken.None);
+        await runtime.ArmAsync("tc-timeout", "dummy", "{}", "300ms", null, WaitMode.Block, maxFires: null, CancellationToken.None);
 
         var payload = await resolver.FirstPayload.WaitAsync(TimeSpan.FromSeconds(5));
         ReadStatus(payload).Should().Be("timed_out");
@@ -70,7 +70,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        await runtime.ArmAsync("tc-cancel", "dummy", "{}", "10m", "cancel-me", CancellationToken.None);
+        await runtime.ArmAsync("tc-cancel", "dummy", "{}", "10m", "cancel-me", WaitMode.Block, maxFires: null, CancellationToken.None);
 
         var cancelled = await runtime.CancelWaitsAsync("tc-cancel", null, null, CancellationToken.None);
         cancelled.Should().Be(1);
@@ -96,7 +96,7 @@ public class TriggerRuntimeTests
         // Unknown id/label/kind → nothing cancelled, no throw.
         (await runtime.CancelWaitsAsync("nope", null, null, CancellationToken.None)).Should().Be(0);
 
-        await runtime.ArmAsync("tc-idem", "dummy", "{}", "10m", null, CancellationToken.None);
+        await runtime.ArmAsync("tc-idem", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         (await runtime.CancelWaitsAsync("tc-idem", null, null, CancellationToken.None)).Should().Be(1);
         // Second cancel of an already-terminal wait → 0.
         (await runtime.CancelWaitsAsync("tc-idem", null, null, CancellationToken.None)).Should().Be(0);
@@ -110,8 +110,8 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        await runtime.ArmAsync("a", "dummy", "{}", "10m", "batch", CancellationToken.None);
-        await runtime.ArmAsync("b", "dummy", "{}", "10m", "batch", CancellationToken.None);
+        await runtime.ArmAsync("a", "dummy", "{}", "10m", "batch", WaitMode.Block, maxFires: null, CancellationToken.None);
+        await runtime.ArmAsync("b", "dummy", "{}", "10m", "batch", WaitMode.Block, maxFires: null, CancellationToken.None);
 
         var byLabel = await runtime.CancelWaitsAsync(null, "batch", null, CancellationToken.None);
         byLabel.Should().Be(2);
@@ -130,7 +130,7 @@ public class TriggerRuntimeTests
             await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
             runtime.Register(Registration("dummy", source));
 
-            await runtime.ArmAsync($"race-{i}", "dummy", "{}", "10m", null, CancellationToken.None);
+            await runtime.ArmAsync($"race-{i}", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
 
             var fire = Task.Run(() => source.FireAsync("x"));
             var cancel = Task.Run(() => runtime.CancelWaitsAsync($"race-{i}", null, null, CancellationToken.None));
@@ -150,9 +150,9 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(maxConcurrent: 1), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        (await runtime.ArmAsync("one", "dummy", "{}", "10m", null, CancellationToken.None)).IsArmed.Should().BeTrue();
+        (await runtime.ArmAsync("one", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None)).IsArmed.Should().BeTrue();
 
-        var second = await runtime.ArmAsync("two", "dummy", "{}", "10m", null, CancellationToken.None);
+        var second = await runtime.ArmAsync("two", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         second.IsArmed.Should().BeFalse();
         second.Reason.Should().Be("max_concurrent_waits");
     }
@@ -164,7 +164,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
         runtime.RegisterBuiltIns();
 
-        var result = await runtime.ArmAsync("x", "no-such-kind", "{}", "10m", null, CancellationToken.None);
+        var result = await runtime.ArmAsync("x", "no-such-kind", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         result.IsArmed.Should().BeFalse();
         result.Reason.Should().Be("unknown_kind");
     }
@@ -177,7 +177,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        var result = await runtime.ArmAsync("x", "dummy", "{}", "not-a-time", null, CancellationToken.None);
+        var result = await runtime.ArmAsync("x", "dummy", "{}", "not-a-time", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         result.IsArmed.Should().BeFalse();
         result.Reason.Should().Be("invalid_timeout");
     }
@@ -191,7 +191,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(options, resolver.Resolve);
         runtime.Register(Registration("dummy", source));
 
-        await runtime.ArmAsync("tc-cap", "dummy", "{}", "10m", null, CancellationToken.None);
+        await runtime.ArmAsync("tc-cap", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         await source.FireAsync(new string('A', 10_000));
 
         var payload = await resolver.FirstPayload.WaitAsync(TimeSpan.FromSeconds(5));
@@ -220,7 +220,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), Resolve);
         runtime.Register(Registration("dummy", source));
 
-        await runtime.ArmAsync("tc-retry", "dummy", "{}", "10m", null, CancellationToken.None);
+        await runtime.ArmAsync("tc-retry", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         await source.FireAsync("x");
 
         var payload = await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -296,7 +296,7 @@ public class TriggerRuntimeTests
         // One slot, already taken by a live wait, so the restored re-arm cannot acquire it.
         await using var runtime = new TriggerRuntime(FastOptions(maxConcurrent: 1), resolver.Resolve);
         runtime.Register(Registration("dummy", source));
-        await runtime.ArmAsync("live", "dummy", "{}", "10m", null, CancellationToken.None);
+        await runtime.ArmAsync("live", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var waitArgs = JsonSerializer.Serialize(new { kind = "dummy", args = new { }, timeout = "10m" });
@@ -330,7 +330,7 @@ public class TriggerRuntimeTests
         await using var runtime = new TriggerRuntime(FastOptions(), Resolve);
         runtime.Register(Registration("cancel_on_dispose", source));
 
-        await runtime.ArmAsync("tc-token", "cancel_on_dispose", "{}", "10m", null, CancellationToken.None);
+        await runtime.ArmAsync("tc-token", "cancel_on_dispose", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
         await source.FireAsync();
 
         var payload = await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));

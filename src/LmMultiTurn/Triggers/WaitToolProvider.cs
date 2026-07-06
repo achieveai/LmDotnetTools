@@ -176,6 +176,8 @@ public sealed class WaitToolProvider : IFunctionProvider
             parsed.ArgsJson,
             parsed.Timeout,
             parsed.Label,
+            parsed.Mode,
+            parsed.MaxFires,
             cancellationToken);
 
         if (result.IsArmed)

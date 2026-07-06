@@ -18,6 +18,13 @@ public delegate Task TriggerResolveDelegate(
     CancellationToken cancellationToken);
 
 /// <summary>
+/// Injects a notify-mode trigger envelope as a fresh queued turn on the owning loop. Supplied by
+/// the loop (partial application of <c>EnqueueTriggerNotifyAsync</c>). Null when the host wired no
+/// notify path — arming a notify wait is then rejected.
+/// </summary>
+public delegate Task TriggerNotifyDelegate(string payload, bool isError, CancellationToken cancellationToken);
+
+/// <summary>
 /// A block wait recovered from persisted history on restart. Carries the original <c>Wait</c>
 /// arguments and the instant it was armed so the runtime can re-arm (or expire) it.
 /// </summary>
@@ -52,6 +59,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     private readonly TriggerOptions _options;
     private readonly TriggerResolveDelegate _resolve;
+    private readonly TriggerNotifyDelegate? _notify;
     private readonly ILogger? _logger;
     private readonly SemaphoreSlim _concurrencyGate;
     private readonly ConcurrentDictionary<string, TriggerSourceRegistration> _registrations =
@@ -60,12 +68,17 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
 
-    public TriggerRuntime(TriggerOptions options, TriggerResolveDelegate resolve, ILogger? logger = null)
+    public TriggerRuntime(
+        TriggerOptions options,
+        TriggerResolveDelegate resolve,
+        TriggerNotifyDelegate? notify = null,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(resolve);
         _options = options;
         _resolve = resolve;
+        _notify = notify;
         _logger = logger;
         _concurrencyGate = new SemaphoreSlim(options.MaxConcurrentWaits, options.MaxConcurrentWaits);
     }
@@ -120,6 +133,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         string argsJson,
         string timeout,
         string? label,
+        WaitMode mode,
+        int? maxFires,
         CancellationToken ct)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -134,9 +149,21 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 $"No trigger kind '{kind}' is registered. Registered kinds: {string.Join(", ", RegisteredKinds)}.");
         }
 
-        if (!reg.Capabilities.SupportsBlock)
+        if (mode == WaitMode.Block && !reg.Capabilities.SupportsBlock)
         {
             return WaitArmResult.Reject("unsupported_mode", $"Kind '{kind}' does not support block waits.");
+        }
+
+        if (mode == WaitMode.Notify)
+        {
+            if (!reg.Capabilities.SupportsNotify)
+            {
+                return WaitArmResult.Reject("unsupported_mode", $"Kind '{kind}' does not support notify waits.");
+            }
+            if (_notify == null)
+            {
+                return WaitArmResult.Reject("notify_unavailable", "This host did not enable notify-mode waits.");
+            }
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -145,7 +172,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             return WaitArmResult.Reject("invalid_timeout", timeoutError ?? "invalid timeout");
         }
 
-        return await ArmCoreAsync(waitId, reg, argsJson, label, now, deadline, ct);
+        return await ArmCoreAsync(waitId, reg, argsJson, label, mode, maxFires, now, deadline, ct);
     }
 
     private async Task<WaitArmResult> ArmCoreAsync(
@@ -153,6 +180,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         TriggerSourceRegistration reg,
         string argsJson,
         string? label,
+        WaitMode mode,
+        int? maxFires,
         DateTimeOffset armedAt,
         DateTimeOffset deadline,
         CancellationToken ct)
@@ -172,6 +201,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
             WaitId = waitId,
             Kind = reg.Kind,
             Label = label,
+            Mode = mode,
+            MaxFires = maxFires,
             ArmedAt = armedAt,
             Deadline = deadline,
         };
@@ -323,12 +354,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 // Ceiling already elapsed while offline (or unparseable) — resolve as timed out.
                 await DeliverAsync(
                     r.ToolCallId,
-                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, ArmedAt = armedAt, Deadline = armedAt }),
+                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, Mode = WaitMode.Block, ArmedAt = armedAt, Deadline = armedAt }),
                     isError: false);
                 continue;
             }
 
-            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, armedAt, deadline, ct);
+            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, WaitMode.Block, maxFires: null, armedAt, deadline, ct);
             if (!armResult.IsArmed)
             {
                 // Re-arm was rejected (e.g. concurrency limit, source arm failure). Do NOT leave the
@@ -345,16 +376,43 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     private async ValueTask OnSourceFiredAsync(ArmedWait wait, TriggerFireEvent fire)
     {
+        if (wait.Mode == WaitMode.Block)
+        {
+            var blockPayload = BuildFiredPayload(wait, fire);
+            _ = await FinalizeAsync(wait, WaitState.Fired, blockPayload, isError: false);
+            return;
+        }
+
+        // Notify mode: deliver each fire as a queued envelope; stay armed until maxFires or TTL.
+        if (wait.State != WaitState.Pending)
+        {
+            return; // already terminal (cancelled / timed_out) — ignore a late fire.
+        }
+
+        var fireNumber = Interlocked.Increment(ref wait.FiresSoFar);
+        if (wait.MaxFires is int over && fireNumber > over)
+        {
+            return; // a concurrent fire already consumed the last budget slot.
+        }
+
+        var isFinalFire = wait.MaxFires is int cap && fireNumber >= cap;
         var payload = BuildFiredPayload(wait, fire);
-        _ = await FinalizeAsync(wait, WaitState.Fired, payload, isError: false);
+        await NotifyAsync(wait, payload, isError: false);
+
+        if (isFinalFire)
+        {
+            // The last fire's envelope IS the terminal message (decision #2 satisfied) — tear down
+            // without delivering a second, redundant envelope.
+            _ = await TryTeardownAsync(wait, WaitState.Fired);
+        }
     }
 
     /// <summary>
-    /// Attempts the single terminal transition for <paramref name="wait"/>. The winner stops the
-    /// ceiling timer, disposes the source (no fire after dispose), releases the concurrency slot,
-    /// and delivers the one result. Returns true only for the winning caller.
+    /// Claims the single terminal transition and runs teardown (stop ceiling, dispose source, release
+    /// gate, deregister). Returns true only for the winning caller. Does NOT deliver — callers that
+    /// owe a terminal message call this then deliver.
     /// </summary>
-    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
+    private async Task<bool> TryTeardownAsync(ArmedWait wait, WaitState state)
     {
         if (!wait.TryClaim(state))
         {
@@ -386,12 +444,55 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         _ = _waits.TryRemove(wait.WaitId, out _);
         ReleaseGate(wait);
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts the single terminal transition for <paramref name="wait"/>. The winner stops the
+    /// ceiling timer, disposes the source (no fire after dispose), releases the concurrency slot,
+    /// and delivers the one result. Returns true only for the winning caller.
+    /// </summary>
+    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
+    {
+        if (!await TryTeardownAsync(wait, state))
+        {
+            return false;
+        }
 
         // Deliver with a fresh, uncancellable token: the terminal result must reach the loop even
         // though disposing the source above cancels the source's own token, and even if the
         // operation that triggered this transition (a CancelWait) carried a cancelled token.
-        await DeliverAsync(wait.WaitId, payload, isError);
+        if (wait.Mode == WaitMode.Notify)
+        {
+            await NotifyAsync(wait, payload, isError);
+        }
+        else
+        {
+            await DeliverAsync(wait.WaitId, payload, isError);
+        }
         return true;
+    }
+
+    private async Task NotifyAsync(ArmedWait wait, string payload, bool isError)
+    {
+        if (_notify == null)
+        {
+            _logger?.LogWarning("trigger notify fired for {WaitId} but no notify delegate is wired", wait.WaitId);
+            return;
+        }
+
+        try
+        {
+            await _notify(payload, isError, CancellationToken.None);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down — nothing to inject into.
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "trigger notify delivery failed for {WaitId}", wait.WaitId);
+        }
     }
 
     private async Task DeliverAsync(string toolCallId, string payload, bool isError)
@@ -603,6 +704,9 @@ public sealed class TriggerRuntime : IAsyncDisposable
         public required string WaitId { get; init; }
         public required string Kind { get; init; }
         public string? Label { get; init; }
+        public required WaitMode Mode { get; init; }
+        public int? MaxFires { get; init; }
+        public int FiresSoFar; // interlocked; notify mode only.
         public required DateTimeOffset ArmedAt { get; init; }
         public required DateTimeOffset Deadline { get; init; }
         public IArmedTrigger? Source { get; set; }
