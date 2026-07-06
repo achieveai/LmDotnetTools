@@ -70,11 +70,14 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     }
 
     // Test-only constructor: lets tests inject a stub IsRunning probe without standing up a
-    // real Kestrel host. Marked internal so it stays out of the public surface.
+    // real Kestrel host, and inject the Copilot token gate (copilotTokenAvailable) so discovered
+    // Copilot models can render available without a real gh/Copilot login. Marked internal so it
+    // stays out of the public surface.
     internal ProviderRegistry(
         IFileSystemProbe? probe,
         Func<bool> mockHostIsRunning,
-        IReadOnlyList<CopilotModelInfo>? copilotModels = null)
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null,
+        Func<bool>? copilotTokenAvailable = null)
     {
         ArgumentNullException.ThrowIfNull(mockHostIsRunning);
 
@@ -93,8 +96,9 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         var hasOpenAiKey = HasEnvVar("OPENAI_API_KEY");
         var hasAnthropicKey = HasEnvVar("ANTHROPIC_API_KEY");
         // Copilot-backed providers route through the Copilot API using the developer's existing
-        // Copilot/gh login, so they are available whenever a token can be resolved.
-        var hasCopilotToken = new CliCredentialCopilotTokenProvider().ResolveToken() is not null;
+        // Copilot/gh login, so they are available whenever a token can be resolved. The check is
+        // delegated (defaulting to the real CLI-credential probe) so tests can force it without a login.
+        var hasCopilotToken = (copilotTokenAvailable ?? DefaultCopilotTokenAvailable)();
 
         foreach (var entry in CatalogEntries)
         {
@@ -231,6 +235,14 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     private static bool IsMockProvider(string normalizedId)
     {
         return normalizedId.EndsWith("-mock", StringComparison.Ordinal);
+    }
+
+    // Production default for the Copilot token gate: a token resolves from the developer's existing
+    // gh/Copilot CLI credentials. Overridable via the internal ctor's copilotTokenAvailable delegate
+    // so tests need no real login.
+    private static bool DefaultCopilotTokenAvailable()
+    {
+        return new CliCredentialCopilotTokenProvider().ResolveToken() is not null;
     }
 
     private static bool HasEnvVar(string name)
