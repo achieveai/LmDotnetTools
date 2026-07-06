@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -78,6 +79,18 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 
     private static SignalingSink SinkThatCompletes(TaskCompletionSource<TriggerFireEvent> tcs) => new(tcs);
 
+    /// <summary>Signals that delivery was attempted, then always fails — simulates a sink whose
+    /// FireAsync throws/is cancelled mid-delivery (e.g. the runtime's fire channel rejecting the
+    /// event during shutdown).</summary>
+    private sealed class ThrowingSink(TaskCompletionSource attempted) : ITriggerEventSink
+    {
+        public ValueTask FireAsync(TriggerFireEvent fire, CancellationToken cancellationToken)
+        {
+            attempted.TrySetResult();
+            throw new InvalidOperationException("simulated delivery failure");
+        }
+    }
+
     [Fact]
     public async Task Fire_WhenSubAgentCompletes_AndSuppressesRelay()
     {
@@ -141,6 +154,66 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
                 It.IsAny<CancellationToken>()),
             Times.Once(),
             "wait-cancel must leave the sub-agent running; its result relays once the flag is restored");
+    }
+
+    [Fact]
+    public async Task Dispose_AfterFailedDelivery_RestoresRelayFlag()
+    {
+        // Regression for SubAgentArmedTrigger.RunAsync: `_completed` used to be set to 1 BEFORE
+        // the fire attempt and never reset if sink.FireAsync then threw/was cancelled, so
+        // DisposeAsync's flag-restore branch (gated on `_completed == 0`) was skipped forever —
+        // permanently stranding NotifyParentOnCompletion at the arm-time "suppressed" (false)
+        // value.
+        //
+        // Note on what this test can and cannot observe: by the time a fire is attempted, the
+        // sub-agent's own HandleRunCompletionAsync has ALREADY made its one-shot relay decision
+        // for this run — TryCompleteWithResult/TryCompleteWithException runs synchronously and
+        // checks NotifyParentOnCompletion in the same call frame, with no await in between, so
+        // that check always completes before this trigger's own continuation (awaiting
+        // ObserveCompletionAsync, whose TaskCompletionSource uses
+        // RunContinuationsAsynchronously) gets scheduled to resume. A post-hoc restore therefore
+        // cannot retroactively relay THIS run's result — its only observable effect is on the
+        // SubAgentState's own flag, restored for any future interaction with this sub-agent.
+        // There is no public accessor for it (SubAgentManager is sealed and
+        // SubAgentCompletionTriggerSource depends on the concrete type, not an interface), so
+        // this test reads it via reflection rather than asserting a parent relay that the
+        // architecture makes provably impossible to trigger for the same completion.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "sub-done", gate);
+
+        var src = new SubAgentCompletionTriggerSource(() => manager);
+        var fireAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var handle = await src.ArmAsync(
+            ArmReq($$"""{"agentId":"{{agentId}}"}"""), new ThrowingSink(fireAttempted), CancellationToken.None);
+
+        gate.SetResult();
+
+        // Wait for the (failing) delivery attempt to actually happen before disposing, so
+        // dispose deterministically observes the post-catch state instead of racing ahead of it.
+        await fireAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Must not throw/hang despite the in-flight fire having faulted.
+        await handle.DisposeAsync();
+
+        GetNotifyParentOnCompletion(manager, agentId).Should().BeTrue(
+            "a failed delivery must reset _completed so dispose still restores automatic relay " +
+            "instead of permanently stranding it");
+    }
+
+    /// <summary>Reads the internal NotifyParentOnCompletion flag via reflection — see the comment
+    /// on <see cref="Dispose_AfterFailedDelivery_RestoresRelayFlag"/> for why no public seam
+    /// exists to observe this.</summary>
+    private static bool GetNotifyParentOnCompletion(SubAgentManager manager, string agentId)
+    {
+        var agentsField = typeof(SubAgentManager).GetField("_agents", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SubAgentManager._agents field not found.");
+        var agents = (System.Collections.IDictionary)agentsField.GetValue(manager)!;
+        var state = agents[agentId]
+            ?? throw new InvalidOperationException($"No sub-agent state for '{agentId}'.");
+        var flagProperty = state.GetType().GetProperty("NotifyParentOnCompletion")
+            ?? throw new InvalidOperationException("SubAgentState.NotifyParentOnCompletion property not found.");
+        return (bool)flagProperty.GetValue(state)!;
     }
 
     [Fact]

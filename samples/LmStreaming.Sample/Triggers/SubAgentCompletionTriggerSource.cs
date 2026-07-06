@@ -130,13 +130,33 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
             {
                 Interlocked.Exchange(ref _completed, 1);
                 var errPayload = JsonSerializer.Serialize(new { agentId = _agentId, error = ex.Message });
-                await sink.FireAsync(new TriggerFireEvent(errPayload), ct);
+                try
+                {
+                    await sink.FireAsync(new TriggerFireEvent(errPayload), ct);
+                }
+                catch
+                {
+                    // Delivery failed/cancelled — let automatic parent relay resume instead of
+                    // stranding the result.
+                    Interlocked.Exchange(ref _completed, 0);
+                    throw;
+                }
                 return;
             }
 
             Interlocked.Exchange(ref _completed, 1);
             var payload = JsonSerializer.Serialize(new { agentId = _agentId, result });
-            await sink.FireAsync(new TriggerFireEvent(payload), ct);
+            try
+            {
+                await sink.FireAsync(new TriggerFireEvent(payload), ct);
+            }
+            catch
+            {
+                // Delivery failed/cancelled — let automatic parent relay resume instead of
+                // stranding the result.
+                Interlocked.Exchange(ref _completed, 0);
+                throw;
+            }
         }
 
         public async ValueTask DisposeAsync()
