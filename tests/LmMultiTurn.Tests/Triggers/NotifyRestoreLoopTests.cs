@@ -174,6 +174,85 @@ public class NotifyRestoreLoopTests
         }
     }
 
+    /// <summary>
+    /// PR #158 review fix: recovery must never block on the loop's bounded input channel.
+    /// <see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/> delivers a terminal envelope
+    /// (<c>trigger_lost_on_restart</c>) for every unregistered/non-restorable notify row it finds.
+    /// Before the fix, that delivery went through the loop's BLOCKING
+    /// <c>EnqueueTriggerNotifyAsync</c> (<c>TryWrite</c> falling back to <c>WriteAsync</c>). With
+    /// more terminal rows to restore than the channel's capacity, and recovery running here
+    /// (deliberately) BEFORE <c>RunAsync</c> starts the reader, the channel fills and the fallback
+    /// <c>WriteAsync</c> would hang forever waiting for a reader that never starts — a startup
+    /// deadlock. The fix threads a non-blocking <c>TryEnqueueTriggerNotify</c> delegate through
+    /// <see cref="TriggerRuntime"/> for restore-time delivery only: a row is deleted only once its
+    /// envelope was actually accepted into the channel, and rows that don't fit are retained
+    /// (not lost) for redelivery on the next recovery.
+    /// </summary>
+    [Fact]
+    public async Task RestoreNotifyWaits_ChannelSmallerThanTerminalRows_CompletesWithoutBlocking_AndRetainsRejectedRows()
+    {
+        const string threadId = "notify-restore-overflow-thread";
+        const int terminalRowCount = 3;
+        const int channelCapacity = 1; // smaller than terminalRowCount by design
+
+        var convStore = new InMemoryConversationStore();
+        await convStore.SaveMetadataAsync(threadId, new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = "run_prev",
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+        // Seed more terminal (unregistered-kind) notify_waits rows than the input channel can
+        // hold. Each is non-restorable, so RestoreNotifyWaitsAsync attempts to deliver one
+        // trigger_lost_on_restart envelope per row.
+        var notifyStore = new InMemoryNotifyWaitStore();
+        for (var i = 0; i < terminalRowCount; i++)
+        {
+            await notifyStore.SaveAsync(new NotifyWaitRecord(
+                $"w{i}",
+                threadId,
+                "no-such-kind", // deliberately unregistered -> always non-restorable/terminal
+                "{}",
+                null,
+                null,
+                0,
+                DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                "active"));
+        }
+
+        var options = new TriggerOptions
+        {
+            NotifyWaitStore = notifyStore,
+            ThreadId = threadId,
+        };
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            threadId,
+            store: convStore,
+            logger: _loggerMock.Object,
+            inputChannelCapacity: channelCapacity,
+            triggerOptions: options);
+
+        // Act: drive recovery directly WITHOUT ever starting RunAsync, so nothing drains the
+        // bounded input channel while RestoreNotifyWaitsAsync is delivering terminal envelopes.
+        // Bound the wait so a regression fails as a timeout instead of hanging the whole suite.
+        var recovered = await loop.RecoverAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        recovered.Should().BeFalse(); // zero message rows for this thread
+
+        var remainingRows = await notifyStore.LoadActiveAsync(threadId);
+
+        // Exactly `channelCapacity` envelopes fit and were accepted -> those rows are deleted.
+        // The rest could not be enqueued without blocking, so they must be retained for
+        // redelivery on the next recovery rather than silently lost.
+        remainingRows.Should().HaveCount(
+            terminalRowCount - channelCapacity,
+            "rows whose envelope could not be enqueued without blocking must be retained, not dropped");
+    }
+
     /// <summary>Simple in-memory <see cref="INotifyWaitStore"/> test double — no SQLite needed here.</summary>
     private sealed class InMemoryNotifyWaitStore : INotifyWaitStore
     {

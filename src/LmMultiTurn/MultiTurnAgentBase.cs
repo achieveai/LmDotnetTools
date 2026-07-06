@@ -656,6 +656,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
+    /// Non-blocking counterpart to <see cref="EnqueueRawAsync"/>: attempts to post a pre-built
+    /// <see cref="QueuedInput"/> onto the input channel without ever awaiting a full channel.
+    /// Used by <c>MultiTurnAgentLoop</c> for restart-recovery notify delivery
+    /// (<see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.TriggerRuntime.RestoreNotifyWaitsAsync"/>),
+    /// which can run before the run loop starts reading — blocking there would deadlock startup.
+    /// </summary>
+    /// <returns>True if the input was accepted into the channel; false if the channel is currently
+    /// full (the caller must not treat the input as delivered).</returns>
+    protected bool TryEnqueueRaw(QueuedInput queuedInput)
+    {
+        ArgumentNullException.ThrowIfNull(queuedInput);
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        return _inputChannel.Writer.TryWrite(queuedInput);
+    }
+
+    /// <summary>
     /// Throws <see cref="ObjectDisposedException"/> if the agent has been disposed. Public API
     /// methods on subclasses (e.g., <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>) call this
     /// to fail fast instead of mutating disposed state.

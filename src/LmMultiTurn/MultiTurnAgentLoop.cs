@@ -157,6 +157,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 resolve: (toolCallId, result, isError, ct) =>
                     ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
                 notify: (payload, isError, ct) => EnqueueTriggerNotifyAsync(payload, isError, ct),
+                tryNotify: TryEnqueueTriggerNotify,
                 logger: logger);
             _triggerRuntime.RegisterBuiltIns();
             foreach (var registration in triggerOptions.AdditionalRegistrations)
@@ -1090,18 +1091,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// </summary>
     private async Task EnqueueTriggerNotifyAsync(string payload, bool isError, CancellationToken ct)
     {
-        var envelope = new TextMessage
-        {
-            Role = Role.User,
-            Text = $"<trigger>\n{payload}\n</trigger>",
-        };
-        var input = new UserInput([envelope], InputId: null, ParentRunId: null);
-        var queued = new QueuedInput(
-            input,
-            ReceiptId: $"notify:{Guid.NewGuid():N}",
-            QueuedAt: DateTimeOffset.UtcNow,
-            Resume: null,
-            Trigger: new TriggerEnvelope(isError));
+        var queued = BuildTriggerNotifyInput(payload, isError);
 
         try
         {
@@ -1115,6 +1105,50 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             // Loop torn down mid-fire — drop the envelope.
         }
+    }
+
+    /// <summary>
+    /// Non-blocking counterpart to <see cref="EnqueueTriggerNotifyAsync"/>, supplied to
+    /// <see cref="TriggerRuntime"/> as its <c>tryNotify</c> delegate — used ONLY during restart
+    /// recovery (<see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/>). Recovery runs before the run
+    /// loop starts reading the (bounded) input channel, so restore-time terminal envelopes must never
+    /// block on a full channel: enough restored terminal rows could otherwise fill the channel and
+    /// deadlock startup (the loop can't drain it until <see cref="RunLoopAsync"/> starts, which
+    /// itself may be gated behind this very recovery call completing). This attempts a non-blocking
+    /// write and reports whether it was accepted; the runtime only deletes the persisted
+    /// <c>notify_waits</c> row when this returns true, so a rejected envelope is naturally retried on
+    /// the next recovery instead of being lost.
+    /// </summary>
+    private bool TryEnqueueTriggerNotify(string payload, bool isError)
+    {
+        var queued = BuildTriggerNotifyInput(payload, isError);
+
+        try
+        {
+            return TryEnqueueRaw(queued);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down mid-restore — nothing to inject into; report not-delivered so the
+            // caller retains the row rather than treating a dropped envelope as delivered.
+            return false;
+        }
+    }
+
+    private static QueuedInput BuildTriggerNotifyInput(string payload, bool isError)
+    {
+        var envelope = new TextMessage
+        {
+            Role = Role.User,
+            Text = $"<trigger>\n{payload}\n</trigger>",
+        };
+        var input = new UserInput([envelope], InputId: null, ParentRunId: null);
+        return new QueuedInput(
+            input,
+            ReceiptId: $"notify:{Guid.NewGuid():N}",
+            QueuedAt: DateTimeOffset.UtcNow,
+            Resume: null,
+            Trigger: new TriggerEnvelope(isError));
     }
 
     /// <summary>

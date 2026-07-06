@@ -136,6 +136,42 @@ public class TriggerRuntimeNotifyRestoreTests
         (await store.LoadActiveAsync("t")).Should().BeEmpty("the stale exhausted row must be deleted");
     }
 
+    /// <summary>
+    /// PR #158 review fix: <see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/> must never block
+    /// recovery on a full input channel. When a non-blocking <c>tryNotify</c> delegate is wired
+    /// (mirroring the loop's <c>TryEnqueueTriggerNotify</c> over a bounded channel), a terminal
+    /// row's envelope is deleted from the store only when the delegate reports it was accepted;
+    /// rows whose delivery is rejected (channel full) must be retained — never lost — for
+    /// redelivery on the next recovery. The blocking <c>notify</c> delegate must not be invoked at
+    /// all once <c>tryNotify</c> is wired (asserted here by throwing from it).
+    /// </summary>
+    [Fact]
+    public async Task RestoreNotifyWaits_TryNotifyRejectsSomeRows_RetainsRejectedRowsWithoutBlocking()
+    {
+        var store = new InMemoryNotifyWaitStore();
+        for (var i = 0; i < 3; i++)
+        {
+            await store.SaveAsync(new NotifyWaitRecord($"w{i}", "t", "no-such-kind", "{}", null, null, 0,
+                FutureUnixMs(30), NowUnixMs(), "active")); // unregistered kind -> always terminal
+        }
+
+        var accepted = 0;
+        var options = new TriggerOptions { NotifyWaitStore = store, ThreadId = "t" };
+        var rt = new TriggerRuntime(
+            options,
+            resolve: (_, _, _, _) => Task.CompletedTask,
+            notify: (_, _, _) => throw new InvalidOperationException(
+                "blocking notify delegate must not be used for restore-time delivery once tryNotify is wired"),
+            tryNotify: (_, _) => Interlocked.Increment(ref accepted) <= 1); // only the first delivery is "accepted"
+
+        await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
+
+        accepted.Should().Be(3, "the non-blocking delegate is attempted for every terminal row regardless of acceptance");
+        (await store.LoadActiveAsync("t")).Should().HaveCount(
+            2,
+            "rows whose envelope could not be enqueued without blocking must be retained, not dropped");
+    }
+
     [Fact]
     public async Task RestoreNotifyWaits_NoStoreConfigured_IsNoOp()
     {
