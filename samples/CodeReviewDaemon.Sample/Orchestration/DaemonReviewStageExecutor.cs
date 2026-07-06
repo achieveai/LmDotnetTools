@@ -197,7 +197,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         try
         {
-            var session = await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
+            // A pooled run mounts the agent session OVER the leased slot (so /workspace == the slot and
+            // /workspace/store is real); every other tool-assisted run keeps the per-run mount. The lease
+            // was recorded by TryPooledFetchContextAsync in the ContextReady stage.
+            var session = _leasedReviews.TryGetValue(run.Id, out var lease)
+                ? await _provisioner.GetOrCreateForSlotAsync(run, lease.Slot, cancellationToken).ConfigureAwait(false)
+                : await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
             if (session is null)
             {
                 _logger.LogInformation(

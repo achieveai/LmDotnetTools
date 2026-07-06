@@ -94,6 +94,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_mounts_the_agent_session_over_the_leased_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // A pooled run provisions the review agent's session by mounting it OVER the slot leased in
+        // ContextReady (GetOrCreateForSlotAsync) — never the per-run mount — and the provisioner saw the
+        // very slot that was leased (index 0).
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1);
+        fixture.Provisioner.LastSlot.Should().NotBeNull();
+        fixture.Provisioner.LastSlot!.Index.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Posted_commits_only_the_pr_notes_dir_onto_the_notes_branch_and_never_merges()
     {
         using var fixture = Fixture.Create();
@@ -248,12 +265,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 options,
                 [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
-                provisioner: new RecordingProvisioner(),
+                provisioner: Provisioner,
                 slotWorkspace: slotWorkspace);
         }
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
+        public RecordingProvisioner Provisioner { get; } = new();
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
@@ -357,13 +375,27 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     /// <summary>Hands back a session so the review stage can build a (scoped) tool context; the fake agent
-    /// loop factory ignores the gateway details and just records the context it was given.</summary>
+    /// loop factory ignores the gateway details and just records the context it was given. Records which
+    /// provisioning entry point the executor used (per-run vs slot-mount) and the slot it saw.</summary>
     private sealed class RecordingProvisioner : IReviewSessionProvisioner
     {
+        public int GetOrCreateForSlotCalls { get; private set; }
+        public ReviewSlot? LastSlot { get; private set; }
+
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
             Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}",
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            LastSlot = slot;
+            // Mirror the real provisioner: same per-run session id/key, but the mount HostPath is the slot.
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+                $"session-{run.Id}", slot.HostPath,
+                new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }

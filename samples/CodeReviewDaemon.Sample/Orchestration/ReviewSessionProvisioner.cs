@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -23,6 +24,18 @@ internal interface IReviewSessionProvisioner
     /// provisioner registered" and fall back to the diff-only path rather than failing the stage.
     /// </summary>
     Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct);
+
+    /// <summary>
+    /// Resolves the per-run sandbox session mounted OVER the leased pool <paramref name="slot"/> instead of
+    /// a fresh per-run dir, so <c>/workspace</c> is the slot itself — <c>/workspace/store</c> is the slot's
+    /// store clone and the reviewer's scoped writes/store reads point at real files (design §4.1). The
+    /// session is still keyed by the per-run workspace id (every stage resolves the SAME session); only the
+    /// mounted directory differs. Falls back to <see cref="GetOrCreateAsync"/> — and returns exactly what it
+    /// returns — when the slot cannot be expressed as a path under the configured workspace base (a
+    /// misconfigured pool root degrades to the per-run mount rather than failing the stage).
+    /// </summary>
+    Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct);
+
     Task DestroyAsync(ReviewRun run, CancellationToken ct);
 }
 
@@ -59,18 +72,28 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     private readonly ILogger<ReviewSessionProvisioner> _logger;
     private readonly ConcurrentDictionary<string, ReviewRunSession> _bySession = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The gateway's host workspace base directory (its <c>WORKSPACE_BASE_PATH</c>). A leased pool slot is
+    /// mounted at <c>/workspace</c> by expressing its host path RELATIVE to this base (see
+    /// <see cref="GetOrCreateForSlotAsync"/>); <c>null</c>/blank (or a slot outside it) makes the slot mount
+    /// degrade to the per-run mount.
+    /// </summary>
+    private readonly string? _workspaceBasePath;
+
     private readonly string _gatewayBaseUrl =
         Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000";
 
     public ReviewSessionProvisioner(
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        string? workspaceBasePath = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
+        _workspaceBasePath = workspaceBasePath;
     }
 
     public static string WorkspaceId(ReviewRun run) => $"review-run-{run.Id}";
@@ -88,6 +111,40 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     {
         ArgumentNullException.ThrowIfNull(run);
 
+        // The per-run mount: /workspace is a fresh dir named review-run-{id} under the gateway's base.
+        return await ProvisionAsync(run, directoryRelPath: WorkspaceId(run), ct).ConfigureAwait(false);
+    }
+
+    public async Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(slot);
+
+        // Mount /workspace OVER the leased slot by expressing its host path relative to the gateway's base.
+        // A misconfigured pool root (base unset, or the slot outside it) is not a hard failure: degrade to
+        // the per-run mount so the reviewer still gets a session (design §7) — its store/scratch just won't
+        // resolve, exactly as on a non-pooled run.
+        var slotRelPath = ResolveSlotRelPath(slot);
+        if (slotRelPath is null)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: cannot mount pooled slot '{SlotPath}' under workspace base '{Base}'; "
+                    + "falling back to the per-run session mount.",
+                run.Id, slot.HostPath, _workspaceBasePath ?? "(unset)");
+            return await GetOrCreateAsync(run, ct).ConfigureAwait(false);
+        }
+
+        return await ProvisionAsync(run, slotRelPath, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The shared session-provisioning tail: applies the host-dir disk guard, then resolves (creating once)
+    /// the run's sandbox session mounting <paramref name="directoryRelPath"/> under the gateway base, and
+    /// caches the runner/filesystem per session id. The session is always keyed by <see cref="WorkspaceId"/>
+    /// so every stage of a run resolves the SAME session regardless of the mounted directory.
+    /// </summary>
+    private async Task<ReviewRunSession?> ProvisionAsync(ReviewRun run, string directoryRelPath, CancellationToken ct)
+    {
         if (!HasSufficientDiskSpace())
         {
             _logger.LogWarning(
@@ -100,7 +157,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         var workspaceId = WorkspaceId(run);
         var session = await _sessions
             .GetOrCreateLiveSessionAsync(
-                new WorkspaceRef(workspaceId, DirectoryRelPath: workspaceId, Marketplaces: _options.Marketplaces),
+                new WorkspaceRef(workspaceId, DirectoryRelPath: directoryRelPath, Marketplaces: _options.Marketplaces),
                 ct)
             .ConfigureAwait(false);
 
@@ -113,6 +170,32 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
                 _options.Limits);
             return new ReviewRunSession(id, session.HostPath, runner, new SandboxFileSystem(runner));
         });
+    }
+
+    /// <summary>
+    /// The leased slot's host path as a forward-slashed directory leaf RELATIVE to
+    /// <see cref="_workspaceBasePath"/>, or <c>null</c> when no base is configured or the slot is not under
+    /// it. <see cref="Path.GetRelativePath(string, string)"/> yields a rooted path (different drive/root) or
+    /// a <c>..</c>-prefixed path (same drive, outside the base) when the slot escapes the base — both are
+    /// rejected so the mount can never point outside the gateway's configured workspace root.
+    /// </summary>
+    private string? ResolveSlotRelPath(ReviewSlot slot)
+    {
+        if (string.IsNullOrWhiteSpace(_workspaceBasePath))
+        {
+            return null;
+        }
+
+        var relative = Path.GetRelativePath(_workspaceBasePath, slot.HostPath);
+        if (Path.IsPathRooted(relative)
+            || relative.Equals("..", StringComparison.Ordinal)
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || relative.StartsWith("../", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return relative.Replace('\\', '/');
     }
 
     /// <summary>

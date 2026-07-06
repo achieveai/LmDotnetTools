@@ -7,6 +7,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -65,6 +66,11 @@ public sealed class ReviewToolContextBuildTests
         toolContext!.SessionId.Should().Be("session-abc");
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(options.ReadOnlyToolAllowList);
         toolContext.SubAgentOptions.Should().BeNull("sub-agents are attached in a later task");
+
+        // A non-pooled (no leased slot) tool-assisted run resolves the session via the per-run mount, never
+        // the slot mount — GetOrCreateForSlotAsync is reserved for a run that leased a pooled slot.
+        provisioner.GetOrCreateCalls.Should().Be(1);
+        provisioner.GetOrCreateForSlotCalls.Should().Be(0);
     }
 
     [Fact]
@@ -272,6 +278,9 @@ public sealed class ReviewToolContextBuildTests
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
             throw new InvalidOperationException("sandbox gateway unreachable");
 
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            throw new InvalidOperationException("sandbox gateway unreachable");
+
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }
 
@@ -281,14 +290,29 @@ public sealed class ReviewToolContextBuildTests
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
             throw new OperationCanceledException("provisioning cancelled");
 
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            throw new OperationCanceledException("provisioning cancelled");
+
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
     {
-        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+        public int GetOrCreateCalls { get; private set; }
+        public int GetOrCreateForSlotCalls { get; private set; }
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        {
+            GetOrCreateCalls++;
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 sessionId, $"/workspace/{sessionId}", new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            return GetOrCreateAsync(run, ct);
+        }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }

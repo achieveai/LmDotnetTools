@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -89,10 +90,13 @@ public sealed class DaemonReviewStageExecutorSessionTests
     }
 
     /// <summary>Records <c>GetOrCreateAsync</c> calls and hands back a session whose fake runner/fs
-    /// satisfy the same rev-parse/diff scripting the diff-only path relies on.</summary>
+    /// satisfy the same rev-parse/diff scripting the diff-only path relies on. The slot-mount entry point
+    /// is unused on this non-pooled path (no lease is ever recorded) but implemented so the fake satisfies
+    /// the interface.</summary>
     private sealed class RecordingProvisioner : IReviewSessionProvisioner
     {
         public int GetOrCreateCalls { get; private set; }
+        public int GetOrCreateForSlotCalls { get; private set; }
 
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
@@ -102,6 +106,12 @@ public sealed class DaemonReviewStageExecutorSessionTests
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty));
             return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}", runner, new FakeSandboxFileSystem()));
+        }
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            return GetOrCreateAsync(run, ct);
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;

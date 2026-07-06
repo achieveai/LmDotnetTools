@@ -153,7 +153,11 @@ builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
 builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
     sp.GetRequiredService<ISandboxSessionSource>(),
     daemonOptions,
-    sp.GetRequiredService<ILoggerFactory>()));
+    sp.GetRequiredService<ILoggerFactory>(),
+    // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
+    // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
+    // pool root is defaulted under it below so the slot always resolves to a path inside the base.
+    sandboxGatewayOptions.WorkspaceBasePath));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
@@ -232,9 +236,16 @@ if (daemonOptions.EnableToolAssistedReview
     && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
 {
     string storeUrl = daemonOptions.ResolvedStoreUrl;
-    var poolRoot = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
-        ? Path.Combine(AppContext.BaseDirectory, "review-pool")
-        : daemonOptions.ReviewPoolHostRoot;
+    // The pool root MUST sit under the gateway's WorkspaceBasePath so a leased slot can be mounted at
+    // /workspace (ReviewSessionProvisioner.GetOrCreateForSlotAsync expresses the slot relative to that
+    // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
+    // it is configured, falling back to a dir beside the binary only when no base path is set (the slot
+    // mount then degrades to the per-run mount, which is still correct — just not slot-backed).
+    var poolRoot = !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+        ? daemonOptions.ReviewPoolHostRoot
+        : !string.IsNullOrWhiteSpace(sandboxGatewayOptions.WorkspaceBasePath)
+            ? Path.Combine(sandboxGatewayOptions.WorkspaceBasePath, "review-pool")
+            : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
     builder.Services.AddSingleton(sp =>
     {
