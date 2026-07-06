@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
 using Xunit;
@@ -25,6 +26,58 @@ public class TriggerRuntimeTests
         GateAcquireTimeout = TimeSpan.FromMilliseconds(150),
         MaxBlockWaitDuration = TimeSpan.FromMinutes(15),
     };
+
+    [Fact]
+    public async Task Ctor_ThreeArgBinaryCompatOverload_ConstructsAndArmsBlockWait_NoNotify()
+    {
+        // Regression: this PR inserted `notify` before `logger` in the primary ctor, breaking the
+        // pre-existing positional (options, resolve, logger) callers. The compat overload must
+        // still construct a working runtime that arms a block wait (no notify delegate needed).
+        var resolver = new RecordingResolver();
+        var source = new ManualTriggerSource();
+        await using var runtime = new TriggerRuntime(FastOptions(), resolver.Resolve, logger: null);
+        runtime.Register(Registration("dummy", source));
+
+        var armed = await runtime.ArmAsync("tc-compat", "dummy", "{}", "10m", null, WaitMode.Block, maxFires: null, CancellationToken.None);
+        armed.IsArmed.Should().BeTrue("the 3-arg (options, resolve, logger) ctor must still construct a fully working runtime");
+
+        await source.FireAsync("hello");
+
+        var payload = await resolver.FirstPayload.WaitAsync(TimeSpan.FromSeconds(5));
+        ReadStatus(payload).Should().Be("fired");
+    }
+
+    [Fact]
+    public void Ctor_Throws_WhenNotifyWaitStoreSet_WithoutThreadId()
+    {
+        var options = new TriggerOptions { NotifyWaitStore = new NoopNotifyWaitStore(), ThreadId = null };
+
+        var act = () => new TriggerRuntime(options, resolve: (_, _, _, _) => Task.CompletedTask);
+
+        act.Should().Throw<ArgumentException>()
+            .WithParameterName("options");
+    }
+
+    [Fact]
+    public void Ctor_DoesNotThrow_WhenNotifyWaitStoreAndThreadIdBothSet()
+    {
+        var options = new TriggerOptions { NotifyWaitStore = new NoopNotifyWaitStore(), ThreadId = "thread-1" };
+
+        var act = () => new TriggerRuntime(options, resolve: (_, _, _, _) => Task.CompletedTask);
+
+        act.Should().NotThrow();
+    }
+
+    /// <summary>Minimal no-op <see cref="INotifyWaitStore"/> for ctor-guard tests — never invoked.</summary>
+    private sealed class NoopNotifyWaitStore : INotifyWaitStore
+    {
+        public Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task DeleteAsync(string waitId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NotifyWaitRecord>>([]);
+    }
 
     [Fact]
     public async Task Fire_ResolvesWait_WithFiredStatus_ViaDummySource()

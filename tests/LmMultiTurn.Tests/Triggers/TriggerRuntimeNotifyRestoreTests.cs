@@ -117,6 +117,26 @@ public class TriggerRuntimeNotifyRestoreTests
     }
 
     [Fact]
+    public async Task RestoreNotifyWaits_ExhaustedRow_DeletesWithoutReArming()
+    {
+        // A row can end up persisted with fires_so_far already at (or past) maxFires if the process
+        // crashed between OnSourceFiredAsync persisting the final fire count and its own
+        // TryTeardownAsync deleting the row. Restoring it must NOT re-arm (re-arming with a clamped
+        // remaining budget of 0 would produce a wait that can never fire again, but also never
+        // self-terminates until its TTL) — it must be deleted, silently, as stale terminal state.
+        var store = new InMemoryNotifyWaitStore();
+        await store.SaveAsync(new NotifyWaitRecord("w-exhausted", "t", "manual-restorable", "{}", null, 3, 3,
+            FutureUnixMs(minutes: 30), NowUnixMs(), "active"));
+
+        var (rt, _, notified) = BuildRuntime(store, threadId: "t", restorableManual: true);
+        await rt.RestoreNotifyWaitsAsync(CancellationToken.None);
+
+        rt.ListWaits().Should().NotContain(w => w.WaitId == "w-exhausted", "an exhausted row must not be re-armed");
+        notified.Should().BeEmpty("the final fire's envelope was already delivered before the crash — no redundant notification");
+        (await store.LoadActiveAsync("t")).Should().BeEmpty("the stale exhausted row must be deleted");
+    }
+
+    [Fact]
     public async Task RestoreNotifyWaits_NoStoreConfigured_IsNoOp()
     {
         var options = new TriggerOptions(); // NotifyWaitStore and ThreadId both null

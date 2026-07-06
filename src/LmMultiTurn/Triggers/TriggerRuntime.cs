@@ -77,11 +77,38 @@ public sealed class TriggerRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(resolve);
+        if (options.NotifyWaitStore != null && string.IsNullOrEmpty(options.ThreadId))
+        {
+            throw new ArgumentException(
+                "TriggerOptions.NotifyWaitStore requires a non-empty ThreadId so durable notify restore is scoped to a conversation.",
+                nameof(options));
+        }
         _options = options;
         _resolve = resolve;
         _notify = notify;
         _logger = logger;
         _concurrencyGate = new SemaphoreSlim(options.MaxConcurrentWaits, options.MaxConcurrentWaits);
+    }
+
+    /// <summary>
+    /// Binary-compatibility overload for callers using the pre-notify-mode positional shape
+    /// <c>(options, resolve, logger)</c>. Delegates to the primary constructor with no notify
+    /// delegate wired (arming a notify-mode wait is then rejected — see <see cref="ArmAsync"/>).
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="logger"/> intentionally has no default value here: giving it one would make
+    /// this constructor ambiguous with the primary constructor for a 2-arg call (both would be
+    /// applicable via default-substitution, and neither is preferred by the language's tie-break
+    /// rules). Omitting the default keeps this overload applicable only to genuine 3-arg calls
+    /// (where it is unambiguously preferred, since it substitutes no optional parameters) while
+    /// 2-arg calls still resolve — unambiguously — to the primary constructor.
+    /// </remarks>
+    public TriggerRuntime(
+        TriggerOptions options,
+        TriggerResolveDelegate resolve,
+        ILogger? logger)
+        : this(options, resolve, notify: null, logger)
+    {
     }
 
     /// <summary>Registers the built-in one-shot <c>timer</c> source.</summary>
@@ -417,6 +444,18 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 continue;
             }
 
+            // An exhausted row (fires_so_far already reached maxFires) is stale terminal state: the
+            // final fire's envelope was already delivered by OnSourceFiredAsync before this row's own
+            // row-delete could complete (e.g. the process crashed between persisting fires_so_far and
+            // TryTeardownAsync's DeleteAsync). Re-arming would either double-fire or, if the remaining
+            // budget clamps to zero, arm a wait that can never terminate on its own — so treat it as
+            // terminal here too: clean up the row, no re-arm, no redundant notification.
+            if (row.MaxFires is int exhaustedMaxFires && row.FiresSoFar >= exhaustedMaxFires)
+            {
+                await store.DeleteAsync(row.WaitId, ct);
+                continue;
+            }
+
             // A missing arm timestamp (older/hand-authored data) would otherwise map to the Unix
             // epoch and expire instantly — restart the clock from now instead.
             var armedAt = row.ArmedAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.ArmedAtUnixMs) : DateTimeOffset.UtcNow;
@@ -470,7 +509,13 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         // Best-effort: keep the persisted fire count current so a restart resumes with the correct
         // remaining budget. A failure here does not affect delivery of the fire already sent above.
-        if (_options.NotifyWaitStore != null && _options.ThreadId != null)
+        // Debounced: a high-frequency notify source (e.g. a file-tail matching every line) would
+        // otherwise issue one SQLite write per fire. Persist only the first fire, every 10th fire,
+        // and the final fire — restart-recovery only needs an approximately-current fires_so_far
+        // (RestoreNotifyWaitsAsync re-arms with the remaining budget as of the last persisted value,
+        // which is a bounded under-count of at most 9 fires, not an unbounded drift).
+        var shouldPersist = fireNumber == 1 || fireNumber % 10 == 0 || isFinalFire;
+        if (shouldPersist && _options.NotifyWaitStore != null && _options.ThreadId != null)
         {
             try
             {
