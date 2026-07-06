@@ -149,6 +149,9 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("simulated provider failure");
+
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("simulated provider failure");
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────

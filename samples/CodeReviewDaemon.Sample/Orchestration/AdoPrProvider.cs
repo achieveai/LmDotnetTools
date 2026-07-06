@@ -131,6 +131,53 @@ internal sealed class AdoPrProvider : IPrProvider
             ? id.GetString() ?? string.Empty
             : string.Empty;
 
+    /// <summary>
+    /// Classifies a single PR's lifecycle via
+    /// <c>GET /{org}/{project}/_apis/git/repositories/{repo}/pullrequests/{prId}</c> — mapping ADO's
+    /// <c>status</c> field (<c>active</c>/<c>completed</c>/<c>abandoned</c>) to <see cref="PrLifecycle"/>.
+    /// Used by the PR-lifecycle sweep (a later task) to decide whether to merge or delete the PR's notes
+    /// branch. Mirrors <see cref="ListOpenPullRequestsAsync"/>'s basic-auth + accept-json request shape.
+    /// </summary>
+    public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrEmpty(prId);
+
+        var org = repo.OrgOrOwner;
+        var project = repo.Project;
+        var repoName = repo.RepoName;
+        var url =
+            $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repoName}/pullrequests/{prId}"
+            + $"?api-version={ApiVersion}";
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+        httpRequest.Headers.Accept.ParseAdd("application/json");
+
+        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return MapPrLifecycle(document.RootElement.GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// Maps ADO's single-PR <c>status</c> to <see cref="PrLifecycle"/>: <c>active</c> is Open,
+    /// <c>completed</c> is Merged, <c>abandoned</c> is Abandoned. An unrecognized status is treated as Open
+    /// so the sweep leaves the notes branch untouched rather than risk a wrong merge or delete.
+    /// </summary>
+    private static PrLifecycle MapPrLifecycle(string? status) => status switch
+    {
+        "active" => PrLifecycle.Open,
+        "completed" => PrLifecycle.Merged,
+        "abandoned" => PrLifecycle.Abandoned,
+        _ => PrLifecycle.Open,
+    };
+
     private static PrLifecycleState MapLifecycle(string? status) => status switch
     {
         "active" => PrLifecycleState.Open,

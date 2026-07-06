@@ -7,19 +7,6 @@ using CodeReviewDaemon.Sample.Workspace;
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
-/// A single PR's Open/Merged/Abandoned classification from <c>GET /repos/{owner}/{repo}/pulls/{number}</c>
-/// (see <see cref="GitHubPrProvider.GetPrStateAsync"/>). Feeds the PR-lifecycle sweep (a later task) that
-/// merges a PR's notes branch when merged and deletes it when abandoned (closed without merging).
-/// Distinct from the coarser <see cref="PrLifecycleState"/> recorded while polling the open-PR list.
-/// </summary>
-internal enum PrLifecycle
-{
-    Open,
-    Merged,
-    Abandoned,
-}
-
-/// <summary>
 /// Real <see cref="IPrProvider"/> over the GitHub REST API. The daemon watches PRs by polling, so this
 /// only needs to list the open PRs for a repo: <c>GET /repos/{owner}/{repo}/pulls?state=open</c>. Each
 /// request carries a bearer token minted by the shared <see cref="IOAuthTokenProvider"/> (single bot
