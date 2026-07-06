@@ -156,6 +156,65 @@ public sealed class ReviewStoreTests
         reloaded.PrLifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    // ── §6 confidentiality trust signals (Task 17) ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true, false)] // task's example: fork PR against a private target
+    [InlineData(false, true)] // same-org PR against a public target — both differ from the fail-closed defaults
+    [InlineData(false, false)]
+    public void The_confidentiality_trust_signals_round_trip_the_exact_stored_values(bool isForkPr, bool isTargetRepoPublic)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var created = store.CreateOrGetReviewRun(SampleRun(repoId) with
+        {
+            IsForkPr = isForkPr,
+            IsTargetRepoPublic = isTargetRepoPublic,
+        });
+
+        var reloaded = store.GetReviewRun(created.Id);
+        reloaded.Should().NotBeNull();
+        reloaded!.IsForkPr.Should().Be(isForkPr,
+            "the persisted fork signal must survive reload rather than fall back to the fail-closed default (true)");
+        reloaded.IsTargetRepoPublic.Should().Be(isTargetRepoPublic,
+            "the persisted target-visibility signal must survive reload rather than fall back to the fail-closed default (true)");
+    }
+
+    // ── ListReviewedPrsAsync (PR-lifecycle sweeper) ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListReviewedPrsAsync_returns_each_reviewed_pr_once_across_multiple_runs()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // Two distinct runs for PR 118 (different head shas) must collapse to a single reviewed-PR row;
+        // PR 200 is a second reviewed PR.
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-1" });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-2" });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-3" });
+
+        var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
+
+        reviewed.Should().HaveCount(2, "the two runs for PR 118 collapse to one reviewed-PR row");
+        reviewed.Select(r => r.PrId).Should().BeEquivalentTo(["118", "200"]);
+        reviewed.Should().OnlyContain(r => r.Provider == "github" && r.Repo.RepoName == "LmDotnetTools");
+    }
+
+    [Fact]
+    public async Task ListReviewedPrsAsync_is_empty_when_nothing_has_been_reviewed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
+
+        reviewed.Should().BeEmpty();
+    }
+
     // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
 
     private const int CurrentCursorVersion = 1;
