@@ -2105,7 +2105,7 @@ git commit -m "feat(sample): subagent-completion trigger source with relay-flag 
 **Interfaces:**
 - Produces:
   - `record NotifyWaitRecord(string WaitId, string ThreadId, string Kind, string Args, string? Label, int? MaxFires, int FiresSoFar, long TimeoutAtUnixMs, long ArmedAtUnixMs, string Status);`
-  - `interface INotifyWaitStore { Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default); Task DeleteAsync(string waitId, CancellationToken ct = default); Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default); }`
+  - `interface INotifyWaitStore { Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default); Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default); Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default); }`
   - `SqliteNotifyWaitStore(ISqliteConnectionFactory factory) : INotifyWaitStore`.
 
 - [ ] **Step 1: Write the failing tests** (round-trip + thread scoping):
@@ -2135,7 +2135,7 @@ public class SqliteNotifyWaitStoreTests
         var store = new SqliteNotifyWaitStore(factory);
         await store.SaveAsync(new NotifyWaitRecord("w1", "t", "schedule", "{}", null, null, 0, 0, 0, "active"));
 
-        await store.DeleteAsync("w1");
+        await store.DeleteAsync("t", "w1");
 
         (await store.LoadActiveAsync("t")).Should().BeEmpty();
     }
@@ -2154,7 +2154,7 @@ Add a new `const string` beside `CreateMetadataTableSql`:
 internal const string CreateNotifyWaitsTableSql =
     """
     CREATE TABLE IF NOT EXISTS notify_waits (
-        wait_id       TEXT PRIMARY KEY,
+        wait_id       TEXT NOT NULL,
         thread_id     TEXT NOT NULL,
         kind          TEXT NOT NULL,
         args          TEXT NOT NULL,
@@ -2163,7 +2163,8 @@ internal const string CreateNotifyWaitsTableSql =
         fires_so_far  INTEGER NOT NULL DEFAULT 0,
         timeout_at    INTEGER NOT NULL,
         armed_at      INTEGER NOT NULL,
-        status        TEXT NOT NULL
+        status        TEXT NOT NULL,
+        PRIMARY KEY (thread_id, wait_id)
     );
     """;
 
@@ -2204,7 +2205,7 @@ public interface INotifyWaitStore
 {
     Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default);
 
-    Task DeleteAsync(string waitId, CancellationToken ct = default);
+    Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default);
 
     Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default);
 }
@@ -2218,7 +2219,7 @@ using Microsoft.Data.Sqlite;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
-/// <summary>SQLite-backed <see cref="INotifyWaitStore"/>. Upserts by wait_id; deletes on terminal.</summary>
+/// <summary>SQLite-backed <see cref="INotifyWaitStore"/>. Upserts by (thread_id, wait_id); deletes on terminal.</summary>
 public sealed class SqliteNotifyWaitStore : INotifyWaitStore
 {
     private readonly ISqliteConnectionFactory _factory;
@@ -2239,7 +2240,7 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
             INSERT INTO notify_waits
                 (wait_id, thread_id, kind, args, label, max_fires, fires_so_far, timeout_at, armed_at, status)
             VALUES ($id, $thread, $kind, $args, $label, $max, $fires, $timeout, $armed, $status)
-            ON CONFLICT(wait_id) DO UPDATE SET
+            ON CONFLICT(thread_id, wait_id) DO UPDATE SET
                 fires_so_far = excluded.fires_so_far,
                 status = excluded.status;
             """;
@@ -2256,11 +2257,12 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task DeleteAsync(string waitId, CancellationToken ct = default)
+    public async Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default)
     {
         var conn = await _factory.GetConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM notify_waits WHERE wait_id = $id;";
+        cmd.CommandText = "DELETE FROM notify_waits WHERE thread_id = $thread AND wait_id = $id;";
+        cmd.Parameters.AddWithValue("$thread", threadId);
         cmd.Parameters.AddWithValue("$id", waitId);
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -2381,7 +2383,7 @@ In `TryTeardownAsync` (Task 2), after `ReleaseGate(wait)`, delete the row for a 
 ```csharp
 if (wait.Mode == WaitMode.Notify && _options.NotifyWaitStore != null)
 {
-    try { await _options.NotifyWaitStore.DeleteAsync(wait.WaitId, CancellationToken.None); }
+    try { await _options.NotifyWaitStore.DeleteAsync(_options.ThreadId!, wait.WaitId, CancellationToken.None); }
     catch (Exception ex) { _logger?.LogWarning(ex, "notify-wait row delete failed for {WaitId}", wait.WaitId); }
 }
 ```
@@ -2417,7 +2419,7 @@ public async Task RestoreNotifyWaitsAsync(CancellationToken ct)
         if (!_registrations.TryGetValue(row.Kind, out var reg) || !reg.Capabilities.SupportsRestore || !reg.Capabilities.SupportsNotify)
         {
             await lost();
-            await store.DeleteAsync(row.WaitId, ct);
+            await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
             continue;
         }
 
@@ -2430,7 +2432,7 @@ public async Task RestoreNotifyWaitsAsync(CancellationToken ct)
                 new ArmedWait { WaitId = row.WaitId, Kind = row.Kind, Label = row.Label, Mode = WaitMode.Notify, ArmedAt = armedAt, Deadline = deadline },
                 BuildTerminalPayload("timed_out", new ArmedWait { WaitId = row.WaitId, Kind = row.Kind, Label = row.Label, Mode = WaitMode.Notify, ArmedAt = armedAt, Deadline = deadline }),
                 isError: false);
-            await store.DeleteAsync(row.WaitId, ct);
+            await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
             continue;
         }
 
@@ -2439,7 +2441,7 @@ public async Task RestoreNotifyWaitsAsync(CancellationToken ct)
         if (!armResult.IsArmed)
         {
             await lost();
-            await store.DeleteAsync(row.WaitId, ct);
+            await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
         }
     }
 }
