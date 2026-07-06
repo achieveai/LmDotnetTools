@@ -725,10 +725,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Runs the §2 durable one-commit retention sequence for the primary review when a ReviewBot repo is
-    /// configured, then records the <c>reviewbot_push</c> outcome in the outbox: terminal
-    /// <see cref="OutboxStatus.Posted"/> (carrying the pushed SHA) on success, or left non-terminal on a
-    /// <see cref="ReviewBotPublishOutcome.GitSyncFailed"/> so the reconcile path retries. Retention is
+    /// Commits the primary review's notes onto its (persistent) review branch for the primary review
+    /// when a ReviewBot repo is configured, then records the <c>reviewbot_push</c> outcome in the
+    /// outbox: terminal <see cref="OutboxStatus.Posted"/> (carrying the pushed SHA) on success, or left
+    /// non-terminal on a <see cref="ReviewBotPublishOutcome.GitSyncFailed"/> so the reconcile path
+    /// retries. The review branch is always kept here — it accumulates notes across re-reviews and is
+    /// only merged-or-deleted by a later PR-close step, not by this per-review commit. Retention is
     /// skipped (and nothing is pushed) when <c>ReviewBotRepoUrl</c> is unset — the inert default.
     /// </summary>
     private async Task PublishToReviewBotAsync(
@@ -753,14 +755,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // repo.
         await EnsureReviewBotCheckoutAsync(git, fileSystem, repoRoot, run, cancellationToken).ConfigureAwait(false);
 
-        var manager = new ReviewBotRepoManager(
+        var manager = new ReviewBranchManager(
             git,
             fileSystem,
             provider,
-            _loggerFactory.CreateLogger<ReviewBotRepoManager>());
+            _loggerFactory.CreateLogger<ReviewBranchManager>());
 
         // Only the PRs/... artifact is supplied explicitly; any KnowledgeBase/... entry the Knowledge arm
-        // wrote into the checkout earlier is committed by the manager's `git add -A` (plan §2 step 2/3).
+        // wrote into the checkout earlier is committed by the manager's `git add -A`.
         var prArtifactPath =
             $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{run.PrId}-{ShortSha(run.HeadSha)}/review.md";
         var request = new ReviewBotPublishRequest(
@@ -770,7 +772,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             DefaultBranch: ReviewBotDefaultBranch,
             Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
 
-        var result = await manager.PublishAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
+        var result = await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
 
         var outbox = _store.EnqueueOutbox(new OutboxEntry
         {
@@ -786,7 +788,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
             _logger.LogInformation(
-                "Run {RunId}: ReviewBot retention pushed {Sha}; review branch '{Branch}' deleted.",
+                "Run {RunId}: ReviewBot notes pushed {Sha} onto review branch '{Branch}' (kept for later re-reviews).",
                 run.Id, result.PushedSha, result.ReviewBranch);
         }
         else

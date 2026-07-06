@@ -387,17 +387,29 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // This is the first review of the PR: the review branch does not exist yet.
+        fixture.Runner.OnArgvContains(
+            "rev-parse --verify review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(1, string.Empty, "unknown revision"));
         // The push must succeed so the retention sequence reaches the reviewbot_push record.
-        fixture.Runner.OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        fixture.Runner.OnArgvContains(
+            "rev-parse review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        // The §2 durable one-commit retention sequence ran in the ReviewBot checkout.
+        // CommitNotesAsync commits onto the review branch and pushes the BRANCH (not the default branch) —
+        // the branch persists so later re-reviews can keep appending notes to it.
         commands.Should().Contain(a => a.Contains("checkout -B review/github/achieveai-lmdotnettools/118"));
         commands.Should().Contain(a => a.Contains("commit -m"));
-        commands.Should().Contain(a => a.Contains("push origin main"));
+        commands.Should().Contain(a => a.Contains("push origin review/github/achieveai-lmdotnettools/118"));
+
+        // The branch is kept: nothing merges or deletes it as part of a single review pass.
+        commands.Should().NotContain(a => a.Contains("branch -D review/github/achieveai-lmdotnettools/118"));
+        commands.Should().NotContain(a => a.Contains("push origin --delete review/github/achieveai-lmdotnettools/118"));
+        commands.Should().NotContain(a => a.Contains("push origin main"), "a per-review commit must never fast-forward the default branch");
 
         // The PRs/... review artifact was written into the checkout before the commit.
         fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
@@ -475,7 +487,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
-        fixture.Runner.OnArgvContains("push origin main", new SandboxCommandResult(1, string.Empty, "rejected"));
+        fixture.Runner.OnArgvContains(
+            "push origin review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(1, string.Empty, "rejected"));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
