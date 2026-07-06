@@ -484,6 +484,11 @@ try
                 var providerId = context.ProviderId;
                 var requestResponseDumpFileName = context.DumpFile;
                 var workspaceId = context.WorkspaceId;
+                // Per-caller sandbox identity (issue #153 M2). Null for the interactive UI — the
+                // sandbox session and /mcp headers below fall back to the process default in that
+                // case. Frozen for the pooled agent's lifetime; captured once here so every site in
+                // this factory threads the same value.
+                var callerCredential = context.CallerCredential;
 
                 var isMedicalMode = mode.Id == SystemChatModes.MedicalKnowledgeModeId;
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
@@ -536,7 +541,10 @@ try
                     // schedule, and reusing a cached-but-evicted handle silently strips the session's
                     // marketplace-provided tools (e.g. sandbox-Skill). This recreates the session on a
                     // gateway 404 so the agent always gets the full tool set without a process restart.
-                    sandboxSession = sandboxRegistry.GetOrCreateLiveSessionAsync(workspaceRef).GetAwaiter().GetResult();
+                    sandboxSession = sandboxRegistry
+                        .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
+                        .GetAwaiter()
+                        .GetResult();
                     var wsSuffix =
                         "\n\nYour workspace directory is: "
                         + sandboxSession.HostPath
@@ -707,8 +715,11 @@ try
 
                 if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
                 {
-                    // Sandbox MCP header dict: X-Session-ID plus the app's sandbox auth headers
-                    // (issue #153 M1).
+                    // Sandbox MCP header dict: X-Session-ID plus the app's sandbox auth headers.
+                    // The caller's credential (S2S) wins over the process default so an S2S
+                    // caller's /mcp tool calls carry its own identity; the interactive UI (null)
+                    // falls back to the default (issue #153 M1/M2). Connect-time-frozen for the
+                    // pooled agent by design — not re-evaluated per turn.
                     Dictionary<string, string>? sandboxMcpHeaders = null;
                     if (isWorkspaceMode)
                     {
@@ -716,7 +727,10 @@ try
                         {
                             ["X-Session-ID"] = sandboxSession!.SessionId,
                         };
-                        AddSandboxAuthHeaders(sandboxMcpHeaders, sandboxCredential);
+                        AddSandboxAuthHeaders(
+                            sandboxMcpHeaders,
+                            callerCredential ?? sandboxCredential
+                        );
                     }
 
                     return new MultiTurnAgentPool.AgentCreationResult(
@@ -820,12 +834,15 @@ try
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header
-                    // and the app's sandbox auth headers (issue #153 M1).
+                    // and the app's sandbox auth headers. The caller's credential (S2S) wins over
+                    // the process default so an S2S caller's /mcp calls carry its own identity; the
+                    // interactive UI (null) falls back to the default (issue #153 M1/M2).
+                    // Connect-time-frozen for the pooled agent; not re-evaluated per turn.
                     var sandboxMcpHeaders = new Dictionary<string, string>
                     {
                         ["X-Session-ID"] = sandboxSession!.SessionId,
                     };
-                    AddSandboxAuthHeaders(sandboxMcpHeaders, sandboxCredential);
+                    AddSandboxAuthHeaders(sandboxMcpHeaders, callerCredential ?? sandboxCredential);
                     var sandboxClients = ConnectHttpMcpClient(
                         filteredRegistry,
                         "sandbox",
