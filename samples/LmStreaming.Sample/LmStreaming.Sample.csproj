@@ -16,6 +16,7 @@
     <InternalsVisibleTo Include="LmStreaming.Sample.Browser.E2E.Tests" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Cronos" Version="0.11.0" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.84.1" />
     <PackageReference Include="Vite.AspNetCore" Version="2.4.1" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />

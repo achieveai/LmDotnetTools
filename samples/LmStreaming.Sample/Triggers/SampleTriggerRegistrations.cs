@@ -25,7 +25,17 @@ public static class SampleTriggerRegistrations
             Source = new FileTailTriggerSource(fileTailRoots),
         });
 
-        // (#143) schedule, (#144) subagent registrations appended here in later tasks.
+        // (#143) schedule: unconditional — fires on a cron expression or a fixed interval.
+        registrations.Add(new TriggerSourceRegistration
+        {
+            Kind = ScheduleTriggerSource.KindName,
+            Description = "Fire on a cron expression or a fixed interval (block resolves once; notify repeats).",
+            ArgsSchema = ScheduleTriggerSource.ArgsSchemaText,
+            Capabilities = ScheduleTriggerSource.Capabilities,
+            Source = new ScheduleTriggerSource(),
+        });
+
+        // (#144) subagent registration appended here in a later task.
         // (#142) process registration appended here, guarded by `if (sandboxEnabled)`, in Task 9.
         if (sandboxEnabled)
         {
