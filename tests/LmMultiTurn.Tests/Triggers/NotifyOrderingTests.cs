@@ -46,20 +46,7 @@ public class NotifyOrderingTests
         // ExecuteRunTurnsAsync breaks immediately once it completes — the fire, already queued,
         // is only observed by the outer run loop as a brand-new run (run 3) once run 2 is done.
         var manual = new ManualTriggerSource();
-        var options = new TriggerOptions
-        {
-            AdditionalRegistrations =
-            [
-                new TriggerSourceRegistration
-                {
-                    Kind = "manual",
-                    Description = "test notify source",
-                    ArgsSchema = "{}",
-                    Capabilities = ManualTriggerSource.Caps,
-                    Source = manual,
-                },
-            ],
-        };
+        var options = ManualNotifyOptions(manual);
 
         var waitCall = new ToolCallMessage
         {
@@ -167,20 +154,7 @@ public class NotifyOrderingTests
                 return ToolHandlerResult.FromText("tool done");
             });
 
-        var options = new TriggerOptions
-        {
-            AdditionalRegistrations =
-            [
-                new TriggerSourceRegistration
-                {
-                    Kind = "manual",
-                    Description = "test notify source",
-                    ArgsSchema = "{}",
-                    Capabilities = ManualTriggerSource.Caps,
-                    Source = manual,
-                },
-            ],
-        };
+        var options = ManualNotifyOptions(manual);
 
         var waitCall = new ToolCallMessage
         {
@@ -274,20 +248,7 @@ public class NotifyOrderingTests
         // the block wait's placeholder is unresolved, so it errors out without touching _deferred.
         // Assert the block wait's tool_call_id is still reported as deferred afterward.
         var manual = new ManualTriggerSource();
-        var options = new TriggerOptions
-        {
-            AdditionalRegistrations =
-            [
-                new TriggerSourceRegistration
-                {
-                    Kind = "manual",
-                    Description = "test notify source",
-                    ArgsSchema = "{}",
-                    Capabilities = ManualTriggerSource.Caps,
-                    Source = manual,
-                },
-            ],
-        };
+        var options = ManualNotifyOptions(manual);
 
         var blockWaitCall = new ToolCallMessage
         {
@@ -330,7 +291,8 @@ public class NotifyOrderingTests
         await loop.SendAsync([new TextMessage { Text = "arm both waits", Role = Role.User }]);
         await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_block");
+        var before = (await loop.GetDeferredToolCallsAsync()).Should()
+            .ContainSingle(p => p.ToolCallId == "tc_block").Subject;
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await manual.Sinks["tc_notify"].FireAsync(new TriggerFireEvent("fire-1"), cts.Token);
@@ -338,9 +300,19 @@ public class NotifyOrderingTests
 
         await cts.CancelAsync();
 
-        (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(
-            p => p.ToolCallId == "tc_block",
-            "a notify fire must never resolve or otherwise touch a parked block wait's deferred tool call");
+        var after = (await loop.GetDeferredToolCallsAsync()).Should()
+            .ContainSingle(
+                p => p.ToolCallId == "tc_block",
+                "a notify fire must never resolve or otherwise touch a parked block wait's deferred tool call")
+            .Subject;
+
+        // Presence-by-key is not enough: a regression that mutated the entry in place (e.g.
+        // overwrote FunctionArgs/DeferredAtUnixMs/GenerationId while keeping the same key) would
+        // slip past a key check. DeferredToolCallInfo is a record, so value-equality proves the
+        // entry is byte-for-byte unchanged — every field, not just the id.
+        after.Should().Be(
+            before,
+            "a notify fire must leave the parked block wait's deferred entry entirely unchanged, not merely still-keyed");
     }
 
     [Fact]
@@ -351,20 +323,7 @@ public class NotifyOrderingTests
         // in the order they were fired — however many runs the outer loop happens to batch them
         // into. Assert on relative content ordering, not on the number of runs.
         var manual = new ManualTriggerSource();
-        var options = new TriggerOptions
-        {
-            AdditionalRegistrations =
-            [
-                new TriggerSourceRegistration
-                {
-                    Kind = "manual",
-                    Description = "test notify source",
-                    ArgsSchema = "{}",
-                    Capabilities = ManualTriggerSource.Caps,
-                    Source = manual,
-                },
-            ],
-        };
+        var options = ManualNotifyOptions(manual);
 
         var waitCall = new ToolCallMessage
         {
@@ -436,6 +395,26 @@ public class NotifyOrderingTests
             .ToList();
         fireOrder.Should().Equal([1, 2, 3], "the three fires must be delivered in the order they occurred");
     }
+
+    /// <summary>
+    /// Registers <paramref name="manual"/> under the <c>manual</c> kind (block+notify capable) so a
+    /// wait with <c>kind: "manual"</c> arms against it. Every scenario wires the same source the
+    /// same way — this keeps that boilerplate in one place.
+    /// </summary>
+    private static TriggerOptions ManualNotifyOptions(ManualTriggerSource manual) => new()
+    {
+        AdditionalRegistrations =
+        [
+            new TriggerSourceRegistration
+            {
+                Kind = "manual",
+                Description = "test notify source",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = manual,
+            },
+        ],
+    };
 
     private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
         MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
