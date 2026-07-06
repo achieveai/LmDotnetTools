@@ -71,7 +71,7 @@ public class SqliteNotifyWaitStoreTests
 
         // Deleting a non-existent row on a never-initialized schema must not throw — schema init
         // happens lazily inside DeleteAsync itself, same as SaveAsync/LoadActiveAsync.
-        var act = () => store.DeleteAsync("does-not-exist");
+        var act = () => store.DeleteAsync("threadX", "does-not-exist");
 
         await act.Should().NotThrowAsync();
     }
@@ -84,9 +84,35 @@ public class SqliteNotifyWaitStoreTests
         var store = new SqliteNotifyWaitStore(factory);
         await store.SaveAsync(new NotifyWaitRecord("w1", "t", "schedule", "{}", null, null, 0, 0, 0, "active"));
 
-        await store.DeleteAsync("w1");
+        await store.DeleteAsync("t", "w1");
 
         (await store.LoadActiveAsync("t")).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SameWaitId_DifferentThreads_BothPersist_NoOverwrite()
+    {
+        // wait_id is the model-assigned tool_call_id, not globally unique across threads (tests
+        // routinely reuse fixed ids like "tc_notify"). Identity must be scoped by (thread_id,
+        // wait_id) so two threads sharing one store never collide/overwrite each other's row.
+        await using var factory = new InMemorySqliteConnectionFactory();
+        await SqliteSchemaInitializer.InitializeSchemaAsync(factory);
+        var store = new SqliteNotifyWaitStore(factory);
+
+        await store.SaveAsync(new NotifyWaitRecord("tc_notify", "threadA", "schedule", "{}", "a-label", null, 0, 1_000, 500, "active"));
+        await store.SaveAsync(new NotifyWaitRecord("tc_notify", "threadB", "schedule", "{}", "b-label", null, 0, 2_000, 1_500, "active"));
+
+        // Both independently loadable — neither overwrote the other.
+        var rowsA = await store.LoadActiveAsync("threadA");
+        var rowsB = await store.LoadActiveAsync("threadB");
+        rowsA.Should().ContainSingle(r => r.WaitId == "tc_notify" && r.Label == "a-label");
+        rowsB.Should().ContainSingle(r => r.WaitId == "tc_notify" && r.Label == "b-label");
+
+        // Deleting one thread's row must not affect the other's.
+        await store.DeleteAsync("threadA", "tc_notify");
+
+        (await store.LoadActiveAsync("threadA")).Should().BeEmpty();
+        (await store.LoadActiveAsync("threadB")).Should().ContainSingle(r => r.WaitId == "tc_notify" && r.Label == "b-label");
     }
 
     /// <summary>

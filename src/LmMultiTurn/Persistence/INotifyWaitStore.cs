@@ -26,7 +26,13 @@ public interface INotifyWaitStore
 {
     Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default);
 
-    Task DeleteAsync(string waitId, CancellationToken ct = default);
+    /// <summary>
+    /// Deletes the row identified by the composite (<paramref name="threadId"/>,
+    /// <paramref name="waitId"/>) key. <paramref name="waitId"/> alone is not globally unique (it is
+    /// the model-assigned tool_call_id, which two threads can share), so the thread must be
+    /// supplied to scope the delete correctly.
+    /// </summary>
+    Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default);
 
     Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default);
 }

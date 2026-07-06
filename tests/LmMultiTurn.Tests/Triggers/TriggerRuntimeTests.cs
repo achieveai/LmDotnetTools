@@ -73,7 +73,7 @@ public class TriggerRuntimeTests
     {
         public Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default) => Task.CompletedTask;
 
-        public Task DeleteAsync(string waitId, CancellationToken ct = default) => Task.CompletedTask;
+        public Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default) => Task.CompletedTask;
 
         public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<NotifyWaitRecord>>([]);

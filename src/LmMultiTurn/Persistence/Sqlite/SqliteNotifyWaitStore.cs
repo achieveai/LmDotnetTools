@@ -1,6 +1,11 @@
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
-/// <summary>SQLite-backed <see cref="INotifyWaitStore"/>. Upserts by wait_id; deletes on terminal.</summary>
+/// <summary>
+/// SQLite-backed <see cref="INotifyWaitStore"/>. Upserts by (thread_id, wait_id) — the wait_id is
+/// the model-assigned tool_call_id and is not globally unique across threads, so identity is
+/// scoped by thread to avoid two conversations sharing one store colliding on the same id. Deletes
+/// on terminal.
+/// </summary>
 public sealed class SqliteNotifyWaitStore : INotifyWaitStore
 {
     private readonly ISqliteConnectionFactory _factory;
@@ -55,7 +60,7 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
             INSERT INTO notify_waits
                 (wait_id, thread_id, kind, args, label, max_fires, fires_so_far, timeout_at, armed_at, status)
             VALUES ($id, $thread, $kind, $args, $label, $max, $fires, $timeout, $armed, $status)
-            ON CONFLICT(wait_id) DO UPDATE SET
+            ON CONFLICT(thread_id, wait_id) DO UPDATE SET
                 args = excluded.args,
                 label = excluded.label,
                 max_fires = excluded.max_fires,
@@ -77,8 +82,9 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task DeleteAsync(string waitId, CancellationToken ct = default)
+    public async Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(waitId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
@@ -86,7 +92,8 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM notify_waits WHERE wait_id = $id;";
+        command.CommandText = "DELETE FROM notify_waits WHERE thread_id = $thread AND wait_id = $id;";
+        _ = command.Parameters.AddWithValue("$thread", threadId);
         _ = command.Parameters.AddWithValue("$id", waitId);
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }

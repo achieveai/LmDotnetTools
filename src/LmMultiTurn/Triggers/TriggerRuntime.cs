@@ -440,7 +440,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             if (!_registrations.TryGetValue(row.Kind, out var reg) || !reg.Capabilities.SupportsRestore || !reg.Capabilities.SupportsNotify)
             {
                 await NotifyRawAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, "trigger_lost_on_restart"), isError: false);
-                await store.DeleteAsync(row.WaitId, ct);
+                await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 continue;
             }
 
@@ -452,7 +452,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             // terminal here too: clean up the row, no re-arm, no redundant notification.
             if (row.MaxFires is int exhaustedMaxFires && row.FiresSoFar >= exhaustedMaxFires)
             {
-                await store.DeleteAsync(row.WaitId, ct);
+                await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 continue;
             }
 
@@ -466,7 +466,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 await NotifyRawAsync(
                     BuildTerminalPayload("timed_out", new ArmedWait { WaitId = row.WaitId, Kind = row.Kind, Label = row.Label, Mode = WaitMode.Notify, ArmedAt = armedAt, Deadline = deadline }),
                     isError: false);
-                await store.DeleteAsync(row.WaitId, ct);
+                await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
                 continue;
             }
 
@@ -475,7 +475,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             if (!armResult.IsArmed)
             {
                 await NotifyRawAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, "trigger_lost_on_restart"), isError: false);
-                await store.DeleteAsync(row.WaitId, ct);
+                await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
             }
         }
     }
@@ -509,12 +509,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         // Best-effort: keep the persisted fire count current so a restart resumes with the correct
         // remaining budget. A failure here does not affect delivery of the fire already sent above.
-        // Debounced: a high-frequency notify source (e.g. a file-tail matching every line) would
-        // otherwise issue one SQLite write per fire. Persist only the first fire, every 10th fire,
-        // and the final fire — restart-recovery only needs an approximately-current fires_so_far
-        // (RestoreNotifyWaitsAsync re-arms with the remaining budget as of the last persisted value,
-        // which is a bounded under-count of at most 9 fires, not an unbounded drift).
-        var shouldPersist = fireNumber == 1 || fireNumber % 10 == 0 || isFinalFire;
+        // Debounced ONLY for unlimited waits (no maxFires): a high-frequency notify source (e.g. a
+        // file-tail matching every line) would otherwise issue one SQLite write per fire, and an
+        // unlimited wait's remaining budget is unbounded anyway so an approximately-current
+        // fires_so_far is fine. A maxFires-bounded wait persists every fire — debouncing it would
+        // let a crash lose up to 9 fires and over-grant the remaining budget on restore.
+        var shouldPersist = wait.MaxFires is not null || fireNumber == 1 || fireNumber % 10 == 0 || isFinalFire;
         if (shouldPersist && _options.NotifyWaitStore != null && _options.ThreadId != null)
         {
             try
@@ -579,7 +579,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         {
             try
             {
-                await _options.NotifyWaitStore.DeleteAsync(wait.WaitId, CancellationToken.None);
+                await _options.NotifyWaitStore.DeleteAsync(_options.ThreadId!, wait.WaitId, CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -626,11 +626,18 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         try
         {
-            await _notify(payload, isError, CancellationToken.None);
+            // Use the runtime's own shutdown token, not CancellationToken.None: _notify writes to
+            // the loop's bounded input channel, and a full channel would otherwise block this
+            // source task indefinitely even after the runtime is disposed.
+            await _notify(payload, isError, _shutdown.Token);
         }
         catch (ObjectDisposedException)
         {
             // Loop torn down — nothing to inject into.
+        }
+        catch (OperationCanceledException)
+        {
+            // Runtime shutting down — drop the fire; the loop side swallows this too.
         }
         catch (Exception ex)
         {
@@ -653,11 +660,15 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
         try
         {
-            await _notify(payload, isError, CancellationToken.None);
+            await _notify(payload, isError, _shutdown.Token);
         }
         catch (ObjectDisposedException)
         {
             // Loop torn down — nothing to inject into.
+        }
+        catch (OperationCanceledException)
+        {
+            // Runtime shutting down — drop the fire; the loop side swallows this too.
         }
         catch (Exception ex)
         {

@@ -187,7 +187,7 @@ public class NotifyRestoreLoopTests
             return Task.CompletedTask;
         }
 
-        public Task DeleteAsync(string waitId, CancellationToken ct = default)
+        public Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default)
         {
             _rows.TryRemove(waitId, out _);
             return Task.CompletedTask;
