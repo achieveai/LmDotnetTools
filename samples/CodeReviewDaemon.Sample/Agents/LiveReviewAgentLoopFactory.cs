@@ -17,9 +17,11 @@ using ModelContextProtocol.Client;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// The production <see cref="IReviewAgentLoopFactory"/>: assembles an Anthropic Messages
-/// <see cref="MultiTurnAgentLoop"/> routed through the GitHub Copilot backend (mirrors the Copilot-backed
-/// Anthropic wiring in <c>LmStreaming.Sample</c>). The bearer token comes from the local GitHub Copilot /
+/// The production <see cref="IReviewAgentLoopFactory"/>: assembles either a Copilot <b>Anthropic Messages</b>
+/// or Copilot <b>OpenAI Responses</b> <see cref="MultiTurnAgentLoop"/> — selected by the configured
+/// <see cref="CodeReviewDaemonOptions.ReviewModelId"/>'s vendor (<c>claude-*</c> → Anthropic, <c>gpt-*</c>/
+/// <c>o1|o3|o4</c> → OpenAI Responses) — routed through the GitHub Copilot backend (mirrors the Copilot-backed
+/// wiring in <c>LmStreaming.Sample</c>). The bearer token comes from the local GitHub Copilot /
 /// <c>gh</c> CLI login via <see cref="CliCredentialCopilotTokenProvider"/> — no API key / base URL config
 /// knob. When <see cref="Create"/> is called without a <see cref="ReviewToolContext"/> the registry stays
 /// empty — the daemon's agents are collect-only text agents that reason over the diff the executor
@@ -31,12 +33,13 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// (lazy per run), so registering it cannot affect daemon boot or the route surface.
 /// </para>
 /// <para>
-/// <b>Lifetime.</b> The Copilot-backed <see cref="AnthropicAgent"/> (and the transport
-/// <see cref="System.Net.Http.HttpClient"/> it owns) is created once on first use and <b>shared</b> across
-/// every loop, then disposed with this singleton. <see cref="MultiTurnAgentLoop"/> disposal does not dispose
-/// its provider agent, so a fresh agent per run would leak one client per run; sharing avoids that. The
-/// daemon drives runs serially (the <c>ReviewStore</c> singleton is documented single-accessor), so one
-/// shared agent across the per-run loops is safe.
+/// <b>Lifetime.</b> The Copilot-backed provider agent (the vendor-matched <see cref="AnthropicAgent"/> or
+/// <see cref="OpenAiResponsesAgent"/>, and the transport <see cref="System.Net.Http.HttpClient"/> it owns) is
+/// created once on first use and <b>shared</b> across every loop, then disposed with this singleton.
+/// <see cref="MultiTurnAgentLoop"/> disposal does not dispose its provider agent, so a fresh agent per run
+/// would leak one client per run; sharing avoids that. The daemon drives runs serially (the
+/// <c>ReviewStore</c> singleton is documented single-accessor), so one shared agent across the per-run loops
+/// is safe.
 /// </para>
 /// </summary>
 internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDisposable
