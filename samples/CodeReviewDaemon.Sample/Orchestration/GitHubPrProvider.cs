@@ -7,6 +7,19 @@ using CodeReviewDaemon.Sample.Workspace;
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
+/// A single PR's Open/Merged/Abandoned classification from <c>GET /repos/{owner}/{repo}/pulls/{number}</c>
+/// (see <see cref="GitHubPrProvider.GetPrStateAsync"/>). Feeds the PR-lifecycle sweep (a later task) that
+/// merges a PR's notes branch when merged and deletes it when abandoned (closed without merging).
+/// Distinct from the coarser <see cref="PrLifecycleState"/> recorded while polling the open-PR list.
+/// </summary>
+internal enum PrLifecycle
+{
+    Open,
+    Merged,
+    Abandoned,
+}
+
+/// <summary>
 /// Real <see cref="IPrProvider"/> over the GitHub REST API. The daemon watches PRs by polling, so this
 /// only needs to list the open PRs for a repo: <c>GET /repos/{owner}/{repo}/pulls?state=open</c>. Each
 /// request carries a bearer token minted by the shared <see cref="IOAuthTokenProvider"/> (single bot
@@ -105,6 +118,52 @@ internal sealed class GitHubPrProvider : IPrProvider
                 HighWaterMark = highWaterMark,
             },
         };
+    }
+
+    /// <summary>
+    /// Classifies a single PR's lifecycle via <c>GET /repos/{owner}/{repo}/pulls/{number}</c> — Open,
+    /// Merged, or Abandoned (closed without merging). Used by the PR-lifecycle sweep (a later task) to
+    /// decide whether to merge or delete the PR's notes branch.
+    /// </summary>
+    public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrEmpty(prId);
+
+        var owner = repo.OrgOrOwner;
+        var repoName = repo.RepoName;
+        var url = $"{BaseUrl}/repos/{owner}/{repoName}/pulls/{prId}";
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+        httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
+        httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
+
+        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return MapPrLifecycle(document.RootElement);
+    }
+
+    /// <summary>
+    /// Maps a single-PR response to <see cref="PrLifecycle"/>: <c>state == "open"</c> is Open;
+    /// <c>state == "closed"</c> with a non-null <c>merged_at</c> is Merged; <c>state == "closed"</c> with a
+    /// null <c>merged_at</c> is Abandoned.
+    /// </summary>
+    private static PrLifecycle MapPrLifecycle(JsonElement pr)
+    {
+        var state = pr.GetProperty("state").GetString();
+        if (string.Equals(state, "open", StringComparison.OrdinalIgnoreCase))
+        {
+            return PrLifecycle.Open;
+        }
+
+        var merged = pr.TryGetProperty("merged_at", out var mergedAt) && mergedAt.ValueKind is not JsonValueKind.Null;
+        return merged ? PrLifecycle.Merged : PrLifecycle.Abandoned;
     }
 
     /// <summary>
