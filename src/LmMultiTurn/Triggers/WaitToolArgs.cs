@@ -51,8 +51,13 @@ internal sealed record WaitToolArgs(
             var label = GetString(root, "label");
 
             var mode = WaitMode.Block;
-            if (root.TryGetProperty("mode", out var modeEl) && modeEl.ValueKind == JsonValueKind.String)
+            if (root.TryGetProperty("mode", out var modeEl) && modeEl.ValueKind != JsonValueKind.Null)
             {
+                if (modeEl.ValueKind != JsonValueKind.String)
+                {
+                    return false; // mode must be a string when present
+                }
+
                 var modeText = modeEl.GetString();
                 if (string.Equals(modeText, "notify", StringComparison.OrdinalIgnoreCase))
                 {

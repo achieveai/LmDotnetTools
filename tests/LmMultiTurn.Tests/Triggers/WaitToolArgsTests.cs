@@ -43,4 +43,19 @@ public class WaitToolArgsTests
         WaitToolArgs.TryParse("""{"kind":"timer","timeout":"1h","mode":"notify","maxFires":0}""", out _)
             .Should().BeFalse();
     }
+
+    [Theory]
+    [InlineData("""{"kind":"timer","timeout":"1h","mode":123}""")]
+    [InlineData("""{"kind":"timer","timeout":"1h","mode":true}""")]
+    public void TryParse_RejectsNonStringMode(string json)
+    {
+        WaitToolArgs.TryParse(json, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParse_TreatsNullModeAsBlock()
+    {
+        WaitToolArgs.TryParse("""{"kind":"timer","timeout":"1h","mode":null}""", out var args).Should().BeTrue();
+        args.Mode.Should().Be(WaitMode.Block);
+    }
 }
