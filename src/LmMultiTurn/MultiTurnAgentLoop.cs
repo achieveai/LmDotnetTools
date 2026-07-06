@@ -930,6 +930,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     [.. restoredWaitEntries.Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs))];
                 await _triggerRuntime.ReconcileRestoredAsync(restoredList, ct);
             }
+
+            // Notify waits aren't backed by deferred tool calls, so they restore from their own table
+            // by thread — separate from the block-wait reconcile above.
+            await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
         }
         else if (restoredWaitEntries.Count > 0)
         {
