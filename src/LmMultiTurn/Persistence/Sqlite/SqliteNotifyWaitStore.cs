@@ -23,7 +23,12 @@ public sealed class SqliteNotifyWaitStore : INotifyWaitStore
                 (wait_id, thread_id, kind, args, label, max_fires, fires_so_far, timeout_at, armed_at, status)
             VALUES ($id, $thread, $kind, $args, $label, $max, $fires, $timeout, $armed, $status)
             ON CONFLICT(wait_id) DO UPDATE SET
+                args = excluded.args,
+                label = excluded.label,
+                max_fires = excluded.max_fires,
                 fires_so_far = excluded.fires_so_far,
+                timeout_at = excluded.timeout_at,
+                armed_at = excluded.armed_at,
                 status = excluded.status;
             """;
         _ = command.Parameters.AddWithValue("$id", record.WaitId);

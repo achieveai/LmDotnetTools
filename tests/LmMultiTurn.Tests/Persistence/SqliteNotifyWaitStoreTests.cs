@@ -26,6 +26,29 @@ public class SqliteNotifyWaitStoreTests
     }
 
     [Fact]
+    public async Task Save_OnConflict_FullyUpsertsMutableColumns_NotJustFiresSoFarAndStatus()
+    {
+        await using var factory = new InMemorySqliteConnectionFactory();
+        await SqliteSchemaInitializer.InitializeSchemaAsync(factory);
+        var store = new SqliteNotifyWaitStore(factory);
+
+        var initial = new NotifyWaitRecord("w", "t", "schedule", "{}", null, 5, 0, 1_000, 500, "active");
+        await store.SaveAsync(initial);
+
+        // Simulate the restore re-arm case: same wait_id, clamped maxFires and refreshed
+        // timeout/armed timestamps.
+        var reArmed = new NotifyWaitRecord("w", "t", "schedule", "{}", null, 3, 0, 2_000, 1_500, "active");
+        await store.SaveAsync(reArmed);
+
+        var rows = await store.LoadActiveAsync("t");
+        rows.Should().ContainSingle();
+        var row = rows.Single();
+        row.MaxFires.Should().Be(3);
+        row.TimeoutAtUnixMs.Should().Be(2_000);
+        row.ArmedAtUnixMs.Should().Be(1_500);
+    }
+
+    [Fact]
     public async Task Delete_RemovesRow()
     {
         await using var factory = new InMemorySqliteConnectionFactory();
