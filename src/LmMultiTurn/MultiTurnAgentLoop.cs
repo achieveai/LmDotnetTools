@@ -152,6 +152,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 triggerOptions,
                 resolve: (toolCallId, result, isError, ct) =>
                     ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
+                notify: (payload, isError, ct) => EnqueueTriggerNotifyAsync(payload, isError, ct),
                 logger: logger);
             _triggerRuntime.RegisterBuiltIns();
             foreach (var registration in triggerOptions.AdditionalRegistrations)
@@ -1058,6 +1059,41 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Injects a notify-mode trigger fire as a fresh user turn through the same internal gate
+    /// ResumeSentinel uses. Resume is null and Messages is non-empty, so RunLoopAsync adds it to
+    /// history and drives a new run — queued strictly behind any in-flight turn (never interrupting,
+    /// per locked decision #1). Supplied to <see cref="TriggerRuntime"/> as its notify delegate.
+    /// </summary>
+    private async Task EnqueueTriggerNotifyAsync(string payload, bool isError, CancellationToken ct)
+    {
+        var envelope = new TextMessage
+        {
+            Role = Role.User,
+            Text = $"<trigger>\n{payload}\n</trigger>",
+        };
+        var input = new UserInput([envelope], InputId: null, ParentRunId: null);
+        var queued = new QueuedInput(
+            input,
+            ReceiptId: $"notify:{Guid.NewGuid():N}",
+            QueuedAt: DateTimeOffset.UtcNow,
+            Resume: null,
+            Trigger: new TriggerEnvelope(isError));
+
+        try
+        {
+            await EnqueueRawAsync(queued, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Expected on shutdown.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down mid-fire — drop the envelope.
         }
     }
 

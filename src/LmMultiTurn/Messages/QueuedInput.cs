@@ -11,8 +11,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 /// loop after the last deferred tool call from a previous turn was resolved. The loop drains
 /// it and starts a new run with no fresh user messages — the resolved tool_results already in
 /// history feed the LLM. Real user inputs always have <c>Resume == null</c>.</param>
+/// <param name="Trigger">Non-null when this entry was injected by a notify-mode trigger fire
+/// (telemetry only; content is in Input.Messages, Resume is null so it drives a real run).</param>
 public record QueuedInput(
     UserInput Input,
     string ReceiptId,
     DateTimeOffset QueuedAt,
-    ResumeSentinel? Resume = null);
+    ResumeSentinel? Resume = null,
+    TriggerEnvelope? Trigger = null);
