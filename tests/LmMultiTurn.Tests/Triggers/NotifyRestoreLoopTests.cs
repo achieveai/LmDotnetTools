@@ -16,12 +16,14 @@ using Xunit;
 namespace LmMultiTurn.Tests.Triggers;
 
 /// <summary>
-/// Task 14: <see cref="MultiTurnAgentLoop"/>'s history-restore path must call
-/// <see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/> alongside its existing block-wait
-/// reconcile (<c>ReconcileRestoredAsync</c>), so a thread rehydrated after a restart re-arms any
-/// notify-mode waits that were persisted to its <see cref="INotifyWaitStore"/>. Notify waits
-/// aren't backed by a deferred tool-call placeholder in history, so this restore path is entirely
-/// separate from the block-wait one already covered by <see cref="DeferredToolExecutionTests"/>.
+/// Task 14: <see cref="MultiTurnAgentLoop"/>'s recovery path must call
+/// <see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/> via <c>OnThreadRecoveredAsync</c>
+/// regardless of whether the thread has any persisted message rows, so a thread rehydrated after
+/// a restart re-arms any notify-mode waits that were persisted to its <see cref="INotifyWaitStore"/>.
+/// Notify waits aren't backed by a deferred tool-call placeholder in history — they live in their
+/// own store, keyed only by thread — so this restore path is entirely separate from the
+/// block-wait one already covered by <see cref="DeferredToolExecutionTests"/> (which does depend
+/// on message history via <c>OnHistoryRestoredAsync</c>).
 /// Reuses the shared notify-capable <see cref="ManualTriggerSource"/> fake (see
 /// <see cref="NotifyEnvelopeDeliveryTests"/>) and a Dictionary-backed <see cref="INotifyWaitStore"/>
 /// double (no SQLite needed here — see <see cref="TriggerRuntimeNotifyRestoreTests"/> for the
@@ -33,23 +35,17 @@ public class NotifyRestoreLoopTests
     private readonly Mock<ILogger<MultiTurnAgentLoop>> _loggerMock = new();
 
     [Fact]
-    public async Task RestoredThread_ReArmsPersistedNotifyWaits()
+    public async Task RestoredThread_WithNoMessages_ReArmsPersistedNotifyWaits()
     {
         const string threadId = "notify-restore-thread";
         const string waitId = "w1";
         const string runId = "run_prev";
 
-        // RecoverAsync only invokes OnHistoryRestoredAsync when persisted messages are
-        // non-empty, so seed a prior user turn (the notify wait row itself lives in the
-        // separate INotifyWaitStore, not in conversation history).
+        // Deliberately seed ZERO message rows: notify_waits are persisted in their own store,
+        // keyed only by thread, independent of conversation history. A thread can have an active
+        // notify wait with no messages at all (e.g. armed on the very first turn), so recovery of
+        // the wait must not be gated on persisted messages being non-empty.
         var convStore = new InMemoryConversationStore();
-        await convStore.AppendMessagesAsync(threadId,
-        [
-            MessagePersistenceConverter.ToPersistedMessage(
-                new TextMessage { Text = "arm the notify wait", Role = Role.User },
-                threadId,
-                runId),
-        ]);
         await convStore.SaveMetadataAsync(threadId, new ThreadMetadata
         {
             ThreadId = threadId,
@@ -108,9 +104,11 @@ public class NotifyRestoreLoopTests
             triggerOptions: options);
 
         // Act: drive the restore path directly (mirrors DeferredToolExecutionTests' pattern of
-        // calling RecoverAsync without ever starting RunAsync first).
+        // calling RecoverAsync without ever starting RunAsync first). With zero persisted
+        // messages, RecoverAsync's own return value stays false (unchanged, message-count-driven
+        // semantics) — the point of this test is that notify-wait restore still runs on this path.
         var recovered = await loop.RecoverAsync();
-        recovered.Should().BeTrue();
+        recovered.Should().BeFalse();
 
         // Assert (1): the runtime re-armed the wait — the source has a live sink registered
         // under the *original* wait id, which only happens via RestoreNotifyWaitsAsync's

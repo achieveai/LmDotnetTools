@@ -276,6 +276,14 @@ public sealed class TriggerRuntime : IAsyncDisposable
                         waitId, _options.ThreadId, reg.Kind, request.ArgsJson, label, maxFires, 0,
                         deadline.ToUnixTimeMilliseconds(), armedAt.ToUnixTimeMilliseconds(), "active"), ct);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // The caller abandoned the call — do not report an armed wait it never asked
+                    // for. Rethrow so the outer catch below cleans up and the cancellation
+                    // propagates, unlike a genuine persistence failure (handled below), which is
+                    // best-effort and must not fail an otherwise-successful arm.
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _logger?.LogWarning(ex, "notify-wait persist failed for {WaitId}", waitId);
@@ -297,6 +305,15 @@ public sealed class TriggerRuntime : IAsyncDisposable
             _ = _waits.TryRemove(waitId, out _);
             _logger?.LogInformation("trigger.arm_rejected {WaitId} kind={Kind} reason={Message}", waitId, reg.Kind, ex.Message);
             return WaitArmResult.Reject("invalid_args", ex.Message);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Reached only via the rethrow above, after the source was already armed (registered,
+            // ceiling running, tracked in _waits). Use the single-claim teardown path — not a bare
+            // ReleaseGate/TryRemove — so a stray late fire or ceiling timeout on this same wait
+            // can't win a second claim and double-release the gate or double-notify.
+            _ = await TryTeardownAsync(wait, WaitState.Failed);
+            throw;
         }
         catch (Exception ex)
         {

@@ -934,10 +934,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     [.. restoredWaitEntries.Select(e => new RestoredWait(e.ToolCallId, e.FunctionArgs, e.DeferredAtUnixMs))];
                 await _triggerRuntime.ReconcileRestoredAsync(restoredList, ct);
             }
-
-            // Notify waits aren't backed by deferred tool calls, so they restore from their own table
-            // by thread — separate from the block-wait reconcile above.
-            await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
         }
         else if (restoredWaitEntries.Count > 0)
         {
@@ -953,6 +949,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     contentBlocks: null,
                     ct);
             }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Runs on every recovery — even threads with zero persisted messages — because
+    /// <c>notify_waits</c> rows are keyed by thread in their own table, independent of message
+    /// history. This is deliberately separate from the block-wait reconcile in
+    /// <see cref="OnHistoryRestoredAsync"/>, which legitimately needs restored message history
+    /// and therefore does not run for message-less threads.
+    /// </remarks>
+    protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
+    {
+        if (_triggerRuntime != null)
+        {
+            await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
         }
     }
 

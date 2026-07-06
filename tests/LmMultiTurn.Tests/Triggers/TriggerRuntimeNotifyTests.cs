@@ -148,6 +148,66 @@ public class TriggerRuntimeNotifyTests
         rt.ListWaits().Should().NotContain(w => w.WaitId == "w7", "a timed-out wait must be torn down");
     }
 
+    [Fact]
+    public async Task NotifyWait_Arm_PropagatesCancellation_WhenCallerTokenCancelledMidPersist()
+    {
+        // Regression: ArmCoreAsync's persist-on-arm step used to catch ALL exceptions from
+        // NotifyWaitStore.SaveAsync (including OperationCanceledException) and merely log a
+        // warning, so a caller whose token was cancelled while the save was in flight still got
+        // back an "armed" result — reporting success for a call it had already abandoned. The
+        // fix rethrows OCE tied to the caller's own token instead of swallowing it, so ArmAsync
+        // surfaces the cancellation and does not leave the wait dangling as armed.
+        using var cts = new CancellationTokenSource();
+        var store = new CancelDuringSaveNotifyWaitStore(cts);
+        var src = new ManualTriggerSource();
+        var options = new TriggerOptions { NotifyWaitStore = store, ThreadId = "t" };
+        await using var rt = new TriggerRuntime(
+            options,
+            resolve: (_, _, _, _) => Task.CompletedTask,
+            notify: (_, _, _) => Task.CompletedTask);
+        rt.Register(new TriggerSourceRegistration
+        {
+            Kind = "manual",
+            Description = "test",
+            ArgsSchema = "{}",
+            Capabilities = ManualTriggerSource.Caps,
+            Source = src,
+        });
+
+        Func<Task> act = () =>
+            rt.ArmAsync("w8", "manual", "{}", "1h", null, WaitMode.Notify, maxFires: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "the caller's own token was cancelled mid-persist, so ArmAsync must surface that " +
+            "instead of reporting the wait as armed");
+
+        rt.ListWaits().Should().NotContain(
+            w => w.WaitId == "w8",
+            "the aborted arm must be fully torn down (source disposed, gate released), not left " +
+            "dangling as a live-armed wait");
+    }
+
+    /// <summary>
+    /// <see cref="INotifyWaitStore"/> double whose <see cref="SaveAsync"/> cancels the caller's
+    /// own token mid-call (simulating the caller abandoning the request while the save is in
+    /// flight) and then observes that cancellation, exactly as a real cancellation-aware store
+    /// would.
+    /// </summary>
+    private sealed class CancelDuringSaveNotifyWaitStore(CancellationTokenSource callerCts) : INotifyWaitStore
+    {
+        public Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default)
+        {
+            callerCts.Cancel();
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<NotifyWaitRecord>> LoadActiveAsync(string threadId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NotifyWaitRecord>>([]);
+    }
+
     /// <summary>Simple in-memory <see cref="INotifyWaitStore"/> test double — no SQLite needed here.</summary>
     private sealed class InMemoryNotifyWaitStore : INotifyWaitStore
     {

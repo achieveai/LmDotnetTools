@@ -563,6 +563,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         {
             Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
             _historyRecovered = true;
+
+            // Some recoverable state (e.g. notify_waits) is persisted separately from message
+            // history and must be restored even when there are zero message rows for this thread.
+            await OnThreadRecoveredAsync(ct);
             return false;
         }
 
@@ -587,6 +591,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // (e.g., MultiTurnAgentLoop rebuilds its deferred-tool registry here).
         await OnHistoryRestoredAsync(messages, ct);
 
+        // Restore any other recoverable state that isn't derived from message history (e.g.
+        // notify_waits, which are keyed by thread in a separate table). Called exactly once per
+        // recovery — this is the non-empty-history counterpart to the call on the early-return
+        // branch above.
+        await OnThreadRecoveredAsync(ct);
+
         Logger.LogInformation(
             "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
             messages.Count,
@@ -604,6 +614,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="messages">The full restored conversation history, in load order.</param>
     /// <param name="ct">Cancellation token.</param>
     protected virtual Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
+    {
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Called from <see cref="RecoverAsync"/> exactly once per recovery attempt, after metadata
+    /// has been loaded — regardless of whether any message rows exist for this thread. Some
+    /// recoverable state (e.g. notify_waits) is persisted separately from message history, keyed
+    /// only by thread, so it must not be gated on <c>persistedMessages.Count &gt; 0</c>. Override
+    /// to restore that kind of state. Runs after <see cref="OnHistoryRestoredAsync"/> when
+    /// messages exist, or in its place when there are none.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    protected virtual Task OnThreadRecoveredAsync(CancellationToken ct)
     {
         return Task.CompletedTask;
     }
