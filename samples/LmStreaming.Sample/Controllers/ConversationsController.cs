@@ -26,6 +26,13 @@ public class ConversationsController(
     ILogger<ConversationsController> logger) : ControllerBase
 {
     /// <summary>
+    /// Warning returned from a mode/provider switch that recreated the agent while a <c>Wait</c> was
+    /// armed. The switch succeeds; the pending timer/park is discarded with the old trigger runtime.
+    /// </summary>
+    private const string ArmedWaitDiscardedWarning =
+        "A pending Wait was armed on this conversation; it was discarded when the agent was recreated for the switch.";
+
+    /// <summary>
     /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without
     /// starting a live agent/sandbox session. Enables a headless caller to provision a conversation
     /// ahead of the first message, so the server (not the caller) mints the thread id.
@@ -399,6 +406,12 @@ public class ConversationsController(
                 });
         }
 
+        // A mode switch recreates the agent, which tears down its trigger runtime. If a Wait is armed
+        // (the run is parked on a timer, not streaming — so it passed the IsInProgress guard above), the
+        // switch is still allowed but the pending wait is discarded; capture that up front so the
+        // response can warn the caller. Checked before recreate, since recreate drops the old agent.
+        var hadArmedWait = await agentPool.HasArmedWaitAsync(threadId, ct);
+
         // Switching into a sandbox-backed mode (e.g. Workspace Agent) eagerly creates the sandbox
         // session. A gateway rejection or an unreachable gateway must answer a clean 503 — not crash
         // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
@@ -431,7 +444,12 @@ public class ConversationsController(
                 new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
         }
 
-        return Ok(new { modeId = mode.Id, modeName = mode.Name });
+        return Ok(new SwitchModeResponse
+        {
+            ModeId = mode.Id,
+            ModeName = mode.Name,
+            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+        });
     }
 
     /// <summary>
@@ -494,6 +512,10 @@ public class ConversationsController(
                 new { error = "Could not resolve the conversation's current mode.", threadId });
         }
 
+        // See SwitchMode: a provider swap recreates the agent and discards any armed Wait. Capture it
+        // before recreate so the response can warn the caller that a pending park-and-wake was dropped.
+        var hadArmedWait = await agentPool.HasArmedWaitAsync(threadId, ct);
+
         // Switching to a sandbox-backed provider eagerly reprovisions; a gateway rejection or an
         // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
         try
@@ -524,7 +546,11 @@ public class ConversationsController(
                 new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
         }
 
-        return Ok(new { providerId = request.ProviderId });
+        return Ok(new SwitchProviderResponse
+        {
+            ProviderId = request.ProviderId,
+            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+        });
     }
 
     /// <summary>

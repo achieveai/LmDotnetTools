@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 
@@ -725,6 +726,32 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// intact across the swap.
     /// </summary>
     public event Action<string>? ThreadRemoved;
+
+    /// <summary>
+    /// Returns true when the pooled agent for <paramref name="threadId"/> currently has an armed,
+    /// unresolved <c>Wait</c> — i.e. a deferred tool call named <see cref="WaitToolProvider.WaitToolName"/>.
+    /// A mode/provider switch recreates the agent (discarding its trigger runtime), so callers use this
+    /// to warn that a pending wait will be lost. Returns false when no agent is pooled or the pooled
+    /// agent type does not expose deferred-call inspection (e.g. a CLI-backed loop).
+    /// </summary>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<bool> HasArmedWaitAsync(string threadId, CancellationToken ct = default)
+    {
+        if (!_agents.TryGetValue(threadId, out var entry))
+        {
+            return false;
+        }
+
+        if (entry.Agent is not MultiTurnAgentLoop loop)
+        {
+            return false;
+        }
+
+        var deferred = await loop.GetDeferredToolCallsAsync(ct);
+        return deferred.Any(d =>
+            string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal));
+    }
 
     /// <summary>
     /// Gets the current mode for an agent.

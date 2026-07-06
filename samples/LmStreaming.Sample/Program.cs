@@ -969,7 +969,14 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
                         persistRunLedger: true,
-                        triggerOptions: triggerOptions
+                        // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
+                        // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
+                        // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
+                        // OpenAI/Anthropic/Copilot behavior stays byte-for-byte unchanged and the sample
+                        // exercises deferred-tool park/resume deterministically via the mock
+                        // instruction-chain. Broader rollout (enabling triggers for real providers behind a
+                        // flag) is tracked in #161.
+                        triggerOptions: isTestMode ? triggerOptions : null
                     );
 
                     if (workflowRuntime is not null)
