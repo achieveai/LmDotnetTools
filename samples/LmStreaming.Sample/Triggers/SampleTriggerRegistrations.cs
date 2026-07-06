@@ -27,6 +27,19 @@ public static class SampleTriggerRegistrations
 
         // (#143) schedule, (#144) subagent registrations appended here in later tasks.
         // (#142) process registration appended here, guarded by `if (sandboxEnabled)`, in Task 9.
+        if (sandboxEnabled)
+        {
+            registrations.Add(new TriggerSourceRegistration
+            {
+                Kind = ProcessTriggerSource.KindName,
+                Description = "Fire when a sandbox process exits with a matching exit code / stdout.",
+                ArgsSchema = ProcessTriggerSource.ArgsSchemaText,
+                Capabilities = ProcessTriggerSource.Capabilities,
+                // Placeholder observer: wire a real IProcessExitObserver over the Bash-tool process
+                // registry to make this kind actually fire in production (documented follow-up).
+                Source = new ProcessTriggerSource(NoopProcessExitObserver.Instance),
+            });
+        }
 
         return new TriggerOptions
         {
