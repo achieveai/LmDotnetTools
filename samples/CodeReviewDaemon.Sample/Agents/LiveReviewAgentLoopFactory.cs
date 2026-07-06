@@ -109,7 +109,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             // Write/Edit/Bash (code stays read-only; Write/Edit are path-wrapped to the PR notes dir +
             // scratch). Absent that config the reviewer stays hard read-only exactly as before.
             var scopedWrite = toolContext.EnableReviewerWrites
-                && toolContext.WritableToolAllowList is { Count: > 0 } writableAllow
+                && toolContext.WritableToolAllowList is { Count: > 0 }
                 && !string.IsNullOrWhiteSpace(toolContext.NotesDir)
                 && !string.IsNullOrWhiteSpace(toolContext.ScratchDir);
             if (scopedWrite)

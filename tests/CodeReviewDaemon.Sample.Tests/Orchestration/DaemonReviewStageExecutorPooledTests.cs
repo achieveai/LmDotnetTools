@@ -141,6 +141,68 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
     }
 
+    [Fact]
+    public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // ContextReady leases a slot and holds it (for the review + commit-notes + terminal return).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.Pool.ReturnCount.Should().Be(0);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
+
+        // Idempotent: a second release (e.g. the Posted stage already returned it) is a no-op, so the slot
+        // is never double-returned to the pool.
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+        fixture.Pool.ReturnCount.Should().Be(1, "the lease was already removed, so a second release is a no-op");
+    }
+
+    [Fact]
+    public async Task Orchestrator_returns_the_leased_slot_when_a_stage_throws_after_ContextReady_leased()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // ContextReady (delegated to the real executor) leases a slot; a later stage then throws, so the run
+        // never reaches Posted. Only the orchestrator's terminal finally can return the slot.
+        var executor = new ThrowAfterStageExecutor(fixture.Executor, throwAt: ReviewStage.Reviewed);
+        var orchestrator = new PrOrchestrator(
+            fixture.Store, executor, NullLogger<PrOrchestrator>.Instance);
+
+        var act = () => orchestrator.RunAsync(run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        fixture.Pool.LeaseCount.Should().Be(1, "ContextReady leased a slot");
+        fixture.Pool.ReturnCount.Should().Be(1, "the orchestrator's terminal finally returned the slot despite the failure");
+        fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
+    }
+
+    [Fact]
+    public async Task Orchestrator_returns_the_leased_slot_when_the_pr_is_no_longer_open()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // A slot is leased (ContextReady) and then the PR is observed closed on the next poll, so RunAsync
+        // short-circuits to Completed WITHOUT running the Posted stage that would normally return it.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.Pool.ReturnCount.Should().Be(0);
+
+        var orchestrator = new PrOrchestrator(
+            fixture.Store, fixture.Executor, NullLogger<PrOrchestrator>.Instance);
+        var closed = run with { PrLifecycleState = PrLifecycleState.Merged };
+
+        var result = await orchestrator.RunAsync(closed, CancellationToken.None);
+
+        result.WorkflowStatus.Should().Be(WorkflowStatus.Completed);
+        fixture.Pool.ReturnCount.Should().Be(1, "the short-circuit finally returned the held slot");
+        fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -304,5 +366,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>Delegates every stage to a real executor but throws at a chosen stage, so a run driven
+    /// through the orchestrator leases a slot in ContextReady and then fails before Posted — proving the
+    /// slot is returned by the orchestrator's terminal <c>finally</c> (via the delegated
+    /// <see cref="IReviewStageExecutor.ReleaseReviewLeaseAsync"/>), not by the Posted stage.</summary>
+    private sealed class ThrowAfterStageExecutor : IReviewStageExecutor
+    {
+        private readonly IReviewStageExecutor _inner;
+        private readonly ReviewStage _throwAt;
+
+        public ThrowAfterStageExecutor(IReviewStageExecutor inner, ReviewStage throwAt)
+        {
+            _inner = inner;
+            _throwAt = throwAt;
+        }
+
+        public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
+        {
+            if (stage == _throwAt)
+            {
+                throw new InvalidOperationException($"Simulated failure at stage {stage}.");
+            }
+
+            return _inner.ExecuteStageAsync(stage, run, cancellationToken);
+        }
+
+        public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) =>
+            _inner.ReleaseReviewLeaseAsync(runId, cancellationToken);
     }
 }

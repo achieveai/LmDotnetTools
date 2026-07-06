@@ -154,7 +154,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task MergeToDefault_merges_pushes_and_deletes_the_branch()
+    public async Task MergeToDefault_fetches_then_merges_the_remote_tracking_ref_pushes_and_deletes_the_branch()
     {
         var runner = new FakeSandboxCommandRunner();
         var fs = new FakeSandboxFileSystem();
@@ -165,10 +165,16 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.Should().BeTrue();
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // A fresh sweeper clone has no LOCAL notes branch, so the branch must be fetched and merged via its
+        // REMOTE-TRACKING ref: fetch first, then merge origin/<branch> — never the bare name (git will not
+        // resolve `merge review/...` to origin/review/...).
+        IndexOf(commands, "fetch origin")
+            .Should()
+            .BeLessThan(IndexOf(commands, $"merge --ff-only origin/{ReviewBranch}"));
         IndexOf(commands, $"checkout {DefaultBranch}")
             .Should()
-            .BeLessThan(IndexOf(commands, $"merge --ff-only {ReviewBranch}"));
-        IndexOf(commands, $"merge --ff-only {ReviewBranch}")
+            .BeLessThan(IndexOf(commands, $"merge --ff-only origin/{ReviewBranch}"));
+        IndexOf(commands, $"merge --ff-only origin/{ReviewBranch}")
             .Should()
             .BeLessThan(IndexOf(commands, $"push origin {DefaultBranch}"));
         IndexOf(commands, $"push origin {DefaultBranch}")
@@ -177,6 +183,13 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         IndexOf(commands, $"branch -D {ReviewBranch}")
             .Should()
             .BeLessThan(IndexOf(commands, $"push origin --delete {ReviewBranch}"));
+
+        // The old bug — merging the branch by its bare name — must not happen: no merge references the
+        // notes branch except through its origin/ remote-tracking ref.
+        commands.Should().NotContain(
+            a => a.Contains("merge", StringComparison.Ordinal)
+                && a.Contains(ReviewBranch, StringComparison.Ordinal)
+                && !a.Contains($"origin/{ReviewBranch}", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -184,7 +197,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     {
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            $"merge --ff-only {ReviewBranch}",
+            $"merge --ff-only origin/{ReviewBranch}",
             new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
         var fs = new FakeSandboxFileSystem();
 
@@ -194,7 +207,29 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.Should().BeTrue();
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --no-edit {ReviewBranch}"));
+        commands.Should().Contain(a => a.Contains($"merge --no-edit origin/{ReviewBranch}"));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_is_a_noop_when_the_notes_branch_is_already_gone_from_origin()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        // A prior sweep already merged + deleted the branch, so it no longer resolves on origin.
+        runner.OnArgvContains(
+            $"rev-parse --verify origin/{ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "fatal: Needed a single revision"));
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs)
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue("an already-resolved branch is an idempotent no-op, not a failure");
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains("fetch origin"));
+        commands.Should().NotContain(a => a.Contains("merge"));
+        commands.Should().NotContain(a => a.Contains($"push origin {DefaultBranch}"));
+        commands.Should().NotContain(a => a.Contains($"branch -D {ReviewBranch}"));
     }
 
     [Fact]

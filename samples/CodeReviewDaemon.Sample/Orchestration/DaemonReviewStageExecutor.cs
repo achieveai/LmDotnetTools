@@ -279,6 +279,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         };
     }
 
+    /// <summary>
+    /// Returns the pooled slot leased for <paramref name="runId"/> (if any) and forgets the lease,
+    /// idempotently. The atomic <see cref="ConcurrentDictionary{TKey,TValue}.TryRemove(TKey, out TValue)"/>
+    /// guards against a double-return: whichever of this method or the Posted stage removes the entry first
+    /// returns the slot, and the other is a no-op. Called from the orchestrator's terminal <c>finally</c> so
+    /// a run that ends without reaching Posted (PR-not-open short-circuit or a stage exception) still returns
+    /// its slot instead of leaking pool capacity.
+    /// </summary>
+    public async Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken)
+    {
+        if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
+        {
+            await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+        }
+    }
+
     private async Task FetchContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
@@ -419,8 +436,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, targetDirSandbox, StoreRoot)),
             });
 
-            _leasedReviews[run.Id] = new LeasedReview(
-                slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox);
+            // Record the lease so the review + commit-notes stages can find it, guarding against silently
+            // overwriting a lease already held for this run id. ContextReady runs once per run, so an
+            // existing entry means a prior slot was never returned; overwriting it would orphan that slot.
+            // Fail the stage instead (handedOff stays false, so this slot is returned by the finally below)
+            // and let the orchestrator's terminal finally return the stale one — the stage then retries clean.
+            if (!_leasedReviews.TryAdd(
+                run.Id,
+                new LeasedReview(slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox)))
+            {
+                throw new InvalidOperationException(
+                    $"Run {run.Id} already holds a pooled review lease; refusing to overwrite it (would leak a slot).");
+            }
+
             handedOff = true;
 
             _logger.LogInformation(

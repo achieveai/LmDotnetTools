@@ -180,10 +180,14 @@ internal sealed class ReviewBranchManager
     }
 
     /// <summary>
-    /// Merges <paramref name="branch"/> into <paramref name="defaultBranch"/> (fast-forward when
-    /// possible, else a merge commit), pushes the default branch, and — only once that push succeeds —
-    /// deletes <paramref name="branch"/> (local + remote). Called when the PR closes merged. Returns
-    /// <c>false</c> without deleting the branch when the push never succeeds, so the caller can retry.
+    /// Fetches <c>origin</c>, then merges the remote-tracking <c>origin/{branch}</c> into
+    /// <paramref name="defaultBranch"/> (fast-forward when possible, else a merge commit), pushes the
+    /// default branch, and — only once that push succeeds — deletes <paramref name="branch"/> (local +
+    /// remote). Called when the PR closes merged. Because the sweeper's store clone never creates local
+    /// branches, the notes branch is addressed through its remote-tracking ref. Idempotent: when the branch
+    /// no longer exists on <c>origin</c> (already merged-and-deleted by a prior sweep) it is a no-op that
+    /// returns <c>true</c>. Returns <c>false</c> without deleting the branch when the push never succeeds,
+    /// so the caller can retry.
     /// </summary>
     public async Task<bool> MergeToDefaultAsync(
         string repoRoot,
@@ -196,17 +200,40 @@ internal sealed class ReviewBranchManager
         ArgumentException.ThrowIfNullOrWhiteSpace(branch);
         ArgumentException.ThrowIfNullOrWhiteSpace(defaultBranch);
 
+        // The sweeper runs against a fresh (or reused-but-never-fetched) store clone that has no LOCAL
+        // notes branch — the branch exists only as a remote-tracking ref. Fetch so both the notes branch and
+        // the default branch resolve, then merge the REMOTE-TRACKING ref: `git merge <bareName>` does NOT
+        // resolve a bare name to origin/<name>, so merging the bare name here would fail every cycle.
+        await RunGitAsync(["fetch", "origin"], repoRoot, cancellationToken).ConfigureAwait(false);
+
+        var remoteBranch = $"origin/{branch}";
+        var branchExists = await RunGitAsync(
+                ["rev-parse", "--verify", remoteBranch],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true)
+            .ConfigureAwait(false);
+        if (!branchExists.Succeeded)
+        {
+            // Already merged-and-deleted by a prior sweep (the branch is gone from origin): nothing to
+            // resolve. Idempotent no-op rather than a failed merge on a nonexistent ref.
+            _logger.LogInformation(
+                "ReviewBot merge-to-default: notes branch '{Branch}' no longer exists on origin; nothing to merge.",
+                branch);
+            return true;
+        }
+
         await RunGitAsync(["checkout", defaultBranch], repoRoot, cancellationToken).ConfigureAwait(false);
 
         var ffOnly = await RunGitAsync(
-                ["merge", "--ff-only", branch],
+                ["merge", "--ff-only", remoteBranch],
                 repoRoot,
                 cancellationToken,
                 allowFailure: true)
             .ConfigureAwait(false);
         if (!ffOnly.Succeeded)
         {
-            await RunGitAsync(["merge", "--no-edit", branch], repoRoot, cancellationToken).ConfigureAwait(false);
+            await RunGitAsync(["merge", "--no-edit", remoteBranch], repoRoot, cancellationToken).ConfigureAwait(false);
         }
 
         var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)

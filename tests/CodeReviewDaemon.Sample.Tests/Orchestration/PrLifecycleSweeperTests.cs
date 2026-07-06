@@ -71,7 +71,10 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         await sweeper.SweepAsync(CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --ff-only {pr.Branch}"));
+        // The sweeper-store clone has no local notes branch, so the merge must fetch and target the
+        // remote-tracking ref (origin/<branch>), not the bare name.
+        commands.Should().Contain(a => a.Contains("fetch origin"));
+        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
         commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
     }
 
