@@ -184,7 +184,11 @@ public sealed class ProcessTriggerSource : ITriggerSource
                 return; // predicate mismatch — the observed exit doesn't satisfy the arm's criteria.
             }
 
-            var payload = JsonSerializer.Serialize(new { handle, exitCode = exit.ExitCode, stdout = exit.Stdout });
+            // Metadata only: process stdout can carry secrets/PII, and this payload flows into
+            // conversation history, the model, and the UI. Report only whether a configured
+            // stdoutPattern matched — never the raw stdout text.
+            var stdoutMatched = regex != null && stdoutOk;
+            var payload = JsonSerializer.Serialize(new { handle, exitCode = exit.ExitCode, stdoutMatched });
             await sink.FireAsync(new TriggerFireEvent(payload), ct);
         }
 

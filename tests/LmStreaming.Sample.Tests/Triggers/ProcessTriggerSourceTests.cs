@@ -107,6 +107,47 @@ public class ProcessTriggerSourceTests
     }
 
     [Fact]
+    public async Task Fire_Payload_OmitsRawStdout_NoPatternConfigured()
+    {
+        // Regression: the fire payload must never carry raw process stdout (it can hold
+        // secrets/PII and flows into history/model/UI) — only metadata like exitCode and,
+        // when a stdoutPattern was configured, whether it matched.
+        var observer = new FakeProcessObserver();
+        var src = new ProcessTriggerSource(observer);
+        var fired = new TaskCompletionSource<TriggerFireEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sink = new CompletingSink(fired);
+
+        await using var handle = await src.ArmAsync(
+            ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+
+        observer.SignalExit("h1", exitCode: 0, stdout: "super-secret-token-xyz");
+
+        var evt = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        evt.Payload.Should().NotContain("super-secret-token-xyz");
+        evt.Payload.Should().NotContain("\"stdout\"");
+        evt.Payload.Should().Contain("\"exitCode\":0");
+        evt.Payload.Should().Contain("\"stdoutMatched\":false");
+    }
+
+    [Fact]
+    public async Task Fire_Payload_StdoutMatchedTrue_WhenPatternConfiguredAndMatched()
+    {
+        var observer = new FakeProcessObserver();
+        var src = new ProcessTriggerSource(observer);
+        var fired = new TaskCompletionSource<TriggerFireEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sink = new CompletingSink(fired);
+
+        await using var handle = await src.ArmAsync(
+            ArmReq("""{"handle":"h1","stdoutPattern":"^DONE$"}"""), sink, CancellationToken.None);
+
+        observer.SignalExit("h1", exitCode: 0, stdout: "DONE");
+
+        var evt = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        evt.Payload.Should().Contain("\"stdoutMatched\":true");
+        evt.Payload.Should().NotContain("\"stdout\"");
+    }
+
+    [Fact]
     public async Task NoFire_WhenExitCodePredicateFails()
     {
         var observer = new FakeProcessObserver();
