@@ -613,13 +613,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             {
                 // Distinct marker from the connectivity-failure path above: this is the gateway
                 // actively rejecting the presented credential (misconfigured/rotated/wrong app key),
-                // not an unreachable gateway.
+                // not an unreachable gateway. Deliberately does NOT log the raw gateway body: on the
+                // auth-rejection path the upstream response is the one most likely to echo submitted
+                // credential material or header values, so logging it would undercut the PR's
+                // never-log-the-key invariant. The app id + status code are the safe diagnostic
+                // signal; inspect the gateway's own logs for the rejection detail.
                 _logger.LogError(
                     "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
-                        + "({StatusCode}) {Body}",
+                        + "({StatusCode}) for app {AppId}",
                     workspaceId,
                     (int)response.StatusCode,
-                    body
+                    effectiveCredential.AppId
                 );
                 throw new SandboxSessionUnavailableException(
                     workspaceId,
