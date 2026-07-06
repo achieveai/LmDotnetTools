@@ -20,6 +20,11 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
 {
     private readonly Mock<IMultiTurnAgent> _parentMock = new();
     private readonly Mock<IStreamingAgent> _subAgentMock = new();
+
+    // Signals when the manager relays a sub-agent result to the parent, so a test can await the
+    // relay deterministically instead of racing it.
+    private readonly TaskCompletionSource _parentRelayed =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SubAgentManager? _manager;
 
     public Task InitializeAsync()
@@ -30,6 +35,7 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
                 It.IsAny<string?>(),
                 It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
+            .Callback(() => _parentRelayed.TrySetResult())
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -93,8 +99,8 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         var evt = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
         evt.Payload.Should().Contain("sub-done");
 
-        // Relay was suppressed: the flag was flipped false at arm and never flipped back.
-        manager.PeekNotifyParentOnCompletion(agentId).Should().BeFalse();
+        // Relay was suppressed behaviorally: the trigger delivered the result, so the manager must
+        // not also relay it to the parent.
         _parentMock.Verify(
             p => p.SendAsync(
                 It.IsAny<List<IMessage>>(),
@@ -106,18 +112,35 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Dispose_BeforeCompletion_RestoresRelayFlag()
+    public async Task Dispose_BeforeCompletion_LeavesSubAgentRunning_AndRelayResumes()
     {
-        var (manager, agentId) = await SpawnNeverCompletingSubAgentAsync();
+        // Gated so the sub-agent is still running (blocked at the gate) when the wait is disposed.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "sub-done", gate);
+
         var src = new SubAgentCompletionTriggerSource(() => manager);
         var handle = await src.ArmAsync(
             ArmReq($$"""{"agentId":"{{agentId}}"}"""), NoopSink, CancellationToken.None);
 
-        manager.PeekNotifyParentOnCompletion(agentId).Should().BeFalse("arming suppresses the relay");
+        // Cancel/timeout the wait BEFORE the sub-agent completes.
+        await handle.DisposeAsync();
 
-        await handle.DisposeAsync(); // simulates CancelWait / timeout before completion
+        // The wait-cancel must NOT have killed the sub-agent: let it finish now.
+        gate.SetResult();
 
-        manager.PeekNotifyParentOnCompletion(agentId).Should().BeTrue(); // restored — result not stranded
+        // Its automatic relay resumed — arm flipped NotifyParentOnCompletion=false, dispose restored
+        // it to true because the sub-agent hadn't completed — so the result reaches the parent
+        // exactly once. This proves BOTH that the sub-agent survived the wait-cancel and that the
+        // flag-restore is meaningful (a killed sub-agent would never relay).
+        await _parentRelayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "wait-cancel must leave the sub-agent running; its result relays once the flag is restored");
     }
 
     [Fact]
@@ -154,23 +177,6 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         SetupGatedSubAgentResponse(
             [new TextMessage { Text = result, Role = Role.Assistant }],
             gate);
-
-        var manager = CreateManager();
-        _manager = manager;
-
-        var spawnJson = await manager.SpawnAsync("test-agent", "Do some work", runInBackground: true);
-        var agentId = ParseAgentId(spawnJson);
-
-        return (manager, agentId);
-    }
-
-    /// <summary>
-    /// Spawns a background sub-agent whose run never completes on its own (only cancellation, e.g.
-    /// via the trigger's dispose cascading into the sub-agent's own token, unblocks it).
-    /// </summary>
-    private async Task<(SubAgentManager Manager, string AgentId)> SpawnNeverCompletingSubAgentAsync()
-    {
-        SetupNeverCompletingSubAgentResponse();
 
         var manager = CreateManager();
         _manager = manager;
@@ -234,17 +240,6 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
                 Task.FromResult(ToGatedAsyncEnumerable(messages, gate, ct)));
     }
 
-    private void SetupNeverCompletingSubAgentResponse()
-    {
-        _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns((IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
-                Task.FromResult(NeverCompletingAsync(ct)));
-    }
-
     /// <summary>
     /// Yields <paramref name="messages"/> only after <paramref name="gate"/> completes, so a test
     /// can control exactly when the sub-agent's run finishes relative to other test actions.
@@ -261,20 +256,6 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
             yield return msg;
             await Task.Yield();
         }
-    }
-
-    /// <summary>
-    /// Never yields on its own; only unblocks (via <see cref="OperationCanceledException"/>) when
-    /// <paramref name="ct"/> fires, mirroring <c>NoopProcessExitObserver</c>'s pattern so disposal
-    /// during teardown doesn't hang.
-    /// </summary>
-    private static async IAsyncEnumerable<IMessage> NeverCompletingAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var registration = ct.Register(() => tcs.TrySetCanceled(ct));
-        await tcs.Task;
-        yield break; // unreachable — tcs.Task only completes (canceled) via the registration above.
     }
 
     #endregion

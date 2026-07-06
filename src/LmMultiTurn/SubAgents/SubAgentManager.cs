@@ -367,11 +367,17 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Awaits a sub-agent's completion by id, returning its final text (or throwing its
+    /// Observes a sub-agent's completion by id, returning its final text (or throwing its
     /// <see cref="SubAgentExecutionException"/> on failure). Used by the sample-app
-    /// SubAgentCompletionTriggerSource so a Wait can observe a sub-agent the same way the internal
-    /// synchronous path does. If the caller's <paramref name="ct"/> fires, the sub-agent is cancelled
-    /// (identical to the internal synchronous wait).
+    /// SubAgentCompletionTriggerSource so a Wait can observe a background sub-agent.
+    /// <para>
+    /// Observation is NON-DESTRUCTIVE: if the caller's <paramref name="ct"/> fires, this stops
+    /// observing (throws <see cref="OperationCanceledException"/>) but leaves the sub-agent's own
+    /// run untouched — unlike <see cref="AwaitCompletionAsync"/> (the synchronous-spawn path), which
+    /// cancels the sub-agent when the parent turn is abandoned. A trigger observing a
+    /// fire-and-forget background sub-agent must leave it running so its automatic relay can resume
+    /// if the wait is cancelled.
+    /// </para>
     /// </summary>
     public Task<string> ObserveCompletionAsync(string agentId, CancellationToken ct)
     {
@@ -380,7 +386,9 @@ public sealed class SubAgentManager : IAsyncDisposable
             throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
         }
 
-        return AwaitCompletionAsync(state, ct);
+        // Await the completion latch directly. On caller-cancel this throws without touching
+        // state.Cts, so the sub-agent's run + monitor keep going and its relay resumes.
+        return state.Completion.Task.WaitAsync(ct);
     }
 
     /// <summary>
@@ -397,23 +405,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         state.NotifyParentOnCompletion = value;
-    }
-
-    /// <summary>
-    /// Test-only peek at whether a sub-agent's completion currently auto-relays to the parent.
-    /// Internal + <c>InternalsVisibleTo</c>-gated (see the csproj) so
-    /// <c>SubAgentCompletionTriggerSourceTests</c> can assert the flag was flipped/restored without
-    /// exposing <see cref="SubAgentState"/> itself; production callers use
-    /// <see cref="SetNotifyParentOnCompletion"/> / <see cref="ObserveCompletionAsync"/> instead.
-    /// </summary>
-    internal bool PeekNotifyParentOnCompletion(string agentId)
-    {
-        if (!_agents.TryGetValue(agentId, out var state))
-        {
-            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
-        }
-
-        return state.NotifyParentOnCompletion;
     }
 
     /// <summary>
