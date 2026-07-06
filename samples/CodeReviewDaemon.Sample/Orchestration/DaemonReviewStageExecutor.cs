@@ -191,7 +191,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
                 ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
@@ -228,7 +228,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 "Run {RunId}: no code-reviewer sub-agents discovered; skill-only review.", run.Id);
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Run {RunId}: sub-agent discovery failed; skill-only review.", run.Id);
             return null;

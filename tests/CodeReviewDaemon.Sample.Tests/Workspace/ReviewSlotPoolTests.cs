@@ -99,4 +99,32 @@ public class ReviewSlotPoolTests : IDisposable
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    public async Task LeaseAsync_WhenSetupThrows_ReleasesPermitAndRecyclesIndex()
+    {
+        var attempts = 0;
+        var pool = CreatePool(maxSlots: 1, (slot, _) =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                throw new InvalidOperationException("transient clone failure");
+            }
+
+            Directory.CreateDirectory(slot.StorePath);
+            File.WriteAllText(Path.Combine(slot.StorePath, ".cloned"), "");
+            return Task.CompletedTask;
+        });
+
+        // First lease fails inside setup, AFTER the single permit + index were taken.
+        var failingLease = async () => await pool.LeaseAsync(default);
+        await failingLease.Should().ThrowAsync<InvalidOperationException>();
+
+        // A leaked permit would make this second lease block forever; the recycle path releases the
+        // permit and returns the index, so it completes promptly and reuses slot 0.
+        var slot = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        slot.Index.Should().Be(0);
+        attempts.Should().Be(2);
+    }
 }

@@ -70,21 +70,38 @@ internal sealed class ReviewSlotPool
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        var slot = BuildSlot(TakeIndex());
-        Directory.CreateDirectory(slot.HostPath);
-        Directory.CreateDirectory(slot.ScratchPath);
-
-        if (!Directory.Exists(slot.StorePath) || IsDirectoryEmpty(slot.StorePath))
+        var index = TakeIndex();
+        try
         {
-            _logger.LogInformation("Cloning store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
-            await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            _logger.LogDebug("Reusing warm store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
-        }
+            var slot = BuildSlot(index);
+            Directory.CreateDirectory(slot.HostPath);
+            Directory.CreateDirectory(slot.ScratchPath);
 
-        return slot;
+            if (!Directory.Exists(slot.StorePath) || IsDirectoryEmpty(slot.StorePath))
+            {
+                _logger.LogInformation("Cloning store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
+                await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                _logger.LogDebug("Reusing warm store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
+            }
+
+            return slot;
+        }
+        catch
+        {
+            // Setup failed after acquiring the permit + index (directory IO, or the clone callback threw).
+            // Recycle BOTH the index and the permit so a transient clone/IO failure cannot permanently
+            // consume pool capacity — otherwise repeated failures exhaust the pool until a daemon restart.
+            lock (_freeIndexesLock)
+            {
+                _freeIndexes.Push(index);
+            }
+
+            _gate.Release();
+            throw;
+        }
     }
 
     /// <summary>
