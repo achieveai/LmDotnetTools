@@ -45,6 +45,16 @@ public sealed class FileTailTriggerSource : ITriggerSource
 
     private static readonly TimeSpan DebounceWindow = TimeSpan.FromMilliseconds(150);
 
+    // Root-boundary comparison must match the filesystem's case sensitivity. On Windows/macOS a
+    // case-variant path IS the same file, so compare case-insensitively; on a case-sensitive
+    // filesystem (typical Linux) a case-variant sibling like "<root>-TAILS/x.log" is a GENUINELY
+    // different directory from "<root>-tails" and must not be treated as in-root — using
+    // OrdinalIgnoreCase there would be a confinement bypass.
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
     private readonly List<string> _allowedRoots;
 
     public FileTailTriggerSource(IReadOnlyList<string> allowedRoots)
@@ -116,8 +126,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
         var real = ResolveRealPath(lexical);
 
         var inRoot = _allowedRoots.Any(root =>
-            real.Equals(root, StringComparison.OrdinalIgnoreCase)
-            || real.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+            real.Equals(root, PathComparison)
+            || real.StartsWith(root + Path.DirectorySeparatorChar, PathComparison));
 
         if (!inRoot)
         {
@@ -339,7 +349,23 @@ public sealed class FileTailTriggerSource : ITriggerSource
                     continue;
                 }
 
-                offset = await PollOnceAsync(path, offset, len, regex, sink, ct);
+                try
+                {
+                    offset = await PollOnceAsync(path, offset, len, regex, sink, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return; // disposed/cancelled mid-read — exit cleanly, don't fault the task.
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // A rotation (rename+recreate) or a brief exclusive lock can race File.Exists →
+                    // FileStream.Open and throw even though the file was just seen to exist. Tolerate
+                    // it the same way the FileInfo.Length read above does — skip this tick and retry
+                    // from the unchanged offset. A monitoring trigger must never die silently on a
+                    // transient IO error.
+                    continue;
+                }
             }
         }
 
@@ -382,18 +408,24 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 return offset; // still-partial line — wait for more data or a newline.
             }
 
-            var text = Encoding.UTF8.GetString(buffer, 0, lastNewline + 1);
-            var newOffset = offset + lastNewline + 1;
-
+            // Walk newline positions in the raw BYTES (not the decoded string) so the returned
+            // offset is byte-accurate even for multi-byte UTF-8 content, and advance it only past
+            // lines actually processed: if the batch cap is hit mid-burst, the remainder is left in
+            // the file to be re-read next poll rather than silently skipped.
             var fired = 0;
-            foreach (var rawLine in text.Split('\n'))
+            var lineStart = 0;
+            var consumed = 0;
+            for (var i = 0; i <= lastNewline; i++)
             {
-                if (fired >= MaxLinesPerBatch)
+                if (buffer[i] != (byte)'\n')
                 {
-                    break;
+                    continue;
                 }
 
-                var line = rawLine.TrimEnd('\r');
+                var line = Encoding.UTF8.GetString(buffer, lineStart, i - lineStart).TrimEnd('\r');
+                lineStart = i + 1;
+                consumed = i + 1; // only advance past lines we've now handled
+
                 if (line.Length == 0)
                 {
                     continue;
@@ -402,10 +434,14 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 if (await FireIfMatchAsync(line, regex, sink, ct))
                 {
                     fired++;
+                    if (fired >= MaxLinesPerBatch)
+                    {
+                        break; // leave the rest of this burst for the next poll — don't drop it.
+                    }
                 }
             }
 
-            return newOffset;
+            return offset + consumed;
         }
 
         private static async Task<bool> FireIfMatchAsync(string line, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
