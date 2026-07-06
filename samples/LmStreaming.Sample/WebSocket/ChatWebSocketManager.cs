@@ -147,6 +147,23 @@ public sealed class ChatWebSocketManager
                 await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
+            catch (SandboxCredentialConflictException ex)
+            {
+                // This conversation was created/driven by an S2S caller under its own sandbox
+                // identity and is frozen to it for its lifetime; the interactive UI (default identity)
+                // cannot silently take it over (#153 cross-actor resume matrix). Surface it as a
+                // structured client error — the REST path maps the same exception to 409 — rather than
+                // aborting the socket with an unhandled 500. App ids only; never the key.
+                _logger.LogWarning(
+                    ex,
+                    "Credential conflict for thread {ThreadId}: bound to '{ExistingAppId}', requested '{RequestedAppId}'",
+                    threadId,
+                    ex.ExistingAppId,
+                    ex.RequestedAppId);
+
+                await SendCredentialConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
+                return;
+            }
 
             // Create linked cancellation for connection lifetime
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -443,6 +460,40 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Sandbox unavailable",
+            CancellationToken.None);
+    }
+
+    private async Task SendCredentialConflictErrorAsync(
+        RegisteredWebSocketConnection connection,
+        SandboxCredentialConflictException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "caller_credential_conflict",
+            // App ids only — the exception message never contains the app key.
+            ["message"] =
+                "This conversation belongs to a different caller identity and cannot be continued here. "
+                + ex.Message,
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Credential conflict",
             CancellationToken.None);
     }
 }

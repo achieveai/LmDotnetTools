@@ -223,7 +223,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     )
     {
         request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", credential.AppId);
-        request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", credential.AppKey);
+        if (!string.IsNullOrEmpty(credential.AppKey))
+        {
+            // Omit the key header entirely when blank (the keyless AUTH_ENFORCE=off dev path), matching
+            // the other transports (AddSandboxAuthHeaders, BuildTransportHeaders, MarketplaceCatalogClient).
+            request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", credential.AppKey);
+        }
         if (sessionId is not null)
         {
             request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);

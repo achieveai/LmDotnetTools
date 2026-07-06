@@ -69,7 +69,7 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
         var configuration = httpContext.RequestServices.GetService<IConfiguration>();
         var secret = configuration?[SecretConfigKey];
 
-        if (string.IsNullOrEmpty(secret))
+        if (string.IsNullOrWhiteSpace(secret))
         {
             WarnGuardDisabledOnce(httpContext);
             await next().ConfigureAwait(false);
