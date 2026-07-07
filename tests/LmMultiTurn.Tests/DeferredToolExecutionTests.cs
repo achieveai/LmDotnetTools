@@ -754,6 +754,139 @@ public class DeferredToolExecutionTests
     }
 
     [Fact]
+    public async Task OnHistoryRestoredAsync_IsolatesTriggerDisabledFailures_SoOneConflictDoesNotStrandOthers()
+    {
+        // Two restored Waits recover with no trigger runtime available. The FIRST (tc_wait_1) hits
+        // a genuine Case-3 conflict in ResolveToolCallAsync: its persisted history already contains
+        // a LATER row resolving it with DIFFERENT content than the trigger_disabled failure the
+        // fallback loop is about to write, so ResolveToolCallAsync throws InvalidOperationException.
+        // Before the fix, that throw aborted the whole foreach loop, leaving the SECOND entry
+        // (tc_wait_2) parked forever even though nothing was wrong with it. The fix isolates each
+        // iteration in its own try/catch so tc_wait_2 still gets resolved.
+        var threadId = "test-thread-restore-wait-isolated";
+        var runId = "run_prev";
+        var generationId = "gen_prev";
+
+        var store = new InMemoryConversationStore();
+
+        var toolCall1 = new ToolCallMessage
+        {
+            ToolCallId = "tc_wait_1",
+            FunctionName = WaitToolProvider.WaitToolName,
+            FunctionArgs = "{\"kind\":\"timer\",\"timeout\":\"10m\"}",
+            Role = Role.Assistant,
+            FromAgent = "test",
+            GenerationId = generationId,
+            RunId = runId,
+            MessageOrderIdx = 0,
+        };
+        var deferredResult1 = new ToolCallResultMessage
+        {
+            ToolCallId = "tc_wait_1",
+            ToolName = WaitToolProvider.WaitToolName,
+            Result = string.Empty,
+            IsDeferred = true,
+            DeferredAt = 1_700_000_000_000,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+            MessageOrderIdx = 1,
+        };
+        // Simulates a prior process having already resolved tc_wait_1 with DIFFERENT content
+        // (e.g. a real trigger fired and delivered a genuine result) after this deferred
+        // placeholder was persisted but before this process recovered — a real Case-3 conflict.
+        var conflictingResolution1 = new ToolCallResultMessage
+        {
+            ToolCallId = "tc_wait_1",
+            ToolName = WaitToolProvider.WaitToolName,
+            Result = "{\"status\":\"completed\",\"reason\":\"already_delivered\"}",
+            IsDeferred = false,
+            IsError = false,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+            MessageOrderIdx = 2,
+        };
+
+        var toolCall2 = new ToolCallMessage
+        {
+            ToolCallId = "tc_wait_2",
+            FunctionName = WaitToolProvider.WaitToolName,
+            FunctionArgs = "{\"kind\":\"timer\",\"timeout\":\"10m\"}",
+            Role = Role.Assistant,
+            FromAgent = "test",
+            GenerationId = generationId,
+            RunId = runId,
+            MessageOrderIdx = 3,
+        };
+        var deferredResult2 = new ToolCallResultMessage
+        {
+            ToolCallId = "tc_wait_2",
+            ToolName = WaitToolProvider.WaitToolName,
+            Result = string.Empty,
+            IsDeferred = true,
+            DeferredAt = 1_700_000_000_000,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+            MessageOrderIdx = 4,
+        };
+
+        await store.AppendMessagesAsync(threadId,
+        [
+            MessagePersistenceConverter.ToPersistedMessage(toolCall1, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(deferredResult1, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(conflictingResolution1, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(toolCall2, threadId, runId),
+            MessagePersistenceConverter.ToPersistedMessage(deferredResult2, threadId, runId),
+        ]);
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata
+        {
+            ThreadId = threadId,
+            LatestRunId = runId,
+            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+
+        // Recovering loop has no triggerOptions -> _triggerRuntime is null, exercising the
+        // trigger-disabled fallback loop under test.
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            threadId,
+            store: store,
+            logger: _loggerMock.Object);
+
+        var recovered = await loop.RecoverAsync();
+        recovered.Should().BeTrue();
+
+        // tc_wait_1's resolution attempt threw (Case-3 conflict) and was never removed from the
+        // deferred registry — it stays visibly parked rather than silently vanishing. tc_wait_2
+        // must NOT be stranded by tc_wait_1's failure: the fix's per-entry isolation must have let
+        // the loop continue past it.
+        var pending = await loop.GetDeferredToolCallsAsync();
+        pending.Should().ContainSingle(p => p.ToolCallId == "tc_wait_1");
+        pending.Should().NotContain(p => p.ToolCallId == "tc_wait_2");
+
+        // tc_wait_2 must have been resolved with the terminal trigger_disabled failure, persisted.
+        var persisted = await store.LoadMessagesAsync(threadId);
+        var resolvedMessages = MessagePersistenceConverter.FromPersistedMessages(persisted);
+        var resolved2 = resolvedMessages.OfType<ToolCallResultMessage>()
+            .Should().ContainSingle(m => m.ToolCallId == "tc_wait_2").Subject;
+        resolved2.IsDeferred.Should().BeFalse();
+        resolved2.IsError.Should().BeFalse();
+
+        using var payload = JsonDocument.Parse(resolved2.Result);
+        payload.RootElement.GetProperty("status").GetString().Should().Be("failed");
+        payload.RootElement.GetProperty("reason").GetString().Should().Be("trigger_disabled");
+
+        // tc_wait_1's persisted rows must be untouched by the failed attempt — no partial/corrupt
+        // write from the aborted resolution.
+        resolvedMessages.OfType<ToolCallResultMessage>()
+            .Count(m => m.ToolCallId == "tc_wait_1").Should().Be(2);
+    }
+
+    [Fact]
     public async Task ResolveToolCallAsync_ThrowsObjectDisposedException_AfterDispose()
     {
         // Resolutions arrive externally on arbitrary threads (webhook handlers, UI events).

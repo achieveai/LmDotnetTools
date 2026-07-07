@@ -21,6 +21,9 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="7.1.0" />
     <PackageReference Include="Moq" Version="4.20.72" />
+    <!-- Xunit.SkippableFact: makes a privilege-/platform-gated test a VISIBLE skip (not a silent
+         green pass) via [SkippableFact] + Skip.If — matching the convention in CopilotLive.Tests. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
     <!-- In-process TestServer for the over-HTTP context-discovery webhook test (exercises the real
          ASP.NET routing, snake_case [FromBody] binding, and Authorization header handling). -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />

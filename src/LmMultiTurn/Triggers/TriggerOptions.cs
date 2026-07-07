@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
 /// <summary>
@@ -28,4 +30,11 @@ public sealed record TriggerOptions
 
     /// <summary>Host-specific trigger kinds to register in addition to the built-in <c>timer</c>.</summary>
     public IReadOnlyList<TriggerSourceRegistration> AdditionalRegistrations { get; init; } = [];
+
+    /// <summary>When set (with <see cref="ThreadId"/>), notify-mode waits persist here so they survive
+    /// a restart. Null disables durable notify restore (notify waits are then process-lifetime only).</summary>
+    public INotifyWaitStore? NotifyWaitStore { get; init; }
+
+    /// <summary>Thread scope for <see cref="NotifyWaitStore"/> rows. Required when the store is set.</summary>
+    public string? ThreadId { get; init; }
 }

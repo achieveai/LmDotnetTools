@@ -21,8 +21,8 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
+using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
@@ -931,7 +931,16 @@ try
                         sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     }
 
-                    var agent = new MultiTurnAgentLoop(
+                    // Declared before construction so the trigger-options closure below can read the
+                    // just-built loop's SubAgentManager: the loop consumes AdditionalRegistrations
+                    // inside its own ctor, so a subagent-kind source can't be handed the manager
+                    // directly — it resolves it lazily once the loop (and thus the manager) exists.
+                    MultiTurnAgentLoop agent = null!;
+                    var triggerOptions = SampleTriggerRegistrations.Build(
+                        sandboxEnabled: sandboxSession is not null,
+                        subAgentManagerAccessor: () => agent?.SubAgentManager);
+
+                    agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
                         threadId,
@@ -960,13 +969,14 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
                         persistRunLedger: true,
-                        // Enable the Wait/CancelWait/ListWaits park-and-wake tools (built-in one-shot
-                        // `timer` source) for the MOCK providers only. Real providers are left untouched:
-                        // this sample exercises deferred-tool park/resume deterministically via the mock
-                        // instruction-chain, and gating here keeps OpenAI/Anthropic/Copilot behavior
-                        // byte-for-byte unchanged. TriggerOptions defaults are fine (16 concurrent waits,
-                        // 15m ceiling).
-                        triggerOptions: isTestMode ? new TriggerOptions() : null
+                        // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
+                        // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
+                        // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
+                        // OpenAI/Anthropic/Copilot behavior stays byte-for-byte unchanged and the sample
+                        // exercises deferred-tool park/resume deterministically via the mock
+                        // instruction-chain. Broader rollout (enabling triggers for real providers behind a
+                        // flag) is tracked in #161.
+                        triggerOptions: isTestMode ? triggerOptions : null
                     );
 
                     if (workflowRuntime is not null)

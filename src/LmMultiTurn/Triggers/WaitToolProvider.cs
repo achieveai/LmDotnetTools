@@ -80,6 +80,25 @@ public sealed class WaitToolProvider : IFunctionProvider
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
+                new FunctionParameterContract
+                {
+                    Name = "mode",
+                    Description =
+                        "\"block\" (default) parks the run until the event fires or times out — the result is "
+                        + "this call's return value. \"notify\" arms without parking: each fire is delivered as a "
+                        + "new message and the wait stays armed for more fires until maxFires or timeout.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "maxFires",
+                    Description =
+                        "Notify mode only: stop after this many fires (positive integer). Omit for unlimited "
+                        + "(bounded only by timeout). Ignored in block mode.",
+                    ParameterType = new JsonSchemaObject { Type = new("integer") },
+                    IsRequired = false,
+                },
             ],
         };
 
@@ -176,17 +195,33 @@ public sealed class WaitToolProvider : IFunctionProvider
             parsed.ArgsJson,
             parsed.Timeout,
             parsed.Label,
+            parsed.Mode,
+            parsed.MaxFires,
             cancellationToken);
 
-        if (result.IsArmed)
+        if (!result.IsArmed)
         {
-            // Park the run; the runtime resolves this tool call when the wait terminates.
-            return new ToolHandlerResult.Deferred();
+            return ToolHandlerResult.FromError(
+                Reject(result.Reason ?? "rejected", result.Message ?? "Wait was rejected."),
+                result.Reason);
         }
 
-        return ToolHandlerResult.FromError(
-            Reject(result.Reason ?? "rejected", result.Message ?? "Wait was rejected."),
-            result.Reason);
+        if (parsed.Mode == WaitMode.Notify)
+        {
+            // Notify arms do NOT park the run; acknowledge immediately. Fires arrive later as
+            // <trigger> turns via the loop's queue gate.
+            return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
+            {
+                status = "armed",
+                mode = "notify",
+                waitId = context.ToolCallId,
+                kind = parsed.Kind,
+                maxFires = parsed.MaxFires,
+            }));
+        }
+
+        // Block mode: park the run; the runtime resolves this tool call when the wait terminates.
+        return new ToolHandlerResult.Deferred();
     }
 
     private async Task<ToolHandlerResult> HandleCancelWaitAsync(

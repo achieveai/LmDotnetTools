@@ -182,4 +182,45 @@ public class MessagesTests
     }
 
     #endregion
+
+    #region QueuedInput binary-compat Tests
+
+    [Fact]
+    public void QueuedInput_FourArgCompatCtor_LeavesTriggerNull()
+    {
+        // Regression: the pre-Trigger 4-arg positional shape (input, receiptId, queuedAt, resume)
+        // must still construct, with Trigger defaulting to null.
+        var messages = new List<IMessage> { new TextMessage { Text = "hi", Role = Role.User } };
+        var input = new UserInput(messages);
+        var queuedAt = DateTimeOffset.UtcNow;
+        var resume = new ResumeSentinel("run-1", "gen-1");
+
+        var queued = new QueuedInput(input, "receipt-1", queuedAt, resume);
+
+        queued.Input.Should().Be(input);
+        queued.ReceiptId.Should().Be("receipt-1");
+        queued.QueuedAt.Should().Be(queuedAt);
+        queued.Resume.Should().Be(resume);
+        queued.Trigger.Should().BeNull();
+    }
+
+    [Fact]
+    public void QueuedInput_FourValueDeconstruct_MatchesPreTriggerShape()
+    {
+        // Regression: the pre-Trigger 4-value Deconstruct((input, receiptId, queuedAt, resume) = ...)
+        // shape must keep working even though the record now carries a 5th (Trigger) member.
+        var messages = new List<IMessage> { new TextMessage { Text = "hi", Role = Role.User } };
+        var input = new UserInput(messages);
+        var queuedAt = DateTimeOffset.UtcNow;
+        var queued = new QueuedInput(input, "receipt-2", queuedAt, Resume: null, Trigger: null);
+
+        var (deconstructedInput, receiptId, deconstructedQueuedAt, resume) = queued;
+
+        deconstructedInput.Should().Be(input);
+        receiptId.Should().Be("receipt-2");
+        deconstructedQueuedAt.Should().Be(queuedAt);
+        resume.Should().BeNull();
+    }
+
+    #endregion
 }

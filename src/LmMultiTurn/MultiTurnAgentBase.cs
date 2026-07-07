@@ -563,6 +563,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         {
             Logger.LogDebug("No stored messages found for thread {ThreadId}", ThreadId);
             _historyRecovered = true;
+
+            // Some recoverable state (e.g. notify_waits) is persisted separately from message
+            // history and must be restored even when there are zero message rows for this thread.
+            await OnThreadRecoveredAsync(ct);
             return false;
         }
 
@@ -587,6 +591,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // (e.g., MultiTurnAgentLoop rebuilds its deferred-tool registry here).
         await OnHistoryRestoredAsync(messages, ct);
 
+        // Restore any other recoverable state that isn't derived from message history (e.g.
+        // notify_waits, which are keyed by thread in a separate table). Called exactly once per
+        // recovery — this is the non-empty-history counterpart to the call on the early-return
+        // branch above.
+        await OnThreadRecoveredAsync(ct);
+
         Logger.LogInformation(
             "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
             messages.Count,
@@ -604,6 +614,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="messages">The full restored conversation history, in load order.</param>
     /// <param name="ct">Cancellation token.</param>
     protected virtual Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
+    {
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Called from <see cref="RecoverAsync"/> exactly once per recovery attempt, after metadata
+    /// has been loaded — regardless of whether any message rows exist for this thread. Some
+    /// recoverable state (e.g. notify_waits) is persisted separately from message history, keyed
+    /// only by thread, so it must not be gated on <c>persistedMessages.Count &gt; 0</c>. Override
+    /// to restore that kind of state. Runs after <see cref="OnHistoryRestoredAsync"/> when
+    /// messages exist, or in its place when there are none.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    protected virtual Task OnThreadRecoveredAsync(CancellationToken ct)
     {
         return Task.CompletedTask;
     }
@@ -629,6 +653,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
         return _inputChannel.Writer.TryWrite(queuedInput) ? ValueTask.CompletedTask : _inputChannel.Writer.WriteAsync(queuedInput, ct);
+    }
+
+    /// <summary>
+    /// Non-blocking counterpart to <see cref="EnqueueRawAsync"/>: attempts to post a pre-built
+    /// <see cref="QueuedInput"/> onto the input channel without ever awaiting a full channel.
+    /// Used by <c>MultiTurnAgentLoop</c> for restart-recovery notify delivery
+    /// (<see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.TriggerRuntime.RestoreNotifyWaitsAsync"/>),
+    /// which can run before the run loop starts reading — blocking there would deadlock startup.
+    /// </summary>
+    /// <returns>True if the input was accepted into the channel; false if the channel is currently
+    /// full (the caller must not treat the input as delivered).</returns>
+    protected bool TryEnqueueRaw(QueuedInput queuedInput)
+    {
+        ArgumentNullException.ThrowIfNull(queuedInput);
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+        return _inputChannel.Writer.TryWrite(queuedInput);
     }
 
     /// <summary>

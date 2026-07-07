@@ -23,8 +23,19 @@ public class WaitToolProviderTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-        _runtime = new TriggerRuntime(new TriggerOptions(), (_, _, _, _) => Task.CompletedTask);
+        _runtime = new TriggerRuntime(
+            new TriggerOptions(),
+            resolve: (_, _, _, _) => Task.CompletedTask,
+            notify: (_, _, _) => Task.CompletedTask);
         _runtime.RegisterBuiltIns();
+        _runtime.Register(new TriggerSourceRegistration
+        {
+            Kind = "manual",
+            Description = "test manual trigger (notify-capable)",
+            ArgsSchema = "{}",
+            Capabilities = ManualTriggerSource.Caps,
+            Source = new ManualTriggerSource(),
+        });
         var provider = new WaitToolProvider(_runtime);
 
         var functions = provider.GetFunctions().ToDictionary(f => f.Contract.Name);
@@ -41,6 +52,11 @@ public class WaitToolProviderTests : IAsyncLifetime
 
     private async Task<JsonDocument> ListAsync() =>
         JsonDocument.Parse((await _listWaits.Handler("{}", new ToolCallContext(), CancellationToken.None)).ResultText);
+
+    private async Task<ToolHandlerResult> InvokeWaitAsync(string argsJson) =>
+        await _wait.Handler(argsJson, new ToolCallContext { ToolCallId = "tc_wait" }, CancellationToken.None);
+
+    private static string ExtractText(ToolHandlerResult result) => result.ResultText;
 
     [Fact]
     public async Task ListWaits_ShowsArmedWait_ThenEmpty_AfterCancelWait()
@@ -108,5 +124,24 @@ public class WaitToolProviderTests : IAsyncLifetime
 
         using var listed = await ListAsync();
         listed.RootElement.GetProperty("waits").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HandleWait_BlockMode_ReturnsDeferred()
+    {
+        // existing block behavior (regression guard): a timer block wait defers.
+        var result = await InvokeWaitAsync("""{"kind":"timer","timeout":"10m"}""");
+        result.Should().BeOfType<ToolHandlerResult.Deferred>();
+    }
+
+    [Fact]
+    public async Task HandleWait_NotifyMode_ReturnsArmedAcknowledgment_NotDeferred()
+    {
+        // Register a notify-capable source in the test runtime, then:
+        var result = await InvokeWaitAsync("""{"kind":"manual","timeout":"1h","mode":"notify","maxFires":2}""");
+        result.Should().NotBeOfType<ToolHandlerResult.Deferred>();
+        var text = ExtractText(result);
+        text.Should().Contain("\"status\":\"armed\"");
+        text.Should().Contain("\"mode\":\"notify\"");
     }
 }

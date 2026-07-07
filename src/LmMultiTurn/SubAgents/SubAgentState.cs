@@ -139,3 +139,42 @@ internal class SubAgentState
         return new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }
+
+/// <summary>
+/// Idempotent, per-gate-acquisition-"epoch" release guard for the manager's shared
+/// concurrency <see cref="SemaphoreSlim"/>. Every successful <c>_concurrencyGate.WaitAsync</c>
+/// call - the original spawn, or a later restart via <c>RestartRunAsync</c> against the SAME,
+/// reused <see cref="SubAgentState"/> - gets its own fresh <see cref="GateReleaseGuard"/>
+/// instance, created immediately after the acquisition succeeds and threaded explicitly through
+/// to both the monitor task and the acquiring method's own failure-cleanup path. Whichever of
+/// the two notices the run's end first calls <see cref="ReleaseOnce"/>; the other's call is then
+/// a safe no-op.
+/// <para>
+/// A single flag/field stored directly on the long-lived <see cref="SubAgentState"/> (reset in
+/// place for each new epoch) cannot serve this role: <c>RestartRunAsync</c> cancels the previous
+/// epoch's monitor but does not wait for its <c>finally</c> block to run before resetting the
+/// shared flag and starting the next epoch's monitor, so the previous epoch's still-in-flight
+/// release can fire AFTER the flag was reset for the new epoch - silently consuming the new
+/// epoch's only legitimate release as a spurious extra one. A fresh, independent instance per
+/// epoch makes that impossible: each epoch's monitor and cleanup path close over their own
+/// object, so a late release from an old epoch can never be mistaken for a new epoch's release.
+/// </para>
+/// </summary>
+internal sealed class GateReleaseGuard
+{
+    private int _released;
+
+    /// <summary>
+    /// Releases <paramref name="gate"/> exactly once for this guard's epoch. Over-releasing a
+    /// <see cref="SemaphoreSlim"/> corrupts its count - it can throw
+    /// <see cref="SemaphoreFullException"/> and, short of that, silently lets more than
+    /// MaxConcurrentSubAgents run concurrently.
+    /// </summary>
+    public void ReleaseOnce(SemaphoreSlim gate)
+    {
+        if (Interlocked.Exchange(ref _released, 1) == 0)
+        {
+            _ = gate.Release();
+        }
+    }
+}
