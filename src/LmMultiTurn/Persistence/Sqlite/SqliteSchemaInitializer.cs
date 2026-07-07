@@ -140,7 +140,17 @@ public static class SqliteSchemaInitializer
         }
         catch
         {
-            transaction.Rollback();
+            try
+            {
+                transaction.Rollback();
+            }
+            catch
+            {
+                // Swallow: a rollback failure (e.g. the connection is already broken) must
+                // never replace the original schema-initialization exception being propagated
+                // below - that exception is the one callers need to diagnose the real failure.
+            }
+
             throw;
         }
     }
