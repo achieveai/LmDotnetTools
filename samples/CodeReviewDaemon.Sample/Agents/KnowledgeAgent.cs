@@ -144,11 +144,15 @@ internal sealed class KnowledgeAgent
     }
 
     /// <summary>
-    /// Resolves the KB-relative path the entry should be written to. An <c>## UPDATES</c> marker that names
-    /// an existing entry is honored (update in place); otherwise the path is <c>&lt;scope&gt;/&lt;slug&gt;.md</c>
-    /// derived from the SCOPE + slugified TITLE — which is a create, or an in-place update when that file
-    /// already exists. Returns <c>null</c> when the markers are too sparse to form a path (no UPDATES target
-    /// and a missing scope/title).
+    /// Resolves the KB-relative path the entry should be written to, treating all path components of the
+    /// model's reply as untrusted (the notes are derived from attacker-controllable PR content, so a crafted
+    /// <c>## SCOPE: ../../.git/hooks</c> or <c>## UPDATES: ../../x</c> must never escape the Knowledge Base).
+    /// An <c>## UPDATES</c> marker is honored only when it validates as a KB-relative <c>&lt;scope&gt;/&lt;slug&gt;.md</c>
+    /// of ref-safe segments AND names a file that exists; otherwise the path is <c>&lt;scope&gt;/&lt;slug&gt;.md</c>
+    /// from a SCOPE that must itself be one ref-safe segment (the slug is already sanitized by
+    /// <see cref="Slugify"/>). Every candidate is finally canonicalized and required to stay under
+    /// <paramref name="knowledgeBaseDir"/>. Returns <c>null</c> (write nothing) when the markers are too
+    /// sparse or fail validation.
     /// </summary>
     private async Task<string?> ResolveTargetRelPathAsync(
         string knowledgeBaseDir,
@@ -158,22 +162,97 @@ internal sealed class KnowledgeAgent
     {
         if (!string.IsNullOrWhiteSpace(parsed.Updates))
         {
-            var updatesRel = parsed.Updates.Trim().TrimStart('/');
-            var updatesContent = await _fileSystem
-                .ReadFileAsync(JoinPath(knowledgeBaseDir, updatesRel), cancellationToken)
-                .ConfigureAwait(false);
-            if (updatesContent is not null)
+            var updatesRel = NormalizeUpdatesRelPath(parsed.Updates);
+            if (updatesRel is null)
             {
-                return updatesRel;
+                _logger.LogWarning(
+                    "Knowledge extraction rejected unsafe ## UPDATES '{Updates}'; treating as a create.",
+                    parsed.Updates);
+            }
+            else if (StaysUnderKnowledgeBase(knowledgeBaseDir, updatesRel))
+            {
+                var updatesContent = await _fileSystem
+                    .ReadFileAsync(JoinPath(knowledgeBaseDir, updatesRel), cancellationToken)
+                    .ConfigureAwait(false);
+                if (updatesContent is not null)
+                {
+                    return updatesRel;
+                }
             }
         }
 
-        if (string.IsNullOrWhiteSpace(parsed.Scope) || string.IsNullOrWhiteSpace(parsed.Title))
+        var scope = parsed.Scope.Trim();
+        if (scope.Length == 0 || string.IsNullOrWhiteSpace(parsed.Title))
         {
             return null;
         }
 
-        return $"{parsed.Scope.Trim().Trim('/')}/{Slugify(parsed.Title)}.md";
+        if (!IsSafeSegment(scope))
+        {
+            _logger.LogWarning("Knowledge extraction rejected unsafe SCOPE '{Scope}'; nothing written.", scope);
+            return null;
+        }
+
+        var relPath = $"{scope}/{Slugify(parsed.Title)}.md";
+        if (!StaysUnderKnowledgeBase(knowledgeBaseDir, relPath))
+        {
+            _logger.LogWarning(
+                "Knowledge extraction rejected SCOPE '{Scope}' that escapes the Knowledge Base; nothing written.",
+                scope);
+            return null;
+        }
+
+        return relPath;
+    }
+
+    /// <summary>
+    /// A path segment is ref-safe only when it is a non-empty run of <c>[A-Za-z0-9._-]</c> that is neither
+    /// <c>.</c> nor <c>..</c>. This rejects directory traversal (<c>../</c>, <c>..\</c>), separator injection,
+    /// and absolute anchors, so a model-emitted SCOPE/UPDATES value can never reach outside the KB directory.
+    /// </summary>
+    private static bool IsSafeSegment(string segment) =>
+        segment.Length > 0
+        && segment is not ("." or "..")
+        && segment.All(static ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '_' or '-');
+
+    /// <summary>
+    /// Validates a model-supplied <c>## UPDATES</c> value as a KB-relative path of one or two ref-safe
+    /// segments whose final segment ends in <c>.md</c> (a layered <c>&lt;scope&gt;/&lt;slug&gt;.md</c> or a legacy flat
+    /// <c>&lt;slug&gt;.md</c>), returning the normalized relpath or <c>null</c> when it fails — so a crafted
+    /// <c>../../.git/x</c> is refused before it can redirect the write.
+    /// </summary>
+    private static string? NormalizeUpdatesRelPath(string updates)
+    {
+        var trimmed = updates.Trim().Replace('\\', '/').Trim('/');
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        var segments = trimmed.Split('/');
+        if (segments.Length > 2
+            || !segments.All(IsSafeSegment)
+            || !segments[^1].EndsWith(".md", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return string.Join('/', segments);
+    }
+
+    /// <summary>
+    /// Backstop for the per-segment checks: canonicalizes <paramref name="relPath"/> under
+    /// <paramref name="knowledgeBaseDir"/> and confirms the result stays inside that directory, so any
+    /// traversal a parser check missed can never reach <see cref="ISandboxFileSystem.WriteFileAsync"/>.
+    /// </summary>
+    private static bool StaysUnderKnowledgeBase(string knowledgeBaseDir, string relPath)
+    {
+        var baseFull = Path.GetFullPath(knowledgeBaseDir);
+        var candidate = Path.GetFullPath(Path.Combine(baseFull, relPath));
+        var baseWithSeparator = baseFull.EndsWith(Path.DirectorySeparatorChar)
+            ? baseFull
+            : baseFull + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(baseWithSeparator, StringComparison.Ordinal);
     }
 
     /// <summary>Merges <paramref name="existing"/> source-PR refs with <paramref name="sourcePrRef"/>, preserving order and de-duplicating.</summary>
@@ -224,9 +303,10 @@ internal sealed class KnowledgeAgent
     private static string Quote(string value) => $"\"{value}\"";
 
     /// <summary>
-    /// Parses the agent's header markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>, each on its own line at the
-    /// top, blank lines allowed) and the entry body that follows the last marker. Unknown or absent markers
-    /// leave their fields empty; the first substantive non-marker line begins the body.
+    /// Parses the agent's header markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>) and the entry body. The whole
+    /// reply is scanned for markers so a collect-only agent that preambles ("Here is the entry:\n## SCOPE:
+    /// …") still yields them instead of silently dropping every marker at the first prose line; the body is
+    /// everything after the LAST recognized marker line. Unknown or absent markers leave their fields empty.
     /// </summary>
     private static ParsedEntry ParseEntry(string text)
     {
@@ -235,23 +315,17 @@ internal sealed class KnowledgeAgent
         string scope = string.Empty, title = string.Empty;
         string? updates = null;
         List<string> tags = [];
-        var bodyStart = lines.Length;
+        var lastMarkerLine = -1;
 
         for (var i = 0; i < lines.Length; i++)
         {
-            var trimmed = lines[i].Trim();
-            if (trimmed.Length == 0)
-            {
-                continue; // Blank separator lines between markers (and before the body) are skipped.
-            }
-
-            var marker = TryParseMarker(trimmed);
+            var marker = TryParseMarker(lines[i].Trim());
             if (marker is null)
             {
-                bodyStart = i; // First non-marker content line — the body begins here.
-                break;
+                continue; // Preamble, blank separators, and body prose are all scanned past for markers.
             }
 
+            lastMarkerLine = i;
             var (key, value) = marker.Value;
             switch (key)
             {
@@ -272,7 +346,9 @@ internal sealed class KnowledgeAgent
             }
         }
 
-        var body = bodyStart < lines.Length ? string.Join("\n", lines[bodyStart..]).Trim() : string.Empty;
+        var body = lastMarkerLine >= 0 && lastMarkerLine + 1 < lines.Length
+            ? string.Join("\n", lines[(lastMarkerLine + 1)..]).Trim()
+            : string.Empty;
         return new ParsedEntry(scope, title, tags, updates, body);
     }
 

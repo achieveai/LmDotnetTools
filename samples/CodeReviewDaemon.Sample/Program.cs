@@ -298,21 +298,30 @@ if (daemonOptions.EnableToolAssistedReview
         Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
         if (daemonOptions.EnableKnowledgeAgent)
         {
-            extractKnowledgeAsync = async (pr, ct) =>
+            // The committer wraps the gated extraction with the git plumbing that carries its write into the
+            // default branch: check the notes branch out, run extraction, and — only when it wrote an entry —
+            // commit + push KnowledgeBase/ onto that branch so MergeToDefaultAsync fast-forwards it into main.
+            var committer = new KnowledgeExtractionCommitter(
+                hostGit, sweeperRepoRoot, loggerFactory.CreateLogger<KnowledgeExtractionCommitter>());
+            extractKnowledgeAsync = (pr, ct) =>
             {
-                var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, ct)
-                    .ConfigureAwait(false);
-                var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
-                await using var loop = loopFactory.Create(
-                    profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
-                var agent = new KnowledgeAgent(loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
-
                 // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
                 // (deterministic — never the model) and stamped into the entry's `updated` frontmatter.
                 var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
-                var todayUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-                _ = await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
-                    .ConfigureAwait(false);
+                return committer.RunAsync(pr.Branch, sourcePrRef, async innerCt =>
+                {
+                    var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
+                        .ConfigureAwait(false);
+                    var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+                    await using var loop = loopFactory.Create(
+                        profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                    var agent = new KnowledgeAgent(
+                        loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
+                    var todayUtc = DateTime.UtcNow.ToString(
+                        "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    return await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, innerCt)
+                        .ConfigureAwait(false);
+                }, ct);
             };
         }
 

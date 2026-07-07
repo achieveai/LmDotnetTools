@@ -129,6 +129,116 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             .Should().ContainSingle();
     }
 
+    // ---- Fix 1: path-traversal hardening on SCOPE / UPDATES -----------------------------------------
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_a_traversal_scope_and_writes_nothing_outside_the_KB()
+    {
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(
+            "## SCOPE: ../../etc\n"
+            + "## TITLE: Evil\n\n"
+            + "malicious body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // A "../../" scope must escape NOTHING: the write is refused outright (gate), not redirected.
+        result.Should().BeNull();
+        fs.Writes.Should().BeEmpty();
+        fs.Files.Keys.Should().NotContain(key => !key.StartsWith(KbDir + "/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_a_scope_that_contains_a_separator()
+    {
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(
+            "## SCOPE: system/nested\n"
+            + "## TITLE: Split Scope\n\n"
+            + "body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // Scope must be ONE ref-safe segment; a scope carrying a path separator is refused, not split.
+        result.Should().BeNull();
+        fs.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_a_traversal_updates_target_even_when_that_file_exists()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // A file planted OUTSIDE the KB that a crafted ## UPDATES tries to redirect the write onto.
+        var escapePath = KbDir + "/../../.git/hooks/pre-commit.md";
+        fs.Files[escapePath] = "#!/bin/sh\necho pwned";
+        var agent = AgentReturning(
+            "## UPDATES: ../../.git/hooks/pre-commit.md\n"
+            + "## SCOPE: system\n"
+            + "## TITLE: Innocent Looking\n\n"
+            + "body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // The traversal UPDATES is refused and the create falls back to the safe scope+slug INSIDE the KB;
+        // the planted escape file is never touched, and every write stays under KnowledgeBase/.
+        result.Should().NotBeNull();
+        result!.EntryFileName.Should().Be("system/innocent-looking.md");
+        fs.Files[escapePath].Should().Be("#!/bin/sh\necho pwned");
+        fs.Writes.Should().OnlyContain(path => path.StartsWith(KbDir + "/", StringComparison.Ordinal));
+    }
+
+    // ---- Fix 2 (finding #3): a valid single-segment scope create stays indexed ----------------------
+
+    [Fact]
+    public async Task TryExtractAsync_indexes_a_valid_single_segment_scope_create()
+    {
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(
+            "## SCOPE: acme-widgets\n"
+            + "## TITLE: Repo Rule\n"
+            + "## TAGS: repo\n\n"
+            + "A repo-scoped rule worth keeping.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result!.EntryFileName.Should().Be("acme-widgets/repo-rule.md");
+        // The one-level regen walk indexes the single-segment scope entry into BOTH bookkeeping files.
+        fs.Files[KbDir + "/_index.jsonl"].Should().Contain("\"file\":\"acme-widgets/repo-rule.md\"");
+        fs.Files[KbDir + "/_toc.md"].Should().Contain("- [Repo Rule](acme-widgets/repo-rule.md)");
+    }
+
+    // ---- Fix 4: marker parsing tolerates leading prose ----------------------------------------------
+
+    [Fact]
+    public async Task TryExtractAsync_extracts_markers_even_after_a_leading_prose_line()
+    {
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(
+            "Here is the distilled entry:\n"
+            + "## SCOPE: system\n"
+            + "## TITLE: Null Checks\n"
+            + "## TAGS: validation\n\n"
+            + "Always null-check external inputs.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result!.EntryFileName.Should().Be("system/null-checks.md");
+        var entryPath = KbDir + "/system/null-checks.md";
+        var meta = KnowledgeIndex.ParseFrontmatter("system/null-checks.md", fs.Files[entryPath]);
+        meta.Should().NotBeNull();
+        meta!.Title.Should().Be("Null Checks");
+        meta.Tags.Should().Equal("validation");
+        fs.Files[entryPath].Should().Contain("Always null-check external inputs");
+        // The preamble line lands neither in a marker nor in the body.
+        fs.Files[entryPath].Should().NotContain("Here is the distilled entry");
+    }
+
     private static FakeMultiTurnAgent AgentReturning(string text) =>
         new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
 
