@@ -29,6 +29,13 @@ public sealed class SandboxGatewayOptions
     /// <summary>
     /// Host base directory the gateway resolves the workspace under.
     /// Becomes <c>WORKSPACE_BASE_PATH</c> when the gateway is spawned.
+    /// <para>
+    /// OPTIONAL. Needed only for the same-host <b>spawn</b> path (and the same-host adopt
+    /// optimization where the client pre-creates the workspace directory). When it is unset, the
+    /// client forwards the workspace leaf to the gateway and lets the gateway own directory
+    /// creation — so a workspace-backed session works against a REMOTE or per-app-rooting gateway
+    /// (ADR 0029) with no local base configured. See <see cref="ResolveWorkspace(string)"/>.
+    /// </para>
     /// </summary>
     public string? WorkspaceBasePath { get; set; }
 
@@ -69,11 +76,18 @@ public sealed class SandboxGatewayOptions
     /// <summary>
     /// Resolves a per-workspace directory leaf into base/leaf/full-path. When
     /// <paramref name="relPathOverride"/> is null/whitespace this is identical to
-    /// <see cref="ResolveWorkspace()"/>. Otherwise the configured base from
-    /// <see cref="ResolveWorkspace()"/> is reused and <paramref name="relPathOverride"/> is treated
-    /// as the workspace leaf. The override is rejected (via <see cref="InvalidOperationException"/>)
-    /// when it is rooted or escapes the base directory (e.g. <c>"../evil"</c>), so a chosen
-    /// workspace can never mount a directory outside the configured base.
+    /// <see cref="ResolveWorkspace()"/>. Otherwise <paramref name="relPathOverride"/> is treated as
+    /// the workspace leaf. A rooted override is always rejected (via
+    /// <see cref="InvalidOperationException"/>) — a workspace identifier is never an absolute path.
+    /// <para>
+    /// If a local base is configured (<see cref="WorkspaceBasePath"/>/<see cref="WorkspacePath"/>),
+    /// the leaf is resolved under it and rejected when it escapes the base (e.g. <c>"../evil"</c>), so
+    /// a chosen workspace can never mount a directory outside the configured base. If NO base is
+    /// configured, resolution returns just the leaf with a null base and null full path: the gateway
+    /// may be remote, or root the workspace under its own per-app base (ADR 0029), so the client
+    /// forwards the leaf and lets the gateway own directory creation instead of resolving/creating a
+    /// local path. A base is thus OPTIONAL — required only for the same-host spawn optimization.
+    /// </para>
     /// </summary>
     public (string? BasePath, string? Leaf, string? FullPath) ResolveWorkspace(string? relPathOverride)
     {
@@ -82,19 +96,25 @@ public sealed class SandboxGatewayOptions
             return ResolveWorkspace();
         }
 
-        var (basePath, _, _) = ResolveWorkspace();
-        if (string.IsNullOrWhiteSpace(basePath))
-        {
-            throw new InvalidOperationException(
-                "Cannot resolve a workspace override because no workspace base path is configured."
-            );
-        }
-
+        // A workspace override is always a RELATIVE leaf (a workspace identifier), never an absolute
+        // path — reject a rooted value up front, independent of whether a local base is configured.
         if (Path.IsPathRooted(relPathOverride))
         {
             throw new InvalidOperationException(
                 $"Workspace directory '{relPathOverride}' must be relative to the workspace base."
             );
+        }
+
+        var (basePath, _, _) = ResolveWorkspace();
+        if (string.IsNullOrWhiteSpace(basePath))
+        {
+            // No local base is configured — e.g. the client adopts a gateway that may be REMOTE, or
+            // that roots the workspace under its own per-app base (ADR 0029). The client neither
+            // resolves an absolute path nor pre-creates the directory on a filesystem it may not even
+            // share: it forwards the leaf (the workspace identifier) and lets the gateway own
+            // creation. WorkspaceBasePath / WorkspacePath is therefore OPTIONAL, needed only for the
+            // same-host spawn path where the client pre-creates the workspace dir as an optimization.
+            return (null, relPathOverride, null);
         }
 
         var baseFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(basePath));
