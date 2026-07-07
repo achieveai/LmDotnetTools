@@ -10,7 +10,7 @@ public class CodeReviewDaemonOptionsTests
         var options = new CodeReviewDaemonOptions();
 
         options.EnableToolAssistedReview.Should().BeFalse();
-        options.Marketplaces.Should().ContainSingle().Which.Should().Be("gb-plugins");
+        options.Marketplaces.Should().Equal("gb-plugins", "superpowers");
         options.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         options.WorkspaceHostRoot.Should().BeNull();
     }

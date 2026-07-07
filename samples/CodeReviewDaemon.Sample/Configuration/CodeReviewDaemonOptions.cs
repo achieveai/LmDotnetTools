@@ -147,8 +147,8 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public string? WorkspaceHostRoot { get; init; }
 
-    /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>.</summary>
-    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins"];
+    /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
+    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
 
     /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
