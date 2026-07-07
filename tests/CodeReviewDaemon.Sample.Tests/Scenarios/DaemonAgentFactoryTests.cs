@@ -103,6 +103,20 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_InstructsConsultingTheKnowledgeBase()
+    {
+        // Task 3 (design §3) — the reviewer consults the Knowledge Base carried in the checkout: Read the
+        // _toc.md first, Grep/Read the entries relevant to the changed files, and call out when the PR
+        // contradicts a recorded invariant.
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("KnowledgeBase"); // consult the KB in the checkout
+        prompt.Should().Contain("_toc.md"); // start from the table of contents
+        prompt.Should().MatchRegex("(?i)contradict"); // flag contradictions with known invariants
+        prompt.Should().MatchRegex("(?i)invariant");
+    }
+
+    [Fact]
     public void CreateJudgeProfile_and_CreateKnowledgeProfile_have_stable_ids_and_gating()
     {
         // P4.4 — the executor feeds these to the live agent loop only when the judge / knowledge flags

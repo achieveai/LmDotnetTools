@@ -38,6 +38,10 @@ internal static class DaemonAgentFactory
            Grep/Glob can come back empty even when files exist, so locate files via the manifest and Read them
            by path. When a cross-repo store is present, its shared Contracts/ layer and the sibling
            repositories under repos/<Repo> are readable the same way, by exact path.
+        4. Consult the Knowledge Base if the checkout has one (a KnowledgeBase/ directory at the store root):
+           Read KnowledgeBase/_toc.md first, then Grep/Read the entries relevant to the changed files and
+           topics. Factor that prior knowledge into your review, and explicitly call out when the PR
+           contradicts a known invariant recorded there.
 
         Produce one focused review, structured as:
         - Open with a one-line summary: the PR, how many files you examined, and the finding counts by
