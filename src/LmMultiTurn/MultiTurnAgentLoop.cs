@@ -943,12 +943,30 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // Wait with a terminal failure now rather than leaving the run parked forever.
             foreach (var entry in restoredWaitEntries)
             {
-                await ResolveToolCallAsync(
-                    entry.ToolCallId,
-                    JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
-                    isError: false,
-                    contentBlocks: null,
-                    ct);
+                // Isolate each entry: ResolveToolCallAsync can throw (e.g. an "already resolved with
+                // different content" conflict) for one entry's persisted state without that meaning
+                // anything about the rest. Without isolation, a throw on entry k would abort the loop
+                // and leave entries k+1... parked forever with no runtime left to ever resolve them.
+                try
+                {
+                    await ResolveToolCallAsync(
+                        entry.ToolCallId,
+                        JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
+                        isError: false,
+                        contentBlocks: null,
+                        ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(
+                        ex,
+                        "Failed to resolve restored wait {ToolCallId} during trigger-disabled recovery; continuing",
+                        entry.ToolCallId);
+                }
             }
         }
     }

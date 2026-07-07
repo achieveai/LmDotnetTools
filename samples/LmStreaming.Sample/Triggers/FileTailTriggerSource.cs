@@ -146,7 +146,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
     /// with a perfectly ordinary (non-linked) directory nested underneath it resolves to a real
     /// path outside the root even though neither the file nor its direct parent is itself a link.
     /// </summary>
-    private static string ResolveRealPath(string full)
+    internal static string ResolveRealPath(string full)
     {
         var pathRoot = Path.GetPathRoot(full);
         if (string.IsNullOrEmpty(pathRoot))
@@ -157,11 +157,14 @@ public sealed class FileTailTriggerSource : ITriggerSource
         var segments = full[pathRoot.Length..]
             .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
 
-        var resolved = Path.TrimEndingDirectorySeparator(pathRoot);
-        if (resolved.Length == 0)
-        {
-            resolved = pathRoot; // e.g. POSIX "/"
-        }
+        // Seed with the root AS-IS (e.g. "C:\" on Windows, "/" on POSIX) rather than trimming its
+        // trailing separator. Path.Combine treats a path ending in the bare volume-separator ':'
+        // (e.g. "C:") as DRIVE-RELATIVE and will not insert a '\' before the next segment, so if the
+        // seed ever lost its trailing separator, Path.Combine(seed, "logs") could produce the
+        // drive-relative "C:logs" instead of the rooted "C:\logs" that the allowed-root confinement
+        // check below depends on. Seeding with the untouched root guarantees every subsequent
+        // Path.Combine call stays rooted on every platform.
+        var resolved = pathRoot;
 
         foreach (var segment in segments)
         {

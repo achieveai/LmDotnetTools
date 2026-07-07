@@ -116,6 +116,30 @@ public class FileTailTriggerSourceTests
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    [SkippableFact]
+    public void ResolveRealPath_KeepsWindowsDriveRootRooted_NotDriveRelative()
+    {
+        // Regression for a Windows-only confinement bug: seeding path resolution with
+        // Path.TrimEndingDirectorySeparator(pathRoot) can (depending on the seed's shape) collapse a
+        // drive root like "C:\" down to the bare "C:" prefix. Path.Combine treats a path ending in
+        // the volume separator ':' as DRIVE-RELATIVE and won't insert a '\' before the next segment,
+        // so Path.Combine("C:", "logs") can yield the drive-relative "C:logs" — which resolves
+        // against the process's current directory on that drive, not the drive root — corrupting the
+        // canonical path the allowed-root confinement check depends on. Only meaningful on Windows,
+        // where paths are drive-rooted; skip visibly elsewhere rather than pass vacuously.
+        Skip.IfNot(OperatingSystem.IsWindows(), "drive-relative path corruption is a Windows-only concept.");
+
+        var root = CreateTempDir();
+        var filePath = Path.Combine(root, "app.log");
+        var expectedRoot = Path.GetPathRoot(filePath)!;
+
+        var resolved = FileTailTriggerSource.ResolveRealPath(filePath);
+
+        Path.IsPathRooted(resolved).Should().BeTrue("the resolved path must stay rooted, never drive-relative");
+        Path.IsPathFullyQualified(resolved).Should().BeTrue("a drive-relative path like \"C:app.log\" is rooted but NOT fully qualified");
+        resolved.Should().StartWith(expectedRoot, "resolution must not lose the drive root prefix (e.g. \"C:\\\")");
+    }
+
     [Fact]
     public async Task Arm_Rejects_InvalidPattern()
     {
