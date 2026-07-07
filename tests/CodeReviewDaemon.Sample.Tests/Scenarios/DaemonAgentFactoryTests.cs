@@ -117,22 +117,15 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
-    public void CreateJudgeProfile_and_CreateKnowledgeProfile_have_stable_ids_and_gating()
+    public void CreateJudgeProfile_has_a_stable_id_and_gating()
     {
-        // P4.4 — the executor feeds these to the live agent loop only when the judge / knowledge flags
-        // are enabled. Each is a plain declaration: stable id, non-empty prompt, no built-ins, deferred
-        // MCP allow-list.
+        // P4.4 — the executor feeds this to the live agent loop only when the judge flag is enabled. It is
+        // a plain declaration: stable id, non-empty prompt, no built-ins, deferred MCP allow-list.
         var judge = DaemonAgentFactory.CreateJudgeProfile();
         judge.Id.Should().Be(DaemonAgentFactory.JudgeProfileId);
         judge.SystemPrompt.Should().NotBeNullOrWhiteSpace();
         judge.EnabledBuiltInTools.Should().BeEmpty();
         judge.EnabledTools.Should().BeNull();
-
-        var knowledge = DaemonAgentFactory.CreateKnowledgeProfile();
-        knowledge.Id.Should().Be(DaemonAgentFactory.KnowledgeProfileId);
-        knowledge.SystemPrompt.Should().NotBeNullOrWhiteSpace();
-        knowledge.EnabledBuiltInTools.Should().BeEmpty();
-        knowledge.EnabledTools.Should().BeNull();
     }
 
     [Fact]

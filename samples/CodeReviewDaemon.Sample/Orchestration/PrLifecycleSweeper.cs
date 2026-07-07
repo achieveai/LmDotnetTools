@@ -86,6 +86,15 @@ internal sealed class PrLifecycleSweeper
     private readonly bool _mergeNotesBranchOnClose;
     private readonly ILogger<PrLifecycleSweeper> _logger;
 
+    /// <summary>
+    /// Optional at-close knowledge-extraction seam (Layer-2, design §1): distills durable knowledge from a
+    /// merged PR's accumulated notes into the store's Knowledge Base BEFORE the notes branch merges into the
+    /// default branch, so the same merge carries the new/updated entry into <c>main</c>. Wired in
+    /// <c>Program.cs</c> only when <c>EnableKnowledgeAgent</c> is set; <c>null</c> leaves the sweep unchanged.
+    /// Runs on the Merged path only — never on Open/Abandoned — and its failure never blocks the lifecycle.
+    /// </summary>
+    private readonly Func<ReviewedPr, CancellationToken, Task>? _extractKnowledgeAsync;
+
     public PrLifecycleSweeper(
         Func<CancellationToken, Task<IReadOnlyList<ReviewedPr>>> listReviewedPrsAsync,
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
@@ -93,7 +102,8 @@ internal sealed class PrLifecycleSweeper
         string repoRoot,
         string defaultBranch,
         bool mergeNotesBranchOnClose,
-        ILogger<PrLifecycleSweeper> logger
+        ILogger<PrLifecycleSweeper> logger,
+        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null
     )
     {
         _listReviewedPrsAsync = listReviewedPrsAsync ?? throw new ArgumentNullException(nameof(listReviewedPrsAsync));
@@ -105,6 +115,7 @@ internal sealed class PrLifecycleSweeper
         _defaultBranch = defaultBranch;
         _mergeNotesBranchOnClose = mergeNotesBranchOnClose;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _extractKnowledgeAsync = extractKnowledgeAsync;
     }
 
     /// <summary>
@@ -170,6 +181,26 @@ internal sealed class PrLifecycleSweeper
                 pr.Provider,
                 pr.PrId);
             return;
+        }
+
+        // Layer-2 (design §1): distill durable knowledge from the PR's accumulated notes BEFORE the notes
+        // branch merges into the default branch, so the same merge carries the new/updated entry into main.
+        // Extraction failure (agent error, IO) is logged and swallowed — it must NEVER block the merge/delete
+        // (design §6: a capability gap degrades, never fails the lifecycle).
+        if (_extractKnowledgeAsync is not null)
+        {
+            try
+            {
+                await _extractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId}; the merge proceeds.",
+                    pr.Provider,
+                    pr.PrId);
+            }
         }
 
         var merged = await _branchManager

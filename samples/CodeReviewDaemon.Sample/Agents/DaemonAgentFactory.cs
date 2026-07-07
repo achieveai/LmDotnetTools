@@ -18,9 +18,6 @@ internal static class DaemonAgentFactory
     /// <summary>Stable id of the judge profile.</summary>
     public const string JudgeProfileId = "judge";
 
-    /// <summary>Stable id of the knowledge-base profile.</summary>
-    public const string KnowledgeProfileId = "knowledge";
-
     /// <summary>Stable id of the at-close knowledge-extraction profile (design §1/§2).</summary>
     public const string KnowledgeExtractionProfileId = "knowledge-extraction";
 
@@ -76,16 +73,6 @@ internal static class DaemonAgentFactory
         {"score": <integer 0-10>, "rationale": "<one or two sentences>"}
 
         Your verdict is recorded for human inspection only. Do not attempt to act on the repository.
-        """;
-
-    private const string KnowledgeSystemPrompt = """
-        You distill a completed code review into one durable Knowledge Base entry.
-
-        Capture the reusable lesson — the pattern, pitfall, or convention a future reviewer should know
-        — not the PR-specific details. Write concise Markdown opening with a single '#' title heading.
-
-        Do not attempt to post comments, push commits, or otherwise act on the repository — the daemon
-        writes your output into the Knowledge Base.
         """;
 
     private const string KnowledgeExtractionSystemPrompt = """
@@ -166,18 +153,6 @@ internal static class DaemonAgentFactory
             Id: JudgeProfileId,
             Name: "Judge Agent",
             SystemPrompt: JudgeSystemPrompt,
-            EnabledTools: null,
-            EnabledBuiltInTools: []);
-
-    /// <summary>
-    /// Builds the knowledge-base-agent profile (distills a review into a durable KB entry). Like the
-    /// reviewer it needs no built-in tools and defers any MCP allow-list to the executor.
-    /// </summary>
-    public static AgentProfile CreateKnowledgeProfile() =>
-        new(
-            Id: KnowledgeProfileId,
-            Name: "Knowledge Agent",
-            SystemPrompt: KnowledgeSystemPrompt,
             EnabledTools: null,
             EnabledBuiltInTools: []);
 

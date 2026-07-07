@@ -290,6 +290,32 @@ if (daemonOptions.EnableToolAssistedReview
             hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
 
+        // At-close knowledge extraction (Layer-2, design §1). Wired only when EnableKnowledgeAgent is set:
+        // on a merged PR, read the PR's accumulated notes off its notes branch, run the gated extraction
+        // over the host store checkout, and let the sweeper's subsequent MergeToDefaultAsync carry the
+        // new/updated Knowledge Base entry into the default branch. Unset → null → the sweep is unchanged.
+        var loopFactory = sp.GetRequiredService<IReviewAgentLoopFactory>();
+        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
+        if (daemonOptions.EnableKnowledgeAgent)
+        {
+            extractKnowledgeAsync = async (pr, ct) =>
+            {
+                var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, ct)
+                    .ConfigureAwait(false);
+                var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+                await using var loop = loopFactory.Create(
+                    profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                var agent = new KnowledgeAgent(loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
+
+                // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
+                // (deterministic — never the model) and stamped into the entry's `updated` frontmatter.
+                var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
+                var todayUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                _ = await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
+                    .ConfigureAwait(false);
+            };
+        }
+
         return new PrLifecycleSweeper(
             async ct =>
             {
@@ -316,8 +342,47 @@ if (daemonOptions.EnableToolAssistedReview
             sweeperRepoRoot,
             "main",
             daemonOptions.MergeNotesBranchOnClose,
-            loggerFactory.CreateLogger<PrLifecycleSweeper>());
+            loggerFactory.CreateLogger<PrLifecycleSweeper>(),
+            extractKnowledgeAsync);
     });
+
+    // Reads a merged PR's accumulated review notes off its persistent notes branch (they live on
+    // origin/<branch>, not yet on the sweeper checkout's default branch) and assembles them as the
+    // knowledge-extraction input. The notes dir mirrors the branch slug (review/<p>/<slug>/<pr> ->
+    // PRs/<p>/<slug>/<pr>). Best-effort: an unreadable/absent notes tree yields a short placeholder rather
+    // than throwing — extraction must never block the lifecycle (design §6).
+    static async Task<string> ReadPrNotesFromBranchAsync(
+        GitRunner git, string repoRoot, string branch, CancellationToken ct)
+    {
+        _ = await git.RunAsync(["-C", repoRoot, "fetch", "origin"], repoRoot, ct).ConfigureAwait(false);
+
+        var remoteRef = $"origin/{branch}";
+        var notesRelPath = branch.StartsWith("review/", StringComparison.Ordinal)
+            ? "PRs/" + branch["review/".Length..]
+            : branch;
+
+        var listed = await git
+            .RunAsync(["-C", repoRoot, "ls-tree", "-r", "--name-only", remoteRef, "--", notesRelPath], repoRoot, ct)
+            .ConfigureAwait(false);
+        if (!listed.Succeeded || string.IsNullOrWhiteSpace(listed.Stdout))
+        {
+            return $"(no accumulated notes found under {notesRelPath})";
+        }
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var file in listed.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var show = await git.RunAsync(["-C", repoRoot, "show", $"{remoteRef}:{file}"], repoRoot, ct)
+                .ConfigureAwait(false);
+            if (show.Succeeded)
+            {
+                _ = builder.Append("## ").Append(file).Append('\n').Append(show.Stdout).Append("\n\n");
+            }
+        }
+
+        var assembled = builder.ToString().Trim();
+        return assembled.Length == 0 ? $"(no readable notes under {notesRelPath})" : assembled;
+    }
 }
 
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.

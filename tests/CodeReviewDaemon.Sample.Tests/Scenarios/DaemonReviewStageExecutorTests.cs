@@ -354,21 +354,6 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task EnableKnowledgeAgent_writes_a_knowledge_base_entry_to_the_sandbox()
-    {
-        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableKnowledgeAgent = true });
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.KnowledgeProfileId] = "# Null-check lesson\nAlways guard.";
-        var run = fixture.SeedRun();
-
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-
-        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("KnowledgeBase/") && p.EndsWith("_toc.md"));
-        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("KnowledgeBase/") && !p.EndsWith("_toc.md"));
-        fixture.Factory.CreatedProfileIds.Should().Contain(DaemonAgentFactory.KnowledgeProfileId);
-    }
-
-    [Fact]
     public async Task Judged_skips_the_judge_artifact_when_the_flag_is_off()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);

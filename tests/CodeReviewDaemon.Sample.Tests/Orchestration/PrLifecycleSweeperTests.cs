@@ -44,7 +44,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         IReadOnlyList<ReviewedPr> reviewedPrs,
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
         ReviewBranchManager branchManager,
-        bool mergeNotesBranchOnClose
+        bool mergeNotesBranchOnClose,
+        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null
     ) =>
         new(
             _ => Task.FromResult(reviewedPrs),
@@ -53,7 +54,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             RepoRoot,
             DefaultBranch,
             mergeNotesBranchOnClose,
-            LoggerFactory.CreateLogger<PrLifecycleSweeper>());
+            LoggerFactory.CreateLogger<PrLifecycleSweeper>(),
+            extractKnowledgeAsync);
 
     private static ReviewedPr Pr(string prId, string branch) => new(TargetRepo, "github", prId, branch);
 
@@ -149,5 +151,79 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(a => a.Contains($"branch -D {okPr.Branch}"));
         commands.Should().Contain(a => a.Contains($"push origin --delete {okPr.Branch}"));
+    }
+
+    [Fact]
+    public async Task Sweep_runs_knowledge_extraction_before_merging_a_merged_PR()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("42", "review/github/acme-widgets/42");
+        var invokedPrs = new List<string>();
+        var runnerCommandCountAtInvocation = -1;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            extractKnowledgeAsync: (p, _) =>
+            {
+                invokedPrs.Add(p.PrId);
+                // MergeToDefaultAsync's first git op is `fetch origin`; an empty command log here proves
+                // extraction ran BEFORE the merge (design §1 — extract before the notes branch merges).
+                runnerCommandCountAtInvocation = runner.Commands.Count;
+                return Task.CompletedTask;
+            });
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        invokedPrs.Should().Equal("42");
+        runnerCommandCountAtInvocation.Should().Be(0);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
+        commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
+    }
+
+    [Fact]
+    public async Task Sweep_does_not_run_knowledge_extraction_for_abandoned_or_open_PRs()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var abandoned = Pr("43", "review/github/acme-widgets/43");
+        var open = Pr("44", "review/github/acme-widgets/44");
+        var invoked = new List<string>();
+        var sweeper = CreateSweeper(
+            [abandoned, open],
+            (p, _) => Task.FromResult(p.PrId == abandoned.PrId ? PrLifecycle.Abandoned : PrLifecycle.Open),
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            extractKnowledgeAsync: (p, _) =>
+            {
+                invoked.Add(p.PrId);
+                return Task.CompletedTask;
+            });
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        invoked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Sweep_still_merges_when_knowledge_extraction_throws()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("45", "review/github/acme-widgets/45");
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            extractKnowledgeAsync: (_, _) => throw new InvalidOperationException("simulated extraction failure"));
+
+        var act = () => sweeper.SweepAsync(CancellationToken.None);
+
+        // Extraction failure is logged and swallowed — it must never block the merge/delete (design §6).
+        await act.Should().NotThrowAsync();
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
+        commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
     }
 }

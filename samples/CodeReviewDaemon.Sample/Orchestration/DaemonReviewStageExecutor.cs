@@ -26,8 +26,8 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 ///   <c>review-context</c> artifact.</item>
 ///   <item><see cref="ReviewStage.Reviewed"/> — run the primary <see cref="ReviewAgent"/> and persist a
 ///   <c>review</c> artifact; if <c>EnableABVariants</c>, also run the collect-only
-///   <see cref="VariantReviewer"/> B arm; if <c>EnableKnowledgeAgent</c>, write a Knowledge Base
-///   entry.</item>
+///   <see cref="VariantReviewer"/> B arm. Knowledge extraction no longer runs per-review — it runs at
+///   PR-close from the <see cref="PrLifecycleSweeper"/> (Layer-2, design §1).</item>
 ///   <item><see cref="ReviewStage.Judged"/> — if <c>EnableJudgeAgent</c>, grade the review with the
 ///   <see cref="JudgeAgent"/>.</item>
 ///   <item><see cref="ReviewStage.Posted"/> — post the review via <see cref="ReviewPoster"/> with
@@ -826,17 +826,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .ConfigureAwait(false);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
-        var reviewText = await RunPrimaryReviewAsync(run, provider, reviewInput, cancellationToken)
-            .ConfigureAwait(false);
+        await RunPrimaryReviewAsync(run, provider, reviewInput, cancellationToken).ConfigureAwait(false);
 
         if (_options.EnableABVariants)
         {
             await RunVariantArmAsync(run, provider, reviewInput, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (_options.EnableKnowledgeAgent)
-        {
-            await RunKnowledgeArmAsync(run, repo, reviewInput, reviewText, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -867,7 +861,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
     }
 
-    private async Task<string> RunPrimaryReviewAsync(
+    private async Task RunPrimaryReviewAsync(
         ReviewRun run, string provider, string reviewInput, CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
@@ -891,8 +885,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Payload = JsonSerializer.Serialize(
                 new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
         });
-
-        return result.ReviewText;
     }
 
     private async Task RunVariantArmAsync(
@@ -904,24 +896,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
         _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    private async Task RunKnowledgeArmAsync(
-        ReviewRun run, RepoIdentity repo, string reviewInput, string reviewText, CancellationToken cancellationToken)
-    {
-        var profile = DaemonAgentFactory.CreateKnowledgeProfile();
-        await using var loop = _loopFactory.Create(profile, run.ModelId, ThreadId(run, DaemonAgentFactory.KnowledgeProfileId));
-
-        // Write to the HOST-side checkout when retention is configured (design §6 Risk A) — the KB entry
-        // lands in the same clone the Posted-stage retention commit captures, never in the sandbox the
-        // review agent shares.
-        var fileSystem = _hostRetention?.FileSystem ?? _fileSystem;
-        var repoRoot = _hostRetention?.RepoRoot ?? RepoRoot;
-        var agent = new KnowledgeAgent(loop, fileSystem, _loggerFactory.CreateLogger<KnowledgeAgent>());
-
-        var title = $"{repo.DisplayName} PR {run.PrId}";
-        var knowledgeInput = $"{reviewInput}\n\n## Review\n{reviewText}";
-        _ = await agent.WriteEntryAsync(repoRoot, title, knowledgeInput, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task JudgeAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -1082,8 +1056,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         // Retention must run against the HOST-side workspace when one is configured (design §6 Risk A) —
-        // the push (and the KB write RunKnowledgeArmAsync made into the same checkout) happen with the
-        // write credential in the daemon process, never in the read-only sandbox the review agent shares.
+        // the push happens with the write credential in the daemon process, never in the read-only sandbox
+        // the review agent shares.
         var retention = _hostRetention;
         var git = new GitRunner(retention?.Git ?? _commandRunner);
         var fileSystem = retention?.FileSystem ?? _fileSystem;
@@ -1101,8 +1075,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             provider,
             _loggerFactory.CreateLogger<ReviewBranchManager>());
 
-        // Only the PRs/... artifact is supplied explicitly; any KnowledgeBase/... entry the Knowledge arm
-        // wrote into the checkout earlier is committed by the manager's `git add -A`.
+        // Only the PRs/... artifact is supplied explicitly; the manager's `git add -A` still captures any
+        // other tracked changes in the checkout.
         var prArtifactPath =
             $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{run.PrId}-{ShortSha(run.HeadSha)}/review.md";
         var request = new ReviewBotPublishRequest(

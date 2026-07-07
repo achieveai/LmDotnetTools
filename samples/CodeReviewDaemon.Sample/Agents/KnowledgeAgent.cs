@@ -5,14 +5,13 @@ using CodeReviewDaemon.Sample.Workspace.Sandbox;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// Distills review knowledge into the durable Knowledge Base. Two entry points share the collect-only
-/// agent drive and the <see cref="ISandboxFileSystem"/> IO: the legacy per-review
-/// <see cref="KnowledgeAgent.WriteEntryAsync"/> (flat <c>KnowledgeBase/{slug}.md</c> + <c>_toc.md</c>),
-/// and the at-close <see cref="KnowledgeAgent.TryExtractAsync"/> (design §1/§2) which gates on durable,
-/// generalizable knowledge, writes a <b>layered</b> <c>KnowledgeBase/&lt;scope&gt;/&lt;slug&gt;.md</c> entry
-/// with daemon-injected frontmatter (create-or-update), then regenerates both the queryable
-/// <c>_index.jsonl</c> and <c>_toc.md</c> from the entries actually present. Committing/pushing the
-/// checkout is the repo manager's job, so this agent stays verifiable against an in-memory fake.
+/// Distills review knowledge into the durable Knowledge Base. The at-close
+/// <see cref="KnowledgeAgent.TryExtractAsync"/> (design §1/§2) drives one collect-only agent run over a
+/// merged PR's accumulated notes, gates on durable, generalizable knowledge, writes a <b>layered</b>
+/// <c>KnowledgeBase/&lt;scope&gt;/&lt;slug&gt;.md</c> entry with daemon-injected frontmatter (create-or-update),
+/// then regenerates both the queryable <c>_index.jsonl</c> and <c>_toc.md</c> from the entries actually
+/// present. Committing/pushing the checkout is the repo manager's job, so this agent stays verifiable
+/// against an in-memory fake.
 /// </summary>
 internal sealed class KnowledgeAgent
 {
@@ -32,49 +31,6 @@ internal sealed class KnowledgeAgent
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
-
-    /// <summary>
-    /// Generates a Knowledge Base entry titled <paramref name="title"/> from
-    /// <paramref name="knowledgeInput"/>, writes it under <paramref name="repoRoot"/>, and rebuilds the
-    /// table of contents. Returns the entry's file name and the agent run id that produced it.
-    /// </summary>
-    public async Task<KnowledgeWriteResult> WriteEntryAsync(
-        string repoRoot,
-        string title,
-        string knowledgeInput,
-        CancellationToken cancellationToken
-    )
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
-        ArgumentException.ThrowIfNullOrWhiteSpace(title);
-
-        var collected = await AgentTextCollector
-            .CollectAsync(_agent, knowledgeInput, cancellationToken)
-            .ConfigureAwait(false);
-
-        var entryFileName = Slugify(title) + ".md";
-        var knowledgeBaseDir = JoinPath(repoRoot, KnowledgeBaseDirectory);
-
-        // Prefix the title heading when the model didn't open with one, so every entry is well-formed
-        // and the regenerated ToC can derive a link label from the entry's first heading.
-        var entryBody = collected.Text.TrimStart().StartsWith('#')
-            ? collected.Text
-            : $"# {title}\n\n{collected.Text}";
-
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, entryFileName), entryBody, cancellationToken)
-            .ConfigureAwait(false);
-
-        await RegenerateTocAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        _logger.LogInformation(
-            "Knowledge run {RunId} wrote entry '{Entry}' and regenerated the table of contents.",
-            collected.RunId,
-            entryFileName
-        );
-
-        return new KnowledgeWriteResult(entryFileName, collected.RunId);
     }
 
     /// <summary>
@@ -459,51 +415,6 @@ internal sealed class KnowledgeAgent
     {
         var name = relPath[(relPath.LastIndexOf('/') + 1)..];
         return name.EndsWith(".md", StringComparison.Ordinal) ? name[..^3] : name;
-    }
-
-    private async Task RegenerateTocAsync(string knowledgeBaseDir, CancellationToken cancellationToken)
-    {
-        var names = await _fileSystem.ListFilesAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        var entries = new List<KnowledgeEntry>();
-        foreach (var name in names)
-        {
-            // The ToC lists Markdown entries only; the ToC itself and non-entry markers are excluded.
-            if (!name.EndsWith(".md", StringComparison.Ordinal) || string.Equals(name, TocFileName, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var content = await _fileSystem
-                .ReadFileAsync(JoinPath(knowledgeBaseDir, name), cancellationToken)
-                .ConfigureAwait(false);
-            entries.Add(new KnowledgeEntry(name, FirstHeading(content) ?? name));
-        }
-
-        var toc = KnowledgeTableOfContents.Render(entries);
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, TocFileName), toc, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>Returns the text of the first top-level <c>#</c> heading, or <c>null</c> if there is none.</summary>
-    private static string? FirstHeading(string? content)
-    {
-        if (string.IsNullOrEmpty(content))
-        {
-            return null;
-        }
-
-        foreach (var line in content.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("# ", StringComparison.Ordinal))
-            {
-                return trimmed[2..].Trim();
-            }
-        }
-
-        return null;
     }
 
     /// <summary>
