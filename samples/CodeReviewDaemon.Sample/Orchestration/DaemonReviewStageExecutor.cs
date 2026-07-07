@@ -316,7 +316,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
-        var git = new GitRunner(runner, _options.BotName);
+        var git = new GitRunner(runner);
 
         // Resolve the checkout: prefer the cross-repo AchieveAiReviews store (the reviewed repo as a
         // submodule under repos/<Repo> beside the shared Contracts/ layer) when configured and applicable;
@@ -383,7 +383,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
     {
         var storeUrl = _options.ResolvedStoreUrl!;
-        var hostGit = new GitRunner(_slotWorkspace!.HostRunner, _options.BotName);
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
         var hostFileSystem = _slotWorkspace.HostFileSystem;
 
         var slot = await _slotWorkspace.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
@@ -1101,7 +1101,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ReviewRun run, RepoIdentity repo, string provider, string reviewBody, LeasedReview lease,
         CancellationToken cancellationToken)
     {
-        var hostGit = new GitRunner(_slotWorkspace!.HostRunner, _options.BotName);
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
         var manager = new ReviewBranchManager(
             hostGit, _slotWorkspace.HostFileSystem, provider, _loggerFactory.CreateLogger<ReviewBranchManager>());
 
@@ -1161,7 +1161,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the push happens with the write credential in the daemon process, never in the read-only sandbox
         // the review agent shares.
         var retention = _hostRetention;
-        var git = new GitRunner(retention?.Git ?? _commandRunner, _options.BotName);
+        var git = new GitRunner(retention?.Git ?? _commandRunner);
         var fileSystem = retention?.FileSystem ?? _fileSystem;
         var repoRoot = retention?.RepoRoot ?? RepoRoot;
 

@@ -262,7 +262,7 @@ if (daemonOptions.EnableToolAssistedReview
             daemonOptions.ScratchDirName,
             async (slot, ct) =>
             {
-                var clone = await new GitRunner(hostRunner, daemonOptions.BotName)
+                var clone = await new GitRunner(hostRunner)
                     .RunAsync(["clone", storeUrl, slot.StorePath], workingDirectory: null, ct)
                     .ConfigureAwait(false);
                 if (!clone.Succeeded)
@@ -274,7 +274,7 @@ if (daemonOptions.EnableToolAssistedReview
             loggerFactory.CreateLogger<ReviewSlotPool>());
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner, daemonOptions.BotName), hostFileSystem, "github", loggerFactory);
+        var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
         return new ReviewSlotWorkspace(pool, preparer, hostRunner, hostFileSystem);
     });
 
@@ -284,7 +284,7 @@ if (daemonOptions.EnableToolAssistedReview
         var store = sp.GetRequiredService<ReviewStore>();
         var providers = sp.GetServices<IPrProvider>().ToList();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        var hostGit = new GitRunner(slots.HostRunner, daemonOptions.BotName);
+        var hostGit = new GitRunner(slots.HostRunner);
         var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
         var branchManager = new ReviewBranchManager(
             hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
