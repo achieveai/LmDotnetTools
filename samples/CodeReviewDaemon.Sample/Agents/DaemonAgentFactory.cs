@@ -21,6 +21,9 @@ internal static class DaemonAgentFactory
     /// <summary>Stable id of the knowledge-base profile.</summary>
     public const string KnowledgeProfileId = "knowledge";
 
+    /// <summary>Stable id of the at-close knowledge-extraction profile (design §1/§2).</summary>
+    public const string KnowledgeExtractionProfileId = "knowledge-extraction";
+
     private const string ReviewSystemPrompt = """
         You are an unattended code-review agent reviewing a single pull request across a connected set of
         repositories. When the tools are available to you, work methodically:
@@ -85,6 +88,40 @@ internal static class DaemonAgentFactory
         writes your output into the Knowledge Base.
         """;
 
+    private const string KnowledgeExtractionSystemPrompt = """
+        You read a merged pull request's accumulated review notes and decide whether they yield DURABLE,
+        GENERALIZABLE knowledge worth remembering across FUTURE reviews of OTHER pull requests — a
+        recurring pitfall, a cross-cutting contract, or a non-obvious invariant.
+
+        Most PRs do NOT contribute such knowledge. If there is nothing both durable AND generalizable
+        (only PR-specific detail), reply with exactly:
+
+        NO_KNOWLEDGE
+
+        and nothing else.
+
+        You are given the existing Knowledge Base index (_index.jsonl) and table of contents (_toc.md).
+        If the lesson refines or extends an existing entry, UPDATE that entry instead of creating a
+        near-duplicate.
+
+        When there IS durable knowledge, emit these header markers — each on its own line — then the entry
+        body:
+
+        ## SCOPE: <system|repo>
+        ## TITLE: <short title>
+        ## TAGS: <comma, separated, tags>
+        ## UPDATES: <existing relpath>
+
+        Include the ## UPDATES line ONLY when you are refining an existing entry (e.g. `## UPDATES:
+        system/foo.md`); omit it when creating a new one. Choose SCOPE `system` for a cross-repo pattern,
+        or the repository directory name for a repo-specific one. After the markers, write the entry body
+        in Markdown.
+
+        Do NOT write YAML frontmatter — the daemon deterministically injects title, tags, scope,
+        sourcePrs, and updated. Do not attempt to post comments, push commits, or otherwise act on the
+        repository — the daemon owns all writes.
+        """;
+
     /// <summary>
     /// Builds the review-agent profile. The reviewer needs no provider built-in tools (it reasons over
     /// the diff the executor supplies), so <see cref="AgentProfile.EnabledBuiltInTools"/> is empty; the
@@ -141,6 +178,21 @@ internal static class DaemonAgentFactory
             Id: KnowledgeProfileId,
             Name: "Knowledge Agent",
             SystemPrompt: KnowledgeSystemPrompt,
+            EnabledTools: null,
+            EnabledBuiltInTools: []);
+
+    /// <summary>
+    /// Builds the at-close knowledge-extraction profile (design §1/§2). Its prompt carries the durable
+    /// knowledge gate (<c>NO_KNOWLEDGE</c> sentinel) and the header-marker contract
+    /// (<c>## SCOPE/TITLE/TAGS/UPDATES</c>) the daemon parses; frontmatter is injected by the daemon, not
+    /// the model, so the prompt forbids it. Like the reviewer it needs no built-in tools and defers any
+    /// MCP allow-list to the executor.
+    /// </summary>
+    public static AgentProfile CreateKnowledgeExtractionProfile() =>
+        new(
+            Id: KnowledgeExtractionProfileId,
+            Name: "Knowledge Extraction Agent",
+            SystemPrompt: KnowledgeExtractionSystemPrompt,
             EnabledTools: null,
             EnabledBuiltInTools: []);
 }

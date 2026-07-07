@@ -35,12 +35,21 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
     public Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken)
     {
         var prefix = directory.TrimEnd('/') + "/";
+        // Mirror `ls -1A` / the production file systems: return the immediate child ENTRY names — a file
+        // directly under the directory, or the first path segment of a deeper key (a subdirectory name),
+        // deduplicated and sorted. The layered Knowledge Base regen relies on discovering scope
+        // subdirectories (system/, <repo>/) this way, exactly as it would against the real gateway.
         IReadOnlyList<string> names =
         [
             .. Files.Keys
                 .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(key => key[prefix.Length..])
-                .Where(rest => !rest.Contains('/', StringComparison.Ordinal))
+                .Select(rest =>
+                {
+                    var slash = rest.IndexOf('/', StringComparison.Ordinal);
+                    return slash < 0 ? rest : rest[..slash];
+                })
+                .Distinct(StringComparer.Ordinal)
                 .OrderBy(name => name, StringComparer.Ordinal),
         ];
         return Task.FromResult(names);

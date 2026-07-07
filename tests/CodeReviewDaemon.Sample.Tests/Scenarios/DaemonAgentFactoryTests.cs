@@ -134,4 +134,25 @@ public sealed class DaemonAgentFactoryTests
         knowledge.EnabledBuiltInTools.Should().BeEmpty();
         knowledge.EnabledTools.Should().BeNull();
     }
+
+    [Fact]
+    public void CreateKnowledgeExtractionProfile_carries_the_gate_and_marker_contract()
+    {
+        // Task 4 (design §1/§2) — the at-close extraction profile: gate sentinel + the header markers the
+        // daemon parses, and an explicit "do not write frontmatter" instruction (the daemon injects it).
+        var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+
+        profile.Id.Should().Be(DaemonAgentFactory.KnowledgeExtractionProfileId);
+        profile.EnabledBuiltInTools.Should().BeEmpty();
+        profile.EnabledTools.Should().BeNull();
+
+        var prompt = profile.SystemPrompt;
+        prompt.Should().Contain("NO_KNOWLEDGE"); // the gate sentinel
+        prompt.Should().Contain("## SCOPE:");
+        prompt.Should().Contain("## TITLE:");
+        prompt.Should().Contain("## TAGS:");
+        prompt.Should().Contain("## UPDATES:");
+        prompt.Should().MatchRegex("(?i)frontmatter"); // the model must NOT write frontmatter
+        prompt.Should().MatchRegex("(?i)durable");
+    }
 }
