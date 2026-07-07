@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -83,5 +84,86 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         await act.Should().NotThrowAsync();
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().NotContain(a => a.Contains("commit -m"));
+    }
+
+    // ---- Finding 1: git exit codes must be checked (no false success, bounded push retry) -----------
+
+    [Fact]
+    public async Task RunAsync_rebases_and_retries_the_push_when_it_is_first_rejected_then_succeeds()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContainsSequence(
+            $"push origin {Branch}",
+            new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"),
+            new SandboxCommandResult(0, string.Empty, string.Empty));
+        var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
+        var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
+
+        await committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            CancellationToken.None);
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // Rejected once, rebased onto the moved remote, then retried successfully.
+        commands.Count(a => a.Contains($"push origin {Branch}")).Should().Be(2);
+        commands.Should().Contain(a => a.Contains($"pull --rebase origin {Branch}"));
+        // Success is reported ONLY once the push actually landed.
+        logger.CountAtLevel(LogLevel.Information, "committed to notes branch").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_never_reports_success_and_stops_retrying_when_the_push_always_fails()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"push origin {Branch}",
+            new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"));
+        var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
+        var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
+
+        var act = () => committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            CancellationToken.None);
+
+        // A push that is rejected forever must never throw and — crucially — must never be reported as a
+        // success: the sweeper's later merge would fetch origin/<branch> WITHOUT this commit and silently
+        // drop the entry while believing it was carried.
+        await act.Should().NotThrowAsync();
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Count(a => a.Contains($"push origin {Branch}")).Should().Be(3); // bounded, not infinite
+        logger.CountAtLevel(LogLevel.Information, "committed to notes branch").Should().Be(0);
+        logger.WarningCount("could not push").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_never_runs_extraction_when_the_notes_branch_checkout_fails()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"checkout -B {Branch} origin/{Branch}",
+            new SandboxCommandResult(128, string.Empty, "fatal: unknown revision"));
+        var committer = CreateCommitter(runner);
+        var extractCalled = false;
+
+        await committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ =>
+            {
+                extractCalled = true;
+                return Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1"));
+            },
+            CancellationToken.None);
+
+        // A failed checkout must never let extraction run — HEAD could be left on the wrong branch
+        // (e.g. the default branch from a prior sweep), which would commit the KB write there instead.
+        extractCalled.Should().BeFalse();
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("commit -m"));
+        commands.Should().NotContain(a => a.Contains("add -- KnowledgeBase"));
     }
 }

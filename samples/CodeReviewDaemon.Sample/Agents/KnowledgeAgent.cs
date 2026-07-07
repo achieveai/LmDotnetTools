@@ -169,6 +169,15 @@ internal sealed class KnowledgeAgent
                     "Knowledge extraction rejected unsafe ## UPDATES '{Updates}'; treating as a create.",
                     parsed.Updates);
             }
+            else if (IsBookkeeping(LeafName(updatesRel)))
+            {
+                // _toc.md/_index.jsonl are regenerated wholesale by RegenerateIndexAndTocAsync below, so
+                // writing the entry there would be silently clobbered by that regen. Refuse and fall
+                // through to the scope+slug create instead of quietly losing the entry.
+                _logger.LogWarning(
+                    "Knowledge extraction rejected ## UPDATES '{Updates}' targeting a bookkeeping file; treating as a create.",
+                    parsed.Updates);
+            }
             else if (StaysUnderKnowledgeBase(knowledgeBaseDir, updatesRel))
             {
                 var updatesContent = await _fileSystem
@@ -199,6 +208,16 @@ internal sealed class KnowledgeAgent
             _logger.LogWarning(
                 "Knowledge extraction rejected SCOPE '{Scope}' that escapes the Knowledge Base; nothing written.",
                 scope);
+            return null;
+        }
+
+        if (IsBookkeeping(LeafName(relPath)))
+        {
+            // Defense in depth: Slugify never actually produces a bookkeeping leaf name today, but a
+            // resolved target must never be allowed to alias _toc.md/_index.jsonl regardless.
+            _logger.LogWarning(
+                "Knowledge extraction rejected SCOPE/TITLE resolving to bookkeeping file '{RelPath}'; nothing written.",
+                relPath);
             return null;
         }
 
@@ -303,10 +322,14 @@ internal sealed class KnowledgeAgent
     private static string Quote(string value) => $"\"{value}\"";
 
     /// <summary>
-    /// Parses the agent's header markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>) and the entry body. The whole
-    /// reply is scanned for markers so a collect-only agent that preambles ("Here is the entry:\n## SCOPE:
-    /// …") still yields them instead of silently dropping every marker at the first prose line; the body is
-    /// everything after the LAST recognized marker line. Unknown or absent markers leave their fields empty.
+    /// Parses the agent's header markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>) and the entry body. Lines
+    /// before the first recognized marker are tolerated as preamble ("Here is the entry:\n## SCOPE: …") so
+    /// a collect-only agent that prefaces its reply still yields the markers instead of silently dropping
+    /// them; but once the header has started, only a CONTIGUOUS run of marker lines is consumed — the
+    /// first non-marker line ends the header, and everything from that line on (however heading-shaped it
+    /// looks) is body text. This keeps a body line like <c>## TAGS: a, b</c> (the entry giving an example
+    /// of the marker syntax) from being re-parsed as a real marker, which would silently overwrite the
+    /// field and truncate the body at that point.
     /// </summary>
     private static ParsedEntry ParseEntry(string text)
     {
@@ -315,17 +338,21 @@ internal sealed class KnowledgeAgent
         string scope = string.Empty, title = string.Empty;
         string? updates = null;
         List<string> tags = [];
-        var lastMarkerLine = -1;
 
-        for (var i = 0; i < lines.Length; i++)
+        var i = 0;
+        while (i < lines.Length && TryParseMarker(lines[i].Trim()) is null)
+        {
+            i++; // Skip preamble before the header starts.
+        }
+
+        while (i < lines.Length)
         {
             var marker = TryParseMarker(lines[i].Trim());
             if (marker is null)
             {
-                continue; // Preamble, blank separators, and body prose are all scanned past for markers.
+                break; // Header ended; the rest — including any heading-shaped lines — is body.
             }
 
-            lastMarkerLine = i;
             var (key, value) = marker.Value;
             switch (key)
             {
@@ -344,11 +371,11 @@ internal sealed class KnowledgeAgent
                 default:
                     break;
             }
+
+            i++;
         }
 
-        var body = lastMarkerLine >= 0 && lastMarkerLine + 1 < lines.Length
-            ? string.Join("\n", lines[(lastMarkerLine + 1)..]).Trim()
-            : string.Empty;
+        var body = i < lines.Length ? string.Join("\n", lines[i..]).Trim() : string.Empty;
         return new ParsedEntry(scope, title, tags, updates, body);
     }
 
@@ -478,6 +505,9 @@ internal sealed class KnowledgeAgent
         name.StartsWith('.')
         || string.Equals(name, TocFileName, StringComparison.Ordinal)
         || string.Equals(name, IndexFileName, StringComparison.Ordinal);
+
+    /// <summary>The final path segment (file name) of a KB-relative path such as <c>system/x.md</c>.</summary>
+    private static string LeafName(string relPath) => relPath[(relPath.LastIndexOf('/') + 1)..];
 
     /// <summary>The scope (first path segment) of <paramref name="relPath"/>, or <c>null</c> when it has none.</summary>
     private static string? ScopeSegment(string relPath)
