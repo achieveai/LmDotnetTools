@@ -43,4 +43,9 @@
          visible to the test assembly. -->
     <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The Web SDK does not auto-glob EmbeddedResource items, so the daemon's YAML/Scriban prompt
+         template (DaemonAgentFactory) must be included explicitly, with a stable LogicalName. -->
+    <EmbeddedResource Include="Prompts\daemon-prompts.yaml" LogicalName="CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml" />
+  </ItemGroup>
 </Project>

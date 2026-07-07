@@ -820,18 +820,40 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
         var context = ReadContext(run.Id);
-        var reviewInput = BuildReviewInput(
-            run, repo, context.Diff, context.FileManifest, context.CheckoutRoot, context.StoreRoot);
+        var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(reviewInput, context.StoreRoot, cancellationToken)
             .ConfigureAwait(false);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
-        await RunPrimaryReviewAsync(run, provider, reviewInput, cancellationToken).ConfigureAwait(false);
+        await RunPrimaryReviewAsync(run, provider, reviewInput, context.CheckoutRoot, context.StoreRoot, cancellationToken)
+            .ConfigureAwait(false);
 
         if (_options.EnableABVariants)
         {
-            await RunVariantArmAsync(run, provider, reviewInput, cancellationToken).ConfigureAwait(false);
+            await RunVariantArmAsync(run, provider, reviewInput, context.CheckoutRoot, context.StoreRoot, cancellationToken)
+                .ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Builds the review prompt's templated workspace-layout variables (design: prompt migration). The
+    /// <c>notes_dir</c>/<c>has_notes</c> pair is derived from <paramref name="toolContext"/> — the SAME
+    /// <see cref="ReviewToolContext.NotesDir"/> that scopes the agent's Write/Edit/Bash tools
+    /// (<see cref="ResolvePooledWriteScope"/>) — never a parallel recomputation, so the prompt can never
+    /// tell the agent to write somewhere its tools don't actually allow.
+    /// </summary>
+    private static Dictionary<string, object> BuildPromptVariables(
+        string? checkoutRoot, string? storeRoot, ReviewToolContext? toolContext)
+    {
+        var notesDir = toolContext?.NotesDir;
+        return new Dictionary<string, object>
+        {
+            ["checkout_root"] = checkoutRoot ?? TargetRoot,
+            ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
+            ["store_root"] = storeRoot ?? string.Empty,
+            ["has_notes"] = !string.IsNullOrWhiteSpace(notesDir),
+            ["notes_dir"] = notesDir ?? string.Empty,
+        };
     }
 
     /// <summary>
@@ -862,10 +884,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     private async Task RunPrimaryReviewAsync(
-        ReviewRun run, string provider, string reviewInput, CancellationToken cancellationToken)
+        ReviewRun run,
+        string provider,
+        string reviewInput,
+        string? checkoutRoot,
+        string? storeRoot,
+        CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
-        var profile = DaemonAgentFactory.CreateReviewProfile();
+        var variables = BuildPromptVariables(checkoutRoot, storeRoot, toolContext);
+        var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
         // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
@@ -888,9 +916,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     private async Task RunVariantArmAsync(
-        ReviewRun run, string provider, string reviewInput, CancellationToken cancellationToken)
+        ReviewRun run,
+        string provider,
+        string reviewInput,
+        string? checkoutRoot,
+        string? storeRoot,
+        CancellationToken cancellationToken)
     {
-        var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant);
+        // The comparison arm never gets a tool context (it always runs diff-only), so it has no notes dir.
+        var variables = BuildPromptVariables(checkoutRoot, storeRoot, toolContext: null);
+        var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
@@ -1210,7 +1245,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     private static string BuildReviewInput(
-        ReviewRun run, RepoIdentity repo, string diff, string? fileManifest, string? checkoutRoot, string? storeRoot)
+        ReviewRun run, RepoIdentity repo, string diff, string? fileManifest)
     {
         var input = $"Review pull request {repo.DisplayName}#{run.PrId} (head {run.HeadSha}).\n\nDiff:\n{diff}";
         if (string.IsNullOrWhiteSpace(fileManifest))
@@ -1218,20 +1253,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return input;
         }
 
-        // The reviewed repo is checked out at checkoutRoot (the PR head). Listing its files lets the agent
-        // Read any of them by exact absolute path to ground findings. In cross-repo store mode the reviewed
-        // repo is a submodule of the store, so the shared Contracts/ layer and sibling repos are readable too.
-        var root = string.IsNullOrWhiteSpace(checkoutRoot) ? "/workspace/target" : checkoutRoot;
-        var storeNote = string.IsNullOrWhiteSpace(storeRoot)
-            ? string.Empty
-            : $" It is a submodule of the cross-repo review store at {storeRoot}, so the shared contracts under "
-                + $"{storeRoot}/Contracts and sibling repositories under {storeRoot}/repos are also readable — "
-                + "consult them when a finding depends on cross-repo behavior.";
-        return input
-            + $"\n\nThe reviewed repository ({repo.DisplayName}) is checked out at {root} (the PR head).{storeNote}\n"
-            + $"Read any of these files directly by absolute path — e.g. {root}/<path> — to ground your review "
-            + "in the actual code:\n"
-            + fileManifest;
+        // The checkout root / store layout are now templated into the review agent's SYSTEM PROMPT (the
+        // "Workspace layout" section, see DaemonAgentFactory.CreateReviewProfile) rather than duplicated
+        // here — this only needs to carry the file manifest so the agent can Read files by exact path.
+        return input + "\n\nTracked files in the reviewed repository (Read any of these by exact path):\n" + fileManifest;
     }
 
     private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";

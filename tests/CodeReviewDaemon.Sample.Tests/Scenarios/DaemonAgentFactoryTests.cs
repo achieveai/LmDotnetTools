@@ -117,6 +117,66 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_concrete_workspace_layout()
+    {
+        // The daemon YAML/Scriban prompt template (Prompts/daemon-prompts.yaml) templates the run's
+        // concrete checkout/store/notes paths into the review agent's system prompt, so it is TOLD exactly
+        // where to read and where to write instead of guessing.
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/store/repos/Foo",
+            ["has_store"] = true,
+            ["store_root"] = "/workspace/store",
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("/workspace/store/repos/Foo");
+        prompt.Should().Contain("cross-repo store at /workspace/store");
+        prompt.Should().Contain("/workspace/store/PRs/github/acme/1");
+        prompt.Should().MatchRegex("(?i)only writable location");
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_omits_store_and_notes_sentences_when_absent()
+    {
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = false,
+            ["notes_dir"] = string.Empty,
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("/workspace/target"); // the checkout root still renders
+        prompt.Should().NotContain("cross-repo store at"); // the has_store sentence is omitted
+        prompt.Should().NotMatchRegex("(?i)only writable location"); // the has_notes sentence is omitted
+        prompt.Should().NotMatchRegex(@"\{\{|\}\}"); // no leftover Scriban syntax
+    }
+
+    [Fact]
+    public void CreateVariantProfile_with_variables_renders_the_variant_prompt_through_scriban()
+    {
+        // The A/B comparison arm's prompt can carry the same {{ }} placeholders as the primary review
+        // template; the executor renders it with the same variables dictionary.
+        var variant = new ReviewVariant(
+            VariantId: "b",
+            ModelId: "anthropic/claude-haiku-4-5",
+            SystemPrompt: "Review tersely. Workspace: {{ checkout_root }}.",
+            CanWrite: false);
+        var vars = new Dictionary<string, object> { ["checkout_root"] = "/workspace/target" };
+
+        var profile = DaemonAgentFactory.CreateVariantProfile(variant, vars);
+
+        profile.SystemPrompt.Should().Be("Review tersely. Workspace: /workspace/target.");
+    }
+
+    [Fact]
     public void CreateJudgeProfile_has_a_stable_id_and_gating()
     {
         // P4.4 — the executor feeds this to the live agent loop only when the judge flag is enabled. It is

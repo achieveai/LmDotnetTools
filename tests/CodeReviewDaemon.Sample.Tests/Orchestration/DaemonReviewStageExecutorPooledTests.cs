@@ -94,6 +94,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_templates_the_notes_dir_into_the_review_system_prompt()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The reviewer is TOLD exactly where it may read/write for THIS run — not left to guess — via the
+        // templated "Workspace layout" section of the review system prompt. The notes dir must be the
+        // identical value the tool context scoped Write/Edit/Bash to (asserted above).
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain("/workspace/store/repos/LmDotnetTools");
+        profile.SystemPrompt.Should().Contain("cross-repo store at /workspace/store");
+        profile.SystemPrompt.Should().Contain("/workspace/store/PRs/github/achieveai-lmdotnettools/118");
+        profile.SystemPrompt.Should().MatchRegex("(?i)only writable location");
+    }
+
+    [Fact]
     public async Task Reviewed_mounts_the_agent_session_over_the_leased_slot()
     {
         using var fixture = Fixture.Create();

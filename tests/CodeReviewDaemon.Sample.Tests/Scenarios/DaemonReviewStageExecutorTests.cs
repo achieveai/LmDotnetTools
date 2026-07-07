@@ -166,7 +166,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var input = reviewAgent.ReceivedInputs.Should().ContainSingle().Subject;
         var text = input.Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("/workspace/target").And.Contain("src/Foo/Bar.cs");
+        text.Should().Contain("src/Foo/Bar.cs");
+
+        // The checkout root is now templated into the review agent's SYSTEM PROMPT (not duplicated into
+        // the input) via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain("/workspace/target");
     }
 
     [Fact]
@@ -255,10 +260,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
-        text.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
+        // The store layout (submodule checkout root + shared Contracts/) is now templated into the review
+        // agent's SYSTEM PROMPT via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables,
+        // rather than duplicated into the input.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
+        profile.SystemPrompt.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
     }
 
     [Fact]
