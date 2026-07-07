@@ -47,6 +47,65 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_rereview_section_and_write_convention()
+    {
+        // A re-review is told it's a re-review, sees the previously-reviewed commit and the current
+        // head, is pointed at its own prior notes files, and is told which numbered files to write
+        // this round (round 02, since one prior round already completed).
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["is_rereview"] = true,
+            ["prev_commit"] = "abc123",
+            ["new_commit"] = "def456",
+            ["review_round"] = "02",
+            ["has_prior_files"] = true,
+            ["prior_files"] = "PR_Context_01.md\nPR_Findings_01.md",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().MatchRegex("(?i)RE-REVIEW");
+        prompt.Should().Contain("round 02");
+        prompt.Should().Contain("abc123");
+        prompt.Should().Contain("def456");
+        prompt.Should().Contain("PR_Findings_01.md");
+        prompt.Should().Contain("PR_Context_02.md"); // write-convention names this round's context file
+        prompt.Should().Contain("PR_Findings_02.md"); // and this round's findings file
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_omits_rereview_section_on_the_first_review()
+    {
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["is_rereview"] = false,
+            ["prev_commit"] = string.Empty,
+            ["new_commit"] = "def456",
+            ["review_round"] = "01",
+            ["has_prior_files"] = false,
+            ["prior_files"] = string.Empty,
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().NotMatchRegex("(?i)RE-REVIEW"); // no re-review section on a first review
+        prompt.Should().NotContain("abc123");
+        prompt.Should().Contain("PR_Context_01.md"); // the write-convention still names round 01
+        prompt.Should().Contain("PR_Findings_01.md");
+        prompt.Should().NotMatchRegex(@"\{\{|\}\}"); // no leftover Scriban syntax
+    }
+
+    [Fact]
     public void CreateVariantProfile_carries_the_variant_prompt_and_keeps_the_same_tool_gating()
     {
         // P4.2 — the prompt/skill axis of an A/B comparison feeds the profile; the model and the

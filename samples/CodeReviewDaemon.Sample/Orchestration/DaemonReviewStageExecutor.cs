@@ -841,9 +841,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <see cref="ReviewToolContext.NotesDir"/> that scopes the agent's Write/Edit/Bash tools
     /// (<see cref="ResolvePooledWriteScope"/>) — never a parallel recomputation, so the prompt can never
     /// tell the agent to write somewhere its tools don't actually allow.
+    /// <para>
+    /// The re-review variables (<paramref name="prevHeadSha"/>, <paramref name="reviewRound"/>,
+    /// <paramref name="priorNotesFiles"/>) are looked up/listed by the caller (<see cref="RunPrimaryReviewAsync"/>
+    /// via <see cref="ComputeRereviewContextAsync"/>) so this builder stays a pure value mapper with no
+    /// store/file-system access of its own.
+    /// </para>
     /// </summary>
     private static Dictionary<string, object> BuildPromptVariables(
-        string? checkoutRoot, string? storeRoot, ReviewToolContext? toolContext)
+        string? checkoutRoot,
+        string? storeRoot,
+        ReviewToolContext? toolContext,
+        string headSha,
+        string? prevHeadSha,
+        int reviewRound,
+        IReadOnlyList<string> priorNotesFiles)
     {
         var notesDir = toolContext?.NotesDir;
         return new Dictionary<string, object>
@@ -853,8 +865,52 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ["store_root"] = storeRoot ?? string.Empty,
             ["has_notes"] = !string.IsNullOrWhiteSpace(notesDir),
             ["notes_dir"] = notesDir ?? string.Empty,
+            ["is_rereview"] = !string.IsNullOrWhiteSpace(prevHeadSha),
+            ["prev_commit"] = prevHeadSha ?? string.Empty,
+            ["new_commit"] = headSha,
+            ["review_round"] = reviewRound.ToString("D2", CultureInfo.InvariantCulture),
+            ["has_prior_files"] = priorNotesFiles.Count > 0,
+            ["prior_files"] = string.Join('\n', priorNotesFiles),
         };
     }
+
+    /// <summary>
+    /// Computes this run's re-review context: the previously-reviewed head (from
+    /// <see cref="ReviewStore.GetPriorReviewSummary"/>, PRIMARY-variant completed rounds only), the round
+    /// number this review is (<c>prior count + 1</c>), and — when a notes dir is mounted — the reviewer's
+    /// own prior <c>PR_Context_*.md</c>/<c>PR_Findings_*.md</c> files so it can read its earlier work
+    /// instead of re-collecting context. Shared by <see cref="RunPrimaryReviewAsync"/> and
+    /// <see cref="RunVariantArmAsync"/> so both arms are told the same round/commit facts without either
+    /// duplicating the store query or the file listing.
+    /// </summary>
+    private async Task<(string? PrevHeadSha, int ReviewRound, IReadOnlyList<string> PriorNotesFiles)> ComputeRereviewContextAsync(
+        ReviewRun run, string? notesDir, CancellationToken cancellationToken)
+    {
+        var summary = _store.GetPriorReviewSummary(run.RepoId, run.PrId, run.Id);
+        var reviewRound = summary.PriorReviewCount + 1;
+
+        if (string.IsNullOrWhiteSpace(notesDir))
+        {
+            return (summary.PrevHeadSha, reviewRound, []);
+        }
+
+        var entries = await _fileSystem.ListFilesAsync(notesDir, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<string> priorFiles =
+        [
+            .. entries
+                .Where(IsPriorNotesFile)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .Select(name => PosixJoin(notesDir, name)),
+        ];
+
+        return (summary.PrevHeadSha, reviewRound, priorFiles);
+    }
+
+    /// <summary>Matches this run's own <c>PR_Context_NN.md</c>/<c>PR_Findings_NN.md</c> notes files (design:
+    /// prompt migration write convention) among a notes dir's listed entries.</summary>
+    private static bool IsPriorNotesFile(string name) =>
+        (name.StartsWith("PR_Context_", StringComparison.Ordinal) || name.StartsWith("PR_Findings_", StringComparison.Ordinal))
+        && name.EndsWith(".md", StringComparison.Ordinal);
 
     /// <summary>
     /// Best-effort prepends the store's Knowledge Base table of contents to the review input so the review
@@ -892,7 +948,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
-        var variables = BuildPromptVariables(checkoutRoot, storeRoot, toolContext);
+        var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
+            run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
+        var variables = BuildPromptVariables(
+            checkoutRoot, storeRoot, toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
@@ -923,8 +982,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? storeRoot,
         CancellationToken cancellationToken)
     {
-        // The comparison arm never gets a tool context (it always runs diff-only), so it has no notes dir.
-        var variables = BuildPromptVariables(checkoutRoot, storeRoot, toolContext: null);
+        // The comparison arm never gets a tool context (it always runs diff-only), so it has no notes dir
+        // and no prior-files listing — but it is still told the same round/commit facts as the primary.
+        var (prevHeadSha, reviewRound, _) = await ComputeRereviewContextAsync(run, notesDir: null, cancellationToken)
+            .ConfigureAwait(false);
+        var variables = BuildPromptVariables(
+            checkoutRoot, storeRoot, toolContext: null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);

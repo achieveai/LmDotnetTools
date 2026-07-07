@@ -113,6 +113,50 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_templates_rereview_context_and_prior_notes_files_into_the_system_prompt()
+    {
+        using var fixture = Fixture.Create();
+
+        // A prior round already completed for this PR at an older head — the current run is round 2.
+        var repoId = fixture.Store.EnsureRepo(new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "repo-stable-1",
+        });
+        _ = fixture.Store.CreateOrGetReviewRun(new ReviewRun
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = "sha-old",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-0",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Posted,
+            WorkflowStatus = WorkflowStatus.Completed,
+            PrLifecycleState = PrLifecycleState.Open,
+        });
+        var run = fixture.SeedRun(); // head-sha "head-sha" — this round's head
+
+        // The prior round's own notes are already on the notes dir the reviewer's tools address.
+        fixture.BootFileSystem.Seed(
+            "/workspace/store/PRs/github/achieveai-lmdotnettools/118/PR_Findings_01.md", "prior findings");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().MatchRegex("(?i)RE-REVIEW");
+        profile.SystemPrompt.Should().Contain("round 02");
+        profile.SystemPrompt.Should().Contain("sha-old"); // the previously-reviewed commit
+        profile.SystemPrompt.Should().Contain("head-sha"); // the current head
+        profile.SystemPrompt.Should().Contain("PR_Findings_01.md"); // prior notes file, read-first
+    }
+
+    [Fact]
     public async Task Reviewed_mounts_the_agent_session_over_the_leased_slot()
     {
         using var fixture = Fixture.Create();
@@ -280,7 +324,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 Store,
                 Factory,
                 BootRunner,
-                new FakeSandboxFileSystem(),
+                BootFileSystem,
                 options,
                 [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
@@ -294,6 +338,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
+        public FakeSandboxFileSystem BootFileSystem { get; } = new();
         public FakeReviewSlotPool Pool { get; }
         public FakeReviewSlotPreparer Preparer { get; }
         public DaemonReviewStageExecutor Executor { get; }

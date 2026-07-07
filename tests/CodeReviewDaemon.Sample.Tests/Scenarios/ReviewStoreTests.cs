@@ -156,6 +156,59 @@ public sealed class ReviewStoreTests
         reloaded.PrLifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    // ── prior-review summary (re-review context) ──────────────────────────────────────────────────
+
+    [Fact]
+    public void GetPriorReviewSummary_returns_the_newest_completed_head_and_the_completed_count()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-old", Stage = ReviewStage.Reviewed });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-new", Stage = ReviewStage.Posted });
+        // A different PR's completed run must not be counted.
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-other", Stage = ReviewStage.Reviewed });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().Be("sha-new", "the most recently created completed run is the last review");
+        summary.PriorReviewCount.Should().Be(2, "two prior runs for this PR reached a completed review stage");
+    }
+
+    [Fact]
+    public void GetPriorReviewSummary_does_not_count_runs_that_never_completed_a_review()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-ctx", Stage = ReviewStage.ContextReady });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().BeNull("a run stuck at ContextReady never produced review output");
+        summary.PriorReviewCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void GetPriorReviewSummary_ignores_the_b_variant_so_ab_runs_do_not_double_count()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-b", VariantId = "b", Stage = ReviewStage.Reviewed });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().BeNull("only the primary variant counts toward the re-review history");
+        summary.PriorReviewCount.Should().Be(0);
+    }
+
     // ── §6 confidentiality trust signals (Task 17) ────────────────────────────────────────────────
 
     [Theory]
