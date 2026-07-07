@@ -143,6 +143,51 @@ public class SandboxGatewayOptionsTests
     }
 
     [Fact]
+    public void ResolveWorkspace_WithOverride_ReturnsLeafWithoutBaseOrFullPath_WhenNoBaseConfigured()
+    {
+        // A remote gateway (or one that roots the workspace under its own per-app base, ADR 0029) has
+        // no local filesystem the client can resolve against or pre-create in. WorkspaceBasePath is
+        // therefore OPTIONAL: with no base configured, resolving an override must NOT throw — it yields
+        // just the leaf (the workspace identifier the gateway needs), with a null base and null full
+        // path so the registry skips local directory pre-creation and lets the gateway own creation.
+        var options = new SandboxGatewayOptions(); // no WorkspaceBasePath, no WorkspacePath
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace("projA");
+
+        resolvedBase.Should().BeNull();
+        leaf.Should().Be("projA");
+        full.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithRootedOverride_Throws_EvenWithNoBaseConfigured()
+    {
+        // The "override must be relative" invariant is independent of whether a base is configured —
+        // a rooted value is never a valid workspace leaf.
+        var options = new SandboxGatewayOptions();
+
+        var rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
+        var act = () => options.ResolveWorkspace(rooted);
+
+        // Pin WHICH guard fires: the rooted check must run ahead of the no-base return (pre-PR the
+        // no-base guard threw first with a different message), so this stays sensitive to the reorder.
+        act.Should().Throw<InvalidOperationException>().WithMessage("*must be relative to the workspace base*");
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithTraversalOverride_Throws_EvenWithNoBaseConfigured()
+    {
+        // Defense-in-depth (PR #165 review): a '..' traversal segment is never a valid workspace
+        // identifier, so it is rejected even with no base configured — the no-base path forwards the
+        // leaf straight to the gateway, so this is the client's only containment guard there.
+        var options = new SandboxGatewayOptions();
+
+        var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void ResolveWorkspace_WithEscapingOverride_Throws()
     {
         var basePath = Path.Combine(Path.GetTempPath(), "ws-base");

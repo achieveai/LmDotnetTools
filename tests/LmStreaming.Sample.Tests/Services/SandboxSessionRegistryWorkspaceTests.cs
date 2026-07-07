@@ -58,7 +58,43 @@ public class SandboxSessionRegistryWorkspaceTests
         second.WorkspaceRelPath.Should().Be("projA");
     }
 
-    private static SandboxSessionRegistry CreateRegistry(string workspaceBasePath, out CapturedRequest captured)
+    [Fact]
+    public async Task GetOrCreateSession_DoesNotCreateWorkspaceDirectoryOnDisk_GatewayOwnsIt()
+    {
+        // The client must NEVER touch the workspace filesystem — the gateway may be on a remote
+        // machine and owns workspace directory creation (create-if-missing) and mounting. Even with a
+        // local base configured, creating a session forwards the leaf WITHOUT the client mkdir-ing it.
+        using var baseDir = new TempWorkspaceBase();
+        await using var registry = CreateRegistry(baseDir.Path, out var captured);
+
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-fs", "projFS"));
+
+        session.WorkspaceRelPath.Should().Be("projFS");
+        captured.LastWorkspace.Should().Be("projFS"); // leaf still forwarded to the gateway
+        Directory.Exists(System.IO.Path.Combine(baseDir.Path, "projFS"))
+            .Should().BeFalse("the client must not create the workspace directory — the gateway owns it");
+    }
+
+    [Fact]
+    public async Task GetOrCreateSession_NoBaseConfigured_DoesNotThrow_AndForwardsLeaf()
+    {
+        // #164 end-to-end regression THROUGH the registry: adopting a gateway with NO WorkspaceBasePath
+        // must NOT throw (pre-fix the throw became a 500 -> WebSocket crash). The client forwards the
+        // leaf and the gateway owns creation. This is the thesis of the PR — covered here at the
+        // registry level, not just in ResolveWorkspace in isolation.
+        await using var registry = CreateRegistryNoBase(out var captured);
+
+        var act = async () => await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-nobase", "projRemote"));
+
+        var session = (await act.Should().NotThrowAsync()).Subject;
+        session.WorkspaceRelPath.Should().Be("projRemote");
+        captured.LastWorkspace.Should().Be("projRemote"); // leaf forwarded to the gateway
+    }
+
+    private static SandboxSessionRegistry CreateRegistryNoBase(out CapturedRequest captured) =>
+        CreateRegistry(workspaceBasePath: null, out captured);
+
+    private static SandboxSessionRegistry CreateRegistry(string? workspaceBasePath, out CapturedRequest captured)
     {
         var capturedRequest = new CapturedRequest();
         captured = capturedRequest;
@@ -115,8 +151,8 @@ public class SandboxSessionRegistryWorkspaceTests
     }
 
     /// <summary>Creates (and deletes) a real temp directory to serve as the workspace base, so the
-    /// <c>ResolveWorkspace</c> containment check passes and the registry's idempotent
-    /// <c>Directory.CreateDirectory</c> succeeds.</summary>
+    /// <c>ResolveWorkspace</c> containment check has a real parent to resolve leaves under. The
+    /// registry itself never creates the per-workspace leaf (the gateway owns that).</summary>
     private sealed class TempWorkspaceBase : IDisposable
     {
         public string Path { get; } =
