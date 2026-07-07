@@ -169,7 +169,9 @@ public class SandboxGatewayOptionsTests
         var rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
         var act = () => options.ResolveWorkspace(rooted);
 
-        act.Should().Throw<InvalidOperationException>();
+        // Pin WHICH guard fires: the rooted check must run ahead of the no-base return (pre-PR the
+        // no-base guard threw first with a different message), so this stays sensitive to the reorder.
+        act.Should().Throw<InvalidOperationException>().WithMessage("*must be relative to the workspace base*");
     }
 
     [Fact]
