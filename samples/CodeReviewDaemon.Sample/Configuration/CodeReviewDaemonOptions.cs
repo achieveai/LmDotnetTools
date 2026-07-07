@@ -198,6 +198,16 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Merge the persistent PR notes branch into the store default branch on PR close.</summary>
     public bool MergeNotesBranchOnClose { get; init; } = true;
 
+    /// <summary>
+    /// Display name the daemon presents as, both as the git commit identity's <c>user.name</c> for
+    /// retention commits (see <see cref="Workspace.Git.GitRunner"/>; the commit <c>user.email</c> stays the
+    /// fixed <c>review-bot@achieveai.local</c> regardless of this setting) and as a <c>[BotName]</c> prefix
+    /// on the body of every posted PR comment — the comment's actual author is a shared OAuth app or a
+    /// person's token, so the prefix disambiguates that the content was authored by the bot on their
+    /// behalf. Default <c>Revobot</c>; an operator may personalize it, e.g. <c>GB's Revobot</c>.
+    /// </summary>
+    public string BotName { get; init; } = "Revobot";
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

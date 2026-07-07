@@ -26,25 +26,32 @@ internal sealed class GitRunner
         "core.hooksPath=/dev/null",
     ];
 
+    /// <summary>Default git commit identity <c>user.name</c> (<see cref="Configuration.CodeReviewDaemonOptions.BotName"/>'s default) when no bot name is passed.</summary>
+    internal const string DefaultBotName = "Revobot";
+
+    private readonly ISandboxCommandRunner _runner;
+
     /// <summary>
     /// Committer identity prepended to every git command. The sandbox git has no <c>user.name</c>/
     /// <c>user.email</c> configured, so a daemon <c>git commit</c> (retention publish, ReviewBot seed)
     /// fails "Author identity unknown" (exit 128) without it. Passed as per-command <c>-c</c> overrides
-    /// so every commit is attributed to the review bot without mutating any global git config.
+    /// so every commit is attributed to the review bot without mutating any global git config. The
+    /// <c>user.name</c> is the constructor's <c>botName</c> (default <see cref="DefaultBotName"/> so
+    /// <see cref="Configuration.CodeReviewDaemonOptions.BotName"/> can drive it); <c>user.email</c> is
+    /// always the fixed <c>review-bot@achieveai.local</c> regardless of the configured bot name.
     /// </summary>
-    internal static readonly IReadOnlyList<string> IdentityArgs =
-    [
-        "-c",
-        "user.name=AchieveAi Review Bot",
-        "-c",
-        "user.email=review-bot@achieveai.local",
-    ];
+    private readonly IReadOnlyList<string> _identityArgs;
 
-    private readonly ISandboxCommandRunner _runner;
-
-    public GitRunner(ISandboxCommandRunner runner)
+    public GitRunner(ISandboxCommandRunner runner, string botName = DefaultBotName)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
+        _identityArgs =
+        [
+            "-c",
+            $"user.name={botName}",
+            "-c",
+            "user.email=review-bot@achieveai.local",
+        ];
     }
 
     /// <summary>
@@ -64,9 +71,9 @@ internal sealed class GitRunner
             throw new ArgumentException("At least one git argument is required.", nameof(gitArgs));
         }
 
-        var argv = new List<string>(1 + HardeningArgs.Count + IdentityArgs.Count + gitArgs.Count) { "git" };
+        var argv = new List<string>(1 + HardeningArgs.Count + _identityArgs.Count + gitArgs.Count) { "git" };
         argv.AddRange(HardeningArgs);
-        argv.AddRange(IdentityArgs);
+        argv.AddRange(_identityArgs);
         argv.AddRange(gitArgs);
 
         return _runner.RunAsync(new SandboxCommand(argv, workingDirectory), cancellationToken);

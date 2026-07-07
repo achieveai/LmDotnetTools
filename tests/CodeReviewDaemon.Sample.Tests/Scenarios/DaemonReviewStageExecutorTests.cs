@@ -461,6 +461,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         // The PRs/... review artifact was written into the checkout before the commit.
         fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        // The retained artifact carries the raw review text — the "[BotName]" prefix is only added to the
+        // POSTED comment (see Posted_prefixes_the_posted_comment_with_the_configured_bot_name), never to
+        // what's committed to the ReviewBot repo.
+        var reviewFilePath = fixture.FileSystem.Writes.Single(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        fixture.FileSystem.Files[reviewFilePath].Should().NotStartWith("[");
 
         // The reviewbot_push outcome is persisted in SQLite (outbox row, terminal Posted with the pushed SHA).
         var push = fixture.Store
@@ -592,7 +597,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await RunAllStagesAsync(fixture, run);
 
         fixture.GitHubPublisher.PostedBodies.Should().ContainSingle()
-            .Which.Should().Be("_No review content was produced._");
+            .Which.Should().Be("[Revobot]\n\n_No review content was produced._");
+    }
+
+    [Fact]
+    public async Task Posted_prefixes_the_posted_comment_with_the_configured_bot_name()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, BotName = "GB's Revobot" });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.GitHubPublisher.PostedBodies.Should().ContainSingle()
+            .Which.Should().StartWith("[GB's Revobot]\n\n");
     }
 
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>

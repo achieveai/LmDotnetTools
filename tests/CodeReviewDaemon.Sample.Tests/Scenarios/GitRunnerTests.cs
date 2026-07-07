@@ -30,10 +30,24 @@ public sealed class GitRunnerTests
                 "-c",
                 "core.hooksPath=/dev/null",
                 "-c",
-                "user.name=AchieveAi Review Bot",
+                "user.name=Revobot",
                 "-c",
                 "user.email=review-bot@achieveai.local",
                 "status");
+    }
+
+    [Fact]
+    public async Task RunAsync_uses_the_configured_bot_name_as_the_git_identity()
+    {
+        var fake = new FakeSandboxCommandRunner();
+        var runner = new GitRunner(fake, botName: "GB's Revobot");
+
+        await runner.RunAsync(["status"], "/work/repo", CancellationToken.None);
+
+        var argv = fake.Commands.Single().Argv;
+        argv.Should().Contain("user.name=GB's Revobot");
+        // The email stays the fixed, operator-independent constant regardless of the configured bot name.
+        argv.Should().Contain("user.email=review-bot@achieveai.local");
     }
 
     [Fact]

@@ -44,4 +44,12 @@ public class CodeReviewDaemonOptionsTests
         o.MergeNotesBranchOnClose.Should().BeTrue();
         o.ScratchDirName.Should().Be("scratch");
     }
+
+    [Fact]
+    public void BotName_defaults_to_Revobot()
+    {
+        var o = new CodeReviewDaemonOptions();
+
+        o.BotName.Should().Be("Revobot", "an operator can override the display name, e.g. \"GB's Revobot\"");
+    }
 }
