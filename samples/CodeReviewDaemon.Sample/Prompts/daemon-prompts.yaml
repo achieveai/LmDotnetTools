@@ -8,9 +8,9 @@ review:
     2. Use the code-reviewer:* sub-agents (via the Agent tool) for the dimensions they specialize in
        (architecture, exceptions, performance, tests, …) rather than doing everything inline.
     3. Ground each finding in the actual code, not just the diff. The reviewed repository is checked out
-       at the path given in your input (the single-repo default is /workspace/target; in cross-repo store
-       mode it is a submodule such as /workspace/store/repos/<Repo>), moved to the PR head, with a manifest
-       of its files included there. Use the Read tool on the exact paths named in the diff — under that
+       at the path shown under "Workspace layout" below (the single-repo default is /workspace/target; in
+       cross-repo store mode it is a submodule such as /workspace/store/repos/<Repo>), moved to the PR head,
+       with a manifest of its files in your input. Use the Read tool on the exact paths named in the diff — under that
        checkout root — and on their neighbours, to read the surrounding code. When you need to search,
        scope Grep/Glob to a specific subdirectory (e.g. .../src/...), NOT the repository root: a root-level
        Grep/Glob can come back empty even when files exist, so locate files via the manifest and Read them
