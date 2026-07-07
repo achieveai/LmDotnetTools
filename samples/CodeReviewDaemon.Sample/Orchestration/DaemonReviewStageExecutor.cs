@@ -822,6 +822,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(
             run, repo, context.Diff, context.FileManifest, context.CheckoutRoot, context.StoreRoot);
+        reviewInput = await PrependPriorKnowledgeAsync(reviewInput, context.StoreRoot, cancellationToken)
+            .ConfigureAwait(false);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
         var reviewText = await RunPrimaryReviewAsync(run, provider, reviewInput, cancellationToken)
@@ -836,6 +838,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             await RunKnowledgeArmAsync(run, repo, reviewInput, reviewText, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Best-effort prepends the store's Knowledge Base table of contents to the review input so the review
+    /// agent starts with the durable knowledge distilled from past PRs (design §3). Only a cross-repo
+    /// store-mode run carries a Knowledge Base — it lives at the store root (<c>&lt;StoreRoot&gt;/KnowledgeBase/</c>),
+    /// so the single-repo path (null <paramref name="storeRoot"/>) is unchanged. A missing <c>_toc.md</c> —
+    /// the common case before any knowledge has been extracted — silently leaves the input untouched (it must
+    /// never fail the review, design §6); the review prompt still directs the agent to consult the KB itself.
+    /// </summary>
+    private async Task<string> PrependPriorKnowledgeAsync(
+        string reviewInput, string? storeRoot, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(storeRoot))
+        {
+            return reviewInput;
+        }
+
+        var tocPath = PosixJoin(storeRoot, "KnowledgeBase/_toc.md");
+        var toc = await _fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(toc))
+        {
+            return reviewInput;
+        }
+
+        _logger.LogInformation("Prepending KnowledgeBase/_toc.md ({Length} chars) to the review input.", toc.Length);
+        return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
     }
 
     private async Task<string> RunPrimaryReviewAsync(

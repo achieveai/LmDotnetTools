@@ -262,6 +262,62 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // The store carries prior knowledge distilled from past PRs; the review must start with its table
+        // of contents so the reviewer factors it in (design §3).
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_leaves_the_input_unchanged_when_the_store_has_no_knowledge_base()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // No KnowledgeBase/_toc.md seeded — the common case before any knowledge has been extracted. The
+        // best-effort read must skip silently and leave the input untouched (design §6).
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Prior knowledge", "a missing _toc.md leaves the review input unchanged");
+    }
+
+    [Fact]
     public async Task Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
