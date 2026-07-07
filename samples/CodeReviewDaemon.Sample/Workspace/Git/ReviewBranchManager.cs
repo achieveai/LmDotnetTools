@@ -301,8 +301,22 @@ internal sealed class ReviewBranchManager
             }
 
             // The remote moved; rebase our commit(s) on top and retry.
-            await RunGitAsync(["pull", "--rebase", "origin", branch], repoRoot, cancellationToken)
+            var rebased = await RunGitAsync(["pull", "--rebase", "origin", branch], repoRoot, cancellationToken)
                 .ConfigureAwait(false);
+            if (!rebased.Succeeded)
+            {
+                // A conflicted/failed rebase leaves the worktree mid-rebase; abort so the reused store
+                // checkout starts clean next cycle, and stop retrying — pushing again would only fail into
+                // the same rebase and burn the remaining attempts.
+                _ = await RunGitAsync(["rebase", "--abort"], repoRoot, cancellationToken, allowFailure: true)
+                    .ConfigureAwait(false);
+                _logger.LogWarning(
+                    "ReviewBot push-with-rebase for '{Branch}' could not rebase onto origin/{Branch} ({Stderr}); aborting retries.",
+                    branch,
+                    branch,
+                    rebased.Stderr);
+                break;
+            }
         }
 
         return false;

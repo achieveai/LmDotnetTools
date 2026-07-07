@@ -155,8 +155,20 @@ internal sealed class KnowledgeExtractionCommitter
             }
 
             // The remote moved; rebase our commit on top and retry.
-            _ = await _git.RunAsync(["pull", "--rebase", "origin", branch], _repoRoot, cancellationToken)
+            var rebased = await _git.RunAsync(["pull", "--rebase", "origin", branch], _repoRoot, cancellationToken)
                 .ConfigureAwait(false);
+            if (!rebased.Succeeded)
+            {
+                // A conflicted/failed rebase leaves the checkout mid-rebase; abort so it is clean for the
+                // next sweep, and stop retrying — pushing again would only fail into the same rebase.
+                _ = await _git.RunAsync(["rebase", "--abort"], _repoRoot, cancellationToken).ConfigureAwait(false);
+                _logger.LogWarning(
+                    "Knowledge extraction push for '{Branch}' could not rebase onto origin/{Branch} ({Stderr}); aborting retries.",
+                    branch,
+                    branch,
+                    rebased.Stderr);
+                break;
+            }
         }
 
         return false;

@@ -166,4 +166,31 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         commands.Should().NotContain(a => a.Contains("commit -m"));
         commands.Should().NotContain(a => a.Contains("add -- KnowledgeBase"));
     }
+
+    [Fact]
+    public async Task RunAsync_aborts_the_rebase_and_stops_retrying_when_the_rebase_fails()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        // The push is rejected (remote moved) and the follow-up rebase then fails (conflict / force-push).
+        runner.OnArgvContains(
+            $"push origin {Branch}", new SandboxCommandResult(1, string.Empty, "rejected (non-fast-forward)"));
+        runner.OnArgvContains(
+            $"pull --rebase origin {Branch}", new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply"));
+        var logger = new CapturingLogger<KnowledgeExtractionCommitter>();
+        var committer = new KnowledgeExtractionCommitter(new GitRunner(runner), RepoRoot, logger);
+
+        await committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            CancellationToken.None);
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // A failed rebase leaves the checkout mid-rebase: it must abort (so the reused sweeper checkout is
+        // clean next cycle) and stop retrying — pushing again would just fail and burn the retry budget.
+        commands.Count(a => a.Contains($"push origin {Branch}")).Should().Be(1);
+        commands.Should().Contain(a => a.Contains("rebase --abort"));
+        // The entry could not be carried — never reported as a success.
+        logger.CountAtLevel(LogLevel.Information, "committed to notes branch").Should().Be(0);
+    }
 }

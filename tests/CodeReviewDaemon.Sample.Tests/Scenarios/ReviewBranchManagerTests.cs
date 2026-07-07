@@ -137,6 +137,31 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task CommitNotes_aborts_the_rebase_and_stops_retrying_when_the_rebase_fails()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"rev-parse --verify {ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "unknown revision"));
+        // Push is rejected (remote moved) and the rebase onto the moved remote then fails (a conflict).
+        runner.OnArgvContains(
+            $"push origin {ReviewBranch}", new SandboxCommandResult(1, string.Empty, "rejected"));
+        runner.OnArgvContains(
+            $"pull --rebase origin {ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "CONFLICT: could not apply"));
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
+
+        // A conflicted rebase cannot make the push land: report the sync failure (keeping the branch),
+        // abort the mid-rebase state, and stop retrying rather than pushing again into a doomed rebase.
+        result.Outcome.Should().Be(ReviewBotPublishOutcome.GitSyncFailed);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Count(a => a.Contains($"push origin {ReviewBranch}")).Should().Be(1);
+        commands.Should().Contain(a => a.Contains("rebase --abort"));
+    }
+
+    [Fact]
     public async Task CommitNotes_keeps_the_branch_and_reports_GitSyncFailed_when_the_push_never_succeeds()
     {
         var runner = new FakeSandboxCommandRunner();
