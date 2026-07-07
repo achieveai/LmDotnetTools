@@ -173,6 +173,19 @@ public class SandboxGatewayOptionsTests
     }
 
     [Fact]
+    public void ResolveWorkspace_WithTraversalOverride_Throws_EvenWithNoBaseConfigured()
+    {
+        // Defense-in-depth (PR #165 review): a '..' traversal segment is never a valid workspace
+        // identifier, so it is rejected even with no base configured — the no-base path forwards the
+        // leaf straight to the gateway, so this is the client's only containment guard there.
+        var options = new SandboxGatewayOptions();
+
+        var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void ResolveWorkspace_WithEscapingOverride_Throws()
     {
         var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
