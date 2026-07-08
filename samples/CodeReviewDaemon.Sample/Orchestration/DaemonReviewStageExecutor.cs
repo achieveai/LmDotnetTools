@@ -404,8 +404,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return false;
             }
 
-            var branch = BuildNotesBranchName(hostGit, hostFileSystem, provider, repo, run);
-            var notesRelPath = BuildNotesRelPath(provider, repo, run.PrId);
+            var branch = BuildNotesBranchName(hostGit, hostFileSystem, repo, run);
+            var notesRelPath = BuildNotesRelPath(repo, run.PrId);
             var policy = DaemonOperationPolicy.BuildForRun(
                 repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
                 allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
@@ -498,18 +498,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return entry?.Path;
     }
 
-    /// <summary>The PR's persistent notes branch name (<c>review/{provider}/{owner-repo}/{pr}</c>) — resolved
+    /// <summary>The PR's persistent notes branch name (<c>review/{repo}-{pr}</c>) — resolved
     /// through <see cref="ReviewBranchManager.BuildReviewBranchName(ReviewBotPublishRequest)"/> so the preparer,
     /// the commit-notes step, and the sweeper all name the branch identically.</summary>
     private string BuildNotesBranchName(
-        GitRunner hostGit, ISandboxFileSystem hostFileSystem, string provider, RepoIdentity repo, ReviewRun run) =>
-        new ReviewBranchManager(hostGit, hostFileSystem, provider, _loggerFactory.CreateLogger<ReviewBranchManager>())
+        GitRunner hostGit, ISandboxFileSystem hostFileSystem, RepoIdentity repo, ReviewRun run) =>
+        new ReviewBranchManager(hostGit, hostFileSystem, _loggerFactory.CreateLogger<ReviewBranchManager>())
             .BuildReviewBranchName(BuildNotesRequest(repo, run, []));
 
-    /// <summary>The PR's persistent notes directory under the store (<c>PRs/{provider}/{owner-repo}/{pr}</c>,
-    /// design §4.3 D3 — one accumulating dir per PR). Each re-review adds a per-commit subdir under it.</summary>
-    private static string BuildNotesRelPath(string provider, RepoIdentity repo, string prId) =>
-        $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{prId}";
+    /// <summary>The PR's persistent notes directory under the store (<c>PRs/{repo}-{pr}</c>,
+    /// design §4.3 D3 — one accumulating dir per PR, keyed by PR number for the PR's lifetime).</summary>
+    private static string BuildNotesRelPath(RepoIdentity repo, string prId) =>
+        $"PRs/{ReviewBotRepoManagerSlug(repo)}-{prId}";
 
     private static ReviewBotPublishRequest BuildNotesRequest(
         RepoIdentity repo, ReviewRun run, IReadOnlyList<ReviewArtifactFile> files) =>
@@ -1136,11 +1136,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
         var manager = new ReviewBranchManager(
-            hostGit, _slotWorkspace.HostFileSystem, provider, _loggerFactory.CreateLogger<ReviewBranchManager>());
+            hostGit, _slotWorkspace.HostFileSystem, _loggerFactory.CreateLogger<ReviewBranchManager>());
 
-        // The per-commit review file lives inside the accumulating per-PR notes dir (design §4.3 D3); only
+        // The review file lives directly inside the accumulating per-PR notes dir (design §4.3 D3); only
         // that dir is staged, so nothing the agent wrote elsewhere (code, scratch) can reach the commit.
-        var reviewFile = $"{lease.NotesRelPath}/{ShortSha(run.HeadSha)}/review.md";
+        var reviewFile = $"{lease.NotesRelPath}/review.md";
         var reqFiles = new[] { new ReviewArtifactFile(reviewFile, reviewBody) };
         var request = BuildNotesRequest(repo, run, reqFiles);
 
@@ -1207,13 +1207,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var manager = new ReviewBranchManager(
             git,
             fileSystem,
-            provider,
             _loggerFactory.CreateLogger<ReviewBranchManager>());
 
         // Only the PRs/... artifact is supplied explicitly; the manager's `git add -A` still captures any
         // other tracked changes in the checkout.
         var prArtifactPath =
-            $"PRs/{provider}/{ReviewBotRepoManagerSlug(repo)}/{run.PrId}-{ShortSha(run.HeadSha)}/review.md";
+            $"PRs/{ReviewBotRepoManagerSlug(repo)}-{run.PrId}/review.md";
         var request = new ReviewBotPublishRequest(
             repo,
             PrNumber: int.Parse(run.PrId, System.Globalization.CultureInfo.InvariantCulture),
@@ -1296,14 +1295,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             HeadSha: run.HeadSha,
             VariantId: run.VariantId));
 
-    /// <summary>Slugs the target identity into a single ReviewBot path segment (mirrors the branch slug).</summary>
-    private static string ReviewBotRepoManagerSlug(RepoIdentity repo)
-    {
-        var parts = new[] { repo.OrgOrOwner, repo.Project, repo.RepoName }
-            .Where(static p => !string.IsNullOrEmpty(p))
-            .Select(static p => SlugSegment(p!));
-        return string.Join('-', parts);
-    }
+    /// <summary>Slugs the target repo name into a single ReviewBot path segment (mirrors the branch slug).</summary>
+    private static string ReviewBotRepoManagerSlug(RepoIdentity repo) => SlugSegment(repo.RepoName);
 
     private static string SlugSegment(string value)
     {
@@ -1312,8 +1305,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .Select(static c => char.IsLetterOrDigit(c) || c is '.' or '_' ? c : '-');
         return new string([.. chars]).Trim('-');
     }
-
-    private static string ShortSha(string sha) => sha.Length <= 8 ? sha : sha[..8];
 
     /// <summary>
     /// Resolves the run's repo and the publisher/artifact provider string. <c>RepoIdentity.Provider</c>

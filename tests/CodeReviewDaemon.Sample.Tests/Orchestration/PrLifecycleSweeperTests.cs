@@ -37,7 +37,6 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         new(
             new GitRunner(runner),
             new FakeSandboxFileSystem(),
-            "github",
             LoggerFactory.CreateLogger<ReviewBranchManager>());
 
     private PrLifecycleSweeper CreateSweeper(
@@ -63,7 +62,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_merges_the_notes_branch_of_a_merged_PR_when_merge_on_close_is_enabled()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("42", "review/github/acme-widgets/42");
+        var pr = Pr("42", "review/widgets-42");
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
@@ -84,7 +83,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_deletes_the_notes_branch_of_an_abandoned_PR_and_never_merges()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("43", "review/github/acme-widgets/43");
+        var pr = Pr("43", "review/widgets-43");
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Abandoned),
@@ -103,7 +102,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_takes_no_action_for_an_open_PR()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("44", "review/github/acme-widgets/44");
+        var pr = Pr("44", "review/widgets-44");
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Open),
@@ -119,7 +118,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_leaves_the_notes_branch_of_a_merged_PR_when_merge_on_close_is_disabled()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("45", "review/github/acme-widgets/45");
+        var pr = Pr("45", "review/widgets-45");
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),
@@ -135,8 +134,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_isolates_a_per_PR_lifecycle_lookup_failure_so_the_remaining_PRs_still_resolve()
     {
         var runner = new FakeSandboxCommandRunner();
-        var failingPr = Pr("46", "review/github/acme-widgets/46");
-        var okPr = Pr("47", "review/github/acme-widgets/47");
+        var failingPr = Pr("46", "review/widgets-46");
+        var okPr = Pr("47", "review/widgets-47");
         var sweeper = CreateSweeper(
             [failingPr, okPr],
             (pr, _) => pr.PrId == failingPr.PrId
@@ -157,7 +156,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_runs_knowledge_extraction_before_merging_a_merged_PR()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("42", "review/github/acme-widgets/42");
+        var pr = Pr("42", "review/widgets-42");
         var invokedPrs = new List<string>();
         var runnerCommandCountAtInvocation = -1;
         var sweeper = CreateSweeper(
@@ -187,8 +186,8 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_does_not_run_knowledge_extraction_for_abandoned_or_open_PRs()
     {
         var runner = new FakeSandboxCommandRunner();
-        var abandoned = Pr("43", "review/github/acme-widgets/43");
-        var open = Pr("44", "review/github/acme-widgets/44");
+        var abandoned = Pr("43", "review/widgets-43");
+        var open = Pr("44", "review/widgets-44");
         var invoked = new List<string>();
         var sweeper = CreateSweeper(
             [abandoned, open],
@@ -210,7 +209,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     public async Task Sweep_still_merges_when_knowledge_extraction_throws()
     {
         var runner = new FakeSandboxCommandRunner();
-        var pr = Pr("45", "review/github/acme-widgets/45");
+        var pr = Pr("45", "review/widgets-45");
         var sweeper = CreateSweeper(
             [pr],
             (_, _) => Task.FromResult(PrLifecycle.Merged),

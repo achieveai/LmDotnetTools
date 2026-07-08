@@ -4,7 +4,7 @@ using CodeReviewDaemon.Sample.Workspace.Sandbox;
 namespace CodeReviewDaemon.Sample.Workspace.Git;
 
 /// <summary>A single review artifact file to retain in the ReviewBot repo, relative to its root.</summary>
-/// <param name="RelativePath">Path under the ReviewBot checkout (e.g. <c>PRs/github/acme-widgets/42-abcd1234/review.md</c>).</param>
+/// <param name="RelativePath">Path under the ReviewBot checkout (e.g. <c>PRs/widgets-42/review.md</c>).</param>
 /// <param name="Content">UTF-8 file body.</param>
 internal sealed record ReviewArtifactFile(string RelativePath, string Content);
 
@@ -47,7 +47,7 @@ internal sealed record ReviewBotPublishRequest(
 
 /// <summary>
 /// Deterministic git/fs orchestration for the ReviewBot repo's per-PR review branch
-/// (<c>review/{provider}/{owner-repo}/{pr}</c>), split into three independently-callable ops so the
+/// (<c>review/{repo}-{pr}</c>), split into three independently-callable ops so the
 /// branch can persist across re-reviews and be merged-or-deleted only when the PR closes:
 /// <list type="bullet">
 /// <item><see cref="CommitNotesAsync"/> — create-or-reuse the branch, commit the review's artifacts,
@@ -67,20 +67,16 @@ internal sealed class ReviewBranchManager
 
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;
-    private readonly string _provider;
     private readonly ILogger<ReviewBranchManager> _logger;
 
     public ReviewBranchManager(
         GitRunner git,
         ISandboxFileSystem fileSystem,
-        string provider,
         ILogger<ReviewBranchManager> logger
     )
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
-        ArgumentException.ThrowIfNullOrWhiteSpace(provider);
-        _provider = provider;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -353,31 +349,67 @@ internal sealed class ReviewBranchManager
     }
 
     /// <summary>
-    /// Builds the review branch name <c>review/{provider}/{owner-repo}/{pr}</c>. The <c>{owner-repo}</c>
-    /// segment uses the normalized, slug-escaped target identity so it is stable across casing drift and
-    /// safe as a git ref. Exposed so callers (and tests) can resolve the branch name for a request.
+    /// Builds the review branch name <c>review/{repo}-{pr}</c>. The <c>{repo}</c> segment uses the
+    /// normalized, slug-escaped target repo name so it is stable across casing drift and safe as a git ref.
+    /// Exposed so callers (and tests) can resolve the branch name for a request.
     /// </summary>
     public string BuildReviewBranchName(ReviewBotPublishRequest request) =>
-        BuildReviewBranchName(_provider, request.TargetRepo, request.PrNumber);
+        BuildReviewBranchName(request.TargetRepo, request.PrNumber);
 
     /// <summary>
-    /// The provider-parameterized branch-name builder the executor's commit-notes, the slot preparer, and
-    /// the PR-lifecycle sweeper all share so they name a PR's persistent notes branch identically (the
-    /// sweeper resolves the branch for a reviewed row without a full request).
+    /// The branch-name builder the executor's commit-notes, the slot preparer, and the PR-lifecycle sweeper
+    /// all share so they name a PR's persistent notes branch identically (the sweeper resolves the branch for
+    /// a reviewed row without a full request).
     /// </summary>
-    public static string BuildReviewBranchName(string provider, RepoIdentity repo, int prNumber) =>
-        $"review/{provider}/{SlugifyRepo(repo)}/{prNumber}";
+    public static string BuildReviewBranchName(RepoIdentity repo, int prNumber) =>
+        $"review/{RepoSlug(repo)}-{prNumber}";
 
-    private string BuildCommitMessage(ReviewBotPublishRequest request) =>
-        $"Review {_provider} {request.TargetRepo.DisplayName}#{request.PrNumber} @ {ShortSha(request.HeadSha)}";
+    private static string BuildCommitMessage(ReviewBotPublishRequest request) =>
+        $"Review {request.TargetRepo.RepoName}#{request.PrNumber}";
 
-    /// <summary>Slugs the target identity into a single ref-safe path segment (lowercased, separators to '-').</summary>
-    private static string SlugifyRepo(RepoIdentity repo)
+    /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').
+    /// Public so the orphan-branch reconciler can match a <c>review/{repo}-{pr}</c> branch back to a configured
+    /// repo identity.</summary>
+    public static string RepoSlug(RepoIdentity repo) => Slug(repo.RepoName);
+
+    /// <summary>
+    /// Reverse of <see cref="BuildReviewBranchName(RepoIdentity, int)"/>: parses a <c>review/{repo}-{pr}</c>
+    /// branch into its repo slug and PR number. Returns <c>false</c> for anything that is not a well-formed
+    /// new-scheme review branch — including the legacy <c>review/{provider}/{owner-repo}/{pr}</c> form, which
+    /// carries embedded '/'.
+    /// </summary>
+    public static bool TryParseReviewBranch(string branch, out string repoSlug, out int prNumber)
     {
-        var parts = new[] { repo.OrgOrOwner, repo.Project, repo.RepoName }
-            .Where(static p => !string.IsNullOrEmpty(p))
-            .Select(static p => Slug(p!));
-        return string.Join('-', parts);
+        repoSlug = string.Empty;
+        prNumber = 0;
+        if (string.IsNullOrEmpty(branch) || !branch.StartsWith("review/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // The new scheme is a single segment "{slug}-{pr}"; an embedded '/' means the legacy nested form.
+        var remainder = branch["review/".Length..];
+        if (remainder.Length == 0 || remainder.Contains('/'))
+        {
+            return false;
+        }
+
+        // The PR number is the trailing run of digits after the last '-'; the slug is everything before it
+        // (repo slugs may themselves contain '-').
+        var lastDash = remainder.LastIndexOf('-');
+        if (lastDash <= 0 || lastDash == remainder.Length - 1)
+        {
+            return false;
+        }
+
+        var prPart = remainder[(lastDash + 1)..];
+        if (!prPart.All(char.IsAsciiDigit) || !int.TryParse(prPart, out prNumber))
+        {
+            return false;
+        }
+
+        repoSlug = remainder[..lastDash];
+        return true;
     }
 
     private static string Slug(string value)
@@ -388,8 +420,6 @@ internal sealed class ReviewBranchManager
             .ToArray();
         return new string(chars).Trim('-');
     }
-
-    private static string ShortSha(string sha) => sha.Length <= 8 ? sha : sha[..8];
 
     private static string JoinPath(string root, string relative) =>
         $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";

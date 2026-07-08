@@ -23,7 +23,7 @@ public sealed class PrLifecycleSweepSeamTests
         pr.Should().NotBeNull();
         pr!.Provider.Should().Be("github");
         pr.PrId.Should().Be("42");
-        pr.Branch.Should().Be("review/github/acme-widgets/42");
+        pr.Branch.Should().Be("review/widgets-42");
     }
 
     [Fact]
@@ -38,7 +38,7 @@ public sealed class PrLifecycleSweepSeamTests
 
         pr.Should().NotBeNull();
         pr!.Provider.Should().Be("ado", "the sweeper polls/branches under 'ado', not the 'azure-devops' storage namespace");
-        pr.Branch.Should().Be("review/ado/acme-platform-widgets/7");
+        pr.Branch.Should().Be("review/widgets-7");
     }
 
     [Fact]
@@ -59,9 +59,9 @@ public sealed class PrLifecycleSweepSeamTests
         var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" };
 
         var githubState = await PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "github", "42", "review/github/acme-widgets/42"), CancellationToken.None);
+            providers, new ReviewedPr(repo, "github", "42", "review/widgets-42"), CancellationToken.None);
         var adoState = await PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "ado", "7", "review/ado/acme-widgets/7"), CancellationToken.None);
+            providers, new ReviewedPr(repo, "ado", "7", "review/widgets-7"), CancellationToken.None);
 
         githubState.Should().Be(PrLifecycle.Merged, "the github PR routes to the github provider's state");
         adoState.Should().Be(PrLifecycle.Abandoned, "the ado PR routes to the ado provider's state");
@@ -74,7 +74,7 @@ public sealed class PrLifecycleSweepSeamTests
         var repo = new RepoIdentity { Provider = "github", OrgOrOwner = "acme", RepoName = "widgets" };
 
         var act = () => PrLifecycleSweepSeam.ResolveLifecycleAsync(
-            providers, new ReviewedPr(repo, "ado", "7", "review/ado/acme-widgets/7"), CancellationToken.None);
+            providers, new ReviewedPr(repo, "ado", "7", "review/widgets-7"), CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ado*");
     }

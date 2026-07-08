@@ -302,8 +302,11 @@ if (daemonOptions.EnableToolAssistedReview
         var hostGit = new GitRunner(slots.HostRunner);
         var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
         var branchManager = new ReviewBranchManager(
-            hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
+            hostGit, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewBranchManager>());
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
+        // The configured repos (full identity + provider) let the sweep resolve an orphaned review/* branch —
+        // whose new-scheme name carries only the repo slug + PR number — back to a pollable PR.
+        var sweepPollTargets = PrPollTargetBuilder.Build(daemonOptions, sweepLogger);
 
         // At-close knowledge extraction (Layer-2, design §1). Wired only when EnableKnowledgeAgent is set:
         // on a merged PR, read the PR's accumulated notes off its notes branch, run the gated extraction
@@ -340,6 +343,38 @@ if (daemonOptions.EnableToolAssistedReview
             };
         }
 
+        // Lists the store's persistent review/* branches straight from origin (fresh each sweep) so orphaned
+        // notes branches are reconciled regardless of this daemon's DB state. A failure degrades to the DB set.
+        static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
+            GitRunner git, string repoRoot, ILogger logger, CancellationToken cancellationToken)
+        {
+            var result = await git
+                .RunAsync(["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"], repoRoot, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Succeeded)
+            {
+                logger.LogWarning(
+                    "PR-lifecycle sweep: listing review/* branches failed (exit {Exit}): {Err}; sweeping the DB set only.",
+                    result.ExitCode, result.Stderr);
+                return [];
+            }
+
+            const string headsPrefix = "refs/heads/";
+            var branches = new List<string>();
+            foreach (var line in result.Stdout.Split(
+                '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var tab = line.IndexOf('\t');
+                var refName = tab >= 0 ? line[(tab + 1)..] : line;
+                if (refName.StartsWith(headsPrefix, StringComparison.Ordinal))
+                {
+                    branches.Add(refName[headsPrefix.Length..]);
+                }
+            }
+
+            return branches;
+        }
+
         return new PrLifecycleSweeper(
             async ct =>
             {
@@ -359,7 +394,12 @@ if (daemonOptions.EnableToolAssistedReview
                 var rows = await store.ListReviewedPrsAsync(ct).ConfigureAwait(false);
                 IReadOnlyList<ReviewedPr> reviewed =
                     [.. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!)];
-                return reviewed;
+
+                // Reconcile against the store's actual review/* branches so a PR whose review row is absent
+                // from this daemon's DB (fresh DB / churn) still has its notes branch resolved when it closes.
+                var reviewBranches = await ListRemoteReviewBranchesAsync(hostGit, sweeperRepoRoot, sweepLogger, ct)
+                    .ConfigureAwait(false);
+                return OrphanBranchReconciler.Reconcile(reviewed, reviewBranches, sweepPollTargets, sweepLogger);
             },
             (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
             branchManager,
