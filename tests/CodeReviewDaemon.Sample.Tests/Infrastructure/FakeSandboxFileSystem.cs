@@ -15,6 +15,15 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
     /// <summary>Paths written, in write order (duplicates kept).</summary>
     public List<string> Writes { get; } = [];
 
+    /// <summary>
+    /// Optional fault injector for reads: when it returns a non-null exception for a path, that read
+    /// throws it (models the boot-lifetime sandbox session 404-ing on a KB read). Default: no faults.
+    /// </summary>
+    public Func<string, Exception?>? ReadFault { get; set; }
+
+    /// <summary>Optional fault injector for directory listings — same contract as <see cref="ReadFault"/>.</summary>
+    public Func<string, Exception?>? ListFault { get; set; }
+
     /// <summary>Seeds a file's contents without recording a write (test setup convenience).</summary>
     public FakeSandboxFileSystem Seed(string path, string content)
     {
@@ -22,8 +31,15 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         return this;
     }
 
-    public Task<string?> ReadFileAsync(string path, CancellationToken cancellationToken) =>
-        Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
+    public Task<string?> ReadFileAsync(string path, CancellationToken cancellationToken)
+    {
+        if (ReadFault?.Invoke(path) is { } fault)
+        {
+            throw fault;
+        }
+
+        return Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
+    }
 
     public Task WriteFileAsync(string path, string content, CancellationToken cancellationToken)
     {
@@ -34,13 +50,27 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
 
     public Task<IReadOnlyList<string>> ListFilesAsync(string directory, CancellationToken cancellationToken)
     {
+        if (ListFault?.Invoke(directory) is { } fault)
+        {
+            throw fault;
+        }
+
         var prefix = directory.TrimEnd('/') + "/";
+        // Mirror `ls -1A` / the production file systems: return the immediate child ENTRY names — a file
+        // directly under the directory, or the first path segment of a deeper key (a subdirectory name),
+        // deduplicated and sorted. The layered Knowledge Base regen relies on discovering scope
+        // subdirectories (system/, <repo>/) this way, exactly as it would against the real gateway.
         IReadOnlyList<string> names =
         [
             .. Files.Keys
                 .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(key => key[prefix.Length..])
-                .Where(rest => !rest.Contains('/', StringComparison.Ordinal))
+                .Select(rest =>
+                {
+                    var slash = rest.IndexOf('/', StringComparison.Ordinal);
+                    return slash < 0 ? rest : rest[..slash];
+                })
+                .Distinct(StringComparer.Ordinal)
                 .OrderBy(name => name, StringComparer.Ordinal),
         ];
         return Task.FromResult(names);

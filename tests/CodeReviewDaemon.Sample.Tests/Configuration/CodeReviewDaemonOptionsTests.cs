@@ -10,7 +10,7 @@ public class CodeReviewDaemonOptionsTests
         var options = new CodeReviewDaemonOptions();
 
         options.EnableToolAssistedReview.Should().BeFalse();
-        options.Marketplaces.Should().ContainSingle().Which.Should().Be("gb-plugins");
+        options.Marketplaces.Should().Equal("gb-plugins", "superpowers");
         options.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         options.WorkspaceHostRoot.Should().BeNull();
     }
@@ -32,5 +32,24 @@ public class CodeReviewDaemonOptionsTests
                 "medium",
                 "the diff-only default of 'low' is tuned for a single-pass review; a multi-turn + sub-agent loop wants more reasoning headroom"
             );
+    }
+
+    [Fact]
+    public void Pool_and_scoped_tool_defaults_are_conservative()
+    {
+        var o = new CodeReviewDaemonOptions();
+        o.ReviewPoolSize.Should().Be(2);
+        o.EnableReviewerWrites.Should().BeFalse("writes are an explicit opt-in");
+        o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
+        o.MergeNotesBranchOnClose.Should().BeTrue();
+        o.ScratchDirName.Should().Be("scratch");
+    }
+
+    [Fact]
+    public void BotName_defaults_to_Revobot()
+    {
+        var o = new CodeReviewDaemonOptions();
+
+        o.BotName.Should().Be("Revobot", "an operator can override the display name, e.g. \"GB's Revobot\"");
     }
 }

@@ -108,6 +108,52 @@ internal sealed class GitHubPrProvider : IPrProvider
     }
 
     /// <summary>
+    /// Classifies a single PR's lifecycle via <c>GET /repos/{owner}/{repo}/pulls/{number}</c> — Open,
+    /// Merged, or Abandoned (closed without merging). Used by the PR-lifecycle sweep (a later task) to
+    /// decide whether to merge or delete the PR's notes branch.
+    /// </summary>
+    public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+        ArgumentException.ThrowIfNullOrEmpty(prId);
+
+        var owner = repo.OrgOrOwner;
+        var repoName = repo.RepoName;
+        var url = $"{BaseUrl}/repos/{owner}/{repoName}/pulls/{prId}";
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
+        httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
+        httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
+
+        using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return MapPrLifecycle(document.RootElement);
+    }
+
+    /// <summary>
+    /// Maps a single-PR response to <see cref="PrLifecycle"/>: <c>state == "open"</c> is Open;
+    /// <c>state == "closed"</c> with a non-null <c>merged_at</c> is Merged; <c>state == "closed"</c> with a
+    /// null <c>merged_at</c> is Abandoned.
+    /// </summary>
+    private static PrLifecycle MapPrLifecycle(JsonElement pr)
+    {
+        var state = pr.GetProperty("state").GetString();
+        if (string.Equals(state, "open", StringComparison.OrdinalIgnoreCase))
+        {
+            return PrLifecycle.Open;
+        }
+
+        var merged = pr.TryGetProperty("merged_at", out var mergedAt) && mergedAt.ValueKind is not JsonValueKind.Null;
+        return merged ? PrLifecycle.Merged : PrLifecycle.Abandoned;
+    }
+
+    /// <summary>
     /// Extracts the <c>rel="next"</c> URL from the response's <c>Link</c> header, or <c>null</c> when this
     /// is the last page. GitHub's format is <c>&lt;url&gt;; rel="next", &lt;url&gt;; rel="last"</c>.
     /// </summary>

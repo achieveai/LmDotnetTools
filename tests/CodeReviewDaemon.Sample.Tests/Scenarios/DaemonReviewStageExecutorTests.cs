@@ -166,7 +166,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var input = reviewAgent.ReceivedInputs.Should().ContainSingle().Subject;
         var text = input.Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("/workspace/target").And.Contain("src/Foo/Bar.cs");
+        text.Should().Contain("src/Foo/Bar.cs");
+
+        // The checkout root is now templated into the review agent's SYSTEM PROMPT (not duplicated into
+        // the input) via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain("/workspace/target");
     }
 
     [Fact]
@@ -255,10 +260,106 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
+        // The store layout (submodule checkout root + shared Contracts/) is now templated into the review
+        // agent's SYSTEM PROMPT via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables,
+        // rather than duplicated into the input.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
+        profile.SystemPrompt.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
+    }
+
+    [Fact]
+    public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // The store carries prior knowledge distilled from past PRs; the review must start with its table
+        // of contents so the reviewer factors it in (design §3).
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("/workspace/store/repos/LmDotnetTools", "the reviewed repo's submodule path is given");
-        text.Should().Contain("/workspace/store/Contracts", "the shared Contracts/ layer is pointed out for cross-repo grounding");
+        text.Should().Contain("Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_degrades_and_does_not_fail_when_the_knowledge_base_read_throws()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        // The KB read (and the re-review notes listing) go through the boot-lifetime sandbox session, which
+        // can 404 ("Session not found") or hiccup. That transport failure must DEGRADE, never fail the
+        // review (design §6). Fault only the KB/notes paths so ContextReady's own reads are unaffected.
+        fixture.FileSystem.ReadFault = path =>
+            path.Contains("KnowledgeBase", StringComparison.Ordinal)
+                ? new InvalidOperationException("Session not found: deadbeef")
+                : null;
+        fixture.FileSystem.ListFault = dir =>
+            dir.Contains("/PRs/", StringComparison.Ordinal)
+                ? new InvalidOperationException("Session not found: deadbeef")
+                : null;
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a KB/notes read failure must degrade, not kill the review (design §6)");
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Prior knowledge (KnowledgeBase/_toc.md)", "the failed KB read is skipped, not prepended");
+    }
+
+    [Fact]
+    public async Task Reviewed_leaves_the_input_unchanged_when_the_store_has_no_knowledge_base()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // No KnowledgeBase/_toc.md seeded — the common case before any knowledge has been extracted. The
+        // best-effort read must skip silently and leave the input untouched (design §6).
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Prior knowledge", "a missing _toc.md leaves the review input unchanged");
     }
 
     [Fact]
@@ -295,21 +396,6 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         JsonDocument.Parse(bVariant.Payload).RootElement.GetProperty("ReviewText").GetString()
             .Should().Contain("Review (B)");
         fixture.Factory.CreatedProfileIds.Should().Contain($"{DaemonAgentFactory.ReviewProfileId}-b");
-    }
-
-    [Fact]
-    public async Task EnableKnowledgeAgent_writes_a_knowledge_base_entry_to_the_sandbox()
-    {
-        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableKnowledgeAgent = true });
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.KnowledgeProfileId] = "# Null-check lesson\nAlways guard.";
-        var run = fixture.SeedRun();
-
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-
-        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("KnowledgeBase/") && p.EndsWith("_toc.md"));
-        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("KnowledgeBase/") && !p.EndsWith("_toc.md"));
-        fixture.Factory.CreatedProfileIds.Should().Contain(DaemonAgentFactory.KnowledgeProfileId);
     }
 
     [Fact]
@@ -387,20 +473,37 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var fixture = Fixture.GitHub(
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+        // This is the first review of the PR: the review branch does not exist yet.
+        fixture.Runner.OnArgvContains(
+            "rev-parse --verify review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(1, string.Empty, "unknown revision"));
         // The push must succeed so the retention sequence reaches the reviewbot_push record.
-        fixture.Runner.OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        fixture.Runner.OnArgvContains(
+            "rev-parse review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        // The §2 durable one-commit retention sequence ran in the ReviewBot checkout.
+        // CommitNotesAsync commits onto the review branch and pushes the BRANCH (not the default branch) —
+        // the branch persists so later re-reviews can keep appending notes to it.
         commands.Should().Contain(a => a.Contains("checkout -B review/github/achieveai-lmdotnettools/118"));
         commands.Should().Contain(a => a.Contains("commit -m"));
-        commands.Should().Contain(a => a.Contains("push origin main"));
+        commands.Should().Contain(a => a.Contains("push origin review/github/achieveai-lmdotnettools/118"));
+
+        // The branch is kept: nothing merges or deletes it as part of a single review pass.
+        commands.Should().NotContain(a => a.Contains("branch -D review/github/achieveai-lmdotnettools/118"));
+        commands.Should().NotContain(a => a.Contains("push origin --delete review/github/achieveai-lmdotnettools/118"));
+        commands.Should().NotContain(a => a.Contains("push origin main"), "a per-review commit must never fast-forward the default branch");
 
         // The PRs/... review artifact was written into the checkout before the commit.
         fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        // The retained artifact carries the raw review text — the "[BotName]" prefix is only added to the
+        // POSTED comment (see Posted_prefixes_the_posted_comment_with_the_configured_bot_name), never to
+        // what's committed to the ReviewBot repo.
+        var reviewFilePath = fixture.FileSystem.Writes.Single(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        fixture.FileSystem.Files[reviewFilePath].Should().NotStartWith("[");
 
         // The reviewbot_push outcome is persisted in SQLite (outbox row, terminal Posted with the pushed SHA).
         var push = fixture.Store
@@ -475,7 +578,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
-        fixture.Runner.OnArgvContains("push origin main", new SandboxCommandResult(1, string.Empty, "rejected"));
+        fixture.Runner.OnArgvContains(
+            "push origin review/github/achieveai-lmdotnettools/118",
+            new SandboxCommandResult(1, string.Empty, "rejected"));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -530,7 +635,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await RunAllStagesAsync(fixture, run);
 
         fixture.GitHubPublisher.PostedBodies.Should().ContainSingle()
-            .Which.Should().Be("_No review content was produced._");
+            .Which.Should().Be("[Revobot]\n\n_No review content was produced._");
+    }
+
+    [Fact]
+    public async Task Posted_prefixes_the_posted_comment_with_the_configured_bot_name()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, BotName = "GB's Revobot" });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.GitHubPublisher.PostedBodies.Should().ContainSingle()
+            .Which.Should().StartWith("[GB's Revobot]\n\n");
     }
 
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>

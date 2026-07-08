@@ -156,6 +156,118 @@ public sealed class ReviewStoreTests
         reloaded.PrLifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    // ── prior-review summary (re-review context) ──────────────────────────────────────────────────
+
+    [Fact]
+    public void GetPriorReviewSummary_returns_the_newest_completed_head_and_the_completed_count()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-old", Stage = ReviewStage.Reviewed });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-new", Stage = ReviewStage.Posted });
+        // A different PR's completed run must not be counted.
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-other", Stage = ReviewStage.Reviewed });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().Be("sha-new", "the most recently created completed run is the last review");
+        summary.PriorReviewCount.Should().Be(2, "two prior runs for this PR reached a completed review stage");
+    }
+
+    [Fact]
+    public void GetPriorReviewSummary_does_not_count_runs_that_never_completed_a_review()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-ctx", Stage = ReviewStage.ContextReady });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().BeNull("a run stuck at ContextReady never produced review output");
+        summary.PriorReviewCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void GetPriorReviewSummary_ignores_the_b_variant_so_ab_runs_do_not_double_count()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-b", VariantId = "b", Stage = ReviewStage.Reviewed });
+        var current = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "sha-current" });
+
+        var summary = store.GetPriorReviewSummary(repoId, "118", current.Id);
+
+        summary.PrevHeadSha.Should().BeNull("only the primary variant counts toward the re-review history");
+        summary.PriorReviewCount.Should().Be(0);
+    }
+
+    // ── §6 confidentiality trust signals (Task 17) ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true, false)] // task's example: fork PR against a private target
+    [InlineData(false, true)] // same-org PR against a public target — both differ from the fail-closed defaults
+    [InlineData(false, false)]
+    public void The_confidentiality_trust_signals_round_trip_the_exact_stored_values(bool isForkPr, bool isTargetRepoPublic)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var created = store.CreateOrGetReviewRun(SampleRun(repoId) with
+        {
+            IsForkPr = isForkPr,
+            IsTargetRepoPublic = isTargetRepoPublic,
+        });
+
+        var reloaded = store.GetReviewRun(created.Id);
+        reloaded.Should().NotBeNull();
+        reloaded!.IsForkPr.Should().Be(isForkPr,
+            "the persisted fork signal must survive reload rather than fall back to the fail-closed default (true)");
+        reloaded.IsTargetRepoPublic.Should().Be(isTargetRepoPublic,
+            "the persisted target-visibility signal must survive reload rather than fall back to the fail-closed default (true)");
+    }
+
+    // ── ListReviewedPrsAsync (PR-lifecycle sweeper) ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListReviewedPrsAsync_returns_each_reviewed_pr_once_across_multiple_runs()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // Two distinct runs for PR 118 (different head shas) must collapse to a single reviewed-PR row;
+        // PR 200 is a second reviewed PR.
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-1" });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-2" });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-3" });
+
+        var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
+
+        reviewed.Should().HaveCount(2, "the two runs for PR 118 collapse to one reviewed-PR row");
+        reviewed.Select(r => r.PrId).Should().BeEquivalentTo(["118", "200"]);
+        reviewed.Should().OnlyContain(r => r.Provider == "github" && r.Repo.RepoName == "LmDotnetTools");
+    }
+
+    [Fact]
+    public async Task ListReviewedPrsAsync_is_empty_when_nothing_has_been_reviewed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
+
+        reviewed.Should().BeEmpty();
+    }
+
     // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
 
     private const int CurrentCursorVersion = 1;

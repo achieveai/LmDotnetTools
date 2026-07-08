@@ -147,8 +147,8 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public string? WorkspaceHostRoot { get; init; }
 
-    /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>.</summary>
-    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins"];
+    /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
+    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
 
     /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
@@ -178,6 +178,35 @@ internal sealed class CodeReviewDaemonOptions
     /// single-repo <c>/workspace/target</c> checkout.
     /// </summary>
     public string? CrossRepoStoreUrl { get; init; }
+
+    /// <summary>Warm review-checkout slots kept ready to skip re-cloning. Default 2.</summary>
+    public int ReviewPoolSize { get; init; } = 2;
+
+    /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
+    public string? ReviewPoolHostRoot { get; init; }
+
+    /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
+    public string ScratchDirName { get; init; } = "scratch";
+
+    /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
+    /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
+    public bool EnableReviewerWrites { get; init; }
+
+    /// <summary>Extra tool names granted when <see cref="EnableReviewerWrites"/> is on.</summary>
+    public IReadOnlyList<string> WritableToolAllowList { get; init; } = ["Write", "Edit", "Bash"];
+
+    /// <summary>Merge the persistent PR notes branch into the store default branch on PR close.</summary>
+    public bool MergeNotesBranchOnClose { get; init; } = true;
+
+    /// <summary>
+    /// Display name the daemon presents as, both as the git commit identity's <c>user.name</c> for
+    /// retention commits (see <see cref="Workspace.Git.GitRunner"/>; the commit <c>user.email</c> stays the
+    /// fixed <c>review-bot@achieveai.local</c> regardless of this setting) and as a <c>[BotName]</c> prefix
+    /// on the body of every posted PR comment — the comment's actual author is a shared OAuth app or a
+    /// person's token, so the prefix disambiguates that the content was authored by the bot on their
+    /// behalf. Default <c>Revobot</c>; an operator may personalize it, e.g. <c>GB's Revobot</c>.
+    /// </summary>
+    public string BotName { get; init; } = "Revobot";
 
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>

@@ -39,6 +39,18 @@ public sealed class MigrationTests
     }
 
     [Fact]
+    public void Migration_v2_adds_the_confidentiality_trust_columns_to_review_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+
+        MigrationRunner.Migrate(connection);
+
+        ColumnExists(connection, "review_run", "is_fork_pr").Should().BeTrue("migration v2 adds is_fork_pr");
+        ColumnExists(connection, "review_run", "is_target_repo_public").Should().BeTrue("migration v2 adds is_target_repo_public");
+    }
+
+    [Fact]
     public void Re_running_migrate_on_a_current_database_is_a_noop()
     {
         using var db = new TempSqliteDatabase();
@@ -155,6 +167,15 @@ public sealed class MigrationTests
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name;";
         _ = command.Parameters.AddWithValue("$name", table);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string table, string column)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM pragma_table_info($table) WHERE name = $column;";
+        _ = command.Parameters.AddWithValue("$table", table);
+        _ = command.Parameters.AddWithValue("$column", column);
         return command.ExecuteScalar() is not null;
     }
 }

@@ -6,12 +6,23 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <summary>
 /// Per-run context that turns a diff-only review loop into a tool-assisted one. Non-null only on the
 /// <c>EnableToolAssistedReview</c> path; when null the factory builds today's empty-registry loop.
+/// <para>
+/// The pooled scoped-writable reviewer (Layer 1) additionally sets <see cref="EnableReviewerWrites"/>
+/// with a <see cref="WritableToolAllowList"/> and the <see cref="NotesDir"/>/<see cref="ScratchDir"/>
+/// roots the writes are scoped to. When those are present the factory builds the registry via
+/// <see cref="ScopedToolFilter"/> (read-only tools + scoped <c>Write</c>/<c>Edit</c>/<c>Bash</c>);
+/// otherwise it stays on the read-only <see cref="ReadOnlyToolFilter"/> path exactly as before.
+/// </para>
 /// </summary>
 internal sealed record ReviewToolContext(
     string GatewayBaseUrl,
     string SessionId,
     IReadOnlyList<string> ReadOnlyToolAllowList,
-    SubAgentOptions? SubAgentOptions);
+    SubAgentOptions? SubAgentOptions,
+    bool EnableReviewerWrites = false,
+    IReadOnlyList<string>? WritableToolAllowList = null,
+    string? NotesDir = null,
+    string? ScratchDir = null);
 
 /// <summary>
 /// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry.

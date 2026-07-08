@@ -11,4 +11,13 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 internal interface IReviewStageExecutor
 {
     Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns any pooled review slot the executor leased for <paramref name="runId"/> and forgets it,
+    /// idempotently. Called by the orchestrator in a <c>finally</c> on every terminal outcome of a run
+    /// (normal completion, the PR-not-open short-circuit, and the failure→RetryPending rethrow) so a run
+    /// that never reaches the Posted stage cannot leak pool capacity. A no-op when no slot is held (the
+    /// diff-only path, or a run whose Posted stage already returned it).
+    /// </summary>
+    Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken);
 }

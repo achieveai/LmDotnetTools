@@ -204,4 +204,43 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         page.PullRequests.Should().BeEmpty();
         page.NextCursor.CursorVersion.Should().Be(PrPollingService.CursorVersion);
     }
+
+    [Fact]
+    public async Task GetPrState_maps_an_open_pr_to_open()
+    {
+        const string openPr = """
+            { "number": 7, "state": "open", "merged_at": null }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", openPr);
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Open);
+    }
+
+    [Fact]
+    public async Task GetPrState_maps_a_closed_and_merged_pr_to_merged()
+    {
+        const string mergedPr = """
+            { "number": 7, "state": "closed", "merged_at": "2026-07-01T00:00:00Z" }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", mergedPr);
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Merged);
+    }
+
+    [Fact]
+    public async Task GetPrState_maps_a_closed_and_unmerged_pr_to_abandoned()
+    {
+        const string abandonedPr = """
+            { "number": 7, "state": "closed", "merged_at": null }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", abandonedPr);
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Abandoned);
+    }
 }

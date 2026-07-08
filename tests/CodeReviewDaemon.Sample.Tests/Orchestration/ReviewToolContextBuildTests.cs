@@ -7,6 +7,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -65,6 +66,11 @@ public sealed class ReviewToolContextBuildTests
         toolContext!.SessionId.Should().Be("session-abc");
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(options.ReadOnlyToolAllowList);
         toolContext.SubAgentOptions.Should().BeNull("sub-agents are attached in a later task");
+
+        // A non-pooled (no leased slot) tool-assisted run resolves the session via the per-run mount, never
+        // the slot mount — GetOrCreateForSlotAsync is reserved for a run that leased a pooled slot.
+        provisioner.GetOrCreateCalls.Should().Be(1);
+        provisioner.GetOrCreateForSlotCalls.Should().Be(0);
     }
 
     [Fact]
@@ -154,6 +160,45 @@ public sealed class ReviewToolContextBuildTests
         toolContext.SubAgentOptions.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Reviewed_ProvisionerThrowsOperationCanceled_Propagates()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new CancelingProvisioner();
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner);
+        var run = SeedRunWithContext(store);
+
+        // Cancellation is not a capability gap — it must surface (the catch filter excludes
+        // OperationCanceledException), not be swallowed into a silent diff-only degrade.
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
+    }
+
+    [Fact]
+    public async Task Reviewed_DiscoveryThrowsOperationCanceled_Propagates()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var provisioner = new FakeReviewSessionProvisioner("session-abc");
+        var discovery = new CancelingDiscoveredItemsSource();
+        var executor = BuildExecutor(
+            store, factory, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner, discovery);
+        var run = SeedRunWithContext(store);
+
+        // A cancellation raised while discovering sub-agents must propagate too — it is not the same as a
+        // discovery failure (which degrades to skill-only); the sub-agent catch filter excludes it.
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
+    }
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
@@ -233,14 +278,41 @@ public sealed class ReviewToolContextBuildTests
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
             throw new InvalidOperationException("sandbox gateway unreachable");
 
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            throw new InvalidOperationException("sandbox gateway unreachable");
+
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>Simulates provisioning being cancelled — must propagate, never degrade to diff-only.</summary>
+    private sealed class CancelingProvisioner : IReviewSessionProvisioner
+    {
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+            throw new OperationCanceledException("provisioning cancelled");
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            throw new OperationCanceledException("provisioning cancelled");
+
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
     {
-        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+        public int GetOrCreateCalls { get; private set; }
+        public int GetOrCreateForSlotCalls { get; private set; }
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        {
+            GetOrCreateCalls++;
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 sessionId, $"/workspace/{sessionId}", new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            return GetOrCreateAsync(run, ct);
+        }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
     }
@@ -258,5 +330,12 @@ public sealed class ReviewToolContextBuildTests
     {
         public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
             string sessionId, CancellationToken ct) => throw new InvalidOperationException("discovery unreachable");
+    }
+
+    /// <summary>Simulates discovery being cancelled — must propagate, never degrade to skill-only.</summary>
+    private sealed class CancelingDiscoveredItemsSource : IDiscoveredItemsSource
+    {
+        public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
+            string sessionId, CancellationToken ct) => throw new OperationCanceledException("discovery cancelled");
     }
 }

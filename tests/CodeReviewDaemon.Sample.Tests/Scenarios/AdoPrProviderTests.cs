@@ -199,4 +199,53 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         page.PullRequests.Should().BeEmpty();
         page.NextCursor.CursorVersion.Should().Be(PrPollingService.CursorVersion);
     }
+
+    [Fact]
+    public async Task GetPrState_maps_an_active_pr_to_open()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Open);
+    }
+
+    [Fact]
+    public async Task GetPrState_maps_a_completed_pr_to_merged()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "completed" }""");
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Merged);
+    }
+
+    [Fact]
+    public async Task GetPrState_maps_an_abandoned_pr_to_abandoned()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "abandoned" }""");
+
+        var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
+
+        state.Should().Be(PrLifecycle.Abandoned);
+    }
+
+    [Fact]
+    public async Task GetPrState_sends_the_single_pr_request_ado_requires()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+
+        _ = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
+
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Method.Should().Be(HttpMethod.Get);
+        request.Uri.ToString().Should()
+            .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests/42");
+        request.Uri.Query.Should().Contain("api-version=7.1");
+        request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
+    }
 }

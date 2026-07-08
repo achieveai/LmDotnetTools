@@ -9,6 +9,7 @@ using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.ReviewBot;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
@@ -152,7 +153,11 @@ builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
 builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
     sp.GetRequiredService<ISandboxSessionSource>(),
     daemonOptions,
-    sp.GetRequiredService<ILoggerFactory>()));
+    sp.GetRequiredService<ILoggerFactory>(),
+    // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
+    // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
+    // pool root is defaulted under it below so the slot always resolves to a path inside the base.
+    sandboxGatewayOptions.WorkspaceBasePath));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
@@ -221,10 +226,177 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
     });
 }
 
+// ── Pooled scoped-writable review workspace + PR-lifecycle sweep (Layer 1) ─────────────────────────
+// Wired only when the pooled path is enabled (tool-assisted + reviewer-writes) AND a store is resolved.
+// Otherwise DaemonReviewStageExecutor's null-fallback keeps the per-run/diff-only checkout and no sweeper
+// runs. The pool, preparer, and sweeper share ONE host-side git runner (privileged, with the write
+// credential) — never the sandbox the untrusted review agent shares (design §4.7).
+if (daemonOptions.EnableToolAssistedReview
+    && daemonOptions.EnableReviewerWrites
+    && !string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
+{
+    string storeUrl = daemonOptions.ResolvedStoreUrl;
+    // The pool root MUST sit under the gateway's WorkspaceBasePath so a leased slot can be mounted at
+    // /workspace (ReviewSessionProvisioner.GetOrCreateForSlotAsync expresses the slot relative to that
+    // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
+    // it is configured, falling back to a dir beside the binary only when no base path is set (the slot
+    // mount then degrades to the per-run mount, which is still correct — just not slot-backed).
+    var poolRoot = !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+        ? daemonOptions.ReviewPoolHostRoot
+        : !string.IsNullOrWhiteSpace(sandboxGatewayOptions.WorkspaceBasePath)
+            ? Path.Combine(sandboxGatewayOptions.WorkspaceBasePath, "review-pool")
+            : Path.Combine(AppContext.BaseDirectory, "review-pool");
+
+    builder.Services.AddSingleton(sp =>
+    {
+        var github = sp.GetRequiredService<GitHubOAuthProvider>();
+        var hostRunner = new HostGitCommandRunner(
+            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+        var hostFileSystem = new HostFileSystem();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
+        var pool = new ReviewSlotPool(
+            daemonOptions.ReviewPoolSize,
+            poolRoot,
+            daemonOptions.ScratchDirName,
+            async (slot, ct) =>
+            {
+                var clone = await new GitRunner(hostRunner)
+                    .RunAsync(["clone", storeUrl, slot.StorePath], workingDirectory: null, ct)
+                    .ConfigureAwait(false);
+                if (!clone.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Cloning the review store into slot {slot.Index} failed (exit {clone.ExitCode}): {clone.Stderr}");
+                }
+            },
+            loggerFactory.CreateLogger<ReviewSlotPool>());
+
+        // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
+        var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        return new ReviewSlotWorkspace(pool, preparer, hostRunner, hostFileSystem);
+    });
+
+    builder.Services.AddSingleton(sp =>
+    {
+        var slots = sp.GetRequiredService<ReviewSlotWorkspace>();
+        var store = sp.GetRequiredService<ReviewStore>();
+        var providers = sp.GetServices<IPrProvider>().ToList();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var hostGit = new GitRunner(slots.HostRunner);
+        var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
+        var branchManager = new ReviewBranchManager(
+            hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
+        var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
+
+        // At-close knowledge extraction (Layer-2, design §1). Wired only when EnableKnowledgeAgent is set:
+        // on a merged PR, read the PR's accumulated notes off its notes branch, run the gated extraction
+        // over the host store checkout, and let the sweeper's subsequent MergeToDefaultAsync carry the
+        // new/updated Knowledge Base entry into the default branch. Unset → null → the sweep is unchanged.
+        var loopFactory = sp.GetRequiredService<IReviewAgentLoopFactory>();
+        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
+        if (daemonOptions.EnableKnowledgeAgent)
+        {
+            // The committer wraps the gated extraction with the git plumbing that carries its write into the
+            // default branch: check the notes branch out, run extraction, and — only when it wrote an entry —
+            // commit + push KnowledgeBase/ onto that branch so MergeToDefaultAsync fast-forwards it into main.
+            var committer = new KnowledgeExtractionCommitter(
+                hostGit, sweeperRepoRoot, loggerFactory.CreateLogger<KnowledgeExtractionCommitter>());
+            extractKnowledgeAsync = (pr, ct) =>
+            {
+                // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
+                // (deterministic — never the model) and stamped into the entry's `updated` frontmatter.
+                var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
+                return committer.RunAsync(pr.Branch, sourcePrRef, async innerCt =>
+                {
+                    var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
+                        .ConfigureAwait(false);
+                    var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+                    await using var loop = loopFactory.Create(
+                        profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                    var agent = new KnowledgeAgent(
+                        loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
+                    var todayUtc = DateTime.UtcNow.ToString(
+                        "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    return await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, innerCt)
+                        .ConfigureAwait(false);
+                }, ct);
+            };
+        }
+
+        return new PrLifecycleSweeper(
+            async ct =>
+            {
+                // Ensure a host store checkout exists to merge/delete branches in; a clone failure logs and
+                // skips this sweep (retried next cycle) rather than aborting.
+                var cloneFailure = await ReviewBotCheckout
+                    .EnsureCheckoutAsync(hostGit, storeUrl, sweeperRepoRoot, sweepLogger, ct)
+                    .ConfigureAwait(false);
+                if (cloneFailure is not null)
+                {
+                    sweepLogger.LogWarning(
+                        "PR-lifecycle sweep skipped: store checkout unavailable ({Kind}): {Message}",
+                        cloneFailure.Kind, cloneFailure.Message);
+                    return [];
+                }
+
+                var rows = await store.ListReviewedPrsAsync(ct).ConfigureAwait(false);
+                IReadOnlyList<ReviewedPr> reviewed =
+                    [.. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).Where(pr => pr is not null).Select(pr => pr!)];
+                return reviewed;
+            },
+            (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
+            branchManager,
+            sweeperRepoRoot,
+            "main",
+            daemonOptions.MergeNotesBranchOnClose,
+            loggerFactory.CreateLogger<PrLifecycleSweeper>(),
+            extractKnowledgeAsync);
+    });
+
+    // Reads a merged PR's accumulated review notes off its persistent notes branch (they live on
+    // origin/<branch>, not yet on the sweeper checkout's default branch) and assembles them as the
+    // knowledge-extraction input. The notes dir mirrors the branch slug (review/<p>/<slug>/<pr> ->
+    // PRs/<p>/<slug>/<pr>). Best-effort: an unreadable/absent notes tree yields a short placeholder rather
+    // than throwing — extraction must never block the lifecycle (design §6).
+    static async Task<string> ReadPrNotesFromBranchAsync(
+        GitRunner git, string repoRoot, string branch, CancellationToken ct)
+    {
+        _ = await git.RunAsync(["-C", repoRoot, "fetch", "origin"], repoRoot, ct).ConfigureAwait(false);
+
+        var remoteRef = $"origin/{branch}";
+        var notesRelPath = branch.StartsWith("review/", StringComparison.Ordinal)
+            ? "PRs/" + branch["review/".Length..]
+            : branch;
+
+        var listed = await git
+            .RunAsync(["-C", repoRoot, "ls-tree", "-r", "--name-only", remoteRef, "--", notesRelPath], repoRoot, ct)
+            .ConfigureAwait(false);
+        if (!listed.Succeeded || string.IsNullOrWhiteSpace(listed.Stdout))
+        {
+            return $"(no accumulated notes found under {notesRelPath})";
+        }
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var file in listed.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var show = await git.RunAsync(["-C", repoRoot, "show", $"{remoteRef}:{file}"], repoRoot, ct)
+                .ConfigureAwait(false);
+            if (show.Succeeded)
+            {
+                _ = builder.Append("## ").Append(file).Append('\n').Append(show.Stdout).Append("\n\n");
+            }
+        }
+
+        var assembled = builder.ToString().Trim();
+        return assembled.Length == 0 ? $"(no readable notes under {notesRelPath})" : assembled;
+    }
+}
+
 // The stage executor (consumer of the four agent/posting flags) and the orchestrator that sequences it.
 builder.Services.AddSingleton<IReviewStageExecutor, DaemonReviewStageExecutor>();
 builder.Services.AddSingleton<PrOrchestrator>();
-
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -232,7 +404,10 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetServices<IPrProvider>(),
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
-    sp.GetRequiredService<ILogger<PrPollingService>>()));
+    sp.GetRequiredService<ILogger<PrPollingService>>(),
+    // The PR-lifecycle sweep runs on the poller cadence when the pooled path registered a sweeper; the
+    // GetService is null otherwise, so the poller keeps polling with no sweep (design §4.5).
+    sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth

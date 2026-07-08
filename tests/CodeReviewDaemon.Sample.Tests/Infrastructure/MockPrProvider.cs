@@ -31,6 +31,9 @@ internal sealed class MockPrProvider : IPrProvider
     /// <summary>Number of times the provider was polled.</summary>
     public int CallCount { get; private set; }
 
+    /// <summary>Lifecycle returned by <see cref="GetPrStateAsync"/>; defaults to Open, settable per test.</summary>
+    public PrLifecycle PrState { get; set; } = PrLifecycle.Open;
+
     public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         CallCount++;
@@ -41,4 +44,7 @@ internal sealed class MockPrProvider : IPrProvider
             NextCursor = _nextCursor,
         });
     }
+
+    public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+        Task.FromResult(PrState);
 }

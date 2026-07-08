@@ -32,7 +32,9 @@ public sealed class HostRetentionTests
         var sandboxFileSystem = new FakeSandboxFileSystem();
 
         var host = new FakeSandboxCommandRunner()
-            .OnArgvContains("rev-parse main", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+            .OnArgvContains(
+                "rev-parse review/github/achieveai-lmdotnettools/118",
+                new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
         var hostFileSystem = new FakeSandboxFileSystem()
             .Seed("/host/reviewbot/README.md", "# ReviewBot")
             .Seed("/host/reviewbot/PRs/.gitkeep", string.Empty)
@@ -61,7 +63,12 @@ public sealed class HostRetentionTests
         var hostCommands = host.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         var sandboxCommands = sandbox.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
 
-        hostCommands.Should().Contain(c => c.Contains("push origin main"), "the retention push must run on the host runner");
+        hostCommands.Should().Contain(
+            c => c.Contains("push origin review/github/achieveai-lmdotnettools/118"),
+            "the retention push must run on the host runner");
+        hostCommands.Should().NotContain(
+            c => c.Contains("branch -D review/") || c.Contains("push origin --delete review/"),
+            "a per-review commit keeps the review branch; only a PR-close op merges or deletes it");
         sandboxCommands.Should().NotContain(
             c => c.Contains("AchieveAiReviews") || c.Contains("checkout -B review/"),
             "the sandbox runner (shared with the untrusted review agent) must never see ReviewBot git traffic");
