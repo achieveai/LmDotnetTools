@@ -69,7 +69,8 @@ Workspace Agent mode is configured through the **`SandboxGateway`** section of
 | `Workspace` | — | Workspace path **relative to `WorkspaceBasePath`**, mounted as the sandbox workspace. |
 | `WorkspaceBasePath` | — | Host base directory the gateway resolves the workspace under (becomes `WORKSPACE_BASE_PATH` when the gateway is spawned). |
 | `WorkspacePath` | — | **Optional absolute path** to the workspace dir. When set it **overrides** `WorkspaceBasePath` + `Workspace`: the app uses its parent as `WORKSPACE_BASE_PATH` and its folder name as the workspace, and creates it if missing. The simplest way to point the sandbox at any folder (see below). |
-| `AppId` | `lmstreaming-sample` | App id sent in the sandbox-create request. |
+| `AppId` | `lmstreaming-sample` | App id sent in the sandbox-create request and, under gateway auth enforcement, as the `X-Sbx-App-Id` bearer header. |
+| `AppKey` | — | Base64 per-app secret (`openssl rand -base64 32`). When set it is sent as `X-Sbx-App-Key` on every gateway request so an `AUTH_ENFORCE` gateway can authenticate this app (see [Gateway authentication](#gateway-authentication)). Leave empty for an unenforced gateway. **SECRET — do not commit a real value.** |
 | `AutoSpawn` | `true` | If a healthy gateway is already running at `BaseUrl`, adopt it; otherwise spawn `GatewayExePath`. |
 | `GatewayExePath` | — | Absolute path to the built `mcp-gateway.exe`, used for auto-spawn. |
 | `AgentCliPath` | — | Absolute path to the built `agent-cli.exe` (becomes `LOCAL_AGENT_CLI_PATH` when the gateway is spawned). |
@@ -98,6 +99,26 @@ With the example above, the mounted workspace is `WorkspaceBasePath` + `Workspac
 `B:\sandbox-workspaces\demo` (the app **creates the directory if it does not exist**).
 Point `Workspace`/`WorkspaceBasePath` at a **dedicated** folder rather than a real source repo —
 the local backend runs unsandboxed, so the agent has read/write access to whatever you mount.
+
+### Gateway authentication
+
+Recent gateways enforce **per-app bearer authentication** (gateway ADR 0029). When `AUTH_ENFORCE` is on
+(the gateway's default), every request must carry `X-Sbx-App-Id` + `X-Sbx-App-Key`; the gateway binds the
+app identity from the credential and scopes each sandbox session to that app. This sample sends those
+headers automatically on **all** gateway calls (REST + MCP) whenever `AppKey` is set — set both `AppId` and
+`AppKey`, or neither.
+
+To run against an enforcing gateway:
+
+1. Generate a secret: `openssl rand -base64 32`.
+2. Register it on the **gateway** under this app's id — e.g. `APP_SECRETS=lmstreaming-sample=<base64>` (or an
+   `APP_SECRETS_FILE` JSON `{ "lmstreaming-sample": "<base64>" }`).
+3. Set the same value on this app: `SandboxGateway:AppKey` in config, or the `SandboxGateway__AppKey` env var
+   (keep the real secret out of committed files).
+
+Leave `AppKey` empty to talk to an `AUTH_ENFORCE=off` gateway — the sample then sends no bearer headers, exactly
+as before. (The gateway↔egress-proxy `PROXY_SERVICE_CRED` and its "deploy the proxy first" ordering are
+operator concerns configured on the gateway side, not here.)
 
 ### Use any folder as the workspace
 
