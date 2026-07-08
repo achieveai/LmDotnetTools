@@ -299,6 +299,44 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_degrades_and_does_not_fail_when_the_knowledge_base_read_throws()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        // The KB read (and the re-review notes listing) go through the boot-lifetime sandbox session, which
+        // can 404 ("Session not found") or hiccup. That transport failure must DEGRADE, never fail the
+        // review (design §6). Fault only the KB/notes paths so ContextReady's own reads are unaffected.
+        fixture.FileSystem.ReadFault = path =>
+            path.Contains("KnowledgeBase", StringComparison.Ordinal)
+                ? new InvalidOperationException("Session not found: deadbeef")
+                : null;
+        fixture.FileSystem.ListFault = dir =>
+            dir.Contains("/PRs/", StringComparison.Ordinal)
+                ? new InvalidOperationException("Session not found: deadbeef")
+                : null;
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a KB/notes read failure must degrade, not kill the review (design §6)");
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Prior knowledge (KnowledgeBase/_toc.md)", "the failed KB read is skipped, not prepended");
+    }
+
+    [Fact]
     public async Task Reviewed_leaves_the_input_unchanged_when_the_store_has_no_knowledge_base()
     {
         using var fixture = Fixture.GitHub(

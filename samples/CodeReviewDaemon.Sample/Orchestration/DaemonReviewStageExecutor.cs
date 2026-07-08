@@ -894,7 +894,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return (summary.PrevHeadSha, reviewRound, []);
         }
 
-        var entries = await _fileSystem.ListFilesAsync(notesDir, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<string> entries;
+        try
+        {
+            entries = await _fileSystem.ListFilesAsync(notesDir, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Listing the notes dir goes through the boot-lifetime sandbox session, which can 404/hiccup;
+            // design §6 says re-review context must never fail the review, so degrade to no prior files.
+            _logger.LogWarning(ex, "Listing prior notes files in '{NotesDir}' failed; proceeding without them.", notesDir);
+            return (summary.PrevHeadSha, reviewRound, []);
+        }
+
         IReadOnlyList<string> priorFiles =
         [
             .. entries
@@ -929,7 +941,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var tocPath = PosixJoin(storeRoot, "KnowledgeBase/_toc.md");
-        var toc = await _fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+        string? toc;
+        try
+        {
+            toc = await _fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A missing _toc.md returns null (handled below); but the read itself can THROW — e.g. the
+            // boot-lifetime sandbox session 404s ("Session not found") or the gateway hiccups. Design §6
+            // says the KB prepend must NEVER fail the review, so degrade to "no prior knowledge" and go on.
+            _logger.LogWarning(ex, "Reading KnowledgeBase/_toc.md failed; proceeding without prior knowledge.");
+            return reviewInput;
+        }
+
         if (string.IsNullOrWhiteSpace(toc))
         {
             return reviewInput;
