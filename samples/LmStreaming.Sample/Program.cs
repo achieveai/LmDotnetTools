@@ -176,10 +176,26 @@ try
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
         ?? new SandboxGatewayOptions();
     _ = builder.Services.AddSingleton(sandboxOptions);
+
+    // Every gateway-bound HttpClient gets the per-app bearer handler (ADR 0029) so its REST calls carry
+    // X-Sbx-App-Id/X-Sbx-App-Key under an AUTH_ENFORCE gateway. No-op when no AppKey is configured, so an
+    // unenforced gateway is unaffected.
+    HttpClient GatewayHttpClient(TimeSpan? timeout = null)
+    {
+        var client = new HttpClient(
+            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey) { InnerHandler = new HttpClientHandler() });
+        if (timeout is { } t)
+        {
+            client.Timeout = t;
+        }
+
+        return client;
+    }
+
     _ = builder.Services.AddSingleton(sp => new SandboxGatewayLifetime(
         sandboxOptions,
         sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-        new HttpClient()
+        GatewayHttpClient()
     ));
     _ = builder.Services.AddHostedService(sp => sp.GetRequiredService<SandboxGatewayLifetime>());
 
@@ -190,7 +206,7 @@ try
         sandboxOptions,
         // The gateway is frequently offline; a short timeout fails fast instead of holding the
         // request for the default 100s while the catalog is a best-effort, read-only browse.
-        new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
+        GatewayHttpClient(TimeSpan.FromSeconds(10)),
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
 
@@ -262,7 +278,7 @@ try
         sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
         // Bounds the gateway create/destroy calls; the create-POST runs sync-over-async on the
         // WebSocket request thread, so the 100s default could stall it indefinitely.
-        new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+        GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
         sp.GetRequiredService<AuthSharedSecret>()
     ));
@@ -670,7 +686,7 @@ try
                                 ? BuildHttpMcpServer(
                                     "sandbox",
                                     $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                                    new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId }
+                                    GatewayAuthHeaders.ForMcp(sandboxSession!.SessionId, sandboxOptions.AppId, sandboxOptions.AppKey)
                                 )
                                 : null,
                             workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null
@@ -767,7 +783,7 @@ try
                         filteredRegistry,
                         "sandbox",
                         $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                        new Dictionary<string, string> { ["X-Session-ID"] = sandboxSession!.SessionId },
+                        GatewayAuthHeaders.ForMcp(sandboxSession!.SessionId, sandboxOptions.AppId, sandboxOptions.AppKey),
                         loggerFactory,
                         // Expose sandbox tools under their natural names (bash, edit, …) rather than
                         // sandbox-bash; the gateway is the sole MCP server here, so no collisions.

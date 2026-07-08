@@ -223,7 +223,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 EnableReviewerWrites: writeScope.Enabled,
                 WritableToolAllowList: writeScope.WritableAllow,
                 NotesDir: writeScope.NotesDir,
-                ScratchDir: writeScope.ScratchDir);
+                ScratchDir: writeScope.ScratchDir,
+                // Per-app bearer identity for the agent's MCP calls to the gateway (ADR 0029), read from the
+                // same env as GatewayBaseUrl so the tool-assisted session authenticates as the daemon.
+                AppId: Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "code-review-daemon",
+                AppKey: Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY"));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

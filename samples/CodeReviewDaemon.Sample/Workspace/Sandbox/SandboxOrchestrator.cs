@@ -1,4 +1,5 @@
 using System.Globalization;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -33,6 +34,8 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
 
     private readonly Uri _endpoint;
     private readonly string _sessionId;
+    private readonly string? _appId;
+    private readonly string? _appKey;
     private readonly SandboxLimits _limits;
     private readonly ILogger<SandboxOrchestrator> _logger;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
@@ -43,13 +46,17 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
         string gatewayBaseUrl,
         string sessionId,
         ILogger<SandboxOrchestrator> logger,
-        SandboxLimits? limits = null
+        SandboxLimits? limits = null,
+        string? appId = null,
+        string? appKey = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayBaseUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         _endpoint = new Uri($"{gatewayBaseUrl.TrimEnd('/')}/mcp");
         _sessionId = sessionId;
+        _appId = appId;
+        _appKey = appKey;
         _limits = limits ?? new SandboxLimits();
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -114,10 +121,7 @@ internal sealed class SandboxOrchestrator : ISandboxCommandRunner, IAsyncDisposa
                     {
                         Name = "sandbox",
                         Endpoint = _endpoint,
-                        AdditionalHeaders = new Dictionary<string, string>
-                        {
-                            ["X-Session-ID"] = _sessionId,
-                        },
+                        AdditionalHeaders = GatewayAuthHeaders.ForMcp(_sessionId, _appId, _appKey),
                     });
 
                 _client = await McpClient.CreateAsync(transport, cancellationToken: cancellationToken)

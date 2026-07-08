@@ -145,9 +145,19 @@ public sealed class SandboxGatewayOptions
     }
 
     /// <summary>
-    /// App id sent in the sandbox-create request.
+    /// App id sent in the sandbox-create request and, under gateway auth enforcement, in the
+    /// <c>X-Sbx-App-Id</c> bearer header (see <see cref="GatewayAuthHeaders"/>).
     /// </summary>
     public string AppId { get; set; } = "lmstreaming-sample";
+
+    /// <summary>
+    /// Base64-encoded per-app shared secret paired with <see cref="AppId"/>. When set, it is sent as the
+    /// <c>X-Sbx-App-Key</c> header on every gateway request so an <c>AUTH_ENFORCE</c> gateway can verify the
+    /// app identity (gateway ADR 0029). Left null/blank when the gateway runs unenforced — the client then
+    /// sends no bearer headers, exactly as before.
+    /// <para>SECRET — never log this value.</para>
+    /// </summary>
+    public string? AppKey { get; set; }
 
     /// <summary>
     /// When <c>true</c> and the gateway is not already healthy, spawn it.
