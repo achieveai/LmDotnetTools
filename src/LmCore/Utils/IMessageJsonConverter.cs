@@ -263,6 +263,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "composite";
         }
 
+        if (type == typeof(NotifyMessage))
+        {
+            return "notify";
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -294,6 +299,14 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
         if (element.TryGetProperty("text", out _))
         {
+            // A notification also carries "text" (its rendered envelope), so this guard must run
+            // before the generic text check — otherwise a $type-less notify (e.g. rehydrated from the
+            // conversation store, which persists without $type) would deserialize as a plain TextMessage.
+            if (element.TryGetProperty("notify_kind", out _))
+            {
+                return typeof(NotifyMessage);
+            }
+
             // Check if this is a TextUpdateMessage or a regular TextMessage
             return
                 element.TryGetProperty("isUpdate", out var isUpdateProp) && isUpdateProp.ValueKind == JsonValueKind.True
@@ -401,6 +414,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "server_tool_result" => typeof(ToolCallResultMessage),
             "text_with_citations" => typeof(TextWithCitationsMessage),
             "composite" => typeof(CompositeMessage),
+            "notify" => typeof(NotifyMessage),
             _ => null,
         };
     }
