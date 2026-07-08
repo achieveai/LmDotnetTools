@@ -4,6 +4,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -108,6 +109,9 @@ public sealed class RunCleanupTests
                 $"/workspace/review-run-{run.Id}",
                 new FakeSandboxCommandRunner(),
                 new FakeSandboxFileSystem()));
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            GetOrCreateAsync(run, ct);
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct)
         {

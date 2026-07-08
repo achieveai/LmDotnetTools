@@ -127,6 +127,37 @@ Nested-tag handling lives in `src/LmTestUtils/TestMode/InstructionChainParser.cs
 
 ---
 
+## Wait / Trigger (Park-and-Wake)
+
+Requires `test` or `test-anthropic` mode. The `Wait` / `CancelWait` / `ListWaits` tools are wired into
+LmStreaming.Sample's agent construction **for the mock providers only** (see `Program.cs` —
+`triggerOptions: isTestMode ? new TriggerOptions() : null`). The built-in one-shot `timer` source is
+registered automatically.
+
+When the parent chain calls `Wait`, the run **parks** (the tool returns `Deferred()`): the `Wait`
+tool-call result is persisted with `is_deferred: true` and no further provider request is made until
+the timer fires. Once the `timer` elapses (here after 3s), the runtime resolves the deferred result
+and the loop **auto-resumes** into the next chain turn — no new user message is needed.
+
+Park on a 3-second timer, then auto-resume with a text message:
+<|instruction_start|>{"instruction_chain":[{"id":"arm-wait","id_message":"Arming a 3s timer","messages":[{"tool_call":[{"name":"Wait","args":{"kind":"timer","args":{"delay":"3s"},"timeout":"30s","label":"demo-timer"}}]}]},{"id":"after-wait","id_message":"Resumed after wait","messages":[{"text":"Timer fired — the run resumed automatically after the wait."}]}]}<|instruction_end|>
+
+Expected behavior:
+1. A `Wait` tool-call pill appears; while parked, `GET /api/conversations/{threadId}/messages` shows
+   the `Wait` tool result with `is_deferred: true` (this is the parked state a headless poller asserts).
+2. After ~3s the timer fires, the deferred result resolves (status `fired`), and the run resumes.
+3. Final assistant text: `Timer fired — the run resumed automatically after the wait.`
+
+`timeout` is the required safety ceiling — if it elapses before the timer's `delay`, the wait resolves
+with status `timed_out` instead of `fired`. Keep `delay` short (a few seconds) in demos so the parked
+window is observable but the run still completes promptly.
+
+Sub-agent delegation that itself parks on a wait (parent delegates → sub-agent arms a 2s timer, resumes,
+replies) — combines the nested-chain escaping rule above with the `Wait` tool:
+<|instruction_start|>{"instruction_chain":[{"id":"parent-wait","id_message":"Delegate to a waiting sub-agent","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"sub-arm\",\"messages\":[{\"tool_call\":[{\"name\":\"Wait\",\"args\":{\"kind\":\"timer\",\"args\":{\"delay\":\"2s\"},\"timeout\":\"20s\",\"label\":\"sub-timer\"}}]}]},{\"id\":\"sub-done\",\"messages\":[{\"text\":\"sub-agent resumed after its wait\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent-done","id_message":"Wrap up","messages":[{"text":"Parent done: sub-agent parked, resumed, and replied."}]}]}<|instruction_end|>
+
+---
+
 ## Mode Filtering Test Prompts
 
 Use these to verify that modes correctly restrict available tools.

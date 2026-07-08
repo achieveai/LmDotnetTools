@@ -169,6 +169,22 @@ public class SandboxGatewayOptionsTests
         var rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
         var act = () => options.ResolveWorkspace(rooted);
 
+        // Pin WHICH guard fires: the rooted check must run ahead of the no-base return (pre-PR the
+        // no-base guard threw first with a different message), so this stays sensitive to the reorder.
+        act.Should().Throw<InvalidOperationException>().WithMessage("*must be relative to the workspace base*");
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithTraversalOverride_Throws_EvenWithNoBaseConfigured()
+    {
+        // Defense-in-depth (PR #165 review): a '..' traversal segment is never a valid workspace
+        // identifier, so it is rejected even with no base configured — the no-base path forwards the
+        // leaf straight to the gateway, so this is the client's only containment guard there.
+        var options = new SandboxGatewayOptions();
+
+        var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
+
+
         act.Should().Throw<InvalidOperationException>();
     }
 

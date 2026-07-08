@@ -30,6 +30,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
 
+    /// <summary>
+    /// Test-only seam: when set, <see cref="CreateSubAgent"/> returns this factory's
+    /// <see cref="IMultiTurnAgent"/> instead of building a real <see cref="MultiTurnAgentLoop"/>,
+    /// so a unit test can substitute a fake agent (e.g. one whose <c>SubscribeAsync</c> throws a
+    /// non-cancellation exception) while still going through the real <see cref="SpawnAsync"/>/
+    /// <see cref="MonitorSubAgentAsync"/> plumbing (real gate acquisition, real monitor task).
+    /// That is needed to exercise <see cref="MonitorSubAgentAsync"/>'s defensive terminal
+    /// <c>catch (Exception)</c> path: every exception a real turn execution raises is already
+    /// caught by <see cref="MultiTurnAgentLoop"/>'s own per-run try/catch and surfaces as a normal
+    /// <c>RunCompletedMessage(IsError: true)</c>, which the (already-correct) error branch of
+    /// <see cref="HandleRunCompletionAsync"/> resolves - so that path can't organically reach the
+    /// monitor's own terminal catch. Null (the default) preserves normal production behavior;
+    /// production code never sets this.
+    /// </summary>
+    internal Func<string, SubAgentTemplate, IMultiTurnAgent>? TestAgentFactoryOverride { get; set; }
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -94,8 +110,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 $"reached. Wait for a sub-agent to complete or increase the limit.");
         }
 
+        // One independent release-guard instance for this gate-acquisition epoch (see
+        // GateReleaseGuard) - shared between this method's own failure cleanup below and the
+        // monitor task started further down, so whichever notices the run's end first is the
+        // one that actually releases the slot.
+        var gateGuard = new GateReleaseGuard();
+
         var agentId = Guid.NewGuid().ToString("N")[..12];
-        SubAgentState state;
+        SubAgentState? state = null;
 
         try
         {
@@ -136,7 +158,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
             // the RunCompletedMessage would fire with no subscriber listening.
-            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
 
             // Send the task as user input (triggers first turn)
             _ = await agent.SendAsync(
@@ -148,8 +170,22 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch
         {
-            // Release the gate on spawn-time failure (before the monitor takes ownership).
-            _ = _concurrencyGate.Release();
+            if (state == null)
+            {
+                // Failed before a SubAgentState existed (e.g. CreateSubAgent threw): the
+                // monitor never started, so this guard is the only path that will ever
+                // release the slot.
+                gateGuard.ReleaseOnce(_concurrencyGate);
+            }
+            else
+            {
+                // Failed after the state was registered - possibly after the monitor already
+                // started (e.g. agent.SendAsync threw). Roll back the partial registration so a
+                // failed spawn never lingers in Peek/SendMessage lookups, then cancel + observe
+                // any started run/monitor tasks so they don't leak as orphaned background work.
+                await CleanupFailedSpawnAsync(agentId, name, state, gateGuard);
+            }
+
             throw;
         }
 
@@ -173,6 +209,63 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Parent relay is suppressed (NotifyParentOnCompletion=false) so the result
         // flows back only as this tool result, in the same parent turn.
         return await AwaitCompletionAsync(state, ct);
+    }
+
+    /// <summary>
+    /// Rolls back a spawn that failed after its <see cref="SubAgentState"/> was registered
+    /// (possibly after the monitor already started, e.g. because <c>agent.SendAsync</c> threw):
+    /// removes the partial registration from <see cref="_agents"/>/<see cref="_namesToIds"/>,
+    /// cancels the sub-agent's <see cref="SubAgentState.Cts"/>, and awaits its
+    /// <see cref="SubAgentState.RunTask"/>/<see cref="SubAgentState.MonitorTask"/> (if started)
+    /// so neither leaks as an orphaned, unobserved background task. The concurrency slot itself
+    /// is released via <paramref name="gateGuard"/> - the same, per-epoch
+    /// <see cref="GateReleaseGuard"/> instance the (possibly already-started) monitor holds - so
+    /// this is a no-op if the monitor's own completion/finally path already released it first.
+    /// </summary>
+    private async Task CleanupFailedSpawnAsync(
+        string agentId,
+        string? name,
+        SubAgentState state,
+        GateReleaseGuard gateGuard)
+    {
+        _ = _agents.TryRemove(agentId, out _);
+        if (!string.IsNullOrWhiteSpace(name)
+            && _namesToIds.TryGetValue(name, out var mappedId)
+            && mappedId == agentId)
+        {
+            _ = _namesToIds.TryRemove(name, out _);
+        }
+
+        try
+        {
+            await state.Cts.CancelAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already torn down by a racing path; nothing to cancel.
+        }
+
+        if (state.RunTask != null)
+        {
+            try { await state.RunTask; }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "RunTask faulted during spawn cleanup for sub-agent {AgentId}", agentId);
+            }
+        }
+
+        if (state.MonitorTask != null)
+        {
+            try { await state.MonitorTask; }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "MonitorTask faulted during spawn cleanup for sub-agent {AgentId}", agentId);
+            }
+        }
+
+        gateGuard.ReleaseOnce(_concurrencyGate);
     }
 
     /// <summary>
@@ -264,6 +357,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 $"reached. Cannot resume agent '{state.AgentId}'.");
         }
 
+        // One independent release-guard instance for this gate-acquisition epoch (see
+        // GateReleaseGuard): the previous epoch (the original spawn or an earlier restart)
+        // already released its own slot via its OWN guard instance when that run finished (or
+        // will do so once its still-in-flight monitor task, awaited below, actually exits) - a
+        // fresh instance here, rather than resetting a shared flag in place, means this new
+        // epoch's release can never be conflated with (or spuriously consumed by) that old,
+        // independent one.
+        var gateGuard = new GateReleaseGuard();
+
         try
         {
             // Recover conversation history if a store is available
@@ -309,7 +411,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
-            state.MonitorTask = MonitorSubAgentAsync(state, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
 
             _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
@@ -322,7 +424,43 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch
         {
-            _ = _concurrencyGate.Release();
+            // Cancel + observe any run/monitor tasks started before the failure (e.g.
+            // agent.SendAsync threw after the new monitor was already subscribed) so they
+            // don't leak as orphaned background work. Unlike a failed SpawnAsync, this agent
+            // stays registered in _agents/_namesToIds: it is a pre-existing sub-agent whose
+            // restart attempt failed, not a fresh, partially-registered one to roll back.
+            try
+            {
+                await state.Cts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already torn down by a racing path; nothing to cancel.
+            }
+
+            if (state.RunTask != null)
+            {
+                try { await state.RunTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "RunTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
+            if (state.MonitorTask != null)
+            {
+                try { await state.MonitorTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "MonitorTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
+                }
+            }
+
+            // Idempotent: a no-op if the (now-observed) monitor's own finally already
+            // released the slot first (both hold the SAME gateGuard instance created above).
+            gateGuard.ReleaseOnce(_concurrencyGate);
             throw;
         }
     }
@@ -364,6 +502,47 @@ public sealed class SubAgentManager : IAsyncDisposable
             send_to_parent_failed = state.SendToParentFailed,
             send_to_parent_error = state.SendToParentError,
         });
+    }
+
+    /// <summary>
+    /// Observes a sub-agent's completion by id, returning its final text (or throwing its
+    /// <see cref="SubAgentExecutionException"/> on failure). Used by the sample-app
+    /// SubAgentCompletionTriggerSource so a Wait can observe a background sub-agent.
+    /// <para>
+    /// Observation is NON-DESTRUCTIVE: if the caller's <paramref name="ct"/> fires, this stops
+    /// observing (throws <see cref="OperationCanceledException"/>) but leaves the sub-agent's own
+    /// run untouched — unlike <see cref="AwaitCompletionAsync"/> (the synchronous-spawn path), which
+    /// cancels the sub-agent when the parent turn is abandoned. A trigger observing a
+    /// fire-and-forget background sub-agent must leave it running so its automatic relay can resume
+    /// if the wait is cancelled.
+    /// </para>
+    /// </summary>
+    public Task<string> ObserveCompletionAsync(string agentId, CancellationToken ct)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        // Await the completion latch directly. On caller-cancel this throws without touching
+        // state.Cts, so the sub-agent's run + monitor keep going and its relay resumes.
+        return state.Completion.Task.WaitAsync(ct);
+    }
+
+    /// <summary>
+    /// Sets whether a specific sub-agent's completion is automatically relayed to the parent. A
+    /// trigger source waiting on this sub-agent flips it to <c>false</c> at arm time (so the result
+    /// arrives once, via the trigger envelope, not twice) and MUST restore it to <c>true</c> if the
+    /// wait is cancelled before completion.
+    /// </summary>
+    public void SetNotifyParentOnCompletion(string agentId, bool value)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        state.NotifyParentOnCompletion = value;
     }
 
     /// <summary>
@@ -451,6 +630,12 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? removeTools,
         out IConversationStore? store)
     {
+        if (TestAgentFactoryOverride != null)
+        {
+            store = null;
+            return TestAgentFactoryOverride(agentId, template);
+        }
+
         var providerAgent = template.AgentFactory();
 
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
@@ -578,27 +763,32 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Monitors a sub-agent's output, buffering turn summaries and detecting completion.
     /// Relays completion/error results back to the parent agent.
     /// </summary>
+    /// <param name="state">The sub-agent's state.</param>
+    /// <param name="gateGuard">
+    /// The <see cref="GateReleaseGuard"/> for the gate-acquisition epoch this monitor was
+    /// started for (created by <c>SpawnAsync</c> or <c>RestartRunAsync</c> right after their
+    /// respective <c>_concurrencyGate.WaitAsync</c> succeeded). Passed explicitly, rather than
+    /// read from a shared field on <paramref name="state"/>, so a later restart's own guard can
+    /// never be conflated with this monitor's - see <see cref="GateReleaseGuard"/>.
+    /// </param>
+    /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task MonitorSubAgentAsync(
         SubAgentState state,
+        GateReleaseGuard gateGuard,
         CancellationToken ct)
     {
         string? lastTextContent = null;
-        var gateReleased = false;
 
-        // Release the concurrency slot exactly once per monitor. A single monitor can
-        // observe multiple RunCompletedMessages — a background sub-agent continued in
-        // place via SendMessage runs again under the same monitor — but the slot was
+        // The concurrency slot is released exactly once per gate-acquisition epoch via
+        // gateGuard.ReleaseOnce (an Interlocked-guarded no-op past the first call). A single
+        // monitor can observe multiple RunCompletedMessages - a background sub-agent continued
+        // in place via SendMessage runs again under the same monitor - but the slot was
         // acquired once (at spawn/restart), so it must be released once: on the first
         // completion, and never again. Releasing per-completion would over-release the
-        // semaphore (eventually SemaphoreFullException) and break the concurrency limit.
-        void ReleaseGateOnce()
-        {
-            if (!gateReleased)
-            {
-                gateReleased = true;
-                _ = _concurrencyGate.Release();
-            }
-        }
+        // semaphore (eventually SemaphoreFullException) and break the concurrency limit. The
+        // same gateGuard instance is also held by SpawnAsync/RestartRunAsync's own failure
+        // cleanup, so whichever path notices termination first is the one that actually
+        // releases it.
 
         // Subscribers receive raw streaming deltas: the publishing middleware runs
         // upstream of the joiner, so the consolidated TextMessage never reaches here —
@@ -651,8 +841,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 if (msg is RunCompletedMessage rcm)
                 {
                     state.LastResult = lastTextContent;
+
+                    // Release the slot BEFORE the (possibly slow/backpressured) parent
+                    // relay in HandleRunCompletionAsync: the run itself is done, so a
+                    // blocked SendToParentAsync must not hold up a fresh sub-agent spawn
+                    // that's waiting on the concurrency gate. Idempotent, so the fallback
+                    // release in the finally block below is a safe no-op afterward.
+                    gateGuard.ReleaseOnce(_concurrencyGate);
                     await HandleRunCompletionAsync(state, rcm, lastTextContent);
-                    ReleaseGateOnce();
                     lastTextContent = null;
                     textGenerationId = null;
                     _ = textBuilder.Clear();
@@ -675,14 +871,20 @@ public sealed class SubAgentManager : IAsyncDisposable
                 ex,
                 "Error monitoring sub-agent {AgentId}",
                 state.AgentId);
+
+            // Fault the completion latch: the run ended here without ever producing a
+            // RunCompletedMessage, so nothing else will resolve it, and an
+            // AwaitCompletionAsync/ObserveCompletionAsync waiter would otherwise hang
+            // forever. TryCompleteWithException is a no-op if already resolved.
+            _ = state.TryCompleteWithException(ex);
         }
         finally
         {
             // Fallback: if no completion was ever handled (the stream ended, was
             // cancelled, or faulted before any RunCompletedMessage), the slot still
-            // needs releasing. ReleaseGateOnce is idempotent, so this is a no-op when
+            // needs releasing. ReleaseOnce is idempotent, so this is a no-op when
             // a completion already released it.
-            ReleaseGateOnce();
+            gateGuard.ReleaseOnce(_concurrencyGate);
         }
     }
 
@@ -695,9 +897,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         RunCompletedMessage rcm,
         string? lastTextContent)
     {
-        // The concurrency slot is released by the monitor (ReleaseGateOnce), exactly once
-        // per monitor lifetime — not here, because a single monitor may handle several
-        // completions when a background sub-agent is continued in place via SendMessage.
+        // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
+        // once per gate-acquisition epoch — not here, because a single monitor may handle
+        // several completions when a background sub-agent is continued in place via SendMessage.
         if (rcm.IsError)
         {
             state.Status = SubAgentStatus.Error;

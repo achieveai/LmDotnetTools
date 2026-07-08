@@ -10,6 +10,35 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class DaemonAgentFactoryTests
 {
     [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_bot_name_into_the_identity_and_self_reference()
+    {
+        // The daemon prepends "[BotName]" to the POSTED comment; injecting bot_name here lets the review
+        // BODY self-identify with the SAME name instead of a label the model invents ad-hoc.
+        var vars = new Dictionary<string, object>
+        {
+            ["bot_name"] = "Revobot",
+            ["checkout_root"] = "/workspace/target",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("You are Revobot,"); // identity line
+        prompt.Should().Contain("use the name Revobot"); // self-reference directive
+        prompt.Should().NotContain("You are ,"); // never render an empty name
+    }
+
+    [Fact]
+    public void CreateReviewProfile_defaults_the_bot_name_when_no_variables_are_supplied()
+    {
+        // The variable-less overload (used by the declarative-profile tests) must still render a clean
+        // identity line rather than "You are , an …".
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("You are Revobot,");
+        prompt.Should().NotContain("You are ,");
+    }
+
+    [Fact]
     public void CreateReviewProfile_has_stable_identity_and_a_system_prompt()
     {
         var profile = DaemonAgentFactory.CreateReviewProfile();
@@ -44,6 +73,65 @@ public sealed class DaemonAgentFactoryTests
         first.SystemPrompt.Should().Be(second.SystemPrompt);
         first.EnabledTools.Should().BeEquivalentTo(second.EnabledTools);
         first.EnabledBuiltInTools.Should().BeEquivalentTo(second.EnabledBuiltInTools);
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_rereview_section_and_write_convention()
+    {
+        // A re-review is told it's a re-review, sees the previously-reviewed commit and the current
+        // head, is pointed at its own prior notes files, and is told which numbered files to write
+        // this round (round 02, since one prior round already completed).
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["is_rereview"] = true,
+            ["prev_commit"] = "abc123",
+            ["new_commit"] = "def456",
+            ["review_round"] = "02",
+            ["has_prior_files"] = true,
+            ["prior_files"] = "PR_Context_01.md\nPR_Findings_01.md",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().MatchRegex("(?i)RE-REVIEW");
+        prompt.Should().Contain("round 02");
+        prompt.Should().Contain("abc123");
+        prompt.Should().Contain("def456");
+        prompt.Should().Contain("PR_Findings_01.md");
+        prompt.Should().Contain("PR_Context_02.md"); // write-convention names this round's context file
+        prompt.Should().Contain("PR_Findings_02.md"); // and this round's findings file
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_omits_rereview_section_on_the_first_review()
+    {
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["is_rereview"] = false,
+            ["prev_commit"] = string.Empty,
+            ["new_commit"] = "def456",
+            ["review_round"] = "01",
+            ["has_prior_files"] = false,
+            ["prior_files"] = string.Empty,
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().NotMatchRegex("(?i)RE-REVIEW"); // no re-review section on a first review
+        prompt.Should().NotContain("abc123");
+        prompt.Should().Contain("PR_Context_01.md"); // the write-convention still names round 01
+        prompt.Should().Contain("PR_Findings_01.md");
+        prompt.Should().NotMatchRegex(@"\{\{|\}\}"); // no leftover Scriban syntax
     }
 
     [Fact]
@@ -103,21 +191,109 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
-    public void CreateJudgeProfile_and_CreateKnowledgeProfile_have_stable_ids_and_gating()
+    public void ReviewProfile_Prompt_InstructsConsultingTheKnowledgeBase()
     {
-        // P4.4 — the executor feeds these to the live agent loop only when the judge / knowledge flags
-        // are enabled. Each is a plain declaration: stable id, non-empty prompt, no built-ins, deferred
-        // MCP allow-list.
+        // Task 3 (design §3) — the reviewer consults the Knowledge Base carried in the checkout: Read the
+        // _toc.md first, Grep/Read the entries relevant to the changed files, and call out when the PR
+        // contradicts a recorded invariant.
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("KnowledgeBase"); // consult the KB in the checkout
+        prompt.Should().Contain("_toc.md"); // start from the table of contents
+        prompt.Should().MatchRegex("(?i)contradict"); // flag contradictions with known invariants
+        prompt.Should().MatchRegex("(?i)invariant");
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_concrete_workspace_layout()
+    {
+        // The daemon YAML/Scriban prompt template (Prompts/daemon-prompts.yaml) templates the run's
+        // concrete checkout/store/notes paths into the review agent's system prompt, so it is TOLD exactly
+        // where to read and where to write instead of guessing.
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/store/repos/Foo",
+            ["has_store"] = true,
+            ["store_root"] = "/workspace/store",
+            ["has_notes"] = true,
+            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("/workspace/store/repos/Foo");
+        prompt.Should().Contain("cross-repo store at /workspace/store");
+        prompt.Should().Contain("/workspace/store/PRs/github/acme/1");
+        prompt.Should().MatchRegex("(?i)only writable location");
+    }
+
+    [Fact]
+    public void CreateReviewProfile_with_variables_omits_store_and_notes_sentences_when_absent()
+    {
+        var vars = new Dictionary<string, object>
+        {
+            ["checkout_root"] = "/workspace/target",
+            ["has_store"] = false,
+            ["store_root"] = string.Empty,
+            ["has_notes"] = false,
+            ["notes_dir"] = string.Empty,
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("/workspace/target"); // the checkout root still renders
+        prompt.Should().NotContain("cross-repo store at"); // the has_store sentence is omitted
+        prompt.Should().NotMatchRegex("(?i)only writable location"); // the has_notes sentence is omitted
+        prompt.Should().NotMatchRegex(@"\{\{|\}\}"); // no leftover Scriban syntax
+    }
+
+    [Fact]
+    public void CreateVariantProfile_with_variables_renders_the_variant_prompt_through_scriban()
+    {
+        // The A/B comparison arm's prompt can carry the same {{ }} placeholders as the primary review
+        // template; the executor renders it with the same variables dictionary.
+        var variant = new ReviewVariant(
+            VariantId: "b",
+            ModelId: "anthropic/claude-haiku-4-5",
+            SystemPrompt: "Review tersely. Workspace: {{ checkout_root }}.",
+            CanWrite: false);
+        var vars = new Dictionary<string, object> { ["checkout_root"] = "/workspace/target" };
+
+        var profile = DaemonAgentFactory.CreateVariantProfile(variant, vars);
+
+        profile.SystemPrompt.Should().Be("Review tersely. Workspace: /workspace/target.");
+    }
+
+    [Fact]
+    public void CreateJudgeProfile_has_a_stable_id_and_gating()
+    {
+        // P4.4 — the executor feeds this to the live agent loop only when the judge flag is enabled. It is
+        // a plain declaration: stable id, non-empty prompt, no built-ins, deferred MCP allow-list.
         var judge = DaemonAgentFactory.CreateJudgeProfile();
         judge.Id.Should().Be(DaemonAgentFactory.JudgeProfileId);
         judge.SystemPrompt.Should().NotBeNullOrWhiteSpace();
         judge.EnabledBuiltInTools.Should().BeEmpty();
         judge.EnabledTools.Should().BeNull();
+    }
 
-        var knowledge = DaemonAgentFactory.CreateKnowledgeProfile();
-        knowledge.Id.Should().Be(DaemonAgentFactory.KnowledgeProfileId);
-        knowledge.SystemPrompt.Should().NotBeNullOrWhiteSpace();
-        knowledge.EnabledBuiltInTools.Should().BeEmpty();
-        knowledge.EnabledTools.Should().BeNull();
+    [Fact]
+    public void CreateKnowledgeExtractionProfile_carries_the_gate_and_marker_contract()
+    {
+        // Task 4 (design §1/§2) — the at-close extraction profile: gate sentinel + the header markers the
+        // daemon parses, and an explicit "do not write frontmatter" instruction (the daemon injects it).
+        var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+
+        profile.Id.Should().Be(DaemonAgentFactory.KnowledgeExtractionProfileId);
+        profile.EnabledBuiltInTools.Should().BeEmpty();
+        profile.EnabledTools.Should().BeNull();
+
+        var prompt = profile.SystemPrompt;
+        prompt.Should().Contain("NO_KNOWLEDGE"); // the gate sentinel
+        prompt.Should().Contain("## SCOPE:");
+        prompt.Should().Contain("## TITLE:");
+        prompt.Should().Contain("## TAGS:");
+        prompt.Should().Contain("## UPDATES:");
+        prompt.Should().MatchRegex("(?i)frontmatter"); // the model must NOT write frontmatter
+        prompt.Should().MatchRegex("(?i)durable");
     }
 }

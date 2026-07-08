@@ -77,12 +77,13 @@ public sealed class SandboxGatewayOptions
     /// Resolves a per-workspace directory leaf into base/leaf/full-path. When
     /// <paramref name="relPathOverride"/> is null/whitespace this is identical to
     /// <see cref="ResolveWorkspace()"/>. Otherwise <paramref name="relPathOverride"/> is treated as
-    /// the workspace leaf. A rooted override is always rejected (via
-    /// <see cref="InvalidOperationException"/>) — a workspace identifier is never an absolute path.
+    /// the workspace leaf. A rooted override, or one containing a <c>..</c> traversal segment, is
+    /// always rejected (via <see cref="InvalidOperationException"/>) regardless of whether a base is
+    /// configured — a workspace identifier is never an absolute path and never traverses upward.
     /// <para>
     /// If a local base is configured (<see cref="WorkspaceBasePath"/>/<see cref="WorkspacePath"/>),
-    /// the leaf is resolved under it and rejected when it escapes the base (e.g. <c>"../evil"</c>), so
-    /// a chosen workspace can never mount a directory outside the configured base. If NO base is
+    /// the leaf is resolved under it and additionally rejected if it escapes the base, so a chosen
+    /// workspace can never mount a directory outside the configured base. If NO base is
     /// configured, resolution returns just the leaf with a null base and null full path: the gateway
     /// may be remote, or root the workspace under its own per-app base (ADR 0029), so the client
     /// forwards the leaf and lets the gateway own directory creation instead of resolving/creating a
@@ -104,6 +105,19 @@ public sealed class SandboxGatewayOptions
                 $"Workspace directory '{relPathOverride}' must be relative to the workspace base."
             );
         }
+
+        // Defense-in-depth: a workspace identifier never legitimately contains a parent-directory
+        // traversal segment. Reject '..' regardless of whether a base is configured — on the no-base
+        // path the leaf is forwarded straight to the (possibly remote/permissive) gateway, so this is
+        // the client's only containment guard there; with a base, it fails fast before the escape
+        // check below would catch the same thing.
+        if (Array.Exists(relPathOverride.Split('/', '\\'), segment => segment == ".."))
+        {
+            throw new InvalidOperationException(
+                $"Workspace directory '{relPathOverride}' must not contain '..' path segments."
+            );
+        }
+
 
         var (basePath, _, _) = ResolveWorkspace();
         if (string.IsNullOrWhiteSpace(basePath))
@@ -132,15 +146,17 @@ public sealed class SandboxGatewayOptions
     }
 
     /// <summary>
-    /// App id sent in the sandbox-create request.
+    /// App id sent in the sandbox-create request and, under gateway auth enforcement, in the
+    /// <c>X-Sbx-App-Id</c> bearer header (see <see cref="GatewayAuthHeaders"/>).
     /// </summary>
     public string AppId { get; set; } = "lmstreaming-sample";
 
     /// <summary>
-    /// Base64-encoded app secret the gateway requires alongside <see cref="AppId"/> (ADR 0029),
-    /// sent as the <c>X-Sbx-App-Key</c> header. SECRET — never logged. <c>null</c>/blank means no
-    /// credential is configured, which is only valid while the gateway runs with
-    /// <c>AUTH_ENFORCE=off</c> (the keyless dev path).
+    /// Base64-encoded per-app shared secret paired with <see cref="AppId"/>. When set, it is sent as the
+    /// <c>X-Sbx-App-Key</c> header on every gateway request so an <c>AUTH_ENFORCE</c> gateway can verify the
+    /// app identity (gateway ADR 0029). Left null/blank when the gateway runs unenforced — the client then
+    /// sends no bearer headers, exactly as before.
+    /// <para>SECRET — never log this value.</para>
     /// </summary>
     public string? AppKey { get; set; }
 

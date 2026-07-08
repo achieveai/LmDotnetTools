@@ -15,6 +15,7 @@ internal static class SchemaMigrations
     public static readonly IReadOnlyList<Migration> All =
     [
         new Migration(1, V1Sql),
+        new Migration(2, V2Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -99,5 +100,16 @@ internal static class SchemaMigrations
             payload                TEXT NOT NULL,
             created_at             TEXT NOT NULL
         );
+        """;
+
+    // ── v2: persist the confidentiality trust signals (Task 17, design §6 Risk B) ──────────────────
+    // review_run.IsForkPr / IsTargetRepoPublic feed the cross-repo co-location gate. Both default 1
+    // (true = fail closed): a pre-existing row (and any row nothing has positively marked as same-org /
+    // private-target) reloads as untrusted, matching the model's in-memory defaults so a resumed run
+    // never co-locates the sibling private submodule on the strength of a lost signal. Booleans are
+    // stored as INTEGER 0/1 (SQLite has no native bool).
+    private const string V2Sql = """
+        ALTER TABLE review_run ADD COLUMN is_fork_pr            INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE review_run ADD COLUMN is_target_repo_public INTEGER NOT NULL DEFAULT 1;
         """;
 }

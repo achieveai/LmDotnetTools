@@ -22,6 +22,22 @@ public class HostGitCommandRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_WorkingDirectoryMissing_FailsGracefullyInsteadOfThrowing()
+    {
+        // Reproduces the sweeper's first-run probe: the checkout dir doesn't exist yet, so
+        // Process.Start (which requires an existing WorkingDirectory) must never be reached.
+        var missingDir = Path.Combine(_dir, "not-yet-cloned");
+        var runner = new HostGitCommandRunner(_ => Task.FromResult<string?>("t"), NullLogger<HostGitCommandRunner>.Instance);
+
+        var result = await runner.RunAsync(
+            new SandboxCommand(["git", "rev-parse", "--is-inside-work-tree"], missingDir),
+            default);
+
+        result.Succeeded.Should().BeFalse();
+        result.Stderr.Should().Contain(missingDir);
+    }
+
+    [Fact]
     public async Task HostFileSystem_WriteThenRead_RoundTrips()
     {
         var fs = new HostFileSystem();

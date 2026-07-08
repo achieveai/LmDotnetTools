@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -34,7 +35,7 @@ public class ReviewSessionProvisionerTests
     public async Task GetOrCreateAsync_SameRun_ReusesOneSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance);
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
 
         var a = await provisioner.GetOrCreateAsync(Run(), default);
         var b = await provisioner.GetOrCreateAsync(Run(), default);
@@ -49,12 +50,64 @@ public class ReviewSessionProvisionerTests
     public async Task DestroyAsync_TearsDownTheRunSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance);
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
 
         _ = await provisioner.GetOrCreateAsync(Run(), default);
         await provisioner.DestroyAsync(Run(), default);
 
         fake.DestroyedWorkspaceIds.Should().Contain("review-run-7");
+    }
+
+    [Fact]
+    public async Task GetOrCreateForSlotAsync_MountsTheSlotRelativeToTheWorkspaceBase()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        var slot = new ReviewSlot(
+            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+
+        var session = await provisioner.GetOrCreateForSlotAsync(Run(), slot, default);
+
+        session.Should().NotBeNull();
+        fake.LastRef.Should().NotBeNull();
+        // The session is still keyed by the per-run workspace id, but the MOUNTED directory is the slot's
+        // host path relative to the base, forward-slashed — so /workspace becomes the slot itself.
+        fake.LastRef!.Id.Should().Be("review-run-7");
+        fake.LastRef.DirectoryRelPath.Should().Be("review-pool/slot-0");
+    }
+
+    [Fact]
+    public async Task GetOrCreateForSlotAsync_FallsBackToPerRunMount_WhenNoWorkspaceBaseConfigured()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: null);
+        var slot = new ReviewSlot(
+            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+
+        var session = await provisioner.GetOrCreateForSlotAsync(Run(), slot, default);
+
+        session.Should().NotBeNull();
+        // No base configured → the slot cannot be expressed under it, so it degrades to the per-run mount:
+        // DirectoryRelPath is the review-run-{id} id, NOT the slot leaf.
+        fake.LastRef!.DirectoryRelPath.Should().Be("review-run-7");
+    }
+
+    [Fact]
+    public async Task GetOrCreateForSlotAsync_FallsBackToPerRunMount_WhenSlotEscapesTheWorkspaceBase()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        // The slot lives OUTSIDE the configured base, so mounting it at /workspace would escape the base —
+        // the provisioner refuses and degrades to the per-run mount rather than throwing.
+        var slot = new ReviewSlot(0, "/other/slot-0", "/other/slot-0/store", "/other/slot-0/scratch");
+
+        var session = await provisioner.GetOrCreateForSlotAsync(Run(), slot, default);
+
+        session.Should().NotBeNull();
+        fake.LastRef!.DirectoryRelPath.Should().Be("review-run-7");
     }
 
     /// <summary>
@@ -71,8 +124,13 @@ public class ReviewSessionProvisionerTests
 
         public List<string> DestroyedWorkspaceIds { get; } = [];
 
+        /// <summary>The most recent <see cref="WorkspaceRef"/> the provisioner asked to mount — lets a test
+        /// assert the session key (<c>Id</c>) and the mounted directory (<c>DirectoryRelPath</c>).</summary>
+        public WorkspaceRef? LastRef { get; private set; }
+
         public Task<SandboxSession> GetOrCreateLiveSessionAsync(WorkspaceRef workspaceRef, CancellationToken ct)
         {
+            LastRef = workspaceRef;
             if (!_sessions.TryGetValue(workspaceRef.Id, out var session))
             {
                 CreateCount++;

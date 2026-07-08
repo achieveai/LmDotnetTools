@@ -107,11 +107,13 @@ internal sealed class ReviewStore : IDisposable
             INSERT OR IGNORE INTO review_run (
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
-                feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state, created_at, updated_at)
+                feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
+                is_fork_pr, is_target_repo_public, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
-                $flags, $stage, $workflow, $prState, $now, $now);
+                $flags, $stage, $workflow, $prState,
+                $isForkPr, $isTargetRepoPublic, $now, $now);
             """;
         _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", run.PrId);
@@ -130,6 +132,8 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$stage", run.Stage.ToString());
         _ = insert.Parameters.AddWithValue("$workflow", run.WorkflowStatus.ToString());
         _ = insert.Parameters.AddWithValue("$prState", run.PrLifecycleState.ToString());
+        _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
+        _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
@@ -176,6 +180,82 @@ internal sealed class ReviewStore : IDisposable
         _ = command.Parameters.AddWithValue("$now", UtcNow());
         _ = command.Parameters.AddWithValue("$id", id);
         _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Looks back over prior <c>review_run</c> rows for the same (repoId, prId), excluding
+    /// <paramref name="excludeRunId"/> (the run currently being processed), to give a re-review its
+    /// context: the head sha it was last reviewed at, and how many rounds have completed so far. Only
+    /// the PRIMARY variant counts — the B arm of an A/B comparison is diff-only and shares no notes
+    /// dir, so it must not inflate the round count or be mistaken for "the" prior review. A run only
+    /// counts once it reached a stage that actually produced review output (<see cref="ReviewStage.Reviewed"/>,
+    /// <see cref="ReviewStage.Judged"/>, or <see cref="ReviewStage.Posted"/>); a run stuck at
+    /// <see cref="ReviewStage.Discovered"/> or <see cref="ReviewStage.ContextReady"/> never reviewed
+    /// anything and must not count.
+    /// </summary>
+    public PriorReviewSummary GetPriorReviewSummary(long repoId, string prId, long excludeRunId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT head_sha
+            FROM review_run
+            WHERE repo_id = $repoId AND pr_id = $prId AND variant_id = $variant
+              AND id != $excludeRunId
+              AND stage IN ('Reviewed', 'Judged', 'Posted')
+            ORDER BY id DESC;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$excludeRunId", excludeRunId);
+        using var reader = command.ExecuteReader();
+
+        string? prevHeadSha = null;
+        var priorReviewCount = 0;
+        while (reader.Read())
+        {
+            prevHeadSha ??= reader.GetString(reader.GetOrdinal("head_sha"));
+            priorReviewCount++;
+        }
+
+        return new PriorReviewSummary(prevHeadSha, priorReviewCount);
+    }
+
+    /// <summary>Stable id of the primary (non-comparison) review variant — see <see cref="GetPriorReviewSummary"/>.</summary>
+    private const string PrimaryVariantId = "primary";
+
+    /// <summary>
+    /// Returns one row per PR that has at least one <c>review_run</c> (DISTINCT over the reviewed
+    /// (repo, pr) pairs — multiple runs, variants, or head shas for the same PR collapse to a single
+    /// row). Consumed by the PR-lifecycle sweeper to enumerate the PRs it must re-poll for close/merge
+    /// transitions; the caller derives the per-PR branch name itself.
+    /// </summary>
+    public async Task<IReadOnlyList<ReviewedPrRow>> ListReviewedPrsAsync(CancellationToken cancellationToken)
+    {
+        var results = new List<ReviewedPrRow>();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id
+            FROM review_run rr
+            JOIN repo r ON r.id = rr.repo_id;
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var repo = new RepoIdentity
+            {
+                Provider = reader.GetString(reader.GetOrdinal("provider")),
+                OrgOrOwner = reader.GetString(reader.GetOrdinal("org_or_owner")),
+                Project = GetNullableString(reader, "project"),
+                RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
+                RepoStableId = GetNullableString(reader, "repo_stable_id"),
+            };
+            results.Add(new ReviewedPrRow(repo, repo.Provider, reader.GetString(reader.GetOrdinal("pr_id"))));
+        }
+
+        return results;
     }
 
     // ── poll_cursor (§12) ────────────────────────────────────────────────────────────────────────
@@ -410,6 +490,8 @@ internal sealed class ReviewStore : IDisposable
         Stage = Enum.Parse<ReviewStage>(reader.GetString(reader.GetOrdinal("stage"))),
         WorkflowStatus = Enum.Parse<WorkflowStatus>(reader.GetString(reader.GetOrdinal("workflow_status"))),
         PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
+        IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
+        IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
     };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
@@ -433,3 +515,17 @@ internal sealed class ReviewStore : IDisposable
 
     public void Dispose() => _connection.Dispose();
 }
+
+/// <summary>
+/// A PR that has been reviewed at least once, as enumerated by <see cref="ReviewStore.ListReviewedPrsAsync"/>
+/// for the PR-lifecycle sweeper. Carries the repo <paramref name="Repo"/> and its <paramref name="Provider"/>
+/// (the provider to poll) plus the external <paramref name="PrId"/>; the caller derives any branch name.
+/// </summary>
+internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId);
+
+/// <summary>
+/// The re-review context for a PR, as computed by <see cref="ReviewStore.GetPriorReviewSummary"/>:
+/// the head sha of the most recently completed PRIMARY-variant review (<c>null</c> when this PR has
+/// never completed a review), and how many rounds have completed so far.
+/// </summary>
+internal sealed record PriorReviewSummary(string? PrevHeadSha, int PriorReviewCount);

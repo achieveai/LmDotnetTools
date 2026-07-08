@@ -41,4 +41,14 @@ internal sealed class RecordingStageExecutor : IReviewStageExecutor
         ExecutedStages.Add(stage);
         return Task.CompletedTask;
     }
+
+    /// <summary>Records lease releases the orchestrator requested (this double leases no real slots, so it
+    /// simply counts the calls). Lets a test assert the orchestrator's terminal <c>finally</c> ran.</summary>
+    public int ReleaseCount { get; private set; }
+
+    public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken)
+    {
+        ReleaseCount++;
+        return Task.CompletedTask;
+    }
 }

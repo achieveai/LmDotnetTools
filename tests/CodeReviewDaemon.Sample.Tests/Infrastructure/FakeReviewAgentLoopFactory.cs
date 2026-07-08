@@ -23,6 +23,11 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Profile ids passed to <see cref="Create"/>, in call order.</summary>
     public List<string> CreatedProfileIds { get; } = [];
 
+    /// <summary>The full <see cref="AgentProfile"/>s passed to <see cref="Create"/>, in call order — lets a
+    /// test assert on the rendered <see cref="AgentProfile.SystemPrompt"/> the executor built (e.g. the
+    /// templated workspace-layout paths), not just the profile id.</summary>
+    public List<AgentProfile> CreatedProfiles { get; } = [];
+
     /// <summary>Thread ids passed to <see cref="Create"/>, in call order.</summary>
     public List<string> ThreadIds { get; } = [];
 
@@ -44,6 +49,7 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ReviewToolContext? toolContext = null)
     {
         CreatedProfileIds.Add(profile.Id);
+        CreatedProfiles.Add(profile);
         ThreadIds.Add(threadId);
         ReasoningEfforts.Add(reasoningEffort);
         ToolContexts.Add(toolContext);

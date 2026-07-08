@@ -36,7 +36,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
-    private readonly SubAgentManager? _subAgentManager;
+
+    /// <summary>The sub-agent manager for this loop, or null when no sub-agent options were supplied.
+    /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
+    /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
+    public SubAgentManager? SubAgentManager { get; }
 
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
@@ -124,7 +128,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             var source = subAgentTemplateSource
                 ?? new MutableSubAgentTemplateSource(subAgentOptions.Templates);
 
-            _subAgentManager = new SubAgentManager(
+            SubAgentManager = new SubAgentManager(
                 parentAgent: this,
                 parentContracts: [.. contracts],
                 parentHandlers: handlers,
@@ -136,7 +140,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 parentModelId: DefaultOptions.ModelId);
 
             var toolProvider = new SubAgentToolProvider(
-                _subAgentManager,
+                SubAgentManager,
                 source);
 
             _ = functionRegistry.AddProvider(toolProvider);
@@ -152,6 +156,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 triggerOptions,
                 resolve: (toolCallId, result, isError, ct) =>
                     ResolveToolCallAsync(toolCallId, result, isError, contentBlocks: null, ct),
+                notify: (payload, isError, ct) => EnqueueTriggerNotifyAsync(payload, isError, ct),
+                tryNotify: TryEnqueueTriggerNotify,
                 logger: logger);
             _triggerRuntime.RegisterBuiltIns();
             foreach (var registration in triggerOptions.AdditionalRegistrations)
@@ -185,9 +191,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <inheritdoc />
     protected override async Task OnDisposeAsync()
     {
-        if (_subAgentManager != null)
+        if (SubAgentManager != null)
         {
-            await _subAgentManager.DisposeAsync();
+            await SubAgentManager.DisposeAsync();
         }
 
         if (_triggerRuntime != null)
@@ -937,13 +943,47 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // Wait with a terminal failure now rather than leaving the run parked forever.
             foreach (var entry in restoredWaitEntries)
             {
-                await ResolveToolCallAsync(
-                    entry.ToolCallId,
-                    JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
-                    isError: false,
-                    contentBlocks: null,
-                    ct);
+                // Isolate each entry: ResolveToolCallAsync can throw (e.g. an "already resolved with
+                // different content" conflict) for one entry's persisted state without that meaning
+                // anything about the rest. Without isolation, a throw on entry k would abort the loop
+                // and leave entries k+1... parked forever with no runtime left to ever resolve them.
+                try
+                {
+                    await ResolveToolCallAsync(
+                        entry.ToolCallId,
+                        JsonSerializer.Serialize(new { status = "failed", reason = "trigger_disabled", waitId = entry.ToolCallId }),
+                        isError: false,
+                        contentBlocks: null,
+                        ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(
+                        ex,
+                        "Failed to resolve restored wait {ToolCallId} during trigger-disabled recovery; continuing",
+                        entry.ToolCallId);
+                }
             }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Runs on every recovery — even threads with zero persisted messages — because
+    /// <c>notify_waits</c> rows are keyed by thread in their own table, independent of message
+    /// history. This is deliberately separate from the block-wait reconcile in
+    /// <see cref="OnHistoryRestoredAsync"/>, which legitimately needs restored message history
+    /// and therefore does not run for message-less threads.
+    /// </remarks>
+    protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
+    {
+        if (_triggerRuntime != null)
+        {
+            await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
         }
     }
 
@@ -1059,6 +1099,74 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Injects a notify-mode trigger fire as a fresh user turn through the same internal gate
+    /// ResumeSentinel uses. Resume is null and Messages is non-empty, so RunLoopAsync adds it to
+    /// history and drives a new run — queued strictly behind any in-flight turn (never interrupting,
+    /// per locked decision #1). Supplied to <see cref="TriggerRuntime"/> as its notify delegate.
+    /// </summary>
+    private async Task EnqueueTriggerNotifyAsync(string payload, bool isError, CancellationToken ct)
+    {
+        var queued = BuildTriggerNotifyInput(payload, isError);
+
+        try
+        {
+            await EnqueueRawAsync(queued, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Expected on shutdown.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down mid-fire — drop the envelope.
+        }
+    }
+
+    /// <summary>
+    /// Non-blocking counterpart to <see cref="EnqueueTriggerNotifyAsync"/>, supplied to
+    /// <see cref="TriggerRuntime"/> as its <c>tryNotify</c> delegate — used ONLY during restart
+    /// recovery (<see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/>). Recovery runs before the run
+    /// loop starts reading the (bounded) input channel, so restore-time terminal envelopes must never
+    /// block on a full channel: enough restored terminal rows could otherwise fill the channel and
+    /// deadlock startup (the loop can't drain it until <see cref="RunLoopAsync"/> starts, which
+    /// itself may be gated behind this very recovery call completing). This attempts a non-blocking
+    /// write and reports whether it was accepted; the runtime only deletes the persisted
+    /// <c>notify_waits</c> row when this returns true, so a rejected envelope is naturally retried on
+    /// the next recovery instead of being lost.
+    /// </summary>
+    private bool TryEnqueueTriggerNotify(string payload, bool isError)
+    {
+        var queued = BuildTriggerNotifyInput(payload, isError);
+
+        try
+        {
+            return TryEnqueueRaw(queued);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down mid-restore — nothing to inject into; report not-delivered so the
+            // caller retains the row rather than treating a dropped envelope as delivered.
+            return false;
+        }
+    }
+
+    private static QueuedInput BuildTriggerNotifyInput(string payload, bool isError)
+    {
+        var envelope = new TextMessage
+        {
+            Role = Role.User,
+            Text = $"<trigger>\n{payload}\n</trigger>",
+        };
+        var input = new UserInput([envelope], InputId: null, ParentRunId: null);
+        return new QueuedInput(
+            input,
+            ReceiptId: $"notify:{Guid.NewGuid():N}",
+            QueuedAt: DateTimeOffset.UtcNow,
+            Resume: null,
+            Trigger: new TriggerEnvelope(isError));
     }
 
     /// <summary>

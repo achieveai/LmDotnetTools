@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers.Sources;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
@@ -16,6 +17,28 @@ public delegate Task TriggerResolveDelegate(
     string result,
     bool isError,
     CancellationToken cancellationToken);
+
+/// <summary>
+/// Injects a notify-mode trigger envelope as a fresh queued turn on the owning loop. Supplied by
+/// the loop (partial application of <c>EnqueueTriggerNotifyAsync</c>). Null when the host wired no
+/// notify path — arming a notify wait is then rejected.
+/// </summary>
+public delegate Task TriggerNotifyDelegate(string payload, bool isError, CancellationToken cancellationToken);
+
+/// <summary>
+/// Non-blocking counterpart to <see cref="TriggerNotifyDelegate"/>, used ONLY by
+/// <see cref="TriggerRuntime.RestoreNotifyWaitsAsync"/> to deliver restart-terminal envelopes.
+/// Recovery can run before the loop's run-loop starts reading its bounded input channel, so
+/// restore-time delivery must never block a full channel — it must attempt a non-blocking enqueue
+/// and report whether the envelope was actually accepted. Supplied by the loop (partial
+/// application of a non-blocking channel write, e.g. <c>TryEnqueueTriggerNotify</c>). Null when
+/// the host wired no such delegate — restore then falls back to the (potentially blocking)
+/// <see cref="TriggerNotifyDelegate"/>.
+/// </summary>
+/// <returns>True if the envelope was accepted for delivery; false if it could not be (e.g. the
+/// channel is currently full) — the caller must retain the persisted row for redelivery on the
+/// next recovery rather than losing it.</returns>
+public delegate bool TriggerTryNotifyDelegate(string payload, bool isError);
 
 /// <summary>
 /// A block wait recovered from persisted history on restart. Carries the original <c>Wait</c>
@@ -52,6 +75,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     private readonly TriggerOptions _options;
     private readonly TriggerResolveDelegate _resolve;
+    private readonly TriggerNotifyDelegate? _notify;
+    private readonly TriggerTryNotifyDelegate? _tryNotify;
     private readonly ILogger? _logger;
     private readonly SemaphoreSlim _concurrencyGate;
     private readonly ConcurrentDictionary<string, TriggerSourceRegistration> _registrations =
@@ -60,14 +85,48 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
 
-    public TriggerRuntime(TriggerOptions options, TriggerResolveDelegate resolve, ILogger? logger = null)
+    public TriggerRuntime(
+        TriggerOptions options,
+        TriggerResolveDelegate resolve,
+        TriggerNotifyDelegate? notify = null,
+        TriggerTryNotifyDelegate? tryNotify = null,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(resolve);
+        if (options.NotifyWaitStore != null && string.IsNullOrEmpty(options.ThreadId))
+        {
+            throw new ArgumentException(
+                "TriggerOptions.NotifyWaitStore requires a non-empty ThreadId so durable notify restore is scoped to a conversation.",
+                nameof(options));
+        }
         _options = options;
         _resolve = resolve;
+        _notify = notify;
+        _tryNotify = tryNotify;
         _logger = logger;
         _concurrencyGate = new SemaphoreSlim(options.MaxConcurrentWaits, options.MaxConcurrentWaits);
+    }
+
+    /// <summary>
+    /// Binary-compatibility overload for callers using the pre-notify-mode positional shape
+    /// <c>(options, resolve, logger)</c>. Delegates to the primary constructor with no notify
+    /// delegate wired (arming a notify-mode wait is then rejected — see <see cref="ArmAsync"/>).
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="logger"/> intentionally has no default value here: giving it one would make
+    /// this constructor ambiguous with the primary constructor for a 2-arg call (both would be
+    /// applicable via default-substitution, and neither is preferred by the language's tie-break
+    /// rules). Omitting the default keeps this overload applicable only to genuine 3-arg calls
+    /// (where it is unambiguously preferred, since it substitutes no optional parameters) while
+    /// 2-arg calls still resolve — unambiguously — to the primary constructor.
+    /// </remarks>
+    public TriggerRuntime(
+        TriggerOptions options,
+        TriggerResolveDelegate resolve,
+        ILogger? logger)
+        : this(options, resolve, notify: null, tryNotify: null, logger: logger)
+    {
     }
 
     /// <summary>Registers the built-in one-shot <c>timer</c> source.</summary>
@@ -120,6 +179,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         string argsJson,
         string timeout,
         string? label,
+        WaitMode mode,
+        int? maxFires,
         CancellationToken ct)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -134,9 +195,21 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 $"No trigger kind '{kind}' is registered. Registered kinds: {string.Join(", ", RegisteredKinds)}.");
         }
 
-        if (!reg.Capabilities.SupportsBlock)
+        if (mode == WaitMode.Block && !reg.Capabilities.SupportsBlock)
         {
             return WaitArmResult.Reject("unsupported_mode", $"Kind '{kind}' does not support block waits.");
+        }
+
+        if (mode == WaitMode.Notify)
+        {
+            if (!reg.Capabilities.SupportsNotify)
+            {
+                return WaitArmResult.Reject("unsupported_mode", $"Kind '{kind}' does not support notify waits.");
+            }
+            if (_notify == null)
+            {
+                return WaitArmResult.Reject("notify_unavailable", "This host did not enable notify-mode waits.");
+            }
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -145,7 +218,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             return WaitArmResult.Reject("invalid_timeout", timeoutError ?? "invalid timeout");
         }
 
-        return await ArmCoreAsync(waitId, reg, argsJson, label, now, deadline, ct);
+        return await ArmCoreAsync(waitId, reg, argsJson, label, mode, maxFires, now, deadline, ct);
     }
 
     private async Task<WaitArmResult> ArmCoreAsync(
@@ -153,6 +226,8 @@ public sealed class TriggerRuntime : IAsyncDisposable
         TriggerSourceRegistration reg,
         string argsJson,
         string? label,
+        WaitMode mode,
+        int? maxFires,
         DateTimeOffset armedAt,
         DateTimeOffset deadline,
         CancellationToken ct)
@@ -167,27 +242,30 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 + "Cancel a wait or wait for one to complete.");
         }
 
-        var wait = new ArmedWait
+        var request = new TriggerArmRequest
         {
             WaitId = waitId,
             Kind = reg.Kind,
+            ArgsJson = string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson,
             Label = label,
             ArmedAt = armedAt,
             Deadline = deadline,
         };
 
+        var wait = new ArmedWait
+        {
+            WaitId = waitId,
+            Kind = reg.Kind,
+            Label = label,
+            Mode = mode,
+            MaxFires = maxFires,
+            ArmedAt = armedAt,
+            Deadline = deadline,
+            ArgsJson = request.ArgsJson,
+        };
+
         try
         {
-            var request = new TriggerArmRequest
-            {
-                WaitId = waitId,
-                Kind = reg.Kind,
-                ArgsJson = string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson,
-                Label = label,
-                ArmedAt = armedAt,
-                Deadline = deadline,
-            };
-
             var sink = new WaitSink(this, wait);
             wait.Source = await reg.Source.ArmAsync(request, sink, _shutdown.Token);
 
@@ -204,6 +282,32 @@ public sealed class TriggerRuntime : IAsyncDisposable
             _waits[waitId] = wait;
             StartCeilingTimer(wait);
 
+            // Notify-mode waits have no deferred tool_call_id to reuse as a persisted arming record
+            // (unlike block waits, restored from history), so persist here when the host wired a
+            // durable store. Best-effort: a transient persistence failure should not fail an
+            // otherwise-successful arm — it just means this wait won't survive a restart.
+            if (mode == WaitMode.Notify && _options.NotifyWaitStore != null && _options.ThreadId != null)
+            {
+                try
+                {
+                    await _options.NotifyWaitStore.SaveAsync(new NotifyWaitRecord(
+                        waitId, _options.ThreadId, reg.Kind, request.ArgsJson, label, maxFires, 0,
+                        deadline.ToUnixTimeMilliseconds(), armedAt.ToUnixTimeMilliseconds(), "active"), ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // The caller abandoned the call — do not report an armed wait it never asked
+                    // for. Rethrow so the outer catch below cleans up and the cancellation
+                    // propagates, unlike a genuine persistence failure (handled below), which is
+                    // best-effort and must not fail an otherwise-successful arm.
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "notify-wait persist failed for {WaitId}", waitId);
+                }
+            }
+
             _logger?.LogInformation(
                 "trigger.armed {WaitId} kind={Kind} deadline={Deadline:o}",
                 waitId, reg.Kind, deadline);
@@ -219,6 +323,15 @@ public sealed class TriggerRuntime : IAsyncDisposable
             _ = _waits.TryRemove(waitId, out _);
             _logger?.LogInformation("trigger.arm_rejected {WaitId} kind={Kind} reason={Message}", waitId, reg.Kind, ex.Message);
             return WaitArmResult.Reject("invalid_args", ex.Message);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Reached only via the rethrow above, after the source was already armed (registered,
+            // ceiling running, tracked in _waits). Use the single-claim teardown path — not a bare
+            // ReleaseGate/TryRemove — so a stray late fire or ceiling timeout on this same wait
+            // can't win a second claim and double-release the gate or double-notify.
+            _ = await TryTeardownAsync(wait, WaitState.Failed);
+            throw;
         }
         catch (Exception ex)
         {
@@ -323,12 +436,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 // Ceiling already elapsed while offline (or unparseable) — resolve as timed out.
                 await DeliverAsync(
                     r.ToolCallId,
-                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, ArmedAt = armedAt, Deadline = armedAt }),
+                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = r.ToolCallId, Kind = parsed.Kind, Label = parsed.Label, Mode = WaitMode.Block, ArmedAt = armedAt, Deadline = armedAt }),
                     isError: false);
                 continue;
             }
 
-            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, armedAt, deadline, ct);
+            var armResult = await ArmCoreAsync(r.ToolCallId, reg, parsed.ArgsJson, parsed.Label, WaitMode.Block, maxFires: null, armedAt, deadline, ct);
             if (!armResult.IsArmed)
             {
                 // Re-arm was rejected (e.g. concurrency limit, source arm failure). Do NOT leave the
@@ -341,20 +454,160 @@ public sealed class TriggerRuntime : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Re-arms notify-mode waits persisted for this runtime's thread after a restart. Restorable kinds
+    /// re-arm from their remaining fire budget and TTL (no envelope enqueued — safe to await, never
+    /// touches the loop's input channel). Non-restorable kinds (or unregistered ones) and elapsed-TTL
+    /// rows deliver one final terminal envelope; that delivery goes through
+    /// <see cref="TryDeliverRestoreNotifyAsync"/> so it can NEVER block recovery on a bounded input
+    /// channel whose reader may not have started yet (see the caller docs on
+    /// <see cref="TriggerTryNotifyDelegate"/>). A row is deleted only once its terminal envelope was
+    /// actually accepted for delivery; if the channel is currently full, the row is deliberately left
+    /// in the store so it is retried on the next recovery — no loss, no deadlock. No-op when no store
+    /// or thread is configured.
+    /// </summary>
+    public async Task RestoreNotifyWaitsAsync(CancellationToken ct)
+    {
+        var store = _options.NotifyWaitStore;
+        var threadId = _options.ThreadId;
+        if (store == null || threadId == null)
+        {
+            return;
+        }
+
+        var rows = await store.LoadActiveAsync(threadId, ct);
+        foreach (var row in rows)
+        {
+            if (!_registrations.TryGetValue(row.Kind, out var reg) || !reg.Capabilities.SupportsRestore || !reg.Capabilities.SupportsNotify)
+            {
+                if (await TryDeliverRestoreNotifyAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, "trigger_lost_on_restart"), isError: false))
+                {
+                    await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
+                }
+                else
+                {
+                    _logger?.LogDebug(
+                        "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
+                        row.WaitId);
+                }
+                continue;
+            }
+
+            // An exhausted row (fires_so_far already reached maxFires) is stale terminal state: the
+            // final fire's envelope was already delivered by OnSourceFiredAsync before this row's own
+            // row-delete could complete (e.g. the process crashed between persisting fires_so_far and
+            // TryTeardownAsync's DeleteAsync). Re-arming would either double-fire or, if the remaining
+            // budget clamps to zero, arm a wait that can never terminate on its own — so treat it as
+            // terminal here too: clean up the row, no re-arm, no redundant notification.
+            if (row.MaxFires is int exhaustedMaxFires && row.FiresSoFar >= exhaustedMaxFires)
+            {
+                await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
+                continue;
+            }
+
+            // A missing arm timestamp (older/hand-authored data) would otherwise map to the Unix
+            // epoch and expire instantly — restart the clock from now instead.
+            var armedAt = row.ArmedAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.ArmedAtUnixMs) : DateTimeOffset.UtcNow;
+            var deadline = row.TimeoutAtUnixMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(row.TimeoutAtUnixMs) : armedAt;
+            if (deadline <= DateTimeOffset.UtcNow)
+            {
+                // TTL already elapsed while offline — terminal envelope, delete only if accepted.
+                if (await TryDeliverRestoreNotifyAsync(
+                    BuildTerminalPayload("timed_out", new ArmedWait { WaitId = row.WaitId, Kind = row.Kind, Label = row.Label, Mode = WaitMode.Notify, ArmedAt = armedAt, Deadline = deadline }),
+                    isError: false))
+                {
+                    await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
+                }
+                else
+                {
+                    _logger?.LogDebug(
+                        "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
+                        row.WaitId);
+                }
+                continue;
+            }
+
+            var remainingMaxFires = row.MaxFires is int mf ? Math.Max(0, mf - row.FiresSoFar) : (int?)null;
+            var armResult = await ArmCoreAsync(row.WaitId, reg, row.Args, row.Label, WaitMode.Notify, remainingMaxFires, armedAt, deadline, ct);
+            if (!armResult.IsArmed)
+            {
+                if (await TryDeliverRestoreNotifyAsync(BuildFailedPayload(row.WaitId, row.Kind, row.Label, armResult.Reason ?? "trigger_lost_on_restart"), isError: false))
+                {
+                    await store.DeleteAsync(row.ThreadId, row.WaitId, ct);
+                }
+                else
+                {
+                    _logger?.LogDebug(
+                        "notify-wait restore: input channel unavailable for {WaitId}, retaining row for redelivery on next recovery",
+                        row.WaitId);
+                }
+            }
+        }
+    }
+
     // ---- internal transition machinery -------------------------------------------------------
 
     private async ValueTask OnSourceFiredAsync(ArmedWait wait, TriggerFireEvent fire)
     {
+        if (wait.Mode == WaitMode.Block)
+        {
+            var blockPayload = BuildFiredPayload(wait, fire);
+            _ = await FinalizeAsync(wait, WaitState.Fired, blockPayload, isError: false);
+            return;
+        }
+
+        // Notify mode: deliver each fire as a queued envelope; stay armed until maxFires or TTL.
+        if (wait.State != WaitState.Pending)
+        {
+            return; // already terminal (cancelled / timed_out) — ignore a late fire.
+        }
+
+        var fireNumber = Interlocked.Increment(ref wait.FiresSoFar);
+        if (wait.MaxFires is int over && fireNumber > over)
+        {
+            return; // a concurrent fire already consumed the last budget slot.
+        }
+
+        var isFinalFire = wait.MaxFires is int cap && fireNumber >= cap;
         var payload = BuildFiredPayload(wait, fire);
-        _ = await FinalizeAsync(wait, WaitState.Fired, payload, isError: false);
+        await NotifyAsync(wait, payload, isError: false);
+
+        // Best-effort: keep the persisted fire count current so a restart resumes with the correct
+        // remaining budget. A failure here does not affect delivery of the fire already sent above.
+        // Debounced ONLY for unlimited waits (no maxFires): a high-frequency notify source (e.g. a
+        // file-tail matching every line) would otherwise issue one SQLite write per fire, and an
+        // unlimited wait's remaining budget is unbounded anyway so an approximately-current
+        // fires_so_far is fine. A maxFires-bounded wait persists every fire — debouncing it would
+        // let a crash lose up to 9 fires and over-grant the remaining budget on restore.
+        var shouldPersist = wait.MaxFires is not null || fireNumber == 1 || fireNumber % 10 == 0 || isFinalFire;
+        if (shouldPersist && _options.NotifyWaitStore != null && _options.ThreadId != null)
+        {
+            try
+            {
+                await _options.NotifyWaitStore.SaveAsync(new NotifyWaitRecord(
+                    wait.WaitId, _options.ThreadId, wait.Kind, wait.ArgsJson, wait.Label, wait.MaxFires, fireNumber,
+                    wait.Deadline.ToUnixTimeMilliseconds(), wait.ArmedAt.ToUnixTimeMilliseconds(), "active"), CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "notify-wait fires_so_far update failed for {WaitId}", wait.WaitId);
+            }
+        }
+
+        if (isFinalFire)
+        {
+            // The last fire's envelope IS the terminal message (decision #2 satisfied) — tear down
+            // without delivering a second, redundant envelope.
+            _ = await TryTeardownAsync(wait, WaitState.Fired);
+        }
     }
 
     /// <summary>
-    /// Attempts the single terminal transition for <paramref name="wait"/>. The winner stops the
-    /// ceiling timer, disposes the source (no fire after dispose), releases the concurrency slot,
-    /// and delivers the one result. Returns true only for the winning caller.
+    /// Claims the single terminal transition and runs teardown (stop ceiling, dispose source, release
+    /// gate, deregister). Returns true only for the winning caller. Does NOT deliver — callers that
+    /// owe a terminal message call this then deliver.
     /// </summary>
-    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
+    private async Task<bool> TryTeardownAsync(ArmedWait wait, WaitState state)
     {
         if (!wait.TryClaim(state))
         {
@@ -387,11 +640,138 @@ public sealed class TriggerRuntime : IAsyncDisposable
         _ = _waits.TryRemove(wait.WaitId, out _);
         ReleaseGate(wait);
 
+        if (wait.Mode == WaitMode.Notify && _options.NotifyWaitStore != null)
+        {
+            try
+            {
+                await _options.NotifyWaitStore.DeleteAsync(_options.ThreadId!, wait.WaitId, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "notify-wait row delete failed for {WaitId}", wait.WaitId);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts the single terminal transition for <paramref name="wait"/>. The winner stops the
+    /// ceiling timer, disposes the source (no fire after dispose), releases the concurrency slot,
+    /// and delivers the one result. Returns true only for the winning caller.
+    /// </summary>
+    private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
+    {
+        if (!await TryTeardownAsync(wait, state))
+        {
+            return false;
+        }
+
         // Deliver with a fresh, uncancellable token: the terminal result must reach the loop even
         // though disposing the source above cancels the source's own token, and even if the
         // operation that triggered this transition (a CancelWait) carried a cancelled token.
-        await DeliverAsync(wait.WaitId, payload, isError);
+        if (wait.Mode == WaitMode.Notify)
+        {
+            await NotifyAsync(wait, payload, isError);
+        }
+        else
+        {
+            await DeliverAsync(wait.WaitId, payload, isError);
+        }
         return true;
+    }
+
+    private async Task NotifyAsync(ArmedWait wait, string payload, bool isError)
+    {
+        if (_notify == null)
+        {
+            _logger?.LogWarning("trigger notify fired for {WaitId} but no notify delegate is wired", wait.WaitId);
+            return;
+        }
+
+        try
+        {
+            // Use the runtime's own shutdown token, not CancellationToken.None: _notify writes to
+            // the loop's bounded input channel, and a full channel would otherwise block this
+            // source task indefinitely even after the runtime is disposed.
+            await _notify(payload, isError, _shutdown.Token);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down — nothing to inject into.
+        }
+        catch (OperationCanceledException)
+        {
+            // Runtime shutting down — drop the fire; the loop side swallows this too.
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "trigger notify delivery failed for {WaitId}", wait.WaitId);
+        }
+    }
+
+    /// <summary>
+    /// Delivers a restart-terminal envelope (<c>trigger_lost_on_restart</c>, <c>timed_out</c>) with
+    /// no backing <see cref="ArmedWait"/> — used exclusively by <see cref="RestoreNotifyWaitsAsync"/>.
+    /// Prefers the non-blocking <see cref="_tryNotify"/> delegate so recovery can never block on the
+    /// loop's bounded input channel before its reader has started (the deadlock this exists to avoid
+    /// — see <see cref="TriggerTryNotifyDelegate"/>). When no non-blocking delegate is wired (e.g.
+    /// older/simple test wiring where the plain <see cref="_notify"/> callback never blocks), falls
+    /// back to the original blocking delivery so existing behavior is preserved.
+    /// </summary>
+    /// <returns>
+    /// True if the envelope was accepted for delivery (the caller should delete the persisted row);
+    /// false if the non-blocking channel could not accept it right now (the caller must retain the
+    /// row for redelivery on the next recovery — never delete on a rejected/failed delivery).
+    /// </returns>
+    private async Task<bool> TryDeliverRestoreNotifyAsync(string payload, bool isError)
+    {
+        if (_tryNotify != null)
+        {
+            try
+            {
+                return _tryNotify(payload, isError);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Loop torn down — nothing to inject into. Treat as "not delivered": the row is
+                // retained, which is harmless since a torn-down loop won't run RestoreNotifyWaitsAsync
+                // again until a future recovery picks the row back up.
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "trigger notify-restore delivery failed");
+                return false;
+            }
+        }
+
+        if (_notify == null)
+        {
+            _logger?.LogWarning("trigger notify-restore fired but no notify delegate is wired");
+            return false;
+        }
+
+        try
+        {
+            await _notify(payload, isError, _shutdown.Token);
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Loop torn down — nothing to inject into.
+            return true; // matches prior behavior: row is deleted, not retried, on teardown.
+        }
+        catch (OperationCanceledException)
+        {
+            // Runtime shutting down — drop the fire; the loop side swallows this too.
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "trigger notify-restore delivery failed");
+            return true;
+        }
     }
 
     private async Task DeliverAsync(string toolCallId, string payload, bool isError)
@@ -603,6 +983,10 @@ public sealed class TriggerRuntime : IAsyncDisposable
         public required string WaitId { get; init; }
         public required string Kind { get; init; }
         public string? Label { get; init; }
+        public required WaitMode Mode { get; init; }
+        public int? MaxFires { get; init; }
+        public int FiresSoFar; // interlocked; notify mode only.
+        public string ArgsJson { get; init; } = "{}"; // notify mode only; used to persist fires_so_far updates.
         public required DateTimeOffset ArmedAt { get; init; }
         public required DateTimeOffset Deadline { get; init; }
         public IArmedTrigger? Source { get; set; }
