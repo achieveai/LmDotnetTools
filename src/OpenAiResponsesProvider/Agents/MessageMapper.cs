@@ -231,6 +231,24 @@ internal static class MessageMapper
                 );
                 break;
 
+            case NotifyMessage notify:
+                inputItems.Add(
+                    new ResponseInputItem
+                    {
+                        Type = "message",
+                        Role = MapRole(notify.Role),
+                        Content =
+                        [
+                            new ResponseInputContent
+                            {
+                                Type = notify.Role == Role.Assistant ? "output_text" : "input_text",
+                                Text = notify.Text,
+                            },
+                        ],
+                    }
+                );
+                break;
+
             default:
                 // Unsupported message types (e.g. UsageMessage on the input side) have no Responses
                 // input-side analog and are intentionally dropped.

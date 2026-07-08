@@ -129,6 +129,12 @@ internal sealed class CopilotEventTranslator
                 {
                     _ = sb.AppendLine(textMessage.Text);
                 }
+                else if (message is NotifyMessage notifyMessage)
+                {
+                    // Out-of-band notification: append its self-describing envelope to the CLI prompt so
+                    // the model sees the async event (it arrives via the input batch, not history).
+                    _ = sb.AppendLine(notifyMessage.Text);
+                }
                 else
                 {
                     logger?.LogWarning(

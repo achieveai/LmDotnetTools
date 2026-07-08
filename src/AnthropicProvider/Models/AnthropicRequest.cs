@@ -372,6 +372,12 @@ public record AnthropicRequest
         {
             anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
         }
+        else if (message is NotifyMessage notifyMsg)
+        {
+            // Out-of-band notification: its self-describing envelope is delivered to the model as user
+            // text (NotifyMessage is Role.User, so the caller maps this message to a user turn).
+            anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = notifyMsg.Text });
+        }
         else if (message is ImageMessage imageMsg)
         {
             anthropicMessage.Content.Add(new AnthropicContent
