@@ -362,13 +362,55 @@ internal sealed class ReviewBranchManager
     /// a reviewed row without a full request).
     /// </summary>
     public static string BuildReviewBranchName(RepoIdentity repo, int prNumber) =>
-        $"review/{SlugifyRepo(repo)}-{prNumber}";
+        $"review/{RepoSlug(repo)}-{prNumber}";
 
     private static string BuildCommitMessage(ReviewBotPublishRequest request) =>
         $"Review {request.TargetRepo.RepoName}#{request.PrNumber}";
 
-    /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').</summary>
-    private static string SlugifyRepo(RepoIdentity repo) => Slug(repo.RepoName);
+    /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').
+    /// Public so the orphan-branch reconciler can match a <c>review/{repo}-{pr}</c> branch back to a configured
+    /// repo identity.</summary>
+    public static string RepoSlug(RepoIdentity repo) => Slug(repo.RepoName);
+
+    /// <summary>
+    /// Reverse of <see cref="BuildReviewBranchName(RepoIdentity, int)"/>: parses a <c>review/{repo}-{pr}</c>
+    /// branch into its repo slug and PR number. Returns <c>false</c> for anything that is not a well-formed
+    /// new-scheme review branch — including the legacy <c>review/{provider}/{owner-repo}/{pr}</c> form, which
+    /// carries embedded '/'.
+    /// </summary>
+    public static bool TryParseReviewBranch(string branch, out string repoSlug, out int prNumber)
+    {
+        repoSlug = string.Empty;
+        prNumber = 0;
+        if (string.IsNullOrEmpty(branch) || !branch.StartsWith("review/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // The new scheme is a single segment "{slug}-{pr}"; an embedded '/' means the legacy nested form.
+        var remainder = branch["review/".Length..];
+        if (remainder.Length == 0 || remainder.Contains('/'))
+        {
+            return false;
+        }
+
+        // The PR number is the trailing run of digits after the last '-'; the slug is everything before it
+        // (repo slugs may themselves contain '-').
+        var lastDash = remainder.LastIndexOf('-');
+        if (lastDash <= 0 || lastDash == remainder.Length - 1)
+        {
+            return false;
+        }
+
+        var prPart = remainder[(lastDash + 1)..];
+        if (!prPart.All(char.IsAsciiDigit) || !int.TryParse(prPart, out prNumber))
+        {
+            return false;
+        }
+
+        repoSlug = remainder[..lastDash];
+        return true;
+    }
 
     private static string Slug(string value)
     {
