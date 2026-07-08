@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -102,7 +101,6 @@ public sealed class ContextDiscoveryInjector
 
         var truncated = body.Truncated ?? false;
         var text = _formatter.BuildInjectedMessage(body.Path!, body.Content!, truncated);
-        var metadata = BuildMetadata(body.Path!, truncated);
 
         var injected = 0;
         foreach (var threadId in threads)
@@ -116,12 +114,12 @@ public sealed class ContextDiscoveryInjector
 
             try
             {
-                var message = new TextMessage
-                {
-                    Role = Role.User,
-                    Text = text,
-                    Metadata = metadata,
-                };
+                // Emit a typed notification (kind=context-discovery). The formatted file body stays in
+                // Detail so it still reaches the LLM (via ICanGetText), and the UI renders it as a pill.
+                var message = NotifyMessage.Create(
+                    NotifyKinds.ContextDiscovery,
+                    detail: text,
+                    label: body.Path);
 
                 _ = await agent.SendAsync([message], inputId: null, parentRunId: null, ct).ConfigureAwait(false);
                 injected++;
@@ -147,17 +145,5 @@ public sealed class ContextDiscoveryInjector
             body.SessionId);
 
         return injected;
-    }
-
-    private static ImmutableDictionary<string, object> BuildMetadata(string path, bool truncated)
-    {
-        // The UI reads this key off TextMessage.Metadata; ShadowPropertiesJsonConverter flattens
-        // it to a top-level field on the serialised message so the Vue client sees it as
-        // `message.context_discovery` without any extra middleware.
-        var contextDiscovery = ImmutableDictionary<string, object>.Empty
-            .Add("path", path)
-            .Add("truncated", truncated);
-
-        return ImmutableDictionary<string, object>.Empty.Add(MetadataKey, contextDiscovery);
     }
 }
