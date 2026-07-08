@@ -33,7 +33,7 @@ public sealed class HostRetentionTests
 
         var host = new FakeSandboxCommandRunner()
             .OnArgvContains(
-                "rev-parse review/github/achieveai-lmdotnettools/118",
+                "rev-parse review/lmdotnettools-118",
                 new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
         var hostFileSystem = new FakeSandboxFileSystem()
             .Seed("/host/reviewbot/README.md", "# ReviewBot")
@@ -64,7 +64,7 @@ public sealed class HostRetentionTests
         var sandboxCommands = sandbox.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
 
         hostCommands.Should().Contain(
-            c => c.Contains("push origin review/github/achieveai-lmdotnettools/118"),
+            c => c.Contains("push origin review/lmdotnettools-118"),
             "the retention push must run on the host runner");
         hostCommands.Should().NotContain(
             c => c.Contains("branch -D review/") || c.Contains("push origin --delete review/"),

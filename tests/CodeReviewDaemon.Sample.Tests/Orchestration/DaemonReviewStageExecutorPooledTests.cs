@@ -21,8 +21,8 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 public sealed class DaemonReviewStageExecutorPooledTests
 {
     private const string StoreUrl = "https://github.com/achieveai/AchieveAiReviews.git";
-    private const string Branch = "review/github/achieveai-lmdotnettools/118";
-    private const string NotesRelPath = "PRs/github/achieveai-lmdotnettools/118";
+    private const string Branch = "review/lmdotnettools-118";
+    private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
 
     [Fact]
@@ -89,7 +89,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         toolContext.EnableReviewerWrites.Should().BeTrue();
         toolContext.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
-        toolContext.NotesDir.Should().Be("/workspace/store/PRs/github/achieveai-lmdotnettools/118");
+        toolContext.NotesDir.Should().Be("/workspace/store/PRs/lmdotnettools-118");
         toolContext.ScratchDir.Should().Be("/workspace/scratch");
     }
 
@@ -108,7 +108,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
         profile.SystemPrompt.Should().Contain("/workspace/store/repos/LmDotnetTools");
         profile.SystemPrompt.Should().Contain("cross-repo store at /workspace/store");
-        profile.SystemPrompt.Should().Contain("/workspace/store/PRs/github/achieveai-lmdotnettools/118");
+        profile.SystemPrompt.Should().Contain("/workspace/store/PRs/lmdotnettools-118");
         profile.SystemPrompt.Should().MatchRegex("(?i)only writable location");
     }
 
@@ -143,7 +143,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         // The prior round's own notes are already on the notes dir the reviewer's tools address.
         fixture.BootFileSystem.Seed(
-            "/workspace/store/PRs/github/achieveai-lmdotnettools/118/PR_Findings_01.md", "prior findings");
+            "/workspace/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);

@@ -7,7 +7,7 @@ namespace CodeReviewDaemon.Sample.Tests.Agents;
 
 public class ScopedToolFilterTests
 {
-    private const string NotesDir = "/store/PRs/github/acme-repo/123";
+    private const string NotesDir = "/store/PRs/acme-repo-123";
     private const string ScratchDir = "/store/scratch";
     private static readonly string[] ReadOnlyAllow = ["Read", "Grep", "Glob", "Skill"];
     private static readonly string[] WritableAllow = ["Write", "Edit", "Bash"];

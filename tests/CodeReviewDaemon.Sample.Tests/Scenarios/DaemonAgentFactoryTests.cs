@@ -87,7 +87,7 @@ public sealed class DaemonAgentFactoryTests
             ["has_store"] = false,
             ["store_root"] = string.Empty,
             ["has_notes"] = true,
-            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["notes_dir"] = "/workspace/store/PRs/acme-1",
             ["is_rereview"] = true,
             ["prev_commit"] = "abc123",
             ["new_commit"] = "def456",
@@ -116,7 +116,7 @@ public sealed class DaemonAgentFactoryTests
             ["has_store"] = false,
             ["store_root"] = string.Empty,
             ["has_notes"] = true,
-            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["notes_dir"] = "/workspace/store/PRs/acme-1",
             ["is_rereview"] = false,
             ["prev_commit"] = string.Empty,
             ["new_commit"] = "def456",
@@ -216,14 +216,14 @@ public sealed class DaemonAgentFactoryTests
             ["has_store"] = true,
             ["store_root"] = "/workspace/store",
             ["has_notes"] = true,
-            ["notes_dir"] = "/workspace/store/PRs/github/acme/1",
+            ["notes_dir"] = "/workspace/store/PRs/acme-1",
         };
 
         var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
 
         prompt.Should().Contain("/workspace/store/repos/Foo");
         prompt.Should().Contain("cross-repo store at /workspace/store");
-        prompt.Should().Contain("/workspace/store/PRs/github/acme/1");
+        prompt.Should().Contain("/workspace/store/PRs/acme-1");
         prompt.Should().MatchRegex("(?i)only writable location");
     }
 

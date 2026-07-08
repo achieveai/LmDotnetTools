@@ -302,7 +302,7 @@ if (daemonOptions.EnableToolAssistedReview
         var hostGit = new GitRunner(slots.HostRunner);
         var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
         var branchManager = new ReviewBranchManager(
-            hostGit, slots.HostFileSystem, "github", loggerFactory.CreateLogger<ReviewBranchManager>());
+            hostGit, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewBranchManager>());
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
 
         // At-close knowledge extraction (Layer-2, design §1). Wired only when EnableKnowledgeAgent is set:

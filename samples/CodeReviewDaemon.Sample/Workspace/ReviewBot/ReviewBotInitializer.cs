@@ -139,7 +139,7 @@ internal sealed class ReviewBotInitializer
         "# ReviewBot\n\n"
         + "Durable store for the Code-Review Daemon.\n\n"
         + "- `KnowledgeBase/` — accumulated review knowledge; `_toc.md` is the generated table of contents.\n"
-        + "- `PRs/` — retained per-PR review artifacts (`{provider}/{owner-repo}/{pr}-{head_sha8}/`).\n\n"
+        + "- `PRs/` — retained per-PR review artifacts (`{repo}-{pr}/`).\n\n"
         + "## Setup\n\n"
         + "This repository must be **created out-of-band** (the daemon does not create provider repos). "
         + "Create the empty remote, grant the bot identity access, then run `CodeReviewDaemon reviewbot "

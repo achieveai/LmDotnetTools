@@ -475,11 +475,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // This is the first review of the PR: the review branch does not exist yet.
         fixture.Runner.OnArgvContains(
-            "rev-parse --verify review/github/achieveai-lmdotnettools/118",
+            "rev-parse --verify review/lmdotnettools-118",
             new SandboxCommandResult(1, string.Empty, "unknown revision"));
         // The push must succeed so the retention sequence reaches the reviewbot_push record.
         fixture.Runner.OnArgvContains(
-            "rev-parse review/github/achieveai-lmdotnettools/118",
+            "rev-parse review/lmdotnettools-118",
             new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -488,21 +488,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // CommitNotesAsync commits onto the review branch and pushes the BRANCH (not the default branch) —
         // the branch persists so later re-reviews can keep appending notes to it.
-        commands.Should().Contain(a => a.Contains("checkout -B review/github/achieveai-lmdotnettools/118"));
+        commands.Should().Contain(a => a.Contains("checkout -B review/lmdotnettools-118"));
         commands.Should().Contain(a => a.Contains("commit -m"));
-        commands.Should().Contain(a => a.Contains("push origin review/github/achieveai-lmdotnettools/118"));
+        commands.Should().Contain(a => a.Contains("push origin review/lmdotnettools-118"));
 
         // The branch is kept: nothing merges or deletes it as part of a single review pass.
-        commands.Should().NotContain(a => a.Contains("branch -D review/github/achieveai-lmdotnettools/118"));
-        commands.Should().NotContain(a => a.Contains("push origin --delete review/github/achieveai-lmdotnettools/118"));
+        commands.Should().NotContain(a => a.Contains("branch -D review/lmdotnettools-118"));
+        commands.Should().NotContain(a => a.Contains("push origin --delete review/lmdotnettools-118"));
         commands.Should().NotContain(a => a.Contains("push origin main"), "a per-review commit must never fast-forward the default branch");
 
         // The PRs/... review artifact was written into the checkout before the commit.
-        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        fixture.FileSystem.Writes.Should().Contain(p => p.Contains("/PRs/") && p.EndsWith("review.md"));
         // The retained artifact carries the raw review text — the "[BotName]" prefix is only added to the
         // POSTED comment (see Posted_prefixes_the_posted_comment_with_the_configured_bot_name), never to
         // what's committed to the ReviewBot repo.
-        var reviewFilePath = fixture.FileSystem.Writes.Single(p => p.Contains("/PRs/github/") && p.EndsWith("review.md"));
+        var reviewFilePath = fixture.FileSystem.Writes.Single(p => p.Contains("/PRs/") && p.EndsWith("review.md"));
         fixture.FileSystem.Files[reviewFilePath].Should().NotStartWith("[");
 
         // The reviewbot_push outcome is persisted in SQLite (outbox row, terminal Posted with the pushed SHA).
@@ -579,7 +579,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
         fixture.Runner.OnArgvContains(
-            "push origin review/github/achieveai-lmdotnettools/118",
+            "push origin review/lmdotnettools-118",
             new SandboxCommandResult(1, string.Empty, "rejected"));
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 

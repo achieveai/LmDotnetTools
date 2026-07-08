@@ -19,7 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
 {
     private const string RepoRoot = "/host/sweeper-store";
-    private const string Branch = "review/github/acme-widgets/42";
+    private const string Branch = "review/widgets-42";
     private const string SourcePrRef = "github/acme/widgets/42";
 
     public KnowledgeExtractionCommitterTests(ITestOutputHelper output)

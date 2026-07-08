@@ -19,7 +19,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
 {
     private const string RepoRoot = "/work/reviewbot";
     private const string DefaultBranch = "main";
-    private const string ReviewBranch = "review/github/acme-widgets/42";
+    private const string ReviewBranch = "review/widgets-42";
 
     private static readonly RepoIdentity TargetRepo = new()
     {
@@ -35,7 +35,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         DefaultBranch: DefaultBranch,
         Files:
         [
-            new ReviewArtifactFile("PRs/github/acme-widgets/42-abcd1234/review.md", "# Review"),
+            new ReviewArtifactFile("PRs/widgets-42/review.md", "# Review"),
             new ReviewArtifactFile("KnowledgeBase/_toc.md", "# ToC"),
         ]);
 
@@ -51,7 +51,6 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         new(
             new GitRunner(runner),
             fileSystem,
-            "github",
             LoggerFactory.CreateLogger<ReviewBranchManager>());
 
     [Fact]
@@ -82,7 +81,7 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         commands.Should().NotContain(a => a.Contains($"push origin --delete {ReviewBranch}"));
 
         // Both artifact sets were written into the checkout before the commit.
-        fs.Files.Should().ContainKey($"{RepoRoot}/PRs/github/acme-widgets/42-abcd1234/review.md");
+        fs.Files.Should().ContainKey($"{RepoRoot}/PRs/widgets-42/review.md");
         fs.Files.Should().ContainKey($"{RepoRoot}/KnowledgeBase/_toc.md");
 
         // Every git invocation carries the hardening flags.

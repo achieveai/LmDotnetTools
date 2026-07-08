@@ -16,7 +16,7 @@ internal static class PrLifecycleSweepSeam
     /// Maps a <see cref="ReviewedPrRow"/> from <see cref="ReviewStore.ListReviewedPrsAsync"/> to a
     /// <see cref="ReviewedPr"/> sweep unit: the storage provider is mapped to the branch/poll namespace
     /// (<c>azure-devops</c> → <c>ado</c>) and the persistent notes branch name is derived the same way the
-    /// executor's commit-notes does (<see cref="ReviewBranchManager.BuildReviewBranchName(string, RepoIdentity, int)"/>),
+    /// executor's commit-notes does (<see cref="ReviewBranchManager.BuildReviewBranchName(RepoIdentity, int)"/>),
     /// so the sweep targets the exact branch the reviews pushed to. Returns <c>null</c> for a non-numeric PR
     /// id (which cannot name a branch) so the caller can skip it without aborting the sweep.
     /// </summary>
@@ -31,7 +31,7 @@ internal static class PrLifecycleSweepSeam
 
         var provider = string.Equals(row.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : row.Provider;
         return new ReviewedPr(
-            row.Repo, provider, row.PrId, ReviewBranchManager.BuildReviewBranchName(provider, row.Repo, prNumber));
+            row.Repo, provider, row.PrId, ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber));
     }
 
     /// <summary>
@@ -54,14 +54,14 @@ internal static class PrLifecycleSweepSeam
 /// <summary>
 /// One reviewed PR whose persistent notes branch may need resolving once the PR reaches a terminal
 /// lifecycle. <see cref="Branch"/> is the review branch
-/// <see cref="ReviewBranchManager.BuildReviewBranchName(string, RepoIdentity, int)"/> produced for it
+/// <see cref="ReviewBranchManager.BuildReviewBranchName(RepoIdentity, int)"/> produced for it
 /// (precomputed by the caller — the <c>ReviewStore</c> query supplies the rows and the caller derives the
 /// branch name via the <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
 /// </summary>
 internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch);
 
 /// <summary>
-/// Resolves each reviewed PR's persistent notes branch (<c>review/{provider}/{owner-repo}/{pr}</c>,
+/// Resolves each reviewed PR's persistent notes branch (<c>review/{repo}-{pr}</c>,
 /// created once per PR by <see cref="ReviewBranchManager.CommitNotesAsync"/> and kept across re-reviews)
 /// once the PR closes: merges the branch into the store default branch when the PR merged (if enabled),
 /// deletes it when the PR was abandoned (closed unmerged), and leaves an open PR's branch untouched.

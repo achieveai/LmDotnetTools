@@ -69,11 +69,11 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// <param name="submoduleRelPath">The reviewed submodule's path under the store, e.g.
     /// <c>repos/LmDotnetTools</c>.</param>
     /// <param name="branch">The PR's persistent review branch, e.g.
-    /// <c>review/github/achieveai-lmdotnettools/151</c>.</param>
+    /// <c>review/lmdotnettools-151</c>.</param>
     /// <param name="defaultBranch">The store's default branch, e.g. <c>main</c> — only used when
     /// <paramref name="branch"/> does not already exist on <c>origin</c>.</param>
     /// <param name="notesRelPath">The persistent notes path under the store, e.g.
-    /// <c>PRs/github/achieveai-lmdotnettools/151</c>.</param>
+    /// <c>PRs/lmdotnettools-151</c>.</param>
     /// <param name="policy">The per-run <see cref="OperationPolicy"/> scoping which submodules may be
     /// fetched.</param>
     /// <param name="cancellationToken">Propagated to every git step and the submodule initializer.</param>
